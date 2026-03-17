@@ -1,0 +1,48 @@
+{
+  // Minimal AgentBoot configuration — a small product team.
+  //
+  // One group, two teams, three personas enabled.
+  // Good starting point for teams under 20 engineers.
+
+  "org": "acme-startup",
+  "orgDisplayName": "Acme Startup",
+
+  "groups": {
+    // Single engineering group.
+    "engineering": {
+      "label": "Engineering",
+      // Two feature teams.
+      "teams": ["backend", "frontend"]
+    }
+  },
+
+  "personas": {
+    // Start with three — add more as the team grows.
+    "enabled": [
+      "code-reviewer",
+      "security-reviewer",
+      "test-generator"
+    ]
+    // No extend path — using core personas only.
+  },
+
+  "traits": {
+    // Use the full trait set. Restrict here if you want to limit what
+    // persona authors can reference.
+    "enabled": [
+      "critical-thinking",
+      "structured-output",
+      "source-citation",
+      "minimal-diff",
+      "explain-reasoning"
+    ]
+  },
+
+  "sync": {
+    "repos": "./repos.json"
+    // targetDir defaults to ".claude"
+    // writePersonasIndex defaults to true
+  }
+
+  // output and validation use all defaults.
+}

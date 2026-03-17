@@ -1,0 +1,62 @@
+{
+  "compilerOptions": {
+    // ---------------------------------------------------------------------------
+    // Language and environment
+    // ---------------------------------------------------------------------------
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // ---------------------------------------------------------------------------
+    // Strict mode — all checks on
+    // ---------------------------------------------------------------------------
+    "strict": true,
+    "noUncheckedIndexedAccess": true,       // array[i] is T | undefined
+    "noImplicitOverride": true,             // explicit override keyword required
+    "noPropertyAccessFromIndexSignature": true,
+    "exactOptionalPropertyTypes": true,     // don't allow undefined where optional
+
+    // ---------------------------------------------------------------------------
+    // Additional checks
+    // ---------------------------------------------------------------------------
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+
+    // ---------------------------------------------------------------------------
+    // Emit
+    // ---------------------------------------------------------------------------
+    "outDir": "./dist",
+    "rootDir": ".",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+
+    // ---------------------------------------------------------------------------
+    // Interop
+    // ---------------------------------------------------------------------------
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    // ---------------------------------------------------------------------------
+    // Path aliases
+    // ---------------------------------------------------------------------------
+    "baseUrl": ".",
+    "paths": {
+      "@agentboot/*": ["src/*"]
+    }
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts"
+  ]
+}

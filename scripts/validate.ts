@@ -1,0 +1,590 @@
+/**
+ * AgentBoot validate script.
+ *
+ * Runs a suite of checks against the AgentBoot source tree and config before
+ * a build is allowed to proceed. All checks are independent — every failure
+ * is reported before the process exits.
+ *
+ * Checks:
+ *   1. All personas in agentboot.config.json exist in core/personas/
+ *   2. All traits referenced in persona configs exist in core/traits/
+ *   3. All SKILL.md files have required frontmatter (name, description)
+ *   4. PERSONAS.md is in sync with actual personas (if it exists in dist/)
+ *   5. No obvious secrets or credentials in trait/persona definitions
+ *
+ * Usage:
+ *   npm run validate
+ *   tsx scripts/validate.ts
+ *   tsx scripts/validate.ts --config path/to/agentboot.config.json
+ *   tsx scripts/validate.ts --strict   (treats warnings as errors)
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import chalk from "chalk";
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "..");
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface CheckResult {
+  name: string;
+  passed: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+interface AgentBootConfig {
+  org: string;
+  orgDisplayName?: string;
+  groups?: Record<string, GroupConfig>;
+  personas?: {
+    enabled?: string[];
+    extend?: string;
+    outputFormats?: string[];
+  };
+  traits?: {
+    enabled?: string[];
+  };
+  instructions?: {
+    enabled?: string[];
+  };
+  output?: {
+    distPath?: string;
+    provenanceHeaders?: boolean;
+  };
+  validation?: {
+    secretPatterns?: string[];
+    strictMode?: boolean;
+  };
+}
+
+interface GroupConfig {
+  label?: string;
+  teams?: string[];
+  traitsEnabled?: string[];
+}
+
+interface PersonaConfig {
+  name: string;
+  description: string;
+  invocation?: string;
+  traits?: string[];
+  groups?: Record<string, { traits?: string[] }>;
+  teams?: Record<string, { traits?: string[] }>;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function resolveConfigPath(argv: string[]): string {
+  const idx = argv.indexOf("--config");
+  if (idx !== -1 && argv[idx + 1]) {
+    return path.resolve(argv[idx + 1]!);
+  }
+  return path.join(ROOT, "agentboot.config.json");
+}
+
+/**
+ * Strip single-line // comments from a JSONC string, respecting string literals.
+ * Handles // inside URLs and regex patterns that appear as JSON string values.
+ */
+function stripJsoncComments(raw: string): string {
+  const lines = raw.split("\n");
+  const result: string[] = [];
+
+  for (const line of lines) {
+    let inString = false;
+    let i = 0;
+    let out = "";
+
+    while (i < line.length) {
+      const ch = line[i]!;
+
+      if (inString) {
+        out += ch;
+        if (ch === "\\" && i + 1 < line.length) {
+          i++;
+          out += line[i]!;
+        } else if (ch === '"') {
+          inString = false;
+        }
+      } else {
+        if (ch === '"') {
+          inString = true;
+          out += ch;
+        } else if (ch === "/" && line[i + 1] === "/") {
+          break;
+        } else {
+          out += ch;
+        }
+      }
+      i++;
+    }
+
+    result.push(out.trimEnd());
+  }
+
+  return result.join("\n");
+}
+
+function loadConfig(configPath: string): AgentBootConfig {
+  if (!fs.existsSync(configPath)) {
+    console.error(chalk.red(`✗ Config file not found: ${configPath}`));
+    process.exit(1);
+  }
+  const raw = fs.readFileSync(configPath, "utf-8");
+  return JSON.parse(stripJsoncComments(raw)) as AgentBootConfig;
+}
+
+function check(name: string): CheckResult {
+  return { name, passed: true, warnings: [], errors: [] };
+}
+
+function fail(result: CheckResult, msg: string): void {
+  result.errors.push(msg);
+  result.passed = false;
+}
+
+function warn(result: CheckResult, msg: string): void {
+  result.warnings.push(msg);
+}
+
+function printResult(result: CheckResult, strictMode: boolean): void {
+  const effectivePassed = result.passed && (strictMode ? result.warnings.length === 0 : true);
+
+  if (effectivePassed) {
+    console.log(`  ${chalk.green("✓")} ${result.name}`);
+  } else {
+    console.log(`  ${chalk.red("✗")} ${result.name}`);
+  }
+
+  for (const err of result.errors) {
+    console.log(chalk.red(`      ERROR: ${err}`));
+  }
+
+  for (const w of result.warnings) {
+    const icon = strictMode ? chalk.red("WARN (strict)") : chalk.yellow("WARN");
+    console.log(`      ${icon}: ${w}`);
+  }
+}
+
+function isEffectiveFail(result: CheckResult, strictMode: boolean): boolean {
+  if (!result.passed) return true;
+  if (strictMode && result.warnings.length > 0) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Check 1: Persona existence
+// ---------------------------------------------------------------------------
+
+function checkPersonaExistence(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("Persona existence — all enabled personas found in core/personas/");
+  const enabledPersonas = config.personas?.enabled;
+
+  if (!enabledPersonas || enabledPersonas.length === 0) {
+    warn(result, "No personas enabled in config. Nothing will be compiled.");
+    return result;
+  }
+
+  const corePersonasDir = path.join(ROOT, "core", "personas");
+  const extendDir = config.personas?.extend
+    ? path.resolve(configDir, config.personas.extend)
+    : null;
+
+  // Collect all available persona directories.
+  const available = new Set<string>();
+
+  if (fs.existsSync(corePersonasDir)) {
+    for (const entry of fs.readdirSync(corePersonasDir)) {
+      if (fs.statSync(path.join(corePersonasDir, entry)).isDirectory()) {
+        available.add(entry);
+      }
+    }
+  }
+
+  if (extendDir && fs.existsSync(extendDir)) {
+    for (const entry of fs.readdirSync(extendDir)) {
+      if (fs.statSync(path.join(extendDir, entry)).isDirectory()) {
+        available.add(entry);
+      }
+    }
+  }
+
+  for (const persona of enabledPersonas) {
+    if (!available.has(persona)) {
+      fail(
+        result,
+        `Persona "${persona}" is enabled in config but no directory found. ` +
+          `Expected: core/personas/${persona}/ or ${config.personas?.extend ?? "(no extend path)"}/${persona}/`
+      );
+    }
+  }
+
+  if (result.passed) {
+    // Also warn about personas that exist but are not enabled.
+    const disabled = [...available].filter((p) => !enabledPersonas.includes(p));
+    if (disabled.length > 0) {
+      warn(result, `Personas in core/ not enabled: ${disabled.join(", ")}`);
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Check 2: Trait references
+// ---------------------------------------------------------------------------
+
+function checkTraitReferences(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check(
+    "Trait references — all persona.config.json trait entries exist in core/traits/"
+  );
+
+  const coreTraitsDir = path.join(ROOT, "core", "traits");
+  const enabledTraits = config.traits?.enabled;
+
+  // Collect available trait names.
+  const availableTraits = new Set<string>();
+  if (fs.existsSync(coreTraitsDir)) {
+    for (const file of fs.readdirSync(coreTraitsDir)) {
+      if (file.endsWith(".md")) {
+        availableTraits.add(path.basename(file, ".md"));
+      }
+    }
+  }
+
+  if (availableTraits.size === 0) {
+    warn(result, "No trait files found in core/traits/. Trait injection will be skipped.");
+    return result;
+  }
+
+  // Scan all persona.config.json files.
+  const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
+  if (config.personas?.extend) {
+    const ext = path.resolve(configDir, config.personas.extend);
+    if (fs.existsSync(ext)) personaRoots.push(ext);
+  }
+
+  for (const root of personaRoots) {
+    if (!fs.existsSync(root)) continue;
+
+    for (const personaName of fs.readdirSync(root)) {
+      const personaDir = path.join(root, personaName);
+      if (!fs.statSync(personaDir).isDirectory()) continue;
+
+      const configPath = path.join(personaDir, "persona.config.json");
+      if (!fs.existsSync(configPath)) continue;
+
+      let personaConfig: PersonaConfig;
+      try {
+        personaConfig = JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8"))) as PersonaConfig;
+      } catch {
+        fail(result, `[${personaName}] persona.config.json is not valid JSON`);
+        continue;
+      }
+
+      // Collect all trait references in this persona config.
+      const traitRefs = new Set<string>();
+      for (const t of personaConfig.traits ?? []) traitRefs.add(t);
+      for (const g of Object.values(personaConfig.groups ?? {})) {
+        for (const t of g.traits ?? []) traitRefs.add(t);
+      }
+      for (const tm of Object.values(personaConfig.teams ?? {})) {
+        for (const t of tm.traits ?? []) traitRefs.add(t);
+      }
+
+      for (const traitRef of traitRefs) {
+        if (!availableTraits.has(traitRef)) {
+          fail(
+            result,
+            `[${personaName}] References trait "${traitRef}" which does not exist in core/traits/`
+          );
+        } else if (enabledTraits && !enabledTraits.includes(traitRef)) {
+          warn(
+            result,
+            `[${personaName}] References trait "${traitRef}" which exists but is not in traits.enabled`
+          );
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Check 3: SKILL.md frontmatter
+// ---------------------------------------------------------------------------
+
+// Frontmatter is expected as the first lines of SKILL.md between --- delimiters.
+// Required fields: name, description.
+const FRONTMATTER_RE = /^---\n([\s\S]+?)\n---/;
+
+function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("SKILL.md frontmatter — required fields present (name, description)");
+
+  const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
+  if (config.personas?.extend) {
+    const ext = path.resolve(configDir, config.personas.extend);
+    if (fs.existsSync(ext)) personaRoots.push(ext);
+  }
+
+  let skillsChecked = 0;
+
+  for (const root of personaRoots) {
+    if (!fs.existsSync(root)) continue;
+
+    for (const personaName of fs.readdirSync(root)) {
+      const personaDir = path.join(root, personaName);
+      if (!fs.statSync(personaDir).isDirectory()) continue;
+
+      const skillPath = path.join(personaDir, "SKILL.md");
+      if (!fs.existsSync(skillPath)) {
+        warn(result, `[${personaName}] No SKILL.md found`);
+        continue;
+      }
+
+      skillsChecked++;
+      const content = fs.readFileSync(skillPath, "utf-8");
+      const match = FRONTMATTER_RE.exec(content);
+
+      if (!match) {
+        fail(
+          result,
+          `[${personaName}] SKILL.md has no frontmatter block (expected ---\\n...\\n--- at top of file)`
+        );
+        continue;
+      }
+
+      const frontmatter = match[1] ?? "";
+      const lines = frontmatter.split("\n");
+      const fields = new Map<string, string>();
+
+      for (const line of lines) {
+        const colonIdx = line.indexOf(":");
+        if (colonIdx === -1) continue;
+        const key = line.slice(0, colonIdx).trim();
+        const value = line.slice(colonIdx + 1).trim();
+        fields.set(key, value);
+      }
+
+      if (!fields.has("name") || fields.get("name") === "") {
+        fail(result, `[${personaName}] SKILL.md frontmatter missing required field: name`);
+      }
+      if (!fields.has("description") || fields.get("description") === "") {
+        fail(result, `[${personaName}] SKILL.md frontmatter missing required field: description`);
+      }
+    }
+  }
+
+  if (skillsChecked === 0) {
+    warn(result, "No SKILL.md files found. Has the persona directory been populated?");
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Check 4: PERSONAS.md sync check
+// ---------------------------------------------------------------------------
+
+function checkPersonasIndexSync(config: AgentBootConfig): CheckResult {
+  const result = check(
+    "PERSONAS.md sync — index reflects current enabled personas (if dist/ exists)"
+  );
+
+  const distPath = path.join(ROOT, config.output?.distPath ?? "dist");
+  const personasIndexPath = path.join(distPath, "core", "PERSONAS.md");
+
+  if (!fs.existsSync(personasIndexPath)) {
+    // Not an error — dist hasn't been built yet. Skip.
+    warn(result, "dist/core/PERSONAS.md not found — run `npm run build` to generate it");
+    return result;
+  }
+
+  const indexContent = fs.readFileSync(personasIndexPath, "utf-8");
+  const enabledPersonas = config.personas?.enabled ?? [];
+
+  for (const persona of enabledPersonas) {
+    if (!indexContent.includes(persona)) {
+      fail(
+        result,
+        `Persona "${persona}" is enabled but not listed in dist/core/PERSONAS.md. ` +
+          `Run \`npm run build\` to regenerate.`
+      );
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Check 5: Secret / credential scan
+// ---------------------------------------------------------------------------
+
+// Default patterns that should never appear in persona or trait definitions.
+const DEFAULT_SECRET_PATTERNS: RegExp[] = [
+  /(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]+['"]/i,
+  /(?:api[_-]?key|apikey)\s*[:=]\s*['"][^'"]+['"]/i,
+  /(?:secret|token)\s*[:=]\s*['"][^'"]+['"]/i,
+  /aws[_-]?(?:access[_-]?key|secret[_-]?key)/i,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
+  /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}/,  // GitHub tokens
+  /xox[baprs]-[0-9A-Za-z-]+/,                   // Slack tokens
+];
+
+function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
+  const configPatterns = (config.validation?.secretPatterns ?? []).map(
+    (p) => new RegExp(p)
+  );
+  return [...DEFAULT_SECRET_PATTERNS, ...configPatterns];
+}
+
+function scanFileForSecrets(
+  filePath: string,
+  patterns: RegExp[]
+): Array<{ line: number; pattern: string }> {
+  const hits: Array<{ line: number; pattern: string }> = [];
+  const lines = fs.readFileSync(filePath, "utf-8").split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    for (const pattern of patterns) {
+      if (pattern.test(line)) {
+        hits.push({ line: i + 1, pattern: pattern.source });
+      }
+    }
+  }
+
+  return hits;
+}
+
+function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("Secret scan — no credentials or keys in trait/persona definitions");
+  const patterns = buildSecretPatterns(config);
+
+  const scanRoots: string[] = [
+    path.join(ROOT, "core", "traits"),
+    path.join(ROOT, "core", "personas"),
+  ];
+
+  if (config.personas?.extend) {
+    const ext = path.resolve(configDir, config.personas.extend);
+    if (fs.existsSync(ext)) scanRoots.push(ext);
+  }
+
+  for (const root of scanRoots) {
+    if (!fs.existsSync(root)) continue;
+
+    // Recursively find all .md and .json files.
+    const files = walkDir(root, [".md", ".json"]);
+
+    for (const filePath of files) {
+      const hits = scanFileForSecrets(filePath, patterns);
+      for (const hit of hits) {
+        fail(
+          result,
+          `Potential secret at ${path.relative(ROOT, filePath)}:${hit.line} ` +
+            `(matched pattern: ${hit.pattern})`
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+function walkDir(dir: string, extensions: string[]): string[] {
+  const results: string[] = [];
+  if (!fs.existsSync(dir)) return results;
+
+  for (const entry of fs.readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    const stat = fs.statSync(full);
+    if (stat.isDirectory()) {
+      results.push(...walkDir(full, extensions));
+    } else if (extensions.some((ext) => full.endsWith(ext))) {
+      results.push(full);
+    }
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const configPath = resolveConfigPath(argv);
+  const forceStrict = argv.includes("--strict");
+
+  console.log(chalk.bold("\nAgentBoot — validate"));
+  console.log(chalk.gray(`Config: ${configPath}\n`));
+
+  const config = loadConfig(configPath);
+  const configDir = path.dirname(configPath);
+  const strictMode = forceStrict || (config.validation?.strictMode ?? false);
+
+  if (strictMode) {
+    console.log(chalk.yellow("  ⚑ Strict mode: warnings treated as errors\n"));
+  }
+
+  // Run all checks.
+  const checks: CheckResult[] = [
+    checkPersonaExistence(config, configDir),
+    checkTraitReferences(config, configDir),
+    checkSkillFrontmatter(config, configDir),
+    checkPersonasIndexSync(config),
+    checkNoSecrets(config, configDir),
+  ];
+
+  // Print results.
+  for (const c of checks) {
+    printResult(c, strictMode);
+  }
+
+  // Summary.
+  const failures = checks.filter((c) => isEffectiveFail(c, strictMode));
+  const warnings = checks.reduce((acc, c) => acc + c.warnings.length, 0);
+
+  console.log("");
+  if (failures.length === 0) {
+    console.log(
+      chalk.bold(
+        chalk.green(`✓ All ${checks.length} checks passed`) +
+          (warnings > 0 ? chalk.yellow(` (${warnings} warning${warnings > 1 ? "s" : ""})`) : "")
+      )
+    );
+    process.exit(0);
+  } else {
+    const errorCount = failures.reduce((acc, c) => acc + c.errors.length, 0);
+    console.log(
+      chalk.bold(
+        chalk.red(
+          `✗ ${failures.length} check${failures.length > 1 ? "s" : ""} failed ` +
+            `(${errorCount} error${errorCount > 1 ? "s" : ""}, ` +
+            `${warnings} warning${warnings > 1 ? "s" : ""})`
+        )
+      )
+    );
+    process.exit(1);
+  }
+}
+
+main().catch((err: unknown) => {
+  console.error(chalk.red("Unexpected error:"), err);
+  process.exit(1);
+});

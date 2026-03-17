@@ -1,0 +1,211 @@
+{
+  // AgentBoot configuration file.
+  // This is the only file you need to edit to configure AgentBoot for your organization.
+  //
+  // Convention over configuration: every field has a sensible default.
+  // You only need to specify what's different about your organization.
+  //
+  // Run `npm run full-build` after editing to validate, compile, and sync.
+
+  // ---------------------------------------------------------------------------
+  // Organization identity
+  // ---------------------------------------------------------------------------
+
+  // The name of your organization. Used in provenance headers written to every
+  // output file, and in PERSONAS.md. Use a slug-friendly value (lowercase, no spaces).
+  "org": "acme-corp",
+
+  // Human-readable display name. Used in generated docs and headers.
+  "orgDisplayName": "Acme Corp",
+
+  // ---------------------------------------------------------------------------
+  // Scope hierarchy: org → group → team
+  //
+  // Personas are scoped and merged top-down:
+  //   - Studio-wide (core/) applies to ALL repos
+  //   - Group-level (groups/{group}/) applies to all teams in that group
+  //   - Team-level (teams/{group}/{team}/) applies to that team only
+  //
+  // On filename conflict, the more specific scope wins.
+  // ---------------------------------------------------------------------------
+
+  "groups": {
+    // Platform group: infrastructure, API, and data engineering teams.
+    "platform": {
+      // Human-readable label. Optional — defaults to the key.
+      "label": "Platform Engineering",
+
+      // Teams within this group. Each becomes a subfolder in dist/teams/platform/.
+      "teams": ["api", "infra", "data"],
+
+      // Traits to enable at the group level (in addition to org-level traits).
+      // These are injected into every persona that runs in a Platform repo.
+      "traitsEnabled": [
+        "schema-awareness",   // understands data modeling and schema contracts
+        "source-citation"     // cites sources when making architectural claims
+      ]
+    },
+
+    // Product group: web, mobile, and growth teams.
+    "product": {
+      "label": "Product Engineering",
+      "teams": ["web", "mobile", "growth"],
+      "traitsEnabled": [
+        "source-citation"
+      ]
+    },
+
+    // Security group: AppSec and compliance.
+    "security": {
+      "label": "Security & Compliance",
+      "teams": ["appsec", "compliance"],
+      "traitsEnabled": [
+        "critical-thinking",  // elevates scrutiny threshold to HIGH
+        "structured-output",  // always outputs findings in structured format
+        "source-citation"
+      ]
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Personas
+  // ---------------------------------------------------------------------------
+
+  "personas": {
+    // Which personas from core/personas/ to compile and distribute.
+    // Comment out personas your org doesn't want to use.
+    // Valid values: any directory name under core/personas/.
+    "enabled": [
+      "code-reviewer",       // /review-code — PR and code quality reviews
+      "security-reviewer",   // /review-security — vulnerability and risk analysis
+      "test-generator",      // /gen-tests — writes unit and integration tests
+      "test-data-expert"     // /gen-testdata — generates synthetic test data
+    ],
+
+    // Optional: path to an org-specific personas directory.
+    // Personas found here are compiled alongside core personas.
+    // Useful for proprietary personas you don't want in this repo.
+    // Path is relative to this config file.
+    "extend": "./personas",
+
+    // Persona output format controls what files are generated per persona.
+    // "skill"   — SKILL.md (agentskills.io-compatible)
+    // "claude"  — CLAUDE.md fragment (Claude Code slash command)
+    // "copilot" — .github/copilot-instructions.md fragment
+    // Default: all three.
+    "outputFormats": ["skill", "claude", "copilot"]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Traits
+  // ---------------------------------------------------------------------------
+
+  "traits": {
+    // Which traits from core/traits/ are active at the org level.
+    // These are available to all personas. Personas select which to use via
+    // their persona.config.json. Setting "enabled" here to a subset restricts
+    // which traits personas can reference.
+    //
+    // Default: all traits in core/traits/ are enabled.
+    // To restrict: list only the traits you want available org-wide.
+    "enabled": [
+      "critical-thinking",    // increases scrutiny, flags assumptions
+      "structured-output",    // enforces machine-parseable output formatting
+      "schema-awareness",     // data modeling, schema contracts, migration safety
+      "source-citation",      // cites code locations and docs in findings
+      "minimal-diff",         // prefers targeted changes over wholesale rewrites
+      "explain-reasoning"     // narrates decisions for reviewability
+    ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Always-on instructions
+  // ---------------------------------------------------------------------------
+
+  "instructions": {
+    // core/instructions/ contains Markdown fragments that are ALWAYS loaded
+    // in every repo that receives a sync. These are not personas — they are
+    // baseline behavioral guardrails that run before any slash command.
+    //
+    // "enabled": list of filenames (without .md) to distribute.
+    // Default: all files in core/instructions/ are enabled.
+    "enabled": [
+      "no-secrets",           // never commit credentials or keys
+      "code-style",           // follow existing patterns, minimize diffs
+      "testing-required"      // every change affecting behavior needs a test
+    ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Sync configuration
+  // ---------------------------------------------------------------------------
+
+  "sync": {
+    // Path to repos.json — the list of repos that receive compiled output.
+    // repos.json is an array of objects: { path, group?, team? }
+    //   - path: absolute or relative path to the repo root
+    //   - group: optional group name (must match a key in "groups" above)
+    //   - team: optional team name (must be a member of the group's "teams")
+    //
+    // Paths are resolved relative to this config file.
+    "repos": "./repos.json",
+
+    // Where within each target repo to write the compiled files.
+    // Default: ".claude" (writes to {repo}/.claude/)
+    // Also writes copilot-instructions.md to {repo}/.github/ automatically.
+    "targetDir": ".claude",
+
+    // Whether to write a PERSONAS.md inventory to each repo.
+    // Lists all deployed personas, their invocation commands, and descriptions.
+    // Default: true
+    "writePersonasIndex": true,
+
+    // If true, sync will not modify any files. Prints what would change.
+    // Override at runtime with: npm run sync -- --dry-run
+    "dryRun": false
+  },
+
+  // ---------------------------------------------------------------------------
+  // Output / build configuration
+  // ---------------------------------------------------------------------------
+
+  "output": {
+    // Where compiled output is written before syncing to repos.
+    // Structure: dist/core/, dist/groups/{group}/, dist/teams/{group}/{team}/
+    // Paths are relative to this config file.
+    "distPath": "./dist",
+
+    // Whether to add provenance headers to compiled output files.
+    // Headers identify the source file and compile timestamp, making it
+    // easy to trace a deployed file back to its origin.
+    // Default: true
+    "provenanceHeaders": true,
+
+    // Whether to fail the build if dist/ already contains files from a
+    // previous build. Forces explicit `rm -rf dist/` before re-building.
+    // Useful in CI to prevent stale artifacts from silently persisting.
+    // Default: false
+    "failOnDirtyDist": false
+  },
+
+  // ---------------------------------------------------------------------------
+  // Validation configuration
+  // ---------------------------------------------------------------------------
+
+  "validation": {
+    // Regex patterns that will trigger a validation failure if found in any
+    // trait or persona definition. Extend this list with patterns specific
+    // to your organization (internal hostnames, account IDs, etc.).
+    "secretPatterns": [
+      "(?i)(password|passwd|pwd)\\s*[:=]\\s*['\"][^'\"]+['\"]",
+      "(?i)(api[_-]?key|apikey)\\s*[:=]\\s*['\"][^'\"]+['\"]",
+      "(?i)(secret|token)\\s*[:=]\\s*['\"][^'\"]+['\"]",
+      "(?i)aws[_-]?(access[_-]?key|secret[_-]?key)",
+      "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
+    ],
+
+    // If true, validation warnings are treated as errors and block the build.
+    // Default: false (warnings are printed but do not block)
+    "strictMode": false
+  }
+}

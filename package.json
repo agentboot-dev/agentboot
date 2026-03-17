@@ -1,0 +1,61 @@
+{
+  "name": "agentboot",
+  "version": "0.1.0",
+  "description": "Convention over configuration for agentic development teams. The Spring Boot of Claude Code governance.",
+  "license": "MIT",
+  "author": "Mike Saavedra <mike@agentboot.dev>",
+  "homepage": "https://agentboot.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentboot/agentboot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentboot/agentboot/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "copilot",
+    "ai-agents",
+    "agentskills",
+    "developer-tools",
+    "governance",
+    "convention-over-configuration",
+    "personas",
+    "traits",
+    "agent-governance",
+    "llm",
+    "claude",
+    "anthropic",
+    "code-review",
+    "security-review",
+    "test-generation"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "bin": {
+    "agentboot": "./dist/scripts/cli.js"
+  },
+  "scripts": {
+    "build": "tsx scripts/compile.ts",
+    "validate": "tsx scripts/validate.ts",
+    "sync": "tsx scripts/sync.ts",
+    "full-build": "npm run validate && npm run build && npm run sync",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit && echo 'No lint errors'"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "glob": "^11.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

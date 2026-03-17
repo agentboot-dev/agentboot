@@ -1,0 +1,185 @@
+{
+  // Enterprise AgentBoot configuration.
+  //
+  // Multiple groups, multiple teams per group, custom extension path,
+  // all personas enabled, strict validation, custom secret patterns.
+  //
+  // This config represents a mid-to-large engineering organization
+  // (~50-500 engineers) operating across three major groups.
+
+  "org": "acme-enterprise",
+  "orgDisplayName": "Acme Enterprise",
+
+  // ---------------------------------------------------------------------------
+  // Groups and teams
+  // ---------------------------------------------------------------------------
+
+  "groups": {
+    // Platform: shared infrastructure and foundational services.
+    "platform": {
+      "label": "Platform Engineering",
+      "teams": [
+        "api",           // REST and GraphQL services
+        "infra",         // Terraform, CI/CD, cloud infrastructure
+        "data",          // Data platform, pipelines, warehousing
+        "security"       // AppSec, SAST/DAST, incident response
+      ],
+      // Every Platform engineer gets schema-awareness and source-citation
+      // in addition to the org-wide trait defaults.
+      "traitsEnabled": [
+        "schema-awareness",
+        "source-citation"
+      ]
+    },
+
+    // Product: customer-facing applications.
+    "product": {
+      "label": "Product Engineering",
+      "teams": [
+        "web",           // React/TypeScript frontends
+        "mobile",        // iOS and Android (React Native)
+        "growth",        // A/B testing, analytics, experimentation
+        "design-systems" // Component library and tokens
+      ],
+      "traitsEnabled": [
+        "minimal-diff",     // product changes should be surgical
+        "source-citation"
+      ]
+    },
+
+    // Compliance: regulated domains requiring elevated scrutiny.
+    "compliance": {
+      "label": "Compliance & Regulated Domains",
+      "teams": [
+        "hipaa",         // Healthcare data / PHI handling
+        "pci",           // Payment card data flows
+        "legal-tech"     // Contract analysis, e-discovery tooling
+      ],
+      // Compliance teams always run critical-thinking at HIGH and
+      // must always produce structured output for audit trails.
+      "traitsEnabled": [
+        "critical-thinking",
+        "structured-output",
+        "source-citation",
+        "explain-reasoning"
+      ]
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Personas
+  // ---------------------------------------------------------------------------
+
+  "personas": {
+    // All four core personas enabled.
+    "enabled": [
+      "code-reviewer",
+      "security-reviewer",
+      "test-generator",
+      "test-data-expert"
+    ],
+
+    // Org-specific personas that extend the core set.
+    // These personas live in this repo under ./personas/ and are NOT
+    // contributed back to the agentboot open-source project.
+    "extend": "./personas",
+
+    // Generate all output formats for maximum tool compatibility.
+    "outputFormats": ["skill", "claude", "copilot"]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Traits
+  // ---------------------------------------------------------------------------
+
+  "traits": {
+    // Full set of core traits enabled. Persona authors can reference all of them.
+    "enabled": [
+      "critical-thinking",
+      "structured-output",
+      "schema-awareness",
+      "source-citation",
+      "minimal-diff",
+      "explain-reasoning"
+    ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Always-on instructions
+  // ---------------------------------------------------------------------------
+
+  "instructions": {
+    "enabled": [
+      "no-secrets",
+      "code-style",
+      "testing-required"
+    ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Sync
+  // ---------------------------------------------------------------------------
+
+  "sync": {
+    "repos": "./repos.json",
+
+    // Write compiled files to .claude/ in each repo.
+    "targetDir": ".claude",
+
+    // Write a PERSONAS.md index to each repo so engineers know what's available.
+    "writePersonasIndex": true,
+
+    // dryRun is false by default — set to true here or pass --dry-run at runtime
+    // to preview what sync would do without writing files.
+    "dryRun": false
+  },
+
+  // ---------------------------------------------------------------------------
+  // Output
+  // ---------------------------------------------------------------------------
+
+  "output": {
+    "distPath": "./dist",
+
+    // Provenance headers let engineers trace any deployed file back to source.
+    "provenanceHeaders": true,
+
+    // Fail the build if dist/ has stale content from a previous run.
+    // Recommended in CI pipelines to prevent artifact drift.
+    "failOnDirtyDist": true
+  },
+
+  // ---------------------------------------------------------------------------
+  // Validation
+  // ---------------------------------------------------------------------------
+
+  "validation": {
+    // Strict mode: warnings are treated as errors.
+    // Appropriate for regulated environments where correctness is audited.
+    "strictMode": true,
+
+    // Custom secret patterns for this organization.
+    // Add internal patterns: account IDs, internal hostnames, internal tokens.
+    "secretPatterns": [
+      // Default patterns (password, api_key, secret, token, AWS keys, private keys)
+      // are always active. These are org-specific additions.
+
+      // Internal service account format.
+      "svc-[a-z]+-[a-z0-9]{8}@acme-enterprise\\.internal",
+
+      // Internal API gateway base URL (never hardcode in agent instructions).
+      "api\\.internal\\.acme-enterprise\\.com",
+
+      // Database connection strings.
+      "postgres://[^@]+@[^/]+/",
+      "mongodb\\+srv://",
+
+      // Acme internal CA cert fingerprints.
+      "ACME_INTERNAL_CA",
+
+      // Any placeholder that looks like a real credential was pasted in.
+      "REPLACE_ME",
+      "TODO.*(?:password|secret|key|token)"
+    ]
+  }
+}
