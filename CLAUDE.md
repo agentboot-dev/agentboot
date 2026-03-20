@@ -201,6 +201,6 @@ Total: ~9,900 lines of planning documentation with ~103 open questions to resolv
 - `persona.config.json` is missing from all 4 personas — **blocks trait composition**
 - `repos.json` doesn't exist — needed by sync script (can start as `[]`)
 - `scripts/cli.ts` doesn't exist — blocks `agentboot setup` bin command
-- Traits `minimal-diff` and `explain-reasoning` are referenced in config but not yet written
+- Traits `minimal-diff` and `explain-reasoning` are planned but not yet authored; references moved to comments in config files
 - No `dist/` directory yet — pipeline has never been run end-to-end
 - No test files written yet despite vitest being configured

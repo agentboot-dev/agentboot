@@ -108,9 +108,10 @@ directory might activate additional serverless-specific review guidance. A datab
 migrations directory might activate schema review guardrails.
 
 **Precedence:** More specific scopes win on optional behaviors; more general scopes win
-on mandatory behaviors. The org can mark certain traits or personas as required — those
-cannot be disabled at group or team level. Everything else, lower scopes can add to or
-override.
+on mandatory behaviors. Rules (always-on instructions) are mandatory by nature — they
+cannot be disabled at lower scopes. Personas and traits are optional — lower scopes
+can adjust weights, add personas, or set trait weights to zero. To make a specific
+behavior mandatory, encode it as a rule rather than marking a persona as required.
 
 This hierarchy matters for two reasons. First, it ensures that governance propagates
 downward automatically — a new team that registers with the org immediately gets all

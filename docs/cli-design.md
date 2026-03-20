@@ -297,8 +297,8 @@ $ agentboot doctor
   Personas:
   ✓ code-reviewer: valid SKILL.md, 3 traits composed
   ✓ security-reviewer: valid SKILL.md, 4 traits composed
-  ✗ test-generator: references trait 'minimal-diff' which doesn't exist
-    → Either create core/traits/minimal-diff.md or remove from persona config
+  ✗ test-generator: references trait 'minimal-diff' which is planned but not yet authored
+    → Create core/traits/minimal-diff.md or remove from persona config
 
   Sync Status:
   ✓ my-org/api-service: synced (v1.2.0, 3 days ago)

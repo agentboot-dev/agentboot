@@ -929,7 +929,11 @@ sufficient for per-developer usage analysis.
 
 **`"hashed"`:** Anonymous individual tracking. "Developer a3f2... : 12 sessions/day,
 $14/day, 85% persona usage." The hash is consistent (same person, same hash) but
-not reversible to a name without a restricted-access lookup table. This is the
+not reversible to a name without a restricted-access lookup table. The hash uses a
+salted hash with BYOS (Bring Your Own Salt) -- the org provides and stores the salt
+in their own secrets manager. No salt is the default for ease of adoption, but the
+system indicates when an org has not provided a salt. When salts are updated,
+previous metrics are not correlated to future metrics (forward-only). This is the
 sweet spot for most orgs.
 
 **`"email"`:** Full attribution. Legitimate for cost allocation (chargeback to teams),
@@ -1785,7 +1789,11 @@ to try it. The uninstall experience is part of the sales pitch, not an afterthou
 
 ## 8. Brand & Positioning
 
-### 8.1 "The Spring Boot of AI Agent Governance"
+### 8.1 "The Easy Button for Agentic Development Teams"
+
+Primary tagline (to be workshopped): **"The Easy Button for Agentic Development Teams."**
+Audience-specific alternatives are used when the audience is known (e.g., "The Spring
+Boot of AI Agent Governance" for Java-familiar audiences).
 
 Spring Boot took opinionated defaults and convention-over-configuration to the
 Java ecosystem. Before Spring Boot, configuring a Java web application required
@@ -1994,220 +2002,17 @@ metadata in compiled output makes this transparent to orgs.
 
 ## 10. Open Questions
 
-Design ambiguities, gaps, and decisions that need further exploration. This section
-is as valuable as the design itself because it identifies where the design is
-incomplete, where assumptions need validation, and where trade-offs have not been
-fully resolved.
+Open questions discovered during design have been resolved or deferred.
+See the internal tracking document for remaining items.
 
-### 10.1 Privacy Questions
-
-**Q1: How does the escalation exception interact with /insights?**
-The escalation hook runs on `UserPromptSubmit` (before the model sees the prompt).
-`/insights` runs after sessions, analyzing transcripts. If a flagged prompt was
-also analyzed by `/insights`, could the insights output inadvertently include
-patterns derived from the flagged content? Should `/insights` exclude flagged
-sessions from analysis? If so, does the exclusion itself leak information ("you had
-a flagged session this week" implied by a gap in the data)?
-
-**Q2: What happens when an org transitions from `includeDevId: false` to `"hashed"`
-or `"email"`?**
-Is existing telemetry retroactively attributed? That would violate the privacy
-expectations that existed when the telemetry was collected. The design should
-specify that identity changes apply forward-only, not retroactively. This needs
-explicit documentation.
-
-**Q3: How does the privacy model apply to CI-mode persona invocations?**
-When `claude -p` runs a persona in CI (e.g., on a PR), the "developer" is the CI
-system, not a person. The PR author is identifiable from the PR itself. Should
-CI-mode telemetry include the PR author? The PR number? This is a different privacy
-context than interactive use and may need different rules.
-
-**Q4: Is the `/insights` analysis prompt itself auditable?**
-Developers who want to verify what `/insights` is doing should be able to inspect
-the prompt that is sent to the Claude API for analysis. Should this prompt be
-shipped as a readable file that developers can review? Or is it embedded in the
-skill?
-
-**Q5: What is the retention policy for local session transcripts?**
-Claude Code manages its own session storage. AgentBoot does not control retention
-of `~/.claude/projects/{project}/{sessionId}/` data. Should AgentBoot have an
-opinion on this? Should the privacy documentation recommend a retention policy to
-orgs?
-
-**Q6: How is the "hashed" developer ID generated?**
-If it is a hash of the developer's email or username, it could be brute-forced from
-a known employee list. Should it use a salted hash? What is the salt? Is the salt
-stored locally or centrally? If centrally, who has access?
-
-### 10.2 UX Questions
-
-**Q7: How does the welcome fragment handle returning developers?**
-The welcome fragment is ~80 tokens in CLAUDE.md. It loads every session. For a
-developer who has used AgentBoot for months, this is wasted context. Should there
-be a mechanism to suppress it after N sessions? A user preference? Or is 80 tokens
-low enough to not matter?
-
-**Q8: What is the interaction between contextual tips and the `/learn` skill?**
-If a developer has already run `/learn how do I review one file?`, should the
-contextual tip about vague prompts still appear? Should the tip system track what
-`/learn` topics have been visited? That would require state across sessions, which
-is not currently part of the design.
-
-**Q9: How do non-interactive CLI flags map to the setup wizard?**
-The wizard is interactive. CI and scripted setups use flags. Is every wizard path
-expressible via flags? Has this been mapped? For example, what is the flag
-equivalent of Q6.5 "scan for existing agentic content"?
-
-**Q10: What happens when a developer invokes a persona that does not exist?**
-If the developer types `/review-code` but the code-reviewer persona is not
-installed (missing plugin, unsynchronized repo, broken config), what is the error
-experience? A generic Claude Code "skill not found" message? A helpful AgentBoot
-message with next steps? This needs design attention because it is a common first
-failure for new developers.
-
-**Q11: How does the Cowork non-engineer experience actually work?**
-Section 2.6 describes structured forms for non-engineers, but the Cowork app's
-plugin rendering capabilities are not fully documented. Can Cowork plugins render
-custom forms? Or is the "structured form" concept aspirational? This needs
-validation against Cowork's actual capabilities.
-
-### 10.3 Marketplace Questions
-
-**Q12: How are marketplace usage stats collected?**
-The design references "download count" and "412 orgs" as trust signals. How are
-these numbers collected? Do orgs report installs? Is it inferred from git clone
-counts? Does the contributor's profile stat come from self-reporting or from
-telemetry? If from telemetry, this creates a tension with the privacy model (orgs
-would need to report what marketplace content they use).
-
-**Q13: What happens when a verified trait is abandoned by its author?**
-If Jane Doe contributed `gdpr-awareness` and then stops maintaining it, what
-happens? Does AgentBoot adopt it into core? Does it get a "stale" badge? Does it
-stay in Verified indefinitely? The lifecycle of community-contributed content after
-the original author disengages needs a policy.
-
-**Q14: How does the SuperClaude cross-listing actually work in practice?**
-Has anyone contacted the SuperClaude maintainers? Is cross-listing technically
-feasible given the different trait formats? The design assumes format compatibility
-that has not been validated. This is marked as V2, but the dependency on upstream
-maintainer cooperation should be acknowledged as a risk.
-
-**Q15: What prevents namespace collisions in the marketplace?**
-If two community contributors both submit a `code-quality` trait, who wins? Is
-there a namespace reservation system? First-come-first-served? Or does the review
-process handle this for Verified (Layer 2) content?
-
-### 10.4 Technical Design Questions
-
-**Q16: How does the /insights skill access session transcripts?**
-Claude Code's session transcripts live at
-`~/.claude/projects/{project}/{sessionId}/`. The `/insights` skill needs to read
-these. Skills run in the Claude Code context, so they presumably have filesystem
-access. But is there an API for reading session history, or does `/insights` need
-to parse raw transcript files? The file format is not documented publicly, and
-changes to it would break `/insights`.
-
-**Q17: How does the telemetry "Stop" hook work for subagents?**
-The design specifies that audit trail telemetry is emitted via async Stop hooks.
-But personas run as subagents (`context: fork`). Does the Stop hook fire when the
-subagent completes? Or when the parent session ends? The hook timing affects whether
-telemetry captures per-invocation data or per-session data.
-
-**Q18: What is the behavior when managed settings and repo sync conflict?**
-Managed settings carry HARD guardrails. Repo sync carries persona definitions. What
-happens when they conflict? For example, if managed settings deny a tool and a
-persona definition requires that tool? The scope hierarchy says "more specific wins
-for optional, more general wins for mandatory," but the interaction between these
-two delivery channels is not fully specified.
-
-**Q19: How does `agentboot discover --github-org` handle rate limiting?**
-Scanning all repos in a GitHub org via the API could hit rate limits quickly for
-large orgs (hundreds of repos). The design does not address pagination, rate
-limiting, or partial scan results.
-
-### 10.5 Onboarding Questions
-
-**Q20: How is the setup wizard's auto-detection reliability?**
-The wizard auto-detects org from git remote, existing `.claude/` setup, managed
-settings on disk, and known marketplace patterns. What is the false positive rate?
-If the wizard incorrectly detects an org setup, it could skip important steps or
-configure the wrong marketplace. Has the auto-detection logic been tested against
-real-world git remote patterns?
-
-**Q21: What is the experience for a developer who is on multiple orgs?**
-A consultant or contractor working across multiple orgs might have different
-AgentBoot configurations for each. How does the system handle this? Per-repo
-`.claude/` handles it via sync, but managed settings and plugins are machine-level.
-Can the plugin system support multiple org plugins simultaneously?
-
-**Q22: How does the onboarding checklist handle partial completion?**
-The checklist is generated once. If a developer completes 3 of 7 items and comes
-back later, is the checklist regenerated? Does it track completion state? Or is it
-a stateless document that the developer manually checks off?
-
-### 10.6 Uninstall Questions
-
-**Q23: What happens to telemetry data on uninstall?**
-The uninstall command removes AgentBoot-managed files. What about local NDJSON
-telemetry logs? Are they removed? Preserved? Offered as an option? If the org has
-configured HTTP webhook telemetry, the data already sent to the webhook cannot be
-recalled.
-
-**Q24: How does uninstall handle in-flight sync PRs?**
-If `agentboot sync` has created PRs in target repos that have not been merged yet,
-and then `agentboot uninstall` runs, are those PRs automatically closed? Left open?
-What about PRs that have already been merged but the sync was later determined to
-be unwanted?
-
-**Q25: What is the manifest behavior for repos where AgentBoot files were manually
-modified?**
-The manifest tracks file hashes. If a developer modifies a synced file (e.g., adds
-team-specific rules to a synced CLAUDE.md), the hash mismatches. Uninstall warns.
-But sync also detects mismatches. Does sync overwrite manual modifications? Does it
-merge? Does it warn? The interaction between sync's "overwrite" behavior and
-uninstall's "preserve manual edits" behavior needs clarification.
-
-### 10.7 Brand & Positioning Questions
-
-**Q26: Is "The Spring Boot of AI Agent Governance" the right analogy for all
-audiences?**
-The Spring Boot analogy resonates with Java developers but may be meaningless to
-frontend engineers, DevOps teams, or non-technical stakeholders. Should there be
-audience-specific analogies? "The Terraform of AI personas" for infrastructure
-teams? "The ESLint of AI prompts" for frontend teams?
-
-**Q27: How does the "agent-agnostic" positioning hold up as CC features diverge?**
-If Claude Code continues adding unique features (agent memory, context: fork,
-hooks), the gap between CC and non-CC experiences will widen. At what point does
-the "agent-agnostic content" claim become misleading if 60% of AgentBoot's value
-comes from CC-only features?
-
-**Q28: Should AgentBoot have a public stance on AI regulation and compliance?**
-As AI governance regulations emerge, should AgentBoot position itself as helping
-with regulatory compliance (e.g., EU AI Act, NIST AI RMF)? Or is this scope creep
-from the "engineering governance" positioning?
-
-### 10.8 Process Questions
-
-**Q29: Who maintains the marketplace?**
-The design describes a review process for Verified content but does not specify
-who the reviewers are. Is this the AgentBoot core team (which does not exist yet
-as a formal entity)? Community volunteers? Both? What is the expected review
-turnaround time?
-
-**Q30: What is the governance of AgentBoot itself?**
-AgentBoot governs AI personas. Who governs AgentBoot? Is there a steering committee?
-A BDFL? Community governance? This matters for the marketplace (who decides what
-gets verified?) and for the project's long-term sustainability.
-
-**Q31: How does AgentBoot versioning interact with content versioning?**
-AgentBoot the build tool has a version (1.0.0, 2.0.0). Marketplace content has
-versions. Org plugins have versions. How do these version numbers relate? Can
-AgentBoot 2.0 content work with AgentBoot 1.0 build tools? Is there a compatibility
-matrix?
-
----
-
-*This document is a living design that will evolve as implementation progresses
-and open questions are resolved. The gap between design and implementation is
-where the real learning happens.*
+Key resolved decisions applied to this design:
+- Escalation and /insights are separate processes
+- includeDevId transitions are forward-only and intentionally onerous
+- CI-mode is a different privacy context — attribute to CI user with PR traceability
+- Hashed developer ID uses salted hash (BYOS — org provides salt via secrets manager)
+- Welcome fragment includes removal-after-first-use when implemented
+- Non-interactive CLI outputs config file for CI use
+- Telemetry offered as option to keep or delete on uninstall
+- In-flight sync PRs: best effort close via gh, report if unable
+- Audience-specific catchphrases. Default: "The Easy Button for Agentic Development Teams"
+- No public opinions on AI regulation outside the already opinionated product
