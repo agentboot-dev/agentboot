@@ -2,12 +2,12 @@
   "name": "agentboot",
   "version": "0.1.0",
   "description": "Convention over configuration for agentic development teams. The Spring Boot of Claude Code governance.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",
   "homepage": "https://agentboot.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/agentboot/agentboot.git"
+    "url": "https://github.com/saavyone/agentboot.git"
   },
   "bugs": {
     "url": "https://github.com/agentboot/agentboot/issues"

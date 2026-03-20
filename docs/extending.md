@@ -263,6 +263,185 @@ org-level governance always propagates downward.
 
 ---
 
+## Per-persona extensions
+
+Domain layers can extend individual personas without modifying the base definition. This
+is the "extend without modify" pattern — critical for multi-product organizations where
+each product has specific requirements that should layer on top of the generic persona.
+
+Create an extension file at `domains/my-domain/extensions/{persona-name}.md`:
+
+```markdown
+## Additional Review Rules (My Domain)
+
+When reviewing code in this domain, also check for:
+
+- All API endpoints must validate the `X-Tenant-ID` header before processing
+- Database connections must use the read replica for GET endpoints
+- Event payloads must include `correlationId` for distributed tracing
+```
+
+The persona reads its extension file during the Setup phase (before beginning review).
+Extension rules **add to** the base persona's rules — they do not replace them. If an
+extension rule conflicts with a base rule, the extension is ignored and the conflict
+is logged.
+
+This pattern was validated in a production implementation, where product-level
+extensions added HIPAA-specific checks to the generic code reviewer, security
+reviewer, and test data expert without changing any base agent definitions.
+
+---
+
+## How to add gotchas rules
+
+Gotchas rules are path-scoped instructions that encode battle-tested operational
+knowledge. They are the single highest-value extension you can add — developers
+immediately see value when the agent warns them about a pitfall they would have hit.
+
+Create gotchas files in `domains/my-domain/instructions/path-scoped/`:
+
+```markdown
+---
+paths:
+  - "**/*.lambda.ts"
+  - "functions/**"
+description: "Lambda deployment gotchas"
+---
+
+# Lambda Gotchas
+
+- **Cold start penalty scales with bundle size.** Keep handler files under 5MB.
+  Tree-shake aggressively. Do not import the entire AWS SDK — import only the
+  client you need (`@aws-sdk/client-s3`, not `aws-sdk`).
+- **Environment variables are NOT encrypted at rest by default.** Use SSM
+  Parameter Store or Secrets Manager for anything sensitive. Never put API keys
+  in Lambda env vars directly.
+- **Timeout default is 3 seconds.** If your handler does any I/O, set timeout
+  explicitly. A timed-out Lambda still gets billed for the full duration.
+- **Do not use `console.log` with objects in production.** Use structured logging
+  (`JSON.stringify` with defined fields) or the Lambda Powertools logger.
+```
+
+Sources for gotchas:
+- Post-incident reviews ("what did we learn?")
+- Onboarding notes ("what I wish I knew")
+- Code review comments that keep repeating the same feedback
+- Production debugging sessions where the root cause was non-obvious
+
+The best gotchas rules are specific, actionable, and explain *why* — not just *what*.
+"Don't do X" is less useful than "Don't do X because Y will happen, and here's how
+to verify you haven't done it."
+
+---
+
+## How to add compliance hooks
+
+For organizations with compliance requirements (HIPAA, SOC 2, PCI DSS, GDPR),
+AgentBoot supports a defense-in-depth hook model. See
+[`docs/concepts.md`](concepts.md#compliance-hooks) for the three-layer model.
+
+To add compliance hooks to your domain:
+
+1. Create the hook script in `domains/my-domain/hooks/`:
+
+```bash
+#!/bin/bash
+# hooks/sensitive-data-scan.sh
+# Exit 2 = block request, Exit 0 = allow
+
+INPUT="$1"
+
+# Patterns to detect
+if echo "$INPUT" | grep -qE '\b\d{3}-\d{2}-\d{4}\b'; then
+  echo '{"error": "SSN pattern detected. Remove before continuing."}' >&2
+  exit 2
+fi
+if echo "$INPUT" | grep -qE '\b(sk|pk)_(live|test)_[A-Za-z0-9]{24,}\b'; then
+  echo '{"error": "API key detected. Remove before continuing."}' >&2
+  exit 2
+fi
+exit 0
+```
+
+2. Create a hook configuration fragment in `domains/my-domain/hooks/settings.json`
+   that the build system merges into each target repo's `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/sensitive-data-scan.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/sensitive-data-output-scan.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Claude Code supports a comprehensive set of hook events. The most relevant for compliance:
+- `UserPromptSubmit` — scan input before the model sees it (Layer 1, deterministic)
+- `PreToolUse` — intercept specific tool calls (e.g., block `Bash(rm -rf *)`)
+- `PostToolUse` — scan tool output for sensitive data
+- `Stop` — scan model output (Layer 3, advisory — fires after render)
+- `SessionStart` — audit logging of session initiation
+
+3. Create the corresponding always-on instruction in
+   `domains/my-domain/instructions/always-on.md` (the Layer 2 advisory control):
+
+```markdown
+## Sensitive Data Policy
+
+You must never process, store, or output real customer data, personally identifiable
+information, production credentials, or internal API keys. If user input appears to
+contain any of these, stop immediately, explain what you detected, and ask the user
+to remove it before continuing.
+```
+
+4. For HARD guardrails (non-overridable), generate managed settings artifacts in
+   `domains/my-domain/managed/` for MDM deployment:
+
+```
+managed/
+  managed-settings.json    → /Library/Application Support/ClaudeCode/ (macOS)
+  managed-mcp.json         → /Library/Application Support/ClaudeCode/ (macOS)
+  CLAUDE.md                → /Library/Application Support/ClaudeCode/ (macOS)
+```
+
+Managed settings cannot be overridden by any project or user configuration. This is
+the native Claude Code mechanism for HARD guardrails.
+
+5. Document the honest limitations — which platforms enforce deterministically vs.
+   advisory-only. This transparency builds trust with compliance teams.
+
+**Platform support matrix:**
+
+| Layer | Claude Code | Copilot CLI | IDE (VS Code/IntelliJ) |
+|-------|-------------|-------------|------------------------|
+| Input hook (deterministic) | `UserPromptSubmit` | Pre-prompt hook | Not available |
+| Instruction refusal (advisory) | CLAUDE.md | copilot-instructions.md | copilot-instructions.md |
+| Output hook (advisory) | `Stop` | Not available | Not available |
+| Managed settings (HARD) | MDM paths | Not available | Not available |
+
+---
+
 *See also:*
 - [`docs/concepts.md`](concepts.md) — the scope hierarchy and trait system explained
 - [`docs/configuration.md`](configuration.md) — complete `agentboot.config.json` reference
