@@ -128,7 +128,7 @@ produces the compiled output that will be synced to your target repos.
 npm run build
 ```
 
-A successful build produces output in `.build/` and generates an up-to-date `PERSONAS.md`.
+A successful build produces output in `dist/` and generates an up-to-date `PERSONAS.md`.
 If the build fails, the error output will tell you which persona or trait has a problem.
 
 Common first-run failures:
@@ -146,22 +146,35 @@ npm run sync
 ```
 
 The sync script reads `repos.json`, writes the compiled `.claude/` directory to each
-registered repo, and reports what changed. On a fresh target repo, it will write:
+registered repo, and reports what changed. On a fresh target repo, it will write the
+Claude Code-native output:
 
 ```
 .claude/
-  CLAUDE.md          ← always-on instructions (org + group + team layers)
-  personas/
-    review-code/SKILL.md
+  CLAUDE.md                        ← always-on instructions using @imports
+  settings.json                    ← hooks (compliance, audit logging)
+  .mcp.json                        ← MCP server configs (if any)
+  agents/
+    code-reviewer/CLAUDE.md        ← full frontmatter (model, tools, hooks, etc.)
+    security-reviewer/CLAUDE.md
+  skills/
+    review-code/SKILL.md           ← invocation surface (context: fork → agent)
     review-security/SKILL.md
     gen-tests/SKILL.md
     gen-testdata/SKILL.md
-  instructions/
-    always-on.md
-    path-scoped/
-      *.sql.md        ← activates on database file changes
-      lambda/**/*.md  ← activates on Lambda file changes
+  traits/
+    critical-thinking.md           ← separate trait files for @import
+    structured-output.md
+    source-citation.md
+  rules/
+    gotchas-database.md            ← path-scoped rules (paths: frontmatter)
+    gotchas-lambda.md
 ```
+
+The agents in `.claude/agents/` use Claude Code's full native frontmatter (model,
+permissionMode, maxTurns, disallowedTools, mcpServers, hooks, memory). The skills in
+`.claude/skills/` use `context: fork` to delegate to the agent with isolated context.
+The CLAUDE.md uses `@.claude/traits/critical-thinking.md` imports instead of inlining.
 
 The sync does not commit or push to the target repo. It writes the files locally. You
 decide when to commit and push — this is intentional, so you can review the output before
@@ -209,7 +222,7 @@ To verify the test generator:
 /gen-tests src/services/user-service.ts
 ```
 
-If any command is not recognized, check that the `.claude/personas/` directory was written
+If any command is not recognized, check that the `.claude/agents/ and .claude/skills/` directory was written
 correctly in the sync step and that the persona SKILL.md files are present.
 
 ---

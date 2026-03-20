@@ -158,7 +158,7 @@ File issues at [github.com/agentboot/agentboot/issues](https://github.com/agentb
 
 ## License
 
-MIT — use it, fork it, build on it.
+Apache 2.0 — use it, fork it, build on it.
 
 ---
 

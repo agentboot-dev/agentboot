@@ -381,7 +381,24 @@ must be an array of `RepoConfig` objects:
 
 `name` is the GitHub repo slug (used in PR titles and sync commit messages). `path` is
 the absolute local filesystem path used in `local` sync mode. `team` and `group` must
-match values declared in the `groups` config.
+match values declared in the `groups` config. `platform` determines which output format
+the repo receives:
+
+```json
+[
+  {
+    "name": "my-org/my-repo",
+    "path": "/absolute/path/to/my-repo",
+    "team": "api",
+    "group": "platform",
+    "platform": "claude-code"
+  }
+]
+```
+
+Valid `platform` values: `"claude-code"` (default), `"copilot"`, `"cross-platform"`.
+When `output.format` is `"both"`, the sync script uses this field to select the right
+output for each repo.
 
 ---
 
@@ -459,6 +476,74 @@ from a different directory (e.g., `.github/copilot-instructions.md` for GitHub C
 When `true`, the build step generates `PERSONAS.md` in the root of the personas repo.
 This file is the human-readable registry of all compiled personas. CI checks that this
 file is up to date on every PR.
+
+---
+
+### `output.format`
+
+**Type:** `"claude-code" | "cross-platform" | "both"`
+**Required:** No
+**Default:** `"both"`
+
+Controls which compilation target the build produces.
+
+- `"claude-code"`: Generates Claude Code-native output using the full feature surface —
+  `.claude/agents/` with rich frontmatter (model, tools, hooks, MCP), `.claude/skills/`
+  with `context: fork`, `.claude/rules/` with `paths:` frontmatter, `.claude/traits/` as
+  separate files for `@import`, `.claude/CLAUDE.md` using `@imports`, `.claude/settings.json`
+  with hook entries, and `.claude/.mcp.json`. This is the optimal output for organizations
+  using Claude Code.
+
+- `"cross-platform"`: Generates standalone output that works across all agent platforms —
+  inlined SKILL.md (agentskills.io format), `copilot-instructions.md`, and a flattened
+  `CLAUDE.md`. Traits are baked into each persona file. No @imports, no hooks, no MCP
+  config.
+
+- `"both"`: Generates both formats. Use this when your organization has repos using
+  different agent platforms. The sync script writes the appropriate format per repo
+  based on the repo's `platform` field in `repos.json`.
+
+---
+
+### `output.hooks`
+
+**Type:** `boolean`
+**Required:** No
+**Default:** `true`
+
+When `true` and output format includes `claude-code`, the build step generates
+`.claude/settings.json` with hook entries from domain layer hook configurations.
+Hooks are merged across scopes (org → group → team) with the same precedence rules
+as other configuration.
+
+---
+
+### `output.mcp`
+
+**Type:** `boolean`
+**Required:** No
+**Default:** `true`
+
+When `true` and output format includes `claude-code`, the build step generates
+`.claude/.mcp.json` with MCP server configurations referenced by agent frontmatter.
+
+---
+
+### `output.managed`
+
+**Type:** `boolean`
+**Required:** No
+**Default:** `false`
+
+When `true`, the build step generates managed settings artifacts in `dist/managed/`
+for MDM deployment. These are the non-overridable HARD guardrail files:
+- `managed-settings.json` — hooks and permissions that no user can override
+- `managed-mcp.json` — MCP servers that are always active
+- `CLAUDE.md` — instructions that are always prepended
+
+Managed settings are deployed to system paths via MDM (JumpCloud, Jamf, Intune), not
+via the sync script. The build generates the artifacts; your MDM pipeline distributes
+them.
 
 ---
 
@@ -546,7 +631,11 @@ Claude Code session across your entire organization.
   },
   "output": {
     "dir": ".claude",
-    "personas_registry": true
+    "format": "both",
+    "personas_registry": true,
+    "hooks": true,
+    "mcp": true,
+    "managed": false
   },
   "extend": {
     "domains": ["./domains/fintech-compliance"],
