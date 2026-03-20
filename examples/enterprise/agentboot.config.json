@@ -42,8 +42,8 @@
         "design-systems" // Component library and tokens
       ],
       "traitsEnabled": [
-        "minimal-diff",     // product changes should be surgical
         "source-citation"
+        // Planned trait (not yet authored): "minimal-diff"
       ]
     },
 
@@ -60,8 +60,8 @@
       "traitsEnabled": [
         "critical-thinking",
         "structured-output",
-        "source-citation",
-        "explain-reasoning"
+        "source-citation"
+        // Planned trait (not yet authored): "explain-reasoning"
       ]
     }
   },
@@ -98,9 +98,8 @@
       "critical-thinking",
       "structured-output",
       "schema-awareness",
-      "source-citation",
-      "minimal-diff",
-      "explain-reasoning"
+      "source-citation"
+      // Planned traits (not yet authored): "minimal-diff", "explain-reasoning"
     ]
   },
 

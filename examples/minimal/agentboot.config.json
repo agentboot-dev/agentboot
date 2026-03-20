@@ -32,9 +32,8 @@
     "enabled": [
       "critical-thinking",
       "structured-output",
-      "source-citation",
-      "minimal-diff",
-      "explain-reasoning"
+      "source-citation"
+      // Planned traits (not yet authored): "minimal-diff", "explain-reasoning"
     ]
   },
 

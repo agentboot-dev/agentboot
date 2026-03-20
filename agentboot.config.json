@@ -112,9 +112,10 @@
       "critical-thinking",    // increases scrutiny, flags assumptions
       "structured-output",    // enforces machine-parseable output formatting
       "schema-awareness",     // data modeling, schema contracts, migration safety
-      "source-citation",      // cites code locations and docs in findings
-      "minimal-diff",         // prefers targeted changes over wholesale rewrites
-      "explain-reasoning"     // narrates decisions for reviewability
+      "source-citation"       // cites code locations and docs in findings
+      // Planned traits (not yet authored):
+      //   "minimal-diff"       -- prefers targeted changes over wholesale rewrites
+      //   "explain-reasoning"  -- narrates decisions for reviewability
     ]
   },
 
