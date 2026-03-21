@@ -2,8 +2,18 @@
  * AgentBoot compile script.
  *
  * Reads agentboot.config.json, traverses core/traits/ and core/personas/,
- * composes each persona by inlining trait content at marked positions in
- * each SKILL.md, and writes output to dist/.
+ * composes each persona by inlining trait content, and writes output to
+ * dist/{platform}/ — one self-contained distribution per platform.
+ *
+ * Output structure:
+ *   dist/skill/   — cross-platform SKILL.md (agentskills.io, traits inlined)
+ *   dist/claude/  — Claude Code native (.claude/ format)
+ *   dist/copilot/ — GitHub Copilot (.github/ format)
+ *
+ * Each platform folder contains the full scope hierarchy:
+ *   dist/{platform}/core/
+ *   dist/{platform}/groups/{group}/
+ *   dist/{platform}/teams/{group}/{team}/
  *
  * Trait injection points in SKILL.md:
  *   <!-- traits:start -->
@@ -19,8 +29,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { glob } from "glob";
 import chalk from "chalk";
+import {
+  type AgentBootConfig,
+  type PersonaConfig,
+  resolveConfigPath,
+  loadConfig,
+  stripJsoncComments,
+} from "./lib/config.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -28,119 +44,6 @@ import chalk from "chalk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-
-// ---------------------------------------------------------------------------
-// Config loading
-// ---------------------------------------------------------------------------
-
-function resolveConfigPath(argv: string[]): string {
-  const idx = argv.indexOf("--config");
-  if (idx !== -1 && argv[idx + 1]) {
-    return path.resolve(argv[idx + 1]!);
-  }
-  return path.join(ROOT, "agentboot.config.json");
-}
-
-/**
- * Strip single-line // comments from a JSONC string, respecting string literals.
- * A naive line-level regex would incorrectly strip // inside URLs or regex patterns
- * that appear as JSON string values. This parser tracks whether we are inside a
- * quoted string (handling escaped quotes) before deciding to truncate a line.
- */
-function stripJsoncComments(raw: string): string {
-  const lines = raw.split("\n");
-  const result: string[] = [];
-
-  for (const line of lines) {
-    let inString = false;
-    let i = 0;
-    let out = "";
-
-    while (i < line.length) {
-      const ch = line[i]!;
-
-      if (inString) {
-        out += ch;
-        if (ch === "\\" && i + 1 < line.length) {
-          // Escaped character — consume the next char verbatim.
-          i++;
-          out += line[i]!;
-        } else if (ch === '"') {
-          inString = false;
-        }
-      } else {
-        if (ch === '"') {
-          inString = true;
-          out += ch;
-        } else if (ch === "/" && line[i + 1] === "/") {
-          // Single-line comment outside a string — truncate here.
-          break;
-        } else {
-          out += ch;
-        }
-      }
-      i++;
-    }
-
-    result.push(out.trimEnd());
-  }
-
-  return result.join("\n");
-}
-
-function loadConfig(configPath: string): AgentBootConfig {
-  if (!fs.existsSync(configPath)) {
-    fatal(`Config file not found: ${configPath}`);
-  }
-  const raw = fs.readFileSync(configPath, "utf-8");
-  const stripped = stripJsoncComments(raw);
-  try {
-    return JSON.parse(stripped) as AgentBootConfig;
-  } catch (err) {
-    fatal(`Failed to parse config: ${String(err)}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface AgentBootConfig {
-  org: string;
-  orgDisplayName?: string;
-  groups?: Record<string, GroupConfig>;
-  personas?: {
-    enabled?: string[];
-    extend?: string;
-    outputFormats?: string[];
-  };
-  traits?: {
-    enabled?: string[];
-  };
-  instructions?: {
-    enabled?: string[];
-  };
-  output?: {
-    distPath?: string;
-    provenanceHeaders?: boolean;
-    failOnDirtyDist?: boolean;
-  };
-}
-
-interface GroupConfig {
-  label?: string;
-  teams?: string[];
-  traitsEnabled?: string[];
-}
-
-interface PersonaConfig {
-  name: string;
-  description: string;
-  invocation?: string;
-  traits?: string[];
-  groups?: Record<string, { traits?: string[] }>;
-  teams?: Record<string, { traits?: string[] }>;
-}
 
 interface TraitContent {
   name: string;
@@ -150,7 +53,7 @@ interface TraitContent {
 
 interface CompileResult {
   persona: string;
-  outputFiles: string[];
+  platforms: string[];
   traitsInjected: string[];
   scope: "core" | "group" | "team";
 }
@@ -207,7 +110,6 @@ function loadTraits(
   for (const file of traitFiles) {
     const traitName = path.basename(file, ".md");
 
-    // If a restricted list is given, only load enabled traits.
     if (enabledTraits && !enabledTraits.includes(traitName)) {
       continue;
     }
@@ -259,7 +161,6 @@ function injectTraits(
   const injected: string[] = [];
   const missing: string[] = [];
 
-  // Build the injected block content.
   const blocks: string[] = [];
   for (const traitName of traitNames) {
     const trait = traits.get(traitName);
@@ -286,7 +187,6 @@ function injectTraits(
       ? `\n\n${blocks.join("\n\n")}\n\n`
       : "\n\n<!-- no traits configured -->\n\n";
 
-  // If the SKILL.md already has markers, replace the content between them.
   const startIdx = skillContent.indexOf(TRAITS_START_MARKER);
   const endIdx = skillContent.indexOf(TRAITS_END_MARKER);
 
@@ -299,7 +199,6 @@ function injectTraits(
     };
   }
 
-  // No markers — append the traits block at the end.
   return {
     result: `${skillContent.trimEnd()}\n\n${TRAITS_START_MARKER}${injectedBlock}${TRAITS_END_MARKER}\n`,
     injected,
@@ -307,7 +206,67 @@ function injectTraits(
 }
 
 // ---------------------------------------------------------------------------
-// Persona compilation
+// Platform-specific output builders
+// ---------------------------------------------------------------------------
+
+function buildSkillOutput(
+  personaName: string,
+  _personaConfig: PersonaConfig | null,
+  composedContent: string,
+  config: AgentBootConfig,
+  skillPath: string
+): string {
+  const provenanceEnabled = config.output?.provenanceHeaders !== false;
+  return provenanceEnabled
+    ? `${provenanceHeader(skillPath, config)}${composedContent}`
+    : composedContent;
+}
+
+/**
+ * Build CC-native skill file.
+ * CC expects: .claude/skills/{skill-name}.md with description frontmatter.
+ * The skill name comes from the invocation (e.g., "/review-code" → "review-code").
+ */
+function buildClaudeOutput(
+  personaName: string,
+  personaConfig: PersonaConfig | null,
+  composedContent: string,
+  _config: AgentBootConfig
+): { content: string; skillName: string } {
+  const invocation = personaConfig?.invocation ?? `/${personaName}`;
+  const skillName = invocation.replace(/^\//, "");
+  const description = personaConfig?.description ?? personaName;
+
+  // CC skill frontmatter: just description (CC parses this)
+  const frontmatter = `---\ndescription: ${description}\n---\n\n`;
+
+  // Strip any existing frontmatter from composed content (it's SKILL.md format)
+  const withoutFrontmatter = composedContent.replace(/^---\n(?:(?!---).*\n)*---\n*/, "");
+
+  return {
+    content: `${frontmatter}${withoutFrontmatter}`,
+    skillName,
+  };
+}
+
+function buildCopilotOutput(
+  personaName: string,
+  personaConfig: PersonaConfig | null,
+  composedContent: string,
+  config: AgentBootConfig,
+  skillPath: string
+): string {
+  const header = `# ${personaConfig?.name ?? personaName} (AgentBoot)\n\n`;
+  const description = personaConfig?.description
+    ? `${personaConfig.description}\n\n---\n\n`
+    : "";
+  // Strip HTML comments for Copilot output.
+  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").trim();
+  return `${provenanceHeader(skillPath, config)}${header}${description}${stripped}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// Persona compilation — writes to each platform's dist folder
 // ---------------------------------------------------------------------------
 
 function compilePersona(
@@ -315,23 +274,23 @@ function compilePersona(
   personaDir: string,
   traits: Map<string, TraitContent>,
   config: AgentBootConfig,
-  outputDir: string,
-  scope: "core" | "group" | "team",
+  distPath: string,
+  scopePath: string,
   groupName?: string,
   teamName?: string
 ): CompileResult {
   const skillPath = path.join(personaDir, "SKILL.md");
+  const scope: "core" | "group" | "team" = teamName ? "team" : groupName ? "group" : "core";
 
   if (!fs.existsSync(skillPath)) {
     log(chalk.yellow(`  ⚠ [${personaName}] No SKILL.md found — skipping`));
-    return { persona: personaName, outputFiles: [], traitsInjected: [], scope };
+    return { persona: personaName, platforms: [], traitsInjected: [], scope };
   }
 
   const personaConfig = loadPersonaConfig(personaDir);
   const skillContent = fs.readFileSync(skillPath, "utf-8");
 
   // Determine which traits to inject.
-  // Priority: team-level traits > group-level traits > persona default traits
   let traitNames: string[] = personaConfig?.traits ?? [];
 
   if (groupName && personaConfig?.groups?.[groupName]?.traits) {
@@ -342,7 +301,6 @@ function compilePersona(
     traitNames = [...traitNames, ...(personaConfig.teams[teamName]!.traits ?? [])];
   }
 
-  // Deduplicate while preserving order.
   traitNames = [...new Set(traitNames)];
 
   const { result: composed, injected } = injectTraits(
@@ -352,126 +310,125 @@ function compilePersona(
     personaName
   );
 
-  // Prepend provenance header if enabled.
-  const provenanceEnabled = config.output?.provenanceHeaders !== false;
-  const finalContent = provenanceEnabled
-    ? `${provenanceHeader(skillPath, config)}${composed}`
-    : composed;
-
-  // Write SKILL.md.
-  const outputDir_ = path.join(outputDir, personaName);
-  ensureDir(outputDir_);
-
-  const outputFiles: string[] = [];
-
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+  const platforms: string[] = [];
+
+  // Write to dist/{platform}/{scopePath}/{persona}/ (or skills/{name}/ for claude)
+  // e.g., dist/skill/core/code-reviewer/SKILL.md
+  //        dist/claude/core/skills/review-code/SKILL.md
 
   if (outputFormats.includes("skill")) {
-    const outPath = path.join(outputDir_, "SKILL.md");
-    fs.writeFileSync(outPath, finalContent, "utf-8");
-    outputFiles.push(outPath);
+    const outDir = path.join(distPath, "skill", scopePath, personaName);
+    ensureDir(outDir);
+    const content = buildSkillOutput(personaName, personaConfig, composed, config, skillPath);
+    fs.writeFileSync(path.join(outDir, "SKILL.md"), content, "utf-8");
+    if (personaConfig) {
+      fs.writeFileSync(
+        path.join(outDir, "persona.config.json"),
+        JSON.stringify(personaConfig, null, 2) + "\n",
+        "utf-8"
+      );
+    }
+    platforms.push("skill");
   }
 
   if (outputFormats.includes("claude")) {
-    const claudeContent = buildClaudeFragment(personaName, personaConfig, finalContent, config);
-    const outPath = path.join(outputDir_, "CLAUDE.md");
-    fs.writeFileSync(outPath, claudeContent, "utf-8");
-    outputFiles.push(outPath);
+    const { content, skillName } = buildClaudeOutput(personaName, personaConfig, composed, config);
+    // CC-native: write to dist/claude/{scope}/skills/{skillName}/SKILL.md
+    const skillDir = path.join(distPath, "claude", scopePath, "skills", skillName);
+    ensureDir(skillDir);
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), content, "utf-8");
+    platforms.push("claude");
   }
 
   if (outputFormats.includes("copilot")) {
-    const copilotContent = buildCopilotFragment(personaName, personaConfig, finalContent, config);
-    const outPath = path.join(outputDir_, "copilot-instructions.md");
-    fs.writeFileSync(outPath, copilotContent, "utf-8");
-    outputFiles.push(outPath);
+    const outDir = path.join(distPath, "copilot", scopePath, personaName);
+    ensureDir(outDir);
+    const content = buildCopilotOutput(personaName, personaConfig, composed, config, skillPath);
+    fs.writeFileSync(path.join(outDir, "copilot-instructions.md"), content, "utf-8");
+    if (personaConfig) {
+      fs.writeFileSync(
+        path.join(outDir, "persona.config.json"),
+        JSON.stringify(personaConfig, null, 2) + "\n",
+        "utf-8"
+      );
+    }
+    platforms.push("copilot");
   }
 
-  // Copy persona.config.json if present.
-  const personaConfigPath = path.join(personaDir, "persona.config.json");
-  if (fs.existsSync(personaConfigPath)) {
-    fs.copyFileSync(personaConfigPath, path.join(outputDir_, "persona.config.json"));
-  }
-
-  return { persona: personaName, outputFiles, traitsInjected: injected, scope };
+  return { persona: personaName, platforms, traitsInjected: injected, scope };
 }
 
 // ---------------------------------------------------------------------------
-// Output format builders
-// ---------------------------------------------------------------------------
-
-function buildClaudeFragment(
-  personaName: string,
-  personaConfig: PersonaConfig | null,
-  composedContent: string,
-  config: AgentBootConfig
-): string {
-  const invocation = personaConfig?.invocation ?? `/${personaName}`;
-  const description = personaConfig?.description ?? "";
-  const header = `# ${personaConfig?.name ?? personaName}\n\n`;
-  const invocationBlock = `**Invocation:** \`${invocation}\`\n\n`;
-  const descBlock = description ? `${description}\n\n---\n\n` : "";
-  return `${provenanceHeader(personaName, config)}${header}${invocationBlock}${descBlock}${composedContent}`;
-}
-
-function buildCopilotFragment(
-  personaName: string,
-  personaConfig: PersonaConfig | null,
-  composedContent: string,
-  config: AgentBootConfig
-): string {
-  // GitHub Copilot reads copilot-instructions.md as plain Markdown instructions.
-  // Strip any SKILL.md-specific frontmatter and emit clean Markdown.
-  const header = `# ${personaConfig?.name ?? personaName} (AgentBoot)\n\n`;
-  const description = personaConfig?.description
-    ? `${personaConfig.description}\n\n---\n\n`
-    : "";
-  // Strip <!-- ... --> comments from the composed content for Copilot output.
-  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").trim();
-  return `${provenanceHeader(personaName, config)}${header}${description}${stripped}\n`;
-}
-
-// ---------------------------------------------------------------------------
-// Always-on instructions compilation
+// Always-on instructions compilation — writes to each platform
 // ---------------------------------------------------------------------------
 
 function compileInstructions(
   instructionsDir: string,
   enabledInstructions: string[] | undefined,
-  outputDir: string,
-  config: AgentBootConfig
+  distPath: string,
+  scopePath: string,
+  config: AgentBootConfig,
+  outputFormats: string[]
 ): void {
   if (!fs.existsSync(instructionsDir)) {
     return;
   }
 
   const files = fs.readdirSync(instructionsDir).filter((f) => f.endsWith(".md"));
-  const outDir = path.join(outputDir, "instructions");
-  ensureDir(outDir);
+  const provenanceEnabled = config.output?.provenanceHeaders !== false;
 
-  for (const file of files) {
-    const name = path.basename(file, ".md");
-    if (enabledInstructions && !enabledInstructions.includes(name)) {
-      continue;
+  for (const platform of outputFormats) {
+    // CC uses "rules/" for always-on instructions; other platforms use "instructions/"
+    const dirName = platform === "claude" ? "rules" : "instructions";
+    const outDir = path.join(distPath, platform, scopePath, dirName);
+    ensureDir(outDir);
+
+    for (const file of files) {
+      const name = path.basename(file, ".md");
+      if (enabledInstructions && !enabledInstructions.includes(name)) {
+        continue;
+      }
+      const srcPath = path.join(instructionsDir, file);
+      let content = fs.readFileSync(srcPath, "utf-8");
+
+      // Strip HTML comments for copilot output
+      if (platform === "copilot") {
+        content = content.replace(/<!--[\s\S]*?-->/g, "").trim() + "\n";
+      }
+
+      let finalContent: string;
+      if (!provenanceEnabled) {
+        finalContent = content;
+      } else if (platform === "claude") {
+        // For CC rules, frontmatter must be the first thing in the file.
+        // Insert provenance after the closing --- of frontmatter.
+        const fmMatch = content.match(/^(---\n[\s\S]*?\n---\n)/);
+        if (fmMatch) {
+          const afterFm = content.slice(fmMatch[1].length);
+          finalContent = `${fmMatch[1]}\n${provenanceHeader(srcPath, config)}${afterFm}`;
+        } else {
+          finalContent = `${provenanceHeader(srcPath, config)}${content}`;
+        }
+      } else {
+        finalContent = `${provenanceHeader(srcPath, config)}${content}`;
+      }
+      fs.writeFileSync(path.join(outDir, file), finalContent, "utf-8");
     }
-    const srcPath = path.join(instructionsDir, file);
-    const content = fs.readFileSync(srcPath, "utf-8");
-    const provenanceEnabled = config.output?.provenanceHeaders !== false;
-    const finalContent = provenanceEnabled
-      ? `${provenanceHeader(srcPath, config)}${content}`
-      : content;
-    fs.writeFileSync(path.join(outDir, file), finalContent, "utf-8");
   }
 }
 
 // ---------------------------------------------------------------------------
-// PERSONAS.md index generation
+// PERSONAS.md index generation — writes to each platform
 // ---------------------------------------------------------------------------
 
 function generatePersonasIndex(
   results: CompileResult[],
   config: AgentBootConfig,
   personasBaseDir: string,
-  outputDir: string
+  distPath: string,
+  scopePath: string,
+  outputFormats: string[]
 ): void {
   const org = config.orgDisplayName ?? config.org;
   const lines: string[] = [
@@ -485,7 +442,7 @@ function generatePersonasIndex(
     "|---|---|---|",
   ];
 
-  for (const result of results.filter((r) => r.outputFiles.length > 0)) {
+  for (const result of results.filter((r) => r.platforms.length > 0)) {
     const personaConfigPath = path.join(personasBaseDir, result.persona, "persona.config.json");
     let invocation = `/${result.persona}`;
     let description = "";
@@ -504,16 +461,22 @@ function generatePersonasIndex(
   }
 
   lines.push("", `*Last compiled: ${new Date().toISOString()}*`, "");
-  fs.writeFileSync(path.join(outputDir, "PERSONAS.md"), lines.join("\n"), "utf-8");
+  const content = lines.join("\n");
+
+  for (const platform of outputFormats) {
+    const outDir = path.join(distPath, platform, scopePath);
+    ensureDir(outDir);
+    fs.writeFileSync(path.join(outDir, "PERSONAS.md"), content, "utf-8");
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+function main(): void {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv);
+  const configPath = resolveConfigPath(argv, ROOT);
 
   log(chalk.bold("\nAgentBoot — compile"));
   log(chalk.gray(`Config: ${configPath}\n`));
@@ -543,7 +506,9 @@ async function main(): Promise<void> {
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  // Determine which traits are available.
+  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+
+  // Load traits.
   const enabledTraits = config.traits?.enabled;
   const traits = loadTraits(coreTraitsDir, enabledTraits);
 
@@ -551,13 +516,13 @@ async function main(): Promise<void> {
   for (const name of traits.keys()) {
     log(chalk.gray(`  + ${name}`));
   }
+  log(chalk.cyan(`Output formats: ${outputFormats.join(", ")}`));
   log("");
 
-  // Determine which personas to compile.
   const enabledPersonas = config.personas?.enabled;
 
-  // Discover all persona directories.
-  const personaDirs = new Map<string, string>(); // name → absolute path
+  // Discover persona directories.
+  const personaDirs = new Map<string, string>();
 
   if (fs.existsSync(corePersonasDir)) {
     for (const entry of fs.readdirSync(corePersonasDir)) {
@@ -568,7 +533,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Merge extension personas (higher specificity wins on name collision).
   if (config.personas?.extend) {
     const extendDir = path.resolve(configDir, config.personas.extend);
     if (fs.existsSync(extendDir)) {
@@ -589,12 +553,10 @@ async function main(): Promise<void> {
   const allResults: CompileResult[] = [];
 
   // ---------------------------------------------------------------------------
-  // 1. Compile core (studio-wide) personas
+  // 1. Compile core personas → dist/{platform}/core/{persona}/
   // ---------------------------------------------------------------------------
 
   log(chalk.cyan("Compiling core personas..."));
-  const coreOutputDir = path.join(distPath, "core");
-  ensureDir(coreOutputDir);
 
   for (const [personaName, personaDir] of personaDirs) {
     if (enabledPersonas && !enabledPersonas.includes(personaName)) {
@@ -607,8 +569,8 @@ async function main(): Promise<void> {
       personaDir,
       traits,
       config,
-      coreOutputDir,
-      "core"
+      distPath,
+      "core"              // scopePath → dist/{platform}/core/{persona}/
     );
 
     allResults.push(result);
@@ -624,27 +586,25 @@ async function main(): Promise<void> {
   compileInstructions(
     coreInstructionsDir,
     config.instructions?.enabled,
-    coreOutputDir,
-    config
+    distPath,
+    "core",
+    config,
+    outputFormats
   );
 
   // ---------------------------------------------------------------------------
-  // 2. Compile group-level overrides
+  // 2. Compile group-level overrides → dist/{platform}/groups/{group}/{persona}/
   // ---------------------------------------------------------------------------
 
   if (config.groups) {
     log(chalk.cyan("\nCompiling group-level personas..."));
 
-    for (const [groupName, groupConfig] of Object.entries(config.groups)) {
+    for (const groupName of Object.keys(config.groups)) {
       const groupPersonasDir = path.join(ROOT, "groups", groupName, "personas");
 
       if (!fs.existsSync(groupPersonasDir)) {
-        // No group-specific persona overrides — this is fine.
         continue;
       }
-
-      const groupOutputDir = path.join(distPath, "groups", groupName);
-      ensureDir(groupOutputDir);
 
       const groupPersonaDirs = fs.readdirSync(groupPersonasDir).filter((entry) =>
         fs.statSync(path.join(groupPersonasDir, entry)).isDirectory()
@@ -661,28 +621,26 @@ async function main(): Promise<void> {
           personaDir,
           traits,
           config,
-          groupOutputDir,
-          "group",
+          distPath,
+          `groups/${groupName}`,
           groupName
         );
         allResults.push(result);
         log(`  ${chalk.green("✓")} ${groupName}/${personaName}`);
       }
-
-      void groupConfig; // suppress unused-variable warning
     }
   }
 
   // ---------------------------------------------------------------------------
-  // 3. Compile team-level overrides
+  // 3. Compile team-level overrides → dist/{platform}/teams/{group}/{team}/{persona}/
   // ---------------------------------------------------------------------------
 
   if (config.groups) {
     log(chalk.cyan("\nCompiling team-level personas..."));
     let teamPersonasFound = false;
 
-    for (const [groupName, groupConfig] of Object.entries(config.groups)) {
-      const teams = groupConfig.teams ?? [];
+    for (const groupName of Object.keys(config.groups)) {
+      const teams = config.groups[groupName]!.teams ?? [];
 
       for (const teamName of teams) {
         const teamPersonasDir = path.join(ROOT, "teams", groupName, teamName, "personas");
@@ -692,8 +650,6 @@ async function main(): Promise<void> {
         }
 
         teamPersonasFound = true;
-        const teamOutputDir = path.join(distPath, "teams", groupName, teamName);
-        ensureDir(teamOutputDir);
 
         const teamPersonaDirs = fs.readdirSync(teamPersonasDir).filter((entry) =>
           fs.statSync(path.join(teamPersonasDir, entry)).isDirectory()
@@ -710,8 +666,8 @@ async function main(): Promise<void> {
             personaDir,
             traits,
             config,
-            teamOutputDir,
-            "team",
+            distPath,
+            `teams/${groupName}/${teamName}`,  // scopePath → dist/{platform}/teams/{group}/{team}/{persona}/
             groupName,
             teamName
           );
@@ -727,27 +683,32 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
-  // 4. Generate PERSONAS.md index
+  // 4. Generate PERSONAS.md index in each platform
   // ---------------------------------------------------------------------------
 
-  generatePersonasIndex(allResults, config, corePersonasDir, coreOutputDir);
-  log(chalk.gray("\n  → PERSONAS.md written"));
+  generatePersonasIndex(allResults, config, corePersonasDir, distPath, "core", outputFormats);
+  log(chalk.gray("\n  → PERSONAS.md written to each platform"));
 
   // ---------------------------------------------------------------------------
   // Summary
   // ---------------------------------------------------------------------------
 
-  const successCount = allResults.filter((r) => r.outputFiles.length > 0).length;
-  const fileCount = allResults.reduce((acc, r) => acc + r.outputFiles.length, 0);
+  const successCount = allResults.filter((r) => r.platforms.length > 0).length;
+  const platformCount = allResults.reduce((acc, r) => acc + r.platforms.length, 0);
 
   log(
     chalk.bold(
-      `\n${chalk.green("✓")} Compiled ${successCount} persona(s), ${fileCount} output file(s) → ${path.relative(ROOT, distPath)}/`
+      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(ROOT, distPath)}/`
     )
   );
+  for (const fmt of outputFormats) {
+    log(chalk.gray(`  → dist/${fmt}/`));
+  }
 }
 
-main().catch((err: unknown) => {
+try {
+  main();
+} catch (err: unknown) {
   console.error(chalk.red("Unexpected error:"), err);
   process.exit(1);
-});
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Test Generator",
+  "description": "Test-driven engineer — writes tests as the primary artifact",
+  "invocation": "/gen-tests",
+  "traits": [
+    "structured-output",
+    "schema-awareness",
+    "source-citation"
+  ]
+}

@@ -1,12 +1,12 @@
 /**
  * AgentBoot sync script.
  *
- * Reads repos.json and distributes compiled output from dist/ to each registered
- * repository. For each repo, it merges the applicable scopes in order:
+ * Reads repos.json and distributes compiled output from dist/{platform}/ to each
+ * registered repository. For each repo, it merges the applicable scopes in order:
  *
- *   1. dist/core/           — studio baseline (all repos)
- *   2. dist/groups/{group}/ — group-level additions (if repo has a group)
- *   3. dist/teams/{group}/{team}/ — team-level additions (if repo has a team)
+ *   1. dist/{platform}/core/                    — org baseline (all repos)
+ *   2. dist/{platform}/groups/{group}/          — group-level additions
+ *   3. dist/{platform}/teams/{group}/{team}/    — team-level additions
  *
  * Higher specificity scope wins on filename conflict:
  *   team > group > core
@@ -26,6 +26,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import {
+  type AgentBootConfig,
+  resolveConfigPath,
+  loadConfig,
+} from "./lib/config.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -34,28 +39,12 @@ import chalk from "chalk";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface AgentBootConfig {
-  org: string;
-  orgDisplayName?: string;
-  groups?: Record<string, { teams?: string[] }>;
-  output?: {
-    distPath?: string;
-  };
-  sync?: {
-    repos?: string;
-    targetDir?: string;
-    writePersonasIndex?: boolean;
-    dryRun?: boolean;
-  };
-}
-
 interface RepoEntry {
   // Absolute or relative path to the repo root.
   path: string;
+  // Platform distribution to sync: "claude", "copilot", "cursor", "skill", "gemini".
+  // Defaults to "claude".
+  platform?: string;
   // Group this repo belongs to (must match a key in config.groups).
   group?: string;
   // Team this repo belongs to (must be a member of the group's teams).
@@ -67,6 +56,7 @@ interface RepoEntry {
 interface SyncResult {
   repo: string;
   label?: string;
+  platform?: string;
   group?: string;
   team?: string;
   filesWritten: string[];
@@ -78,66 +68,6 @@ interface SyncResult {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function resolveConfigPath(argv: string[]): string {
-  const idx = argv.indexOf("--config");
-  if (idx !== -1 && argv[idx + 1]) {
-    return path.resolve(argv[idx + 1]!);
-  }
-  return path.join(ROOT, "agentboot.config.json");
-}
-
-/**
- * Strip single-line // comments from a JSONC string, respecting string literals.
- * Handles // inside URLs and regex patterns that appear as JSON string values.
- */
-function stripJsoncComments(raw: string): string {
-  const lines = raw.split("\n");
-  const result: string[] = [];
-
-  for (const line of lines) {
-    let inString = false;
-    let i = 0;
-    let out = "";
-
-    while (i < line.length) {
-      const ch = line[i]!;
-
-      if (inString) {
-        out += ch;
-        if (ch === "\\" && i + 1 < line.length) {
-          i++;
-          out += line[i]!;
-        } else if (ch === '"') {
-          inString = false;
-        }
-      } else {
-        if (ch === '"') {
-          inString = true;
-          out += ch;
-        } else if (ch === "/" && line[i + 1] === "/") {
-          break;
-        } else {
-          out += ch;
-        }
-      }
-      i++;
-    }
-
-    result.push(out.trimEnd());
-  }
-
-  return result.join("\n");
-}
-
-function loadConfig(configPath: string): AgentBootConfig {
-  if (!fs.existsSync(configPath)) {
-    console.error(chalk.red(`✗ Config file not found: ${configPath}`));
-    process.exit(1);
-  }
-  const raw = fs.readFileSync(configPath, "utf-8");
-  return JSON.parse(stripJsoncComments(raw)) as AgentBootConfig;
-}
 
 function loadRepos(reposPath: string, configDir: string): RepoEntry[] {
   const resolved = path.resolve(configDir, reposPath);
@@ -287,6 +217,7 @@ function syncRepo(
   const result: SyncResult = {
     repo: repoPath,
     label: entry.label,
+    platform: entry.platform ?? "claude",
     group: entry.group,
     team: entry.team,
     filesWritten: [],
@@ -300,13 +231,15 @@ function syncRepo(
     return result;
   }
 
-  // Collect files from applicable scopes.
-  const coreDir = path.join(distPath, "core");
+  // Collect files from applicable scopes within the platform distribution.
+  const platform = entry.platform ?? "claude";
+  const platformDir = path.join(distPath, platform);
+  const coreDir = path.join(platformDir, "core");
   const groupDir = entry.group
-    ? path.join(distPath, "groups", entry.group)
+    ? path.join(platformDir, "groups", entry.group)
     : null;
   const teamDir = entry.group && entry.team
-    ? path.join(distPath, "teams", entry.group, entry.team)
+    ? path.join(platformDir, "teams", entry.group, entry.team)
     : null;
 
   const coreFiles = collectScopeFiles(coreDir, "core");
@@ -315,7 +248,7 @@ function syncRepo(
 
   if (coreFiles.length === 0) {
     result.errors.push(
-      `dist/core/ is empty. Run \`npm run build\` before syncing.`
+      `dist/${platform}/core/ is empty. Run \`npm run build\` before syncing.`
     );
     return result;
   }
@@ -323,24 +256,30 @@ function syncRepo(
   const merged = mergeScopes(coreFiles, groupFiles, teamFiles);
 
   // Write all merged files to the target directory.
+  // For copilot platform, only write the merged copilot-instructions.md to .github/
+  // (individual fragments and non-copilot files are not useful in a copilot-only repo).
   const targetBase = path.join(repoPath, targetDir);
-  ensureDir(targetBase, dryRun);
 
-  for (const [relPath, file] of merged) {
-    // copilot-instructions.md fragments are handled separately below.
-    if (relPath.endsWith("copilot-instructions.md")) continue;
+  if (platform !== "copilot") {
+    ensureDir(targetBase, dryRun);
 
-    // PERSONAS.md goes to the targetDir root, not inside a persona subdirectory.
-    // All other files preserve their relative path structure.
-    const destPath = path.join(targetBase, relPath);
-    const content = fs.readFileSync(file.absolutePath, "utf-8");
-    const status = writeFile(destPath, content, dryRun);
+    for (const [relPath, file] of merged) {
+      // copilot-instructions.md fragments are handled separately below.
+      if (relPath.endsWith("copilot-instructions.md")) continue;
 
-    const relDest = path.relative(repoPath, destPath);
-    if (status === "written") {
-      result.filesWritten.push(relDest);
-    } else {
-      result.filesSkipped.push(relDest);
+      // PERSONAS.md is handled separately (controlled by writePersonasIndex config).
+      if (relPath === "PERSONAS.md") continue;
+
+      const destPath = path.join(targetBase, relPath);
+      const content = fs.readFileSync(file.absolutePath, "utf-8");
+      const status = writeFile(destPath, content, dryRun);
+
+      const relDest = path.relative(repoPath, destPath);
+      if (status === "written") {
+        result.filesWritten.push(relDest);
+      } else {
+        result.filesSkipped.push(relDest);
+      }
     }
   }
 
@@ -358,7 +297,7 @@ function syncRepo(
     }
   }
 
-  // Optionally write PERSONAS.md to repo root.
+  // Optionally write PERSONAS.md to the target directory.
   if (writePersonasIndex) {
     const personasIndexSrc = path.join(coreDir, "PERSONAS.md");
     if (fs.existsSync(personasIndexSrc)) {
@@ -416,12 +355,10 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
 
 function printSyncResult(result: SyncResult): void {
   const repoLabel = result.label ?? path.basename(result.repo);
-  const scope =
-    result.team
-      ? `${result.group}/${result.team}`
-      : result.group
-      ? result.group
-      : "core";
+  const scopeParts: string[] = [result.platform ?? "claude"];
+  if (result.team) scopeParts.push(`${result.group}/${result.team}`);
+  else if (result.group) scopeParts.push(result.group);
+  const scope = scopeParts.join("/");
   const dryRunTag = result.dryRun ? chalk.yellow(" [DRY RUN]") : "";
 
   if (result.errors.length > 0) {
@@ -460,7 +397,7 @@ function printSyncResult(result: SyncResult): void {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv);
+  const configPath = resolveConfigPath(argv, ROOT);
   const isDryRun =
     argv.includes("--dry-run") || argv.includes("--dryRun");
 
@@ -484,11 +421,10 @@ async function main(): Promise<void> {
   );
 
   // Check that dist/ exists and has been built.
-  const coreDistDir = path.join(distPath, "core");
-  if (!fs.existsSync(coreDistDir)) {
+  if (!fs.existsSync(distPath)) {
     console.error(
       chalk.red(
-        `✗ dist/core/ not found at ${coreDistDir}\n  Run \`npm run build\` before syncing.`
+        `✗ dist/ not found at ${distPath}\n  Run \`npm run build\` before syncing.`
       )
     );
     process.exit(1);

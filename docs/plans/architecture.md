@@ -41,10 +41,10 @@ in pull requests, and distributed through automated pipelines.
   truth. Target repositories (spokes) receive compiled output via sync. Spokes are
   passive recipients; they do not produce governance artifacts.
 
-- **Dual compilation targets.** The build produces two output sets: Claude Code-native
-  output (using the full platform feature surface: agents, skills, rules, hooks, MCP,
-  managed settings) and cross-platform output (agentskills.io SKILL.md, Copilot
-  instructions, Cursor rules). The same source definitions drive both.
+- **Per-platform compilation targets.** The build produces one self-contained folder per
+  platform under `dist/` (claude, copilot, cursor, skill, gemini). Each folder contains
+  everything needed for that platform and nothing it doesn't. The same source definitions
+  drive all platforms. Scope hierarchy is preserved within each platform folder.
 
 - **Scope hierarchy with deterministic merge.** Configuration merges across four
   levels (Org, Group, Team, Repo) with clear precedence rules: mandatory behaviors
@@ -232,15 +232,22 @@ instructions) into compiled output artifacts.
 - `extensions/` -- org-specific persona extensions
 
 **Outputs:**
-- `dist/core/` -- org-level compiled output
-- `dist/groups/{group}/` -- group-level overrides
-- `dist/teams/{group}/{team}/` -- team-level overrides
+- `dist/claude/` -- self-contained Claude Code distribution (agents, skills, rules, traits, CLAUDE.md, settings.json)
+- `dist/copilot/` -- self-contained Copilot distribution (.github/copilot-instructions.md, prompts)
+- `dist/cursor/` -- self-contained Cursor distribution (.cursor/rules/*.md)
+- `dist/skill/` -- cross-platform SKILL.md output (agentskills.io, traits inlined)
+- `dist/gemini/` -- self-contained Gemini CLI distribution (GEMINI.md)
 - `dist/managed/` -- managed settings artifacts (when `output.managed: true`)
 - `dist/plugin/` -- CC plugin package (when export format is plugin)
 
+Each platform folder preserves scope hierarchy internally:
+- `dist/{platform}/core/` -- org-level compiled output
+- `dist/{platform}/groups/{group}/` -- group-level overrides
+- `dist/{platform}/teams/{group}/{team}/` -- team-level overrides
+
 **Key Interfaces:**
 - `scripts/validate.ts` -- validation entry point, returns pass/fail with diagnostics
-- `scripts/compile.ts` -- compilation entry point, reads config, writes to dist/
+- `scripts/compile.ts` -- compilation entry point, reads config, writes to dist/{platform}/
 - `agentboot build` CLI command -- orchestrates validate + compile
 - `agentboot build --format <target>` -- selects output generator(s)
 
@@ -371,10 +378,11 @@ effective system prompt for each persona.
 2. Named weights (HIGH, MEDIUM, LOW) are resolved to numeric equivalents (0.7, 0.5, 0.3).
 3. Boolean values (`true`) mean the trait is active at its default configuration.
 4. The trait content for the resolved weight level is extracted.
-5. For cross-platform output: trait content is inlined between `<!-- traits:start -->`
+5. Each platform gets its own self-contained output folder under `dist/{platform}/`.
+   For `dist/skill/`: trait content is inlined between `<!-- traits:start -->`
    and `<!-- traits:end -->` markers in the SKILL.md.
-6. For CC-native output: trait files are written separately; CLAUDE.md uses `@import`
-   references.
+6. For `dist/claude/`: trait files are written separately; CLAUDE.md uses `@import`
+   references. Other platform folders receive platform-native formats.
 
 **Scope Merging in Persona Engine:**
 
@@ -565,7 +573,7 @@ platform-specific output selection.
 
 **Inputs:**
 - `repos.json` -- array of repo entries with name, path, team, group, platform
-- `dist/` -- compiled output from the build system
+- `dist/{platform}/` -- compiled output from the build system, one self-contained folder per platform
 - `agentboot.config.json` -- sync mode, PR settings, output directory
 
 **Outputs:**
@@ -575,12 +583,12 @@ platform-specific output selection.
 
 **Key Behaviors:**
 
-1. **Platform Detection:** Each repo's `platform` field determines which output format
-   it receives (`claude-code`, `copilot`, `cursor`, `cross-platform`).
+1. **Platform Selection:** Each repo's `platform` field determines which `dist/{platform}/`
+   folder it reads from (e.g., `claude`, `copilot`, `cursor`, `skill`, `gemini`).
 
 2. **Scope Resolution:** The sync engine looks up each repo's group and team in the
-   config, then merges `dist/core/` + `dist/groups/{group}/` + `dist/teams/{group}/{team}/`
-   to produce the effective output for that repo.
+   config, then merges `dist/{platform}/core/` + `dist/{platform}/groups/{group}/` +
+   `dist/{platform}/teams/{group}/{team}/` to produce the effective output for that repo.
 
 3. **Manifest Tracking:** Every file written by sync is recorded in
    `.agentboot-manifest.json` with its content hash. This enables clean uninstall --
@@ -774,7 +782,7 @@ via managed settings.
 |  | agentboot export  |    |                   |                   |
 |  |  --format plugin  |    | agentboot publish |                   |
 |  |                   |    |                   |                   |
-|  | Reads: dist/      |    | Reads: plugin/    |                   |
+|  | Reads:dist/claude/|    | Reads: plugin/    |                   |
 |  | Writes: plugin/   |    | Writes:           |                   |
 |  |  with plugin.json |    |  marketplace.json |                   |
 |  |  and proper CC    |    |  in marketplace   |                   |
@@ -1503,7 +1511,9 @@ The build system detects and reports scope conflicts:
                     +-------+--------+  +------+-------+  +------+-------+
                             |                  |                  |
                             v                  v                  v
-                    dist/claude-code/   dist/cross-plat/    dist/plugin/
+                    dist/claude/        dist/skill/         dist/plugin/
+                    dist/copilot/       dist/gemini/
+                    dist/cursor/
 ```
 
 ### 6.2 Validation Phase
@@ -1644,7 +1654,7 @@ For CC-native output, the generated CLAUDE.md uses `@import` syntax:
 
 When `agentboot export --format plugin` is invoked:
 
-1. Read compiled CC-native output from `dist/`
+1. Read compiled CC-native output from `dist/claude/`
 2. Generate `plugin.json` with metadata from `agentboot.config.json`
 3. Copy agents, skills, hooks, MCP config into plugin directory structure
 4. Generate settings.json with default agent and permissions
@@ -1661,27 +1671,23 @@ The plugin directory structure matches the Claude Code plugin specification exac
 ```
                   agentboot build
                         |
-           +------------+-------------+
-           |            |             |
-     +-----v----+  +---v------+  +---v----------+
-     | dist/    |  | dist/    |  | dist/        |
-     | claude-  |  | cross-   |  | plugin/      |
-     | code/    |  | platform/|  |              |
-     +-----+----+  +---+------+  +---+----------+
-           |            |             |
-     +-----+----+  +---+------+  +---+----------+
-     | Channel: |  | Channel: |  | Channel:     |
-     | Direct   |  | Direct   |  | Marketplace  |
-     | Sync     |  | Sync     |  |              |
-     |          |  |          |  | Private or   |
-     | Writes   |  | Writes   |  | public CC    |
-     | .claude/ |  | .github/ |  | marketplace  |
-     | to repo  |  | .cursor/ |  | repo on      |
-     |          |  | GEMINI   |  | GitHub       |
-     +-----+----+  +---+------+  +---+----------+
-           |            |             |
-           v            v             v
-     CC repos     Copilot/Cursor/   CC users
+     +------+------+------+------+------+
+     |      |      |      |      |      |
+     v      v      v      v      v      v
+  dist/  dist/  dist/  dist/  dist/  dist/
+  claude copilot cursor skill  gemini plugin
+     |      |      |      |      |      |
+     v      v      v      v      v      v
+  Channel: Direct Sync           Channel:
+  (each platform folder is       Marketplace
+   self-contained; sync reads
+   dist/{platform}/ and writes   Private or
+   to repos in platform-native   public CC
+   locations)                    marketplace
+     |      |      |      |      |      |
+     v      v      v      v      v      v
+  CC     Copilot Cursor  Any   Gemini CC users
+  repos  repos   repos   plat  repos
                   Gemini repos      install via
                                     /plugin install
 
@@ -1723,11 +1729,12 @@ domains/
     │
     │  For each repo in repos.json:
     │    1. Resolve scope (org + group + team)
-    │    2. Select output format (from repo.platform)
-    │    3. Merge dist/core/ + dist/groups/ + dist/teams/
-    │    4. Write files to repo.path + output.dir
-    │    5. Write .agentboot-manifest.json
-    │    6. (Optional) git commit + open PR
+    │    2. Select platform folder (from repo.platform → dist/{platform}/)
+    │    3. Merge dist/{platform}/core/ + groups/ + teams/ + public-repos/{repo}/
+    │    4. If repo.public: verify .gitignore includes .claude/, skip PR
+    │    5. Write files to repo.path in platform-native locations
+    │    6. Write .agentboot-manifest.json
+    │    7. (Private repos only) git commit + open PR
     ▼
                               .claude/
                                 agents/
@@ -2082,69 +2089,73 @@ Gemini CLI  ████████░░░░░░░░░░░░░░�
 | Agent memory                   | `memory: project`           | None                      |
 | Worktree isolation             | `isolation: worktree`       | None                      |
 
-### 9.4 Cross-Platform Output Generation
+### 9.4 Per-Platform Output Generation
+
+Each platform gets its own self-contained folder under `dist/`. Zip any one and it has
+everything needed for that platform, nothing it doesn't. Scope hierarchy (core → groups
+→ teams) is preserved within each platform folder. Duplication across platforms is
+intentional — generated files are cattle not pets. Diffing across platforms (e.g.,
+`diff dist/claude/ dist/copilot/`) shows exactly what's different between distributions.
 
 ```
 agentboot build --format all
 
 dist/
-├── claude-code/                  # Full CC-native output
-│   ├── .claude/
-│   │   ├── agents/
-│   │   ├── skills/
-│   │   ├── rules/
-│   │   ├── traits/
-│   │   ├── CLAUDE.md            # @imports
-│   │   ├── settings.json        # Hooks, permissions
-│   │   └── .mcp.json
-│   └── PERSONAS.md
+├── claude/                      # Self-contained Claude Code distribution
+│   ├── core/
+│   │   ├── agents/code-reviewer.md
+│   │   ├── skills/review-code.md
+│   │   ├── traits/critical-thinking.md
+│   │   ├── rules/baseline.md
+│   │   ├── CLAUDE.md (with @imports)
+│   │   └── settings.json (hooks)
+│   ├── groups/{group}/
+│   └── teams/{group}/{team}/
 │
-├── copilot/                      # Copilot-specific output
-│   ├── .github/
-│   │   ├── copilot-instructions.md
-│   │   ├── instructions/
-│   │   │   └── *.instructions.md  # Path-scoped (glob frontmatter)
-│   │   └── prompts/
-│   │       └── *.prompt.md        # Slash commands
-│   └── skills/
-│       └── {name}/SKILL.md        # agentskills.io
+├── copilot/                     # Self-contained Copilot distribution
+│   ├── core/
+│   │   ├── .github/copilot-instructions.md
+│   │   └── .github/prompts/review-code.md
+│   ├── groups/...
+│   └── teams/...
 │
-├── cursor/                       # Cursor-specific output
-│   ├── .cursor/
-│   │   └── rules/
-│   │       └── *.md
-│   ├── .cursorrules               # Legacy flattened instructions
-│   └── skills/
-│       └── {name}/SKILL.md
+├── cursor/                      # Self-contained Cursor distribution
+│   ├── core/
+│   │   └── .cursor/rules/*.md
+│   ├── groups/...
+│   └── teams/...
 │
-├── gemini/                       # Gemini CLI output
-│   ├── GEMINI.md
-│   └── skills/
-│       └── {name}/SKILL.md
+├── skill/                       # Cross-platform SKILL.md (agentskills.io)
+│   ├── core/
+│   │   ├── code-reviewer/SKILL.md (traits inlined)
+│   │   └── PERSONAS.md
+│   ├── groups/...
+│   └── teams/...
 │
-├── cross-platform/               # Universal (works everywhere)
-│   └── skills/
-│       └── {name}/SKILL.md        # Traits inlined
-│
-└── mcp/                          # MCP server config
-    └── .mcp.json                  # Works on all MCP-supporting platforms
+└── gemini/                      # Self-contained Gemini CLI distribution
+    ├── core/
+    │   └── GEMINI.md
+    ├── groups/...
+    └── teams/...
 ```
 
 ### 9.5 Per-Repo Platform Selection
 
-The sync engine uses each repo's `platform` field to select the correct output:
+The sync engine uses each repo's `platform` field to select which `dist/{platform}/`
+folder to read from:
 
 ```json
 // repos.json
 [
-  { "name": "org/api-service",   "platform": "claude-code" },
+  { "name": "org/api-service",   "platform": "claude" },
   { "name": "org/web-app",       "platform": "copilot" },
   { "name": "org/ml-pipeline",   "platform": "cursor" },
-  { "name": "org/data-service",  "platform": "cross-platform" }
+  { "name": "org/data-service",  "platform": "skill" },
+  { "name": "org/infra-tools",   "platform": "gemini" }
 ]
 ```
 
-When `platform` is not specified, the default is `claude-code`.
+When `platform` is not specified, the default is `claude`.
 
 ### 9.6 The MCP Bridge
 

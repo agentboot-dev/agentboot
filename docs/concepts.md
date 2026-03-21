@@ -172,8 +172,11 @@ This has three advantages over inlined output:
 3. **Transparency** — developers can read each trait file independently instead of
    wading through a monolithic system prompt.
 
-The build system should generate **both formats**: inlined SKILL.md for cross-platform
-distribution, and @import-based files for Claude Code repos.
+The build system generates **one self-contained folder per platform** under `dist/`.
+Each platform folder (e.g., `dist/claude/`, `dist/copilot/`, `dist/cursor/`, `dist/skill/`,
+`dist/gemini/`) contains everything needed for that platform and nothing it doesn't.
+The Claude Code folder uses @import-based files; the skill folder uses inlined SKILL.md
+for cross-platform distribution.
 
 ### Agent frontmatter: much richer than SKILL.md
 
@@ -326,27 +329,58 @@ AgentBoot's review personas should use this pattern for Claude Code output. The 
 is the invocation surface (`/review-code`), and it forks to the agent, which runs in
 isolation with its own tools and permissions.
 
-### Summary: two compilation targets
+### Summary: per-platform compilation targets
 
-AgentBoot's compile step should produce two distinct output sets:
+AgentBoot's compile step produces one self-contained folder per platform under `dist/`.
+Each folder has everything needed for that platform, nothing it doesn't. Scope hierarchy
+(core → groups → teams) is preserved within each platform folder. Duplication across
+platforms is intentional — generated files are cattle not pets. Diffing across platforms
+(e.g., `diff dist/claude/ dist/copilot/`) shows exactly what's different between
+distributions.
 
-**1. Cross-platform output** (current behavior):
-- `SKILL.md` per persona — agentskills.io format, traits inlined, standalone
-- `copilot-instructions.md` — Copilot format
-- Generic `CLAUDE.md` — flattened instructions
+```
+dist/
+├── claude/                      # Self-contained Claude Code distribution
+│   ├── core/
+│   │   ├── agents/code-reviewer.md
+│   │   ├── skills/review-code.md
+│   │   ├── traits/critical-thinking.md
+│   │   ├── rules/baseline.md
+│   │   ├── CLAUDE.md (with @imports)
+│   │   └── settings.json (hooks)
+│   ├── groups/{group}/
+│   └── teams/{group}/{team}/
+│
+├── copilot/                     # Self-contained Copilot distribution
+│   ├── core/
+│   │   ├── .github/copilot-instructions.md
+│   │   └── .github/prompts/review-code.md
+│   ├── groups/...
+│   └── teams/...
+│
+├── cursor/                      # Self-contained Cursor distribution
+│   ├── core/
+│   │   └── .cursor/rules/*.md
+│   ├── groups/...
+│   └── teams/...
+│
+├── skill/                       # Cross-platform SKILL.md (agentskills.io)
+│   ├── core/
+│   │   ├── code-reviewer/SKILL.md (traits inlined)
+│   │   └── PERSONAS.md
+│   ├── groups/...
+│   └── teams/...
+│
+└── gemini/                      # Self-contained Gemini CLI distribution
+    ├── core/
+    │   └── GEMINI.md
+    ├── groups/...
+    └── teams/...
+```
 
-**2. Claude Code-native output** (new):
-- `.claude/agents/{name}/CLAUDE.md` — full native frontmatter (model, tools, hooks, MCP)
-- `.claude/skills/{name}/SKILL.md` — with `context: fork` and `agent:` reference
-- `.claude/rules/{topic}.md` — with `paths:` frontmatter
-- `.claude/traits/{name}.md` — separate trait files for @import composition
-- `.claude/CLAUDE.md` — using `@imports` to compose traits and instructions
-- `.claude/settings.json` — hooks for compliance enforcement, audit logging
-- `.claude/.mcp.json` — MCP server configurations
-
-The Claude Code-native output uses every feature the platform provides. The cross-
-platform output uses the lowest common denominator. Organizations choose which format
-to deploy per repo based on their agent toolchain.
+The sync engine reads from `dist/{platform}/` and writes to target repos in
+platform-native locations. Organizations choose which platform to deploy per repo
+based on their agent toolchain.
 
 ---
 
@@ -384,18 +418,37 @@ govern AI agent behavior across dozens or hundreds of repos without heroic manua
 AgentBoot follows a hub-and-spoke distribution model:
 
 ```
-my-org-personas (hub)
-  └── scripts/sync.ts
+github.com/acme/personas (hub)
+  └── agentboot build && agentboot sync
         ├── repo-A/.claude/
         ├── repo-B/.claude/
         └── repo-N/.claude/
 ```
 
+### Personas hub naming convention
+
+The hub repo is the org's single source of truth for all agentic personas, traits,
+and instructions. The recommended naming convention:
+
+| Priority | Name | When to use |
+|---|---|---|
+| Default | `personas` | Use this. The GitHub org already namespaces it (`github.com/acme/personas`). |
+| Fallback | `agent-personas` | If `personas` is already taken (e.g., marketing/UX personas). |
+
+Avoid redundant prefixes — `github.com/acme/acme-personas` repeats the org name.
+Avoid tool-specific names — `acme-agentboot` implies a fork of the build tool.
+Use short names or abbreviations — "ACME Technologies LLC" is just `acme`.
+
+The `agentboot setup` wizard checks for existing `personas` repos and suggests
+`agent-personas` as the fallback when there's a collision.
+
+### Hub contents
+
 The hub is a single private repository that your organization owns, created from the
 AgentBoot template. It contains:
 - Your `agentboot.config.json`
-- Any org-specific persona extensions
-- The build and sync scripts inherited from AgentBoot
+- Any org-specific persona extensions (traits, gotchas, instructions)
+- `repos.json` listing the spoke repos that receive compiled output
 
 The spoke repos are your actual codebases. They receive compiled persona files, always-on
 instruction fragments, and path-scoped instructions via the sync script. They do not
@@ -411,6 +464,72 @@ This model has a deliberate property: the spokes are passive. They receive gover
 they do not produce it. Teams can add repo-level extensions through the hub's team
 configuration — they do not commit persona files directly to their own repos. This
 prevents drift and keeps the hub authoritative.
+
+### Public repo pattern
+
+For private repos, sync creates a PR and the compiled `.claude/` content is committed
+normally. But for **public repos**, committing org-specific personas would leak private
+content (org traits, internal gotchas, compliance rules) into a public repository.
+
+The public repo pattern solves this:
+
+1. **Compiled output is gitignored** in the public repo (`.claude/` in `.gitignore`)
+2. **Repo-specific enrichments live in the hub**, not in the target repo, under a
+   `public-repos/{repo}/` directory
+3. **Sync still writes locally** — developers get the files, they just aren't committed
+4. **New developers run `agentboot connect`** to pull content from the hub on first clone
+
+The prompts-as-code invariant holds: all content is in version control, reviewed, and
+audited — it's just in the hub's private git instead of the spoke's public git.
+
+**Hub structure with public repos:**
+```
+acme/personas/
+├── core/                          # org-wide (all repos)
+├── groups/
+├── teams/
+├── public-repos/                  # only if org has public repos
+│   ├── agentboot/
+│   │   ├── rules/no-runtime.md
+│   │   └── gotchas/jsonc-parser.md
+│   └── oss-library/
+│       └── gotchas/wasm-compat.md
+├── agentboot.config.json
+└── repos.json
+```
+
+**Scope merge order with public repos:**
+`core/` → `groups/{g}/` → `teams/{g}/{t}/` → `public-repos/{repo}/`
+
+The `public-repos/` scope is the most specific — it wins on filename conflict.
+
+**Developer experience is identical.** A developer inside a public repo runs the same
+commands as in a private repo:
+
+```bash
+agentboot add gotcha "JSONC parser doesn't handle block comments"
+```
+
+AgentBoot detects the repo is public (from `repos.json` or git remote), confirms the
+hub is available and writable, and routes the content to `public-repos/{repo}/` in the
+hub. The developer never changes directories or thinks about where the file goes.
+
+**If the hub is not available or not writable, the command errors:**
+```
+ERROR: Hub repo not found or not writable. Your gotcha cannot be persisted.
+       Run `agentboot connect` to link your hub, or check permissions.
+```
+
+This is a hard error, not a warning. Content never falls through to the public repo's
+git. There is no "write it anyway" option.
+
+**repos.json marks public repos explicitly:**
+```json
+[
+  { "path": "../api", "label": "API", "platform": "claude" },
+  { "path": "../agentboot", "label": "AgentBoot", "platform": "claude", "public": true }
+]
+```
 
 ---
 
@@ -897,6 +1016,26 @@ This is an enterprise add-on, not a core requirement. Most organizations start w
 Channel 2 only and add MDM enforcement when compliance requirements or team size
 demand it. AgentBoot documents the pattern so organizations that need it know exactly
 how to implement it.
+
+---
+
+## Proactive human action notifications
+
+When AgentBoot performs an action that requires human follow-up to take effect, it
+must tell the user what to do. The user should never have to guess why something
+isn't working after running a command. This is a core value-add.
+
+Examples:
+- After `dev-sync` or `sync` changes `.claude/` files: "Restart Claude Code to pick
+  up persona changes"
+- After `sync` changes files in target repos: list which repos were updated
+- After any config change affecting runtime behavior: tell the user what to
+  restart or reload
+- After `publish`: "Plugin published. Developers run `claude plugin install ...`"
+- After `uninstall`: "Removed N files. Restart Claude Code if a session is active."
+
+Every command that produces side effects ends with a "next steps" line if human
+action is needed. No silent state changes.
 
 ---
 

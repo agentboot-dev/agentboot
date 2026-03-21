@@ -9,8 +9,7 @@
  *   1. All personas in agentboot.config.json exist in core/personas/
  *   2. All traits referenced in persona configs exist in core/traits/
  *   3. All SKILL.md files have required frontmatter (name, description)
- *   4. PERSONAS.md is in sync with actual personas (if it exists in dist/)
- *   5. No obvious secrets or credentials in trait/persona definitions
+ *   4. No obvious secrets or credentials in trait/persona definitions
  *
  * Usage:
  *   npm run validate
@@ -23,6 +22,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import {
+  type AgentBootConfig,
+  type PersonaConfig,
+  resolveConfigPath,
+  loadConfig,
+  stripJsoncComments,
+} from "./lib/config.js";
+import {
+  parseFrontmatter,
+  DEFAULT_SECRET_PATTERNS,
+  scanForSecrets,
+} from "./lib/frontmatter.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -42,109 +53,9 @@ interface CheckResult {
   errors: string[];
 }
 
-interface AgentBootConfig {
-  org: string;
-  orgDisplayName?: string;
-  groups?: Record<string, GroupConfig>;
-  personas?: {
-    enabled?: string[];
-    extend?: string;
-    outputFormats?: string[];
-  };
-  traits?: {
-    enabled?: string[];
-  };
-  instructions?: {
-    enabled?: string[];
-  };
-  output?: {
-    distPath?: string;
-    provenanceHeaders?: boolean;
-  };
-  validation?: {
-    secretPatterns?: string[];
-    strictMode?: boolean;
-  };
-}
-
-interface GroupConfig {
-  label?: string;
-  teams?: string[];
-  traitsEnabled?: string[];
-}
-
-interface PersonaConfig {
-  name: string;
-  description: string;
-  invocation?: string;
-  traits?: string[];
-  groups?: Record<string, { traits?: string[] }>;
-  teams?: Record<string, { traits?: string[] }>;
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function resolveConfigPath(argv: string[]): string {
-  const idx = argv.indexOf("--config");
-  if (idx !== -1 && argv[idx + 1]) {
-    return path.resolve(argv[idx + 1]!);
-  }
-  return path.join(ROOT, "agentboot.config.json");
-}
-
-/**
- * Strip single-line // comments from a JSONC string, respecting string literals.
- * Handles // inside URLs and regex patterns that appear as JSON string values.
- */
-function stripJsoncComments(raw: string): string {
-  const lines = raw.split("\n");
-  const result: string[] = [];
-
-  for (const line of lines) {
-    let inString = false;
-    let i = 0;
-    let out = "";
-
-    while (i < line.length) {
-      const ch = line[i]!;
-
-      if (inString) {
-        out += ch;
-        if (ch === "\\" && i + 1 < line.length) {
-          i++;
-          out += line[i]!;
-        } else if (ch === '"') {
-          inString = false;
-        }
-      } else {
-        if (ch === '"') {
-          inString = true;
-          out += ch;
-        } else if (ch === "/" && line[i + 1] === "/") {
-          break;
-        } else {
-          out += ch;
-        }
-      }
-      i++;
-    }
-
-    result.push(out.trimEnd());
-  }
-
-  return result.join("\n");
-}
-
-function loadConfig(configPath: string): AgentBootConfig {
-  if (!fs.existsSync(configPath)) {
-    console.error(chalk.red(`✗ Config file not found: ${configPath}`));
-    process.exit(1);
-  }
-  const raw = fs.readFileSync(configPath, "utf-8");
-  return JSON.parse(stripJsoncComments(raw)) as AgentBootConfig;
-}
 
 function check(name: string): CheckResult {
   return { name, passed: true, warnings: [], errors: [] };
@@ -327,10 +238,6 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
 // Check 3: SKILL.md frontmatter
 // ---------------------------------------------------------------------------
 
-// Frontmatter is expected as the first lines of SKILL.md between --- delimiters.
-// Required fields: name, description.
-const FRONTMATTER_RE = /^---\n([\s\S]+?)\n---/;
-
 function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): CheckResult {
   const result = check("SKILL.md frontmatter — required fields present (name, description)");
 
@@ -357,26 +264,14 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
 
       skillsChecked++;
       const content = fs.readFileSync(skillPath, "utf-8");
-      const match = FRONTMATTER_RE.exec(content);
+      const fields = parseFrontmatter(content);
 
-      if (!match) {
+      if (!fields) {
         fail(
           result,
           `[${personaName}] SKILL.md has no frontmatter block (expected ---\\n...\\n--- at top of file)`
         );
         continue;
-      }
-
-      const frontmatter = match[1] ?? "";
-      const lines = frontmatter.split("\n");
-      const fields = new Map<string, string>();
-
-      for (const line of lines) {
-        const colonIdx = line.indexOf(":");
-        if (colonIdx === -1) continue;
-        const key = line.slice(0, colonIdx).trim();
-        const value = line.slice(colonIdx + 1).trim();
-        fields.set(key, value);
       }
 
       if (!fields.has("name") || fields.get("name") === "") {
@@ -396,78 +291,14 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
 }
 
 // ---------------------------------------------------------------------------
-// Check 4: PERSONAS.md sync check
+// Check 4: Secret / credential scan
 // ---------------------------------------------------------------------------
-
-function checkPersonasIndexSync(config: AgentBootConfig): CheckResult {
-  const result = check(
-    "PERSONAS.md sync — index reflects current enabled personas (if dist/ exists)"
-  );
-
-  const distPath = path.join(ROOT, config.output?.distPath ?? "dist");
-  const personasIndexPath = path.join(distPath, "core", "PERSONAS.md");
-
-  if (!fs.existsSync(personasIndexPath)) {
-    // Not an error — dist hasn't been built yet. Skip.
-    warn(result, "dist/core/PERSONAS.md not found — run `npm run build` to generate it");
-    return result;
-  }
-
-  const indexContent = fs.readFileSync(personasIndexPath, "utf-8");
-  const enabledPersonas = config.personas?.enabled ?? [];
-
-  for (const persona of enabledPersonas) {
-    if (!indexContent.includes(persona)) {
-      fail(
-        result,
-        `Persona "${persona}" is enabled but not listed in dist/core/PERSONAS.md. ` +
-          `Run \`npm run build\` to regenerate.`
-      );
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Check 5: Secret / credential scan
-// ---------------------------------------------------------------------------
-
-// Default patterns that should never appear in persona or trait definitions.
-const DEFAULT_SECRET_PATTERNS: RegExp[] = [
-  /(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]+['"]/i,
-  /(?:api[_-]?key|apikey)\s*[:=]\s*['"][^'"]+['"]/i,
-  /(?:secret|token)\s*[:=]\s*['"][^'"]+['"]/i,
-  /aws[_-]?(?:access[_-]?key|secret[_-]?key)/i,
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
-  /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}/,  // GitHub tokens
-  /xox[baprs]-[0-9A-Za-z-]+/,                   // Slack tokens
-];
 
 function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
   const configPatterns = (config.validation?.secretPatterns ?? []).map(
     (p) => new RegExp(p)
   );
   return [...DEFAULT_SECRET_PATTERNS, ...configPatterns];
-}
-
-function scanFileForSecrets(
-  filePath: string,
-  patterns: RegExp[]
-): Array<{ line: number; pattern: string }> {
-  const hits: Array<{ line: number; pattern: string }> = [];
-  const lines = fs.readFileSync(filePath, "utf-8").split("\n");
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    for (const pattern of patterns) {
-      if (pattern.test(line)) {
-        hits.push({ line: i + 1, pattern: pattern.source });
-      }
-    }
-  }
-
-  return hits;
 }
 
 function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult {
@@ -491,7 +322,8 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
     const files = walkDir(root, [".md", ".json"]);
 
     for (const filePath of files) {
-      const hits = scanFileForSecrets(filePath, patterns);
+      const content = fs.readFileSync(filePath, "utf-8");
+      const hits = scanForSecrets(content, patterns);
       for (const hit of hits) {
         fail(
           result,
@@ -528,7 +360,7 @@ function walkDir(dir: string, extensions: string[]): string[] {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv);
+  const configPath = resolveConfigPath(argv, ROOT);
   const forceStrict = argv.includes("--strict");
 
   console.log(chalk.bold("\nAgentBoot — validate"));
@@ -547,7 +379,6 @@ async function main(): Promise<void> {
     checkPersonaExistence(config, configDir),
     checkTraitReferences(config, configDir),
     checkSkillFrontmatter(config, configDir),
-    checkPersonasIndexSync(config),
     checkNoSecrets(config, configDir),
   ];
 

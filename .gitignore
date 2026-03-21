@@ -1,2 +1,13 @@
+node_modules/
+dist/
+
+# dev-sync output (local dogfooding, not committed)
+.claude/
+.github/copilot/
+.cursor/agentboot/
+.agentboot/skill/
+.gemini/agentboot/
+.github/copilot-instructions.md
+
 /docs/internal/
 /temp/
