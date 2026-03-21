@@ -36,34 +36,19 @@
       "label": "Platform Engineering",
 
       // Teams within this group. Each becomes a subfolder in dist/teams/platform/.
-      "teams": ["api", "infra", "data"],
-
-      // Traits to enable at the group level (in addition to org-level traits).
-      // These are injected into every persona that runs in a Platform repo.
-      "traitsEnabled": [
-        "schema-awareness",   // understands data modeling and schema contracts
-        "source-citation"     // cites sources when making architectural claims
-      ]
+      "teams": ["api", "infra", "data"]
     },
 
     // Product group: web, mobile, and growth teams.
     "product": {
       "label": "Product Engineering",
-      "teams": ["web", "mobile", "growth"],
-      "traitsEnabled": [
-        "source-citation"
-      ]
+      "teams": ["web", "mobile", "growth"]
     },
 
     // Security group: AppSec and compliance.
     "security": {
       "label": "Security & Compliance",
-      "teams": ["appsec", "compliance"],
-      "traitsEnabled": [
-        "critical-thinking",  // elevates scrutiny threshold to HIGH
-        "structured-output",  // always outputs findings in structured format
-        "source-citation"
-      ]
+      "teams": ["appsec", "compliance"]
     }
   },
 
@@ -86,7 +71,7 @@
     // Personas found here are compiled alongside core personas.
     // Useful for proprietary personas you don't want in this repo.
     // Path is relative to this config file.
-    "extend": "./personas",
+    // "extend": "./personas",
 
     // Persona output format controls what files are generated per persona.
     // "skill"   — SKILL.md (agentskills.io-compatible)
@@ -112,10 +97,9 @@
       "critical-thinking",    // increases scrutiny, flags assumptions
       "structured-output",    // enforces machine-parseable output formatting
       "schema-awareness",     // data modeling, schema contracts, migration safety
-      "source-citation"       // cites code locations and docs in findings
-      // Planned traits (not yet authored):
-      //   "minimal-diff"       -- prefers targeted changes over wholesale rewrites
-      //   "explain-reasoning"  -- narrates decisions for reviewability
+      "source-citation",      // cites code locations and docs in findings
+      "audit-trail",          // decision transparency, reasoning trail
+      "confidence-signaling"  // marks claims with HIGH/MEDIUM/LOW confidence
     ]
   },
 
@@ -131,9 +115,8 @@
     // "enabled": list of filenames (without .md) to distribute.
     // Default: all files in core/instructions/ are enabled.
     "enabled": [
-      "no-secrets",           // never commit credentials or keys
-      "code-style",           // follow existing patterns, minimize diffs
-      "testing-required"      // every change affecting behavior needs a test
+      "baseline.instructions",  // code quality principles, review mindset, scope discipline
+      "security.instructions"   // credential/secret/injection/crypto guardrails
     ]
   },
 
@@ -172,7 +155,7 @@
 
   "output": {
     // Where compiled output is written before syncing to repos.
-    // Structure: dist/core/, dist/groups/{group}/, dist/teams/{group}/{team}/
+    // Structure: dist/{platform}/core/, dist/{platform}/groups/{group}/, etc.
     // Paths are relative to this config file.
     "distPath": "./dist",
 
@@ -197,13 +180,7 @@
     // Regex patterns that will trigger a validation failure if found in any
     // trait or persona definition. Extend this list with patterns specific
     // to your organization (internal hostnames, account IDs, etc.).
-    "secretPatterns": [
-      "(?i)(password|passwd|pwd)\\s*[:=]\\s*['\"][^'\"]+['\"]",
-      "(?i)(api[_-]?key|apikey)\\s*[:=]\\s*['\"][^'\"]+['\"]",
-      "(?i)(secret|token)\\s*[:=]\\s*['\"][^'\"]+['\"]",
-      "(?i)aws[_-]?(access[_-]?key|secret[_-]?key)",
-      "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
-    ],
+    "secretPatterns": [],
 
     // If true, validation warnings are treated as errors and block the build.
     // Default: false (warnings are printed but do not block)

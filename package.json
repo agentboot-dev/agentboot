@@ -34,23 +34,20 @@
     "node": ">=18"
   },
   "type": "module",
-  "bin": {
-    "agentboot": "./dist/scripts/cli.js"
-  },
   "scripts": {
+    "clean": "rm -rf dist/",
+    "dev-sync": "tsx scripts/dev-sync.ts",
     "build": "tsx scripts/compile.ts",
     "validate": "tsx scripts/validate.ts",
     "sync": "tsx scripts/sync.ts",
-    "full-build": "npm run validate && npm run build && npm run sync",
+    "full-build": "npm run clean && npm run validate && npm run build && npm run dev-sync",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && echo 'No lint errors'"
   },
   "dependencies": {
-    "chalk": "^5.3.0",
-    "glob": "^11.0.0",
-    "zod": "^3.23.8"
+    "chalk": "^5.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

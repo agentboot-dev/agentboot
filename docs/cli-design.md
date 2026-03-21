@@ -192,17 +192,29 @@ $ agentboot setup
 ```
 
 **Standard Setup (platform team, CC-focused):**
-```
-  Setting up AgentBoot org personas repo.
 
-  ✓ Created agentboot.config.json
+The wizard detects the GitHub org from the git remote and suggests a repo name:
+- Default: `personas` (e.g., `github.com/acme/personas`)
+- Fallback: `agent-personas` (if `personas` is taken)
+- Avoids redundant prefixes (`acme-personas` in `github.com/acme/` is redundant)
+
+```
+$ agentboot setup
+  Detected GitHub org: acme
+
+  Repo name for your personas hub? [personas]
+  > personas
+
+  Setting up AgentBoot org personas repo (acme/personas).
+
+  ✓ Created agentboot.config.json (org: "acme")
   ✓ Created repos.json (empty — add your repos)
   ✓ Created core personas (4)
   ✓ Created core traits (6)
   ✓ Created baseline instructions
 
   Next steps:
-  1. Edit agentboot.config.json with your org name and team structure
+  1. Edit agentboot.config.json with your team structure
   2. Add repos to repos.json
   3. Run: agentboot build
   4. Run: agentboot sync
@@ -218,7 +230,7 @@ $ agentboot setup
   ✓ Generated dist/managed/managed-settings.json (for Jamf deployment)
   ✓ Generated dist/managed/managed-mcp.json
   ✓ Generated dist/managed/CLAUDE.md
-  ✓ Created marketplace template (acme-personas/)
+  ✓ Created marketplace template (personas/)
 
   Deploy managed settings:
     Upload dist/managed/ to Jamf → Configuration Profiles → Claude Code

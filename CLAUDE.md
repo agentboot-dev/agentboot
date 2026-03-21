@@ -9,7 +9,8 @@ npm install          # Install dependencies (required before anything else)
 npm run validate     # Run pre-build validation checks
 npm run build        # Compile traits into persona output files
 npm run sync         # Distribute compiled output to target repos
-npm run full-build   # validate → build → sync pipeline
+npm run clean        # Remove dist/
+npm run full-build   # clean → validate → build → dev-sync pipeline
 npm run test         # Run vitest
 npm run test:watch   # Watch mode testing
 npm run typecheck    # TypeScript type checking (tsc --noEmit)
@@ -23,34 +24,43 @@ AgentBoot is a **build tool** (not a runtime framework) that compiles agentic pe
 
 ### Core Concepts
 
-**Traits** (`core/traits/`) are reusable behavioral building blocks (e.g., `critical-thinking.md`, `source-citation.md`). They support weight configurations (HIGH/MEDIUM/LOW) and are composed at build time — never at runtime.
+**Traits** (`core/traits/`) are reusable behavioral building blocks (e.g., `critical-thinking.md`, `source-citation.md`). They are composed at build time — never at runtime. (Trait weight configurations are a Phase 2 feature.)
 
 **Personas** (`core/personas/{name}/`) each contain:
 - `SKILL.md` — the agent definition with `<!-- traits:start -->` / `<!-- traits:end -->` injection markers
-- `persona.config.json` — build metadata specifying which traits to inject and at what weight
+- `persona.config.json` — build metadata specifying which traits to inject
 
 **Always-on Instructions** (`core/instructions/`) are universal guardrails distributed to every repo regardless of persona configuration.
 
 ### Build Pipeline
 
-1. **`scripts/validate.ts`** — 5 pre-build checks: persona existence, trait references, SKILL.md frontmatter, PERSONAS.md sync, secret scanning
-2. **`scripts/compile.ts`** — loads `agentboot.config.json`, resolves trait references from `persona.config.json`, and emits **two compilation targets**:
-   - **Cross-platform output:** SKILL.md (agentskills.io, traits inlined) + copilot-instructions.md
-   - **Claude Code-native output:** `.claude/agents/` (full frontmatter: model, tools, hooks, MCP), `.claude/skills/` (with `context: fork`), `.claude/rules/` (with `paths:` frontmatter), `.claude/traits/` (separate files for `@import`), `.claude/CLAUDE.md` (using `@imports`), `.claude/settings.json` (hooks), `.claude/.mcp.json`
-3. **`scripts/sync.ts`** — reads `repos.json`, merges scopes (core → group → team, team wins on conflicts), writes the appropriate output format to each target repo
+1. **`scripts/validate.ts`** — 4 pre-build checks: persona existence, trait references, SKILL.md frontmatter, secret scanning
+2. **`scripts/compile.ts`** — loads `agentboot.config.json`, resolves trait references from `persona.config.json`, and emits **one self-contained folder per platform** under `dist/`:
+   - **`dist/skill/`** — cross-platform SKILL.md (agentskills.io format, traits inlined) + PERSONAS.md
+   - **`dist/claude/`** — CC-native skills (`.claude/skills/{name}/SKILL.md` with description frontmatter) + rules
+   - **`dist/copilot/`** — per-persona copilot-instructions.md fragments + instructions
+3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations
+4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
-The Claude Code-native output uses `@import` in CLAUDE.md to compose traits at load time (token-efficient, live-editable) rather than inlining. It generates full agent frontmatter (model, permissionMode, maxTurns, disallowedTools, mcpServers, hooks, memory, isolation) and settings.json hook entries for compliance enforcement.
+Each `dist/{platform}/` folder is self-contained. Scope hierarchy (core → groups → teams) is preserved within each platform folder. Duplication across platforms is intentional (generated files are cattle not pets). `full-build` runs dev-sync (not sync) to load compiled personas locally.
 
 ### Scope Hierarchy
 
-Four-level hierarchy: Org → Group → Team → Repo. More specific scopes layer on top of general ones. For optional behaviors, team overrides group overrides core. For mandatory behaviors, inheritance is top-down (org wins). Scope merging happens in `sync.ts`.
+Four-level hierarchy: Org → Group → Team → Repo. More specific scopes layer on top of general ones. For optional behaviors, team overrides group overrides core. For mandatory behaviors, inheritance is top-down (org wins). Scope merging happens in `sync.ts`. For public repos, repo-specific enrichments live in the hub under `public-repos/{repo}/` (not committed to the public repo) — see "Public repo pattern" in concepts.md.
 
 ### Output Structure
 
-Compiled artifacts go to `dist/`:
-- `dist/core/` — org-level personas
-- `dist/groups/{group}/` — group-level overrides
-- `dist/teams/{group}/{team}/` — team-level overrides
+Compiled artifacts go to `dist/`, organized by platform first, then by scope:
+- `dist/skill/` — cross-platform SKILL.md (agentskills.io format, traits inlined) + persona.config.json + PERSONAS.md
+- `dist/claude/` — CC-native skills + rules + PERSONAS.md
+- `dist/copilot/` — per-persona copilot-instructions.md fragments + instructions + PERSONAS.md
+
+Cursor and Gemini output are planned for Phase 2.
+
+Within each platform folder, scope hierarchy is preserved:
+- `dist/{platform}/core/` — org-level personas
+- `dist/{platform}/groups/{group}/` — group-level overrides
+- `dist/{platform}/teams/{group}/{team}/` — team-level overrides
 
 ### Distribution Model (Hub-and-Spoke)
 
@@ -64,7 +74,7 @@ Everything is driven by `agentboot.config.json` (JSONC format). Key sections: `o
 
 All design ideas are documented in `docs/concepts.md`:
 
-**Core (Tier 1):** agentskills.io format, build-time trait composition, scope hierarchy, hub-and-spoke distribution, multi-format output, composable traits with numeric weights (0.0–1.0).
+**Core (Tier 1):** agentskills.io format, build-time trait composition, scope hierarchy, hub-and-spoke distribution, multi-format output. (Trait weight system — HIGH/MEDIUM/LOW — is designed but not yet implemented.)
 
 **High Value (Tier 2):** per-persona extensions, gotchas rules (path-scoped battle-tested knowledge), compliance hooks (3-layer defense-in-depth), ADR governance (permanent exception lifecycle), behavioral tests, self-improvement reflections (A→B→C), reviewer selection config.
 
@@ -196,11 +206,15 @@ See `docs/concepts.md` for full design rationale.
 
 Total: ~9,900 lines of planning documentation with ~103 open questions to resolve.
 
-## Known Gaps (as of initial scaffold)
+## Known Gaps
 
-- `persona.config.json` is missing from all 4 personas — **blocks trait composition**
-- `repos.json` doesn't exist — needed by sync script (can start as `[]`)
-- `scripts/cli.ts` doesn't exist — blocks `agentboot setup` bin command
-- Traits `minimal-diff` and `explain-reasoning` are planned but not yet authored; references moved to comments in config files
-- No `dist/` directory yet — pipeline has never been run end-to-end
-- No test files written yet despite vitest being configured
+- `scripts/cli.ts` doesn't exist — blocks `agentboot setup` bin command (Phase 2)
+- Claude output generates skills only, not agents (no `model`, `permissionMode` frontmatter yet) (Phase 2)
+- No CLAUDE.md generation with `@import` directives (Phase 2)
+- No settings.json (hooks) or .mcp.json generation (Phase 2)
+- No cursor or gemini output formats (Phase 2)
+- Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not (Phase 2)
+- No runtime config schema validation (zod planned but not wired in) (Phase 2)
+- Extension path `./personas` in config warns but doesn't block
+- `repos.json` is empty — production sync path untested in real workflow (uses dev-sync for dogfooding)
+- This repo is the build tool, not a personas hub — orgs create a separate `personas` repo that uses AgentBoot as the build tool
