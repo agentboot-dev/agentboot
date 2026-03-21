@@ -25,7 +25,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import {
@@ -273,6 +273,9 @@ function syncRepo(
       // PERSONAS.md is handled separately (controlled by writePersonasIndex config).
       if (relPath === "PERSONAS.md") continue;
 
+      // These files need special placement at repo root, handled below.
+      if (relPath === ".mcp.json" || relPath === "CLAUDE.md") continue;
+
       const destPath = path.join(targetBase, relPath);
       const content = fs.readFileSync(file.absolutePath, "utf-8");
       const status = writeFile(destPath, content, dryRun);
@@ -297,6 +300,40 @@ function syncRepo(
       result.filesWritten.push(relDest);
     } else {
       result.filesSkipped.push(relDest);
+    }
+  }
+
+  // Write .mcp.json to repo root (CC reads it from project root, not .claude/).
+  if (platform !== "copilot") {
+    for (const [relPath, file] of merged) {
+      if (relPath === ".mcp.json") {
+        const destPath = path.join(repoPath, ".mcp.json");
+        const content = fs.readFileSync(file.absolutePath, "utf-8");
+        const status = writeFile(destPath, content, dryRun);
+        const relDest = path.relative(repoPath, destPath);
+        if (status === "written") {
+          result.filesWritten.push(relDest);
+        } else {
+          result.filesSkipped.push(relDest);
+        }
+      }
+    }
+  }
+
+  // Write CLAUDE.md to repo root (CC reads it from project root).
+  if (platform !== "copilot") {
+    for (const [relPath, file] of merged) {
+      if (relPath === "CLAUDE.md") {
+        const destPath = path.join(repoPath, "CLAUDE.md");
+        const content = fs.readFileSync(file.absolutePath, "utf-8");
+        const status = writeFile(destPath, content, dryRun);
+        const relDest = path.relative(repoPath, destPath);
+        if (status === "written") {
+          result.filesWritten.push(relDest);
+        } else {
+          result.filesSkipped.push(relDest);
+        }
+      }
     }
   }
 
@@ -325,7 +362,9 @@ function syncRepo(
     entry.team,
     dryRun
   );
-  result.filesWritten.push(manifestRelPath);
+  if (!dryRun) {
+    result.filesWritten.push(manifestRelPath);
+  }
 
   return result;
 }
@@ -423,35 +462,54 @@ function createSyncPR(
   const branchPrefix = prConfig?.branchPrefix ?? "agentboot/sync-";
   const titleTemplate = prConfig?.titleTemplate ?? "chore: AgentBoot persona sync";
 
+  // Validate inputs to prevent injection
+  if (!/^[a-zA-Z0-9/_.-]+$/.test(branchPrefix)) {
+    result.errors.push(`Invalid branchPrefix: "${branchPrefix}" — only alphanumeric, /, _, ., - allowed`);
+    return;
+  }
+
   // Check if there are actual changes
-  try {
-    execSync("git diff --quiet", { cwd: repoPath, stdio: "pipe" });
-    execSync("git diff --cached --quiet", { cwd: repoPath, stdio: "pipe" });
-    // Also check for untracked files in targetDir
-    const untrackedOutput = execSync(
-      `git ls-files --others --exclude-standard ${targetDir}`,
-      { cwd: repoPath, stdio: "pipe" }
-    ).toString().trim();
-    if (!untrackedOutput) {
-      // No changes at all
-      return;
-    }
-  } catch {
-    // git diff --quiet exits non-zero when there are changes — this is expected
+  const diffResult = spawnSync("git", ["diff", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+  const cachedResult = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+  const untrackedResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard", targetDir], { cwd: repoPath, stdio: "pipe" });
+  const untracked = untrackedResult.stdout?.toString().trim() ?? "";
+
+  if (diffResult.status === 0 && cachedResult.status === 0 && !untracked) {
+    return; // No changes
   }
 
   const dateSlug = new Date().toISOString().slice(0, 10);
-  const branch = `${branchPrefix}${dateSlug}`;
+  let branch = `${branchPrefix}${dateSlug}`;
+
+  // Handle branch-already-exists by appending counter
+  const branchCheck = spawnSync("git", ["rev-parse", "--verify", branch], { cwd: repoPath, stdio: "pipe" });
+  if (branchCheck.status === 0) {
+    let counter = 2;
+    while (spawnSync("git", ["rev-parse", "--verify", `${branch}-${counter}`], { cwd: repoPath, stdio: "pipe" }).status === 0) {
+      counter++;
+    }
+    branch = `${branch}-${counter}`;
+  }
 
   try {
-    execSync(`git checkout -b ${branch}`, { cwd: repoPath, stdio: "pipe" });
-    execSync(`git add ${targetDir} .github/`, { cwd: repoPath, stdio: "pipe" });
-    execSync(`git commit -m "${titleTemplate}"`, { cwd: repoPath, stdio: "pipe" });
-    execSync(`git push -u origin ${branch}`, { cwd: repoPath, stdio: "pipe" });
-    const prOutput = execSync(
-      `gh pr create --title "${titleTemplate}" --body "Automated AgentBoot sync"`,
-      { cwd: repoPath, stdio: "pipe" }
-    ).toString().trim();
+    const run = (cmd: string, args: string[]) => {
+      const r = spawnSync(cmd, args, { cwd: repoPath, stdio: "pipe" });
+      if (r.status !== 0) {
+        throw new Error(`${cmd} ${args.join(" ")} failed: ${r.stderr?.toString().trim()}`);
+      }
+      return r.stdout?.toString().trim() ?? "";
+    };
+
+    run("git", ["checkout", "-b", branch]);
+    // Only add paths that exist
+    const addPaths = [targetDir];
+    if (fs.existsSync(path.join(repoPath, ".github"))) {
+      addPaths.push(".github/");
+    }
+    run("git", ["add", ...addPaths]);
+    run("git", ["commit", "-m", titleTemplate]);
+    run("git", ["push", "-u", "origin", branch]);
+    const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", "Automated AgentBoot sync"]);
     result.prUrl = prOutput;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);

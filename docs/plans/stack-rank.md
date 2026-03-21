@@ -42,30 +42,30 @@ AgentBoot code.
 **Definition of done:** A second repo can install AgentBoot personas via CLI. Setup wizard,
 scaffolding, doctor, and uninstall all work. Basic prompt quality checks in place.
 
-| # | Feature | Category | Jira |
-|---|---------|----------|------|
-| 14 | Scope merging (org → group → team → repo) | [BUILD] | AB-16 |
-| 15 | CLI scaffolding (commander, entry point, --help) | [CLI] | AB-29 |
-| 16 | `agentboot build` command | [CLI] | AB-30 |
-| 17 | `agentboot validate` command | [CLI] | AB-31 |
-| 18 | `agentboot sync` command | [CLI] | AB-32 |
-| 19 | `agentboot setup` wizard (interactive) | [CLI] | AB-33 |
-| 20 | `agentboot add persona` scaffolding | [CLI] | AB-34 |
-| 21 | `agentboot add trait` scaffolding | [CLI] | AB-35 |
-| 22 | `agentboot doctor` | [CLI] | AB-36 |
-| 23 | `agentboot uninstall` | [CLI] | AB-45 |
-| 24 | .agentboot-manifest.json (track managed files) | [BUILD] | AB-24 |
-| 25 | CC-native output: .claude/skills/ with context:fork | [BUILD] | AB-18 |
-| 26 | Cross-platform output: standalone SKILL.md (traits inlined) | [BUILD] | AB-21 |
-| 27 | Cross-platform output: copilot-instructions.md | [BUILD] | AB-22 |
-| 28 | PERSONAS.md auto-generation | [BUILD] | AB-23 |
-| 29 | Gotchas rules concept (path-scoped knowledge) | [PERSONA] | AB-52 |
-| 30 | Prompt style guide in scaffolding templates | [PERSONA] | AB-55 |
-| 31 | `agentboot lint` (static prompt analysis) | [CLI] | AB-38 |
-| 32 | Token budget calculation at build time | [BUILD] | AB-25 |
-| 33 | `agentboot status` | [CLI] | AB-37 |
-| 34 | `agentboot config repo platform <name>` (switch repo platform) | [CLI] | — |
-| 35 | First-session welcome fragment in CLAUDE.md | [ONBOARD] | AB-77 |
+| # | Feature | Category | Jira | Status |
+|---|---------|----------|------|--------|
+| 14 | Scope merging (org → group → team → repo) | [BUILD] | AB-16 | ✓ Done |
+| 15 | CLI scaffolding (commander, entry point, --help) | [CLI] | AB-29 | |
+| 16 | `agentboot build` command | [CLI] | AB-30 | |
+| 17 | `agentboot validate` command | [CLI] | AB-31 | |
+| 18 | `agentboot sync` command | [CLI] | AB-32 | |
+| 19 | `agentboot setup` wizard (interactive) | [CLI] | AB-33 | |
+| 20 | `agentboot add persona` scaffolding | [CLI] | AB-34 | |
+| 21 | `agentboot add trait` scaffolding | [CLI] | AB-35 | |
+| 22 | `agentboot doctor` | [CLI] | AB-36 | |
+| 23 | `agentboot uninstall` | [CLI] | AB-45 | |
+| 24 | .agentboot-manifest.json (track managed files) | [BUILD] | AB-24 | ✓ Done |
+| 25 | CC-native output: .claude/skills/ with context:fork | [BUILD] | AB-18 | |
+| 26 | Cross-platform output: standalone SKILL.md (traits inlined) | [BUILD] | AB-21 | ✓ Done |
+| 27 | Cross-platform output: copilot-instructions.md | [BUILD] | AB-22 | ✓ Done |
+| 28 | PERSONAS.md auto-generation | [BUILD] | AB-23 | ✓ Done |
+| 29 | Gotchas rules concept (path-scoped knowledge) | [PERSONA] | AB-52 | |
+| 30 | Prompt style guide in scaffolding templates | [PERSONA] | AB-55 | |
+| 31 | `agentboot lint` (static prompt analysis) | [CLI] | AB-38 | |
+| 32 | Token budget calculation at build time | [BUILD] | AB-25 | ✓ Done |
+| 33 | `agentboot status` | [CLI] | AB-37 | |
+| 34 | `agentboot config repo platform <name>` (switch repo platform) | [CLI] | — | |
+| 35 | First-session welcome fragment in CLAUDE.md | [ONBOARD] | AB-77 | |
 
 ---
 
@@ -74,26 +74,26 @@ scaffolding, doctor, and uninstall all work. Basic prompt quality checks in plac
 **Definition of done:** Personas can be packaged as CC plugins and published. Privacy model
 and compliance hooks are in place. Sync creates PRs instead of direct writes.
 
-| # | Feature | Category | Jira |
-|---|---------|----------|------|
-| 35 | Plugin structure (plugin.json, agents/, skills/, hooks/) | [DELIVER] | AB-57 |
-| 36 | `agentboot export --format plugin` | [CLI] | AB-40 |
-| 37 | `agentboot publish` | [CLI] | AB-41 |
-| 38 | Private marketplace template (marketplace.json) | [DELIVER] | AB-58 |
-| 39 | Brew tap distribution | [CLI] | AB-39 |
-| 40 | CC-native output: .claude/settings.json (hooks) | [BUILD] | AB-26 |
-| 41 | Compliance hooks — input scanning (UserPromptSubmit) | [DELIVER] | AB-59 |
-| 42 | Compliance hooks — output scanning (Stop) | [DELIVER] | AB-60 |
-| 43 | Three-tier privacy model (config: rawPrompts false) | [PRIVACY] | AB-62 |
-| 44 | Telemetry config (includeDevId: false/hashed/email) | [PRIVACY] | AB-65 |
-| 45 | Audit trail hooks (SubagentStart/Stop, PostToolUse) | [PRIVACY] | AB-63 |
-| 46 | Telemetry NDJSON output (canonical schema) | [PRIVACY] | AB-64 |
-| 47 | Managed settings artifact generation | [DELIVER] | AB-61 |
-| 48 | Sync via GitHub API (PR creation mode) | [BUILD] | AB-28 |
-| 49 | CC-native output: .mcp.json generation | [BUILD] | AB-27 |
-| 50 | Per-persona extensions (extend without modify) | [PERSONA] | AB-54 |
-| 51 | Domain layer structure (agentboot.domain.json) | [PERSONA] | AB-53 |
-| 52 | `agentboot add gotcha/domain/hook` scaffolding | [CLI] | AB-46 |
+| # | Feature | Category | Jira | Status |
+|---|---------|----------|------|--------|
+| 35 | Plugin structure (plugin.json, agents/, skills/, hooks/) | [DELIVER] | AB-57 | |
+| 36 | `agentboot export --format plugin` | [CLI] | AB-40 | |
+| 37 | `agentboot publish` | [CLI] | AB-41 | |
+| 38 | Private marketplace template (marketplace.json) | [DELIVER] | AB-58 | |
+| 39 | Brew tap distribution | [CLI] | AB-39 | |
+| 40 | CC-native output: .claude/settings.json (hooks) | [BUILD] | AB-26 | ✓ Done |
+| 41 | Compliance hooks — input scanning (UserPromptSubmit) | [DELIVER] | AB-59 | |
+| 42 | Compliance hooks — output scanning (Stop) | [DELIVER] | AB-60 | |
+| 43 | Three-tier privacy model (config: rawPrompts false) | [PRIVACY] | AB-62 | |
+| 44 | Telemetry config (includeDevId: false/hashed/email) | [PRIVACY] | AB-65 | |
+| 45 | Audit trail hooks (SubagentStart/Stop, PostToolUse) | [PRIVACY] | AB-63 | |
+| 46 | Telemetry NDJSON output (canonical schema) | [PRIVACY] | AB-64 | |
+| 47 | Managed settings artifact generation | [DELIVER] | AB-61 | |
+| 48 | Sync via GitHub API (PR creation mode) | [BUILD] | AB-28 | ✓ Done |
+| 49 | CC-native output: .mcp.json generation | [BUILD] | AB-27 | ✓ Done |
+| 50 | Per-persona extensions (extend without modify) | [PERSONA] | AB-54 | |
+| 51 | Domain layer structure (agentboot.domain.json) | [PERSONA] | AB-53 | |
+| 52 | `agentboot add gotcha/domain/hook` scaffolding | [CLI] | AB-46 | |
 
 ---
 
