@@ -127,6 +127,43 @@ describe("compile script", () => {
     expect(content).toContain("Code Reviewer");
   });
 
+  // --- AB-17: agent output ---
+
+  it("claude: generates agents/{personaName}.md with agent frontmatter", () => {
+    const agentPath = path.join(ROOT, "dist", "claude", "core", "agents", "code-reviewer.md");
+    expect(fs.existsSync(agentPath), "dist/claude/core/agents/code-reviewer.md should exist").toBe(true);
+    const content = fs.readFileSync(agentPath, "utf-8");
+    expect(content).toMatch(/^---\nname: code-reviewer/);
+    expect(content).toContain("description: Senior code reviewer");
+    expect(content).toContain("model: inherit");
+    expect(content).toContain("permissionMode: default");
+  });
+
+  // --- AB-19: CLAUDE.md with @imports ---
+
+  it("claude: generates CLAUDE.md with @import directives", () => {
+    const claudeMdPath = path.join(ROOT, "dist", "claude", "core", "CLAUDE.md");
+    expect(fs.existsSync(claudeMdPath), "dist/claude/core/CLAUDE.md should exist").toBe(true);
+    const content = fs.readFileSync(claudeMdPath, "utf-8");
+    expect(content).toContain("@.claude/traits/critical-thinking.md");
+    expect(content).toContain("@.claude/rules/baseline.instructions.md");
+    expect(content).toContain("Auto-generated");
+  });
+
+  // --- AB-19: trait files ---
+
+  it("claude: generates trait files in traits/", () => {
+    const traitPath = path.join(ROOT, "dist", "claude", "core", "traits", "critical-thinking.md");
+    expect(fs.existsSync(traitPath), "dist/claude/core/traits/critical-thinking.md should exist").toBe(true);
+  });
+
+  // --- AB-25: token budget ---
+
+  it("compile output contains token estimates", () => {
+    const output = run("scripts/compile.ts");
+    expect(output).toContain("tokens");
+  });
+
   // --- copilot platform ---
 
   it("copilot: generates copilot-instructions.md (HTML comments stripped)", () => {
@@ -257,6 +294,24 @@ describe("sync script", () => {
 
   it("writes PERSONAS.md to target", () => {
     expect(fs.existsSync(path.join(syncTarget, ".claude", "PERSONAS.md"))).toBe(true);
+  });
+
+  // --- AB-24: manifest ---
+
+  it("writes .agentboot-manifest.json to target", () => {
+    const manifestPath = path.join(syncTarget, ".claude", ".agentboot-manifest.json");
+    expect(fs.existsSync(manifestPath), ".agentboot-manifest.json should exist").toBe(true);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    expect(manifest.managed_by).toBe("agentboot");
+    expect(manifest.version).toBeDefined();
+    expect(manifest.synced_at).toBeDefined();
+    expect(Array.isArray(manifest.files)).toBe(true);
+    expect(manifest.files.length).toBeGreaterThan(0);
+    // Each file should have a path and sha256 hash
+    for (const file of manifest.files) {
+      expect(file.path).toBeDefined();
+      expect(file.hash).toMatch(/^[a-f0-9]{64}$/);
+    }
   });
 
   it("skips unchanged files on re-sync", () => {

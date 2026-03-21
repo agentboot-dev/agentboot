@@ -341,6 +341,29 @@ function compilePersona(
     platforms.push("claude");
   }
 
+  if (outputFormats.includes("claude")) {
+    // AB-17: Write agent file to dist/claude/{scope}/agents/{personaName}.md
+    const agentDir = path.join(distPath, "claude", scopePath, "agents");
+    ensureDir(agentDir);
+
+    const model = personaConfig?.model ?? "inherit";
+    const permMode = personaConfig?.permissionMode ?? "default";
+    const agentDescription = personaConfig?.description ?? personaName;
+    const withoutFrontmatter = composed.replace(/^---\n(?:(?!---).*\n)*---\n*/, "");
+    const agentContent = [
+      "---",
+      `name: ${personaName}`,
+      `description: ${agentDescription}`,
+      `model: ${model}`,
+      `permissionMode: ${permMode}`,
+      "---",
+      "",
+      withoutFrontmatter,
+    ].join("\n");
+
+    fs.writeFileSync(path.join(agentDir, `${personaName}.md`), agentContent, "utf-8");
+  }
+
   if (outputFormats.includes("copilot")) {
     const outDir = path.join(distPath, "copilot", scopePath, personaName);
     ensureDir(outDir);
@@ -471,6 +494,100 @@ function generatePersonasIndex(
 }
 
 // ---------------------------------------------------------------------------
+// AB-19: CLAUDE.md with @import directives + trait files
+// ---------------------------------------------------------------------------
+
+function generateClaudeMd(
+  traitNames: string[],
+  traits: Map<string, TraitContent>,
+  instructionFileNames: string[],
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string
+): void {
+  const org = config.orgDisplayName ?? config.org;
+
+  // Write trait files to dist/claude/{scopePath}/traits/
+  const traitsDir = path.join(distPath, "claude", scopePath, "traits");
+  ensureDir(traitsDir);
+
+  for (const traitName of traitNames) {
+    const trait = traits.get(traitName);
+    if (trait) {
+      fs.writeFileSync(path.join(traitsDir, `${traitName}.md`), trait.content, "utf-8");
+    }
+  }
+
+  // Build CLAUDE.md with @import directives
+  const lines: string[] = [
+    `# AgentBoot — ${org}`,
+    "",
+    "<!-- Auto-generated. Do not edit manually. -->",
+    "",
+  ];
+
+  if (traitNames.length > 0) {
+    lines.push("## Traits", "");
+    for (const traitName of traitNames) {
+      if (traits.has(traitName)) {
+        lines.push(`@.claude/traits/${traitName}.md`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (instructionFileNames.length > 0) {
+    lines.push("## Instructions", "");
+    for (const instrName of instructionFileNames) {
+      lines.push(`@.claude/rules/${instrName}.md`);
+    }
+    lines.push("");
+  }
+
+  const claudeMdPath = path.join(distPath, "claude", scopePath, "CLAUDE.md");
+  fs.writeFileSync(claudeMdPath, lines.join("\n"), "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// AB-26: settings.json generation
+// ---------------------------------------------------------------------------
+
+function generateSettingsJson(
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string
+): void {
+  const hooks = config.claude?.hooks;
+  const permissions = config.claude?.permissions;
+
+  if (!hooks && !permissions) return;
+
+  const settings: Record<string, unknown> = {};
+  if (hooks) settings.hooks = hooks;
+  if (permissions) settings.permissions = permissions;
+
+  const settingsPath = path.join(distPath, "claude", scopePath, "settings.json");
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// AB-27: .mcp.json generation
+// ---------------------------------------------------------------------------
+
+function generateMcpJson(
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string
+): void {
+  const mcpServers = config.claude?.mcpServers;
+  if (!mcpServers) return;
+
+  const mcpJson = { mcpServers };
+  const mcpPath = path.join(distPath, "claude", scopePath, ".mcp.json");
+  fs.writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -592,6 +709,33 @@ function main(): void {
     outputFormats
   );
 
+  // AB-19/26/27: Claude-specific output (CLAUDE.md, settings.json, .mcp.json)
+  if (outputFormats.includes("claude")) {
+    // Collect instruction file names for @import directives
+    const instrFileNames: string[] = [];
+    if (fs.existsSync(coreInstructionsDir)) {
+      const instrFiles = fs.readdirSync(coreInstructionsDir).filter((f) => f.endsWith(".md"));
+      for (const file of instrFiles) {
+        const name = path.basename(file, ".md");
+        if (!config.instructions?.enabled || config.instructions.enabled.includes(name)) {
+          instrFileNames.push(file);
+        }
+      }
+    }
+
+    generateClaudeMd(
+      [...traits.keys()],
+      traits,
+      instrFileNames,
+      config,
+      distPath,
+      "core"
+    );
+
+    generateSettingsJson(config, distPath, "core");
+    generateMcpJson(config, distPath, "core");
+  }
+
   // ---------------------------------------------------------------------------
   // 2. Compile group-level overrides → dist/{platform}/groups/{group}/{persona}/
   // ---------------------------------------------------------------------------
@@ -688,6 +832,31 @@ function main(): void {
 
   generatePersonasIndex(allResults, config, corePersonasDir, distPath, "core", outputFormats);
   log(chalk.gray("\n  → PERSONAS.md written to each platform"));
+
+  // ---------------------------------------------------------------------------
+  // 5. AB-25: Token budget estimation
+  // ---------------------------------------------------------------------------
+
+  const tokenBudget = config.output?.tokenBudget?.perPersona ?? 8000;
+  log(chalk.cyan("\nToken estimates:"));
+
+  for (const result of allResults.filter((r) => r.platforms.length > 0)) {
+    const skillPath = path.join(distPath, "skill", "core", result.persona, "SKILL.md");
+    if (fs.existsSync(skillPath)) {
+      const content = fs.readFileSync(skillPath, "utf-8");
+      const estimatedTokens = Math.ceil(content.length / 4);
+
+      if (estimatedTokens > tokenBudget) {
+        log(
+          chalk.yellow(
+            `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
+          )
+        );
+      } else {
+        log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
+      }
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Summary

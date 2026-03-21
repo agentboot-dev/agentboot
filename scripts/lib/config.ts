@@ -28,12 +28,23 @@ export interface AgentBootConfig {
     distPath?: string;
     provenanceHeaders?: boolean;
     failOnDirtyDist?: boolean;
+    tokenBudget?: { perPersona?: number };
   };
   sync?: {
     repos?: string;
     targetDir?: string;
     writePersonasIndex?: boolean;
     dryRun?: boolean;
+    pr?: {
+      enabled?: boolean;
+      branchPrefix?: string;
+      titleTemplate?: string;
+    };
+  };
+  claude?: {
+    hooks?: Record<string, unknown>;
+    permissions?: { allow?: string[]; deny?: string[] };
+    mcpServers?: Record<string, unknown>;
   };
   validation?: {
     secretPatterns?: string[];
@@ -50,6 +61,8 @@ export interface PersonaConfig {
   name: string;
   description: string;
   invocation?: string;
+  model?: string;
+  permissionMode?: string;
   traits?: string[];
   groups?: Record<string, { traits?: string[] }>;
   teams?: Record<string, { traits?: string[] }>;
