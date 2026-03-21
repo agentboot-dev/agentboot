@@ -109,7 +109,7 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
   }
 
   const corePersonasDir = path.join(ROOT, "core", "personas");
-  const extendDir = config.personas?.extend
+  const extendDir = config.personas?.customDir
     ? path.resolve(configDir, config.personas.extend)
     : null;
 
@@ -137,7 +137,7 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
       fail(
         result,
         `Persona "${persona}" is enabled in config but no directory found. ` +
-          `Expected: core/personas/${persona}/ or ${config.personas?.extend ?? "(no extend path)"}/${persona}/`
+          `Expected: core/personas/${persona}/ or ${config.personas?.customDir ?? "(no extend path)"}/${persona}/`
       );
     }
   }
@@ -182,7 +182,7 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
 
   // Scan all persona.config.json files.
   const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
-  if (config.personas?.extend) {
+  if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.extend);
     if (fs.existsSync(ext)) personaRoots.push(ext);
   }
@@ -242,7 +242,7 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
   const result = check("SKILL.md frontmatter — required fields present (name, description)");
 
   const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
-  if (config.personas?.extend) {
+  if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.extend);
     if (fs.existsSync(ext)) personaRoots.push(ext);
   }
@@ -310,7 +310,7 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
     path.join(ROOT, "core", "personas"),
   ];
 
-  if (config.personas?.extend) {
+  if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.extend);
     if (fs.existsSync(ext)) scanRoots.push(ext);
   }

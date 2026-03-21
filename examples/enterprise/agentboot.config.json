@@ -7,8 +7,8 @@
   // This config represents a mid-to-large engineering organization
   // (~50-500 engineers) operating across three major groups.
 
-  "org": "acme-enterprise",
-  "orgDisplayName": "Acme Enterprise",
+  "org": "my-company",
+  "orgDisplayName": "My Company",
 
   // ---------------------------------------------------------------------------
   // Groups and teams
@@ -17,7 +17,7 @@
   "groups": {
     // Platform: shared infrastructure and foundational services.
     "platform": {
-      "label": "Platform Engineering",
+
       "teams": [
         "api",           // REST and GraphQL services
         "infra",         // Terraform, CI/CD, cloud infrastructure
@@ -34,7 +34,7 @@
 
     // Product: customer-facing applications.
     "product": {
-      "label": "Product Engineering",
+
       "teams": [
         "web",           // React/TypeScript frontends
         "mobile",        // iOS and Android (React Native)
@@ -49,7 +49,7 @@
 
     // Compliance: regulated domains requiring elevated scrutiny.
     "compliance": {
-      "label": "Compliance & Regulated Domains",
+
       "teams": [
         "hipaa",         // Healthcare data / PHI handling
         "pci",           // Payment card data flows
@@ -82,7 +82,7 @@
     // Org-specific personas that extend the core set.
     // These personas live in this repo under ./personas/ and are NOT
     // contributed back to the agentboot open-source project.
-    "extend": "./personas",
+    "customDir": "./personas",
 
     // Generate all output formats for maximum tool compatibility.
     "outputFormats": ["skill", "claude", "copilot"]

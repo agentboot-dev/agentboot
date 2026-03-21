@@ -2,164 +2,171 @@
 
 **Convention over configuration for agentic development teams.**
 
-AgentBoot is to Claude Code what Spring Boot is to Java: an opinionated, drop-in foundation that gives your whole engineering organization consistent AI agent behavior from day one — without building it yourself.
+AgentBoot is a build tool that compiles AI agent personas and distributes them across your organization's repositories. Define once, deploy everywhere. The Spring Boot of AI agent governance.
 
----
+## The Problem
 
-## The problem
-
-Every team that adopts Claude Code ends up doing the same thing: writing a `CLAUDE.md`, defining some rules, maybe adding a few agents. Most of these are mediocre. New teams don't know where to start. Teams in the same organization drift apart. Nobody shares anything.
-
-Meanwhile, the teams that invest in building it well — composable traits, reviewers, guardrails, a distribution pipeline — can't share their work because it's buried in proprietary context.
+Every team adopting AI coding tools (Claude Code, GitHub Copilot, Cursor) ends up writing its own CLAUDE.md, its own rules, its own agents — independently, inconsistently, and without governance. There's no standard for distributing agent behavior across repos, no mechanism for enforcing compliance, no way to measure value, and no path for sharing improvements.
 
 AgentBoot solves that. It's the shared foundation everyone was going to build anyway, done once, done well.
 
----
+## How It Works
+
+AgentBoot is a build tool, not a runtime framework. It produces files and exits.
+
+```
+Source files              Build step              Distributed artifacts
+(traits, personas,   →    agentboot build    →    (.claude/, copilot-
+ instructions, gotchas)                           instructions.md, skills)
+```
+
+1. **Define** personas from composable traits in version-controlled Markdown
+2. **Build** — validate, compile, and lint in one step
+3. **Sync** — distribute compiled artifacts to every registered repo
+
+The output works without AgentBoot installed. Any platform that reads Markdown can consume it.
 
 ## Quickstart
 
 ```bash
-# 1. Use this repo as a template
-gh repo create my-org-personas --template agentboot/agentboot --private
+# Install
+npm install agentboot
 
-# 2. Configure your org structure
-cp examples/minimal/agentboot.config.json ./agentboot.config.json
-# edit agentboot.config.json with your org name, groups, and teams
+# Set up a new personas repo
+npx agentboot setup
 
-# 3. Build and sync to your repos
-npm install && npm run build && npm run sync
+# Configure your org
+# Edit agentboot.config.json with your org name, groups, and teams
+
+# Build and sync
+npx agentboot build
+npx agentboot sync --dry-run   # preview first
+npx agentboot sync             # deploy to repos
 ```
 
 Your repos now have:
-- Always-on code review instructions
-- Security guardrails active on sensitive file paths
-- `/review-code`, `/review-security`, `/gen-tests` slash commands
+- Always-on code review and security instructions
+- `/review-code`, `/review-security`, `/gen-tests`, `/gen-testdata` slash commands
 - Agent skills deployable in Claude Code agent mode
+- Platform-native output for Claude Code, GitHub Copilot, and agentskills.io
 
----
-
-## What you get
+## What You Get
 
 ### Composable traits
-Reusable behavioral building blocks. Each persona is assembled from traits — change a trait once and every persona that uses it updates automatically.
+
+Reusable behavioral building blocks. Change a trait once and every persona that uses it updates on the next build.
 
 ```
-Security Reviewer  =  critical-thinking (HIGH)
-                    + structured-output
-                    + source-citation
-
-Test Generator     =  schema-awareness
-                    + structured-output
-                    + source-citation
+Security Reviewer  =  critical-thinking + structured-output + source-citation
+Test Generator     =  schema-awareness + structured-output + source-citation
 ```
 
-### V1 personas, ready to deploy
+### V1 Personas
 
 | Persona | Invocation | What it does |
 |---|---|---|
-| Code Reviewer | `/review-code` or auto on PR | Reviews for your team's standards |
-| Security Reviewer | `/review-security` | Flags vulnerabilities, exposed secrets, risky patterns |
-| Test Generator | `/gen-tests` | Writes unit and integration tests from function signatures |
+| Code Reviewer | `/review-code` | Finds real bugs, not style nits |
+| Security Reviewer | `/review-security` | Flags vulnerabilities, secrets, risky patterns |
+| Test Generator | `/gen-tests` | Writes tests, audits coverage, finds gaps |
 | Test Data Expert | `/gen-testdata` | Generates realistic synthetic test data |
 
 ### Scope hierarchy
-Define your org once. AgentBoot handles the layers.
+
+Define your org structure once. AgentBoot handles the layers.
 
 ```
-Your org
+Org
   └── Group (e.g. Platform)
-        ├── Team (e.g. API)       → gets Platform + API personas
-        └── Team (e.g. Frontend)  → gets Platform + Frontend personas
+        ├── Team (e.g. API)       → gets Org + Platform + API personas
+        └── Team (e.g. Frontend)  → gets Org + Platform + Frontend personas
 ```
 
-Studio-wide rules propagate down. Teams extend without overriding what they shouldn't.
+Org-wide rules propagate down. Teams extend without overriding what they shouldn't.
 
-### A distribution pipeline
-One PR to `my-org-personas` → automatically synced to every registered repo. Team Champions don't pull manually. Governance is automatic.
+### Multi-platform output
 
----
+One build produces output for multiple platforms:
 
-## Convention over configuration
+| Platform | Output | Location |
+|---|---|---|
+| Claude Code | Agents, skills, rules, traits, CLAUDE.md | `.claude/` |
+| GitHub Copilot | copilot-instructions.md fragments | `.github/` |
+| agentskills.io | Cross-platform SKILL.md | Configurable |
 
-AgentBoot ships with sensible defaults for everything. You configure what's different about your organization, not everything from scratch.
+### Build once, deploy everywhere
+
+Your personas repo is the source. Target repos receive the compiled output. One PR to the personas repo rebuilds and syncs to every registered repo.
+
+AgentBoot only writes to `.claude/` and `.github/copilot-instructions.md` — it never touches application code, configuration, or dependencies. Sync PRs are safe to auto-merge.
+
+## Configuration
+
+Everything is driven by `agentboot.config.json`:
 
 ```jsonc
-// agentboot.config.json — the only file you need to edit to start
 {
-  "org": "acme-corp",
+  "org": "your-org",
   "groups": {
-    "platform": {
-      "teams": ["api", "infra", "data"]
-    },
-    "product": {
-      "teams": ["mobile", "web", "growth"]
-    }
+    "platform": { "teams": ["api", "infra"] },
+    "product": { "teams": ["mobile", "web"] }
   },
   "personas": {
     "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
-    "extend": "./personas"        // optional: your org-specific additions
-  },
-  "sync": {
-    "repos": ["./repos.json"]    // list of target repos to sync to
+    "customDir": "./personas"  // optional: org-specific additions
   }
 }
 ```
 
-That's it. Run `npm run build && npm run sync` and your whole organization has consistent AI agent governance.
+## CLI Commands
 
----
+```bash
+agentboot build          # Compile personas from traits
+agentboot validate       # Pre-build validation checks
+agentboot sync           # Distribute to target repos
+agentboot full-build     # clean → validate → build → sync pipeline
+agentboot setup          # Scaffold a new personas repo
+agentboot add <type>     # Create a new persona, trait, or gotcha
+agentboot doctor         # Diagnose configuration issues
+agentboot status         # Show deployment status
+agentboot lint           # Static analysis for prompt quality
+agentboot uninstall      # Remove AgentBoot from a repo
+agentboot config         # View configuration
+```
 
-## Why Claude Code
+Run `agentboot --help` for full usage.
 
-AgentBoot is built on Claude Code. If you're evaluating AI development tools and wondering whether the investment is worth it — the answer is yes, and here's why: Claude Code is the only tool with the extensibility model (hooks, agents, MCP, scoped instructions) that makes enterprise governance like AgentBoot possible.
+## Extending
 
-Other tools give you autocomplete. Claude Code gives you a platform. AgentBoot is what you build on that platform.
+AgentBoot ships generic. Your industry has specific requirements. Add domain-specific personas, traits, and gotchas without modifying core:
 
----
+- **Custom personas** — add to `personas.customDir` path in config
+- **Gotchas** — path-scoped knowledge rules in `core/gotchas/`
+- **Domain layers** — compliance overlays for healthcare, fintech, defense
 
-## Extend for your domain
-
-AgentBoot ships generic. Your industry has specific requirements. The `domains/` directory shows you how to add a compliance layer for your context — healthcare, finance, defense, or any regulated environment — without modifying AgentBoot's core.
-
-See [`docs/extending.md`](docs/extending.md) for the pattern.
-
----
-
-## Plays well with others
-
-AgentBoot personas use the [agentskills.io](https://agentskills.io) open standard. Skills you build with AgentBoot work in GitHub Copilot, Cursor, Gemini CLI, and any other agentskills.io-compatible tool. The always-on instructions work anywhere that reads `CLAUDE.md` or `.github/copilot-instructions.md`.
-
-Lock-in is optional. Staying because it works is the goal.
-
----
-
-## Project status
+## Project Status
 
 | Component | Status |
 |---|---|
-| Core traits (6) | ✅ Stable |
-| V1 personas (4) | ✅ Stable |
-| Scope hierarchy + sync | ✅ Stable |
-| CI/CD pipeline | ✅ Stable |
-| Compliance domain template | 🚧 Beta |
-| MCP knowledge base integration | 📋 Planned |
-| Self-improvement loop | 📋 Planned |
-
----
+| Core traits (6) | Stable |
+| V1 personas (4) | Stable |
+| Build pipeline (validate, compile, sync) | Stable |
+| CLI (12 commands) | Stable |
+| Scope hierarchy + distribution | Stable |
+| Lint + token budgets | Stable |
+| Compliance domain template | Planned |
+| MCP knowledge base | Planned |
+| Cursor / Gemini output | Planned |
 
 ## Contributing
 
-AgentBoot grows through community contributions — new personas, new domain layers, improved traits, better tooling.
+AgentBoot grows through community contributions — new personas, domain layers, improved traits, better tooling.
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
-File issues at [github.com/agentboot/agentboot/issues](https://github.com/agentboot/agentboot/issues).
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Apache 2.0 — use it, fork it, build on it.
+Apache 2.0 — see [LICENSE](LICENSE).
 
 ---
 
-*Built by [Mike Saavedra](https://github.com/saavyone). Inspired by a gap nobody had filled.*
+*Built by [Mike Saavedra](https://github.com/saavyone).*
