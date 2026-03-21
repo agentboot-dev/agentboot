@@ -141,7 +141,7 @@ describe("compile script", () => {
       expect(fs.existsSync(agentPath), `${agent.file} should exist`).toBe(true);
       const content = fs.readFileSync(agentPath, "utf-8");
       expect(content).toMatch(/^---\nname:/);
-      expect(content).toContain(`name: ${agent.name}`);
+      expect(content).toContain(`name: "${agent.name}"`);
       // model and permissionMode are only included when explicitly set in persona config
       expect(content).not.toContain("model: inherit");
       expect(content).not.toContain("permissionMode: default");
@@ -160,9 +160,9 @@ describe("compile script", () => {
     for (const trait of ["critical-thinking", "structured-output", "source-citation", "confidence-signaling", "audit-trail", "schema-awareness"]) {
       expect(content).toContain(`@.claude/traits/${trait}.md`);
     }
-    // Both instructions
-    expect(content).toContain("@.claude/rules/baseline.instructions.md");
-    expect(content).toContain("@.claude/rules/security.instructions.md");
+    // Both instructions (exact match — no double .md.md extension)
+    expect(content).toMatch(/@\.claude\/rules\/baseline\.instructions\.md$/m);
+    expect(content).toMatch(/@\.claude\/rules\/security\.instructions\.md$/m);
     expect(content).toContain("Auto-generated");
   });
 
@@ -263,10 +263,11 @@ describe("compile script", () => {
 
   it("platforms are self-contained and each has all personas", () => {
     // skill and copilot use persona directories
+    const nonPersonaDirs = new Set(["instructions", "gotchas"]);
     const skillPersonas = fs.readdirSync(path.join(ROOT, "dist", "skill", "core"))
-      .filter(f => !f.endsWith(".md") && f !== "instructions").sort();
+      .filter(f => !f.endsWith(".md") && !nonPersonaDirs.has(f)).sort();
     const copilotPersonas = fs.readdirSync(path.join(ROOT, "dist", "copilot", "core"))
-      .filter(f => !f.endsWith(".md") && f !== "instructions").sort();
+      .filter(f => !f.endsWith(".md") && !nonPersonaDirs.has(f)).sort();
     expect(skillPersonas).toEqual(copilotPersonas);
 
     // claude uses skills/ directory with subdirectories
@@ -460,7 +461,7 @@ describe("sync script", () => {
 
   // --- AB-28: PR mode ---
 
-  it("PR mode validates branch prefix", () => {
+  it("PR mode handles missing remote gracefully", () => {
     const prTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-pr-"));
     // Initialize a git repo so PR mode has something to work with
     execSync("git init", { cwd: prTarget, stdio: "pipe" });
@@ -472,13 +473,13 @@ describe("sync script", () => {
     );
 
     try {
-      // PR mode with default branch prefix — sync should complete without crash
-      // PR creation will fail due to no remote, but errors are handled gracefully
-      const output = run("scripts/sync.ts -- --mode pr");
-      // Should complete without crash (PR will fail due to no remote, but sync succeeds)
-      expect(output).toContain("Synced 1 repo");
-    } catch {
-      // Expected — PR creation will fail without remote, but sync should still run
+      // PR creation will fail (no remote) — sync reports the error but still completes.
+      // execSync throws on non-zero exit, so we catch and verify the output.
+      run("scripts/sync.ts -- --mode pr");
+    } catch (err: unknown) {
+      // Verify the error is from PR creation (expected), not a process crash
+      const output = (err as { stdout?: Buffer })?.stdout?.toString() ?? "";
+      expect(output).toContain("PR creation failed");
     } finally {
       fs.writeFileSync(
         path.join(ROOT, "repos.json"),

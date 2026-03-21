@@ -7,10 +7,10 @@
   "homepage": "https://agentboot.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/saavyone/agentboot.git"
+    "url": "https://github.com/agentboot-dev/agentboot.git"
   },
   "bugs": {
-    "url": "https://github.com/agentboot/agentboot/issues"
+    "url": "https://github.com/agentboot-dev/agentboot/issues"
   },
   "keywords": [
     "claude-code",
@@ -34,7 +34,11 @@
     "node": ">=18"
   },
   "type": "module",
+  "bin": {
+    "agentboot": "./bin/agentboot.js"
+  },
   "scripts": {
+    "cli": "tsx scripts/cli.ts",
     "clean": "rm -rf dist/",
     "dev-sync": "tsx scripts/dev-sync.ts",
     "build": "tsx scripts/compile.ts",
@@ -47,11 +51,12 @@
     "lint": "tsc --noEmit && echo 'No lint errors'"
   },
   "dependencies": {
-    "chalk": "^5.3.0"
+    "chalk": "^5.3.0",
+    "commander": "^14.0.3",
+    "tsx": "^4.16.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.16.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

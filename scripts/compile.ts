@@ -236,15 +236,29 @@ function buildClaudeOutput(
   const invocation = personaConfig?.invocation ?? `/${personaName}`;
   const skillName = invocation.replace(/^\//, "");
   const description = personaConfig?.description ?? personaName;
+  // Escape newlines and quotes in description to prevent YAML injection
+  const safeDescription = description.replace(/\n/g, " ").replace(/"/g, '\\"');
 
-  // CC skill frontmatter: just description (CC parses this)
-  const frontmatter = `---\ndescription: ${description}\n---\n\n`;
+  // AB-18: CC skill frontmatter with context:fork → delegates to agent
+  const frontmatterLines: string[] = [
+    "---",
+    `description: "${safeDescription}"`,
+    "context: fork",
+    `agent: "${personaName}"`,
+  ];
+
+  // Optional: include model override if specified
+  if (personaConfig?.model) {
+    frontmatterLines.push(`model: "${personaConfig.model}"`);
+  }
+
+  frontmatterLines.push("---", "");
 
   // Strip any existing frontmatter from composed content (it's SKILL.md format)
-  const withoutFrontmatter = composedContent.replace(/^---\n(?:(?!---).*\n)*---\n*/, "");
+  const withoutFrontmatter = composedContent.replace(/^---\n[\s\S]*?\n---\n*/, "");
 
   return {
-    content: `${frontmatter}${withoutFrontmatter}`,
+    content: `${frontmatterLines.join("\n")}\n${withoutFrontmatter}`,
     skillName,
   };
 }
@@ -349,16 +363,17 @@ function compilePersona(
     const model = personaConfig?.model;  // undefined = omit from frontmatter
     const permMode = personaConfig?.permissionMode;
     const agentDescription = personaConfig?.description ?? personaName;
-    // Escape newlines and quotes in description to prevent YAML injection
+    // Escape newlines and quotes in description to prevent YAML injection.
+    // JS '\\"' produces the string \" which is the correct YAML double-quote escape.
     const safeDescription = agentDescription.replace(/\n/g, " ").replace(/"/g, '\\"');
-    const withoutFrontmatter = composed.replace(/^---\n(?:(?!---).*\n)*---\n*/, "");
+    const withoutFrontmatter = composed.replace(/^---\n[\s\S]*?\n---\n*/, "");
     const agentFrontmatter: string[] = [
       "---",
-      `name: ${personaName}`,
-      `description: ${safeDescription}`,
+      `name: "${personaName}"`,
+      `description: "${safeDescription}"`,
     ];
-    if (model) agentFrontmatter.push(`model: ${model}`);
-    if (permMode && permMode !== "default") agentFrontmatter.push(`permissionMode: ${permMode}`);
+    if (model) agentFrontmatter.push(`model: "${model}"`);
+    if (permMode && permMode !== "default") agentFrontmatter.push(`permissionMode: "${permMode}"`);
     agentFrontmatter.push("---");
     const agentContent = [...agentFrontmatter, "", withoutFrontmatter].join("\n");
 
@@ -443,6 +458,52 @@ function compileInstructions(
 }
 
 // ---------------------------------------------------------------------------
+// AB-52: Gotchas compilation — path-scoped knowledge rules
+// ---------------------------------------------------------------------------
+
+function compileGotchas(
+  gotchasDir: string,
+  distPath: string,
+  scopePath: string,
+  config: AgentBootConfig,
+  outputFormats: string[]
+): void {
+  if (!fs.existsSync(gotchasDir)) {
+    return;
+  }
+
+  const gotchaFiles = fs.readdirSync(gotchasDir).filter(
+    (f) => f.endsWith(".md") && f !== "README.md"
+  );
+
+  if (gotchaFiles.length === 0) return;
+
+  log(chalk.gray(`  Gotchas: ${gotchaFiles.length} rule(s)`));
+
+  for (const file of gotchaFiles) {
+    const content = fs.readFileSync(path.join(gotchasDir, file), "utf-8");
+    const provenanceEnabled = config.output?.provenanceHeaders !== false;
+    const header = provenanceEnabled
+      ? provenanceHeader(path.join(gotchasDir, file), config)
+      : "";
+
+    // Write to claude rules (gotchas are path-scoped rules)
+    if (outputFormats.includes("claude")) {
+      const rulesDir = path.join(distPath, "claude", scopePath, "rules");
+      ensureDir(rulesDir);
+      fs.writeFileSync(path.join(rulesDir, file), `${header}${content}`, "utf-8");
+    }
+
+    // Write to skill output as well
+    if (outputFormats.includes("skill")) {
+      const gotchaOutDir = path.join(distPath, "skill", scopePath, "gotchas");
+      ensureDir(gotchaOutDir);
+      fs.writeFileSync(path.join(gotchaOutDir, file), `${header}${content}`, "utf-8");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PERSONAS.md index generation — writes to each platform
 // ---------------------------------------------------------------------------
 
@@ -504,7 +565,8 @@ function generateClaudeMd(
   instructionFileNames: string[],
   config: AgentBootConfig,
   distPath: string,
-  scopePath: string
+  scopePath: string,
+  personaConfigs?: Map<string, PersonaConfig>
 ): void {
   const org = config.orgDisplayName ?? config.org;
 
@@ -541,6 +603,16 @@ function generateClaudeMd(
     lines.push("## Instructions", "");
     for (const instrName of instructionFileNames) {
       lines.push(`@.claude/rules/${instrName}.md`);
+    }
+    lines.push("");
+  }
+
+  // AB-77: First-session welcome fragment
+  if (personaConfigs && personaConfigs.size > 0) {
+    lines.push("## Available Personas", "");
+    for (const [, pc] of personaConfigs) {
+      const cmd = pc.invocation ?? `/${pc.name}`;
+      lines.push(`- \`${cmd}\` — ${pc.description}`);
     }
     lines.push("");
   }
@@ -649,7 +721,13 @@ function main(): void {
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+  const validFormats = ["skill", "claude", "copilot"];
+  const outputFormats = config.personas?.outputFormats ?? validFormats;
+  const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
+  if (unknownFormats.length > 0) {
+    console.error(chalk.red(`Unknown output format(s): ${unknownFormats.join(", ")}. Valid: ${validFormats.join(", ")}`));
+    process.exit(1);
+  }
 
   // Load traits.
   const enabledTraits = config.traits?.enabled;
@@ -676,7 +754,7 @@ function main(): void {
     }
   }
 
-  if (config.personas?.extend) {
+  if (config.personas?.customDir) {
     const extendDir = path.resolve(configDir, config.personas.extend);
     if (fs.existsSync(extendDir)) {
       for (const entry of fs.readdirSync(extendDir)) {
@@ -735,6 +813,10 @@ function main(): void {
     outputFormats
   );
 
+  // AB-52: Compile gotchas (path-scoped knowledge rules)
+  const coreGotchasDir = path.join(coreDir, "gotchas");
+  compileGotchas(coreGotchasDir, distPath, "core", config, outputFormats);
+
   // AB-19/26/27: Claude-specific output (CLAUDE.md, settings.json, .mcp.json)
   if (outputFormats.includes("claude")) {
     // Collect instruction file names for @import directives
@@ -744,9 +826,17 @@ function main(): void {
       for (const file of instrFiles) {
         const name = path.basename(file, ".md");
         if (!config.instructions?.enabled || config.instructions.enabled.includes(name)) {
-          instrFileNames.push(file);
+          instrFileNames.push(name);
         }
       }
+    }
+
+    // Collect persona configs for welcome fragment (AB-77)
+    const personaConfigs = new Map<string, PersonaConfig>();
+    for (const [personaName, personaDir] of personaDirs) {
+      if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+      const pc = loadPersonaConfig(personaDir);
+      if (pc) personaConfigs.set(personaName, pc);
     }
 
     generateClaudeMd(
@@ -755,7 +845,8 @@ function main(): void {
       instrFileNames,
       config,
       distPath,
-      "core"
+      "core",
+      personaConfigs
     );
 
     generateSettingsJson(config, distPath, "core");
@@ -863,7 +954,7 @@ function main(): void {
   // 5. AB-25: Token budget estimation
   // ---------------------------------------------------------------------------
 
-  const tokenBudget = config.output?.tokenBudget?.perPersona ?? 8000;
+  const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
   log(chalk.cyan("\nToken estimates:"));
 
   for (const result of allResults.filter((r) => r.platforms.length > 0)) {

@@ -13,10 +13,10 @@
 
   // The name of your organization. Used in provenance headers written to every
   // output file, and in PERSONAS.md. Use a slug-friendly value (lowercase, no spaces).
-  "org": "acme-corp",
+  "org": "your-org",
 
   // Human-readable display name. Used in generated docs and headers.
-  "orgDisplayName": "Acme Corp",
+  "orgDisplayName": "Your Organization",
 
   // ---------------------------------------------------------------------------
   // Scope hierarchy: org → group → team
@@ -32,22 +32,17 @@
   "groups": {
     // Platform group: infrastructure, API, and data engineering teams.
     "platform": {
-      // Human-readable label. Optional — defaults to the key.
-      "label": "Platform Engineering",
-
       // Teams within this group. Each becomes a subfolder in dist/teams/platform/.
       "teams": ["api", "infra", "data"]
     },
 
     // Product group: web, mobile, and growth teams.
     "product": {
-      "label": "Product Engineering",
       "teams": ["web", "mobile", "growth"]
     },
 
     // Security group: AppSec and compliance.
     "security": {
-      "label": "Security & Compliance",
       "teams": ["appsec", "compliance"]
     }
   },
@@ -71,7 +66,7 @@
     // Personas found here are compiled alongside core personas.
     // Useful for proprietary personas you don't want in this repo.
     // Path is relative to this config file.
-    // "extend": "./personas",
+    // "customDir": "./personas",
 
     // Persona output format controls what files are generated per persona.
     // "skill"   — SKILL.md (agentskills.io-compatible)
@@ -148,7 +143,8 @@
     // Override at runtime with: npm run sync -- --dry-run
     "dryRun": false
 
-    // PR mode: create a PR instead of writing directly.
+    // PR mode (optional): create a PR instead of writing directly.
+    // Uncomment to enable. Requires `gh` CLI installed.
     // "pr": {
     //   "enabled": false,
     //   "branchPrefix": "agentboot/sync-",
@@ -179,8 +175,9 @@
     "failOnDirtyDist": false
 
     // Token budget per persona (estimated tokens). Warns when exceeded.
+    // This is informational — it warns but does not block the build.
     // Default: 8000
-    // "tokenBudget": { "perPersona": 8000 }
+    // "tokenBudget": { "warnAt": 8000 }
   },
 
   // ---------------------------------------------------------------------------

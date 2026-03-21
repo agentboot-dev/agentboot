@@ -4,13 +4,12 @@
   // One group, two teams, three personas enabled.
   // Good starting point for teams under 20 engineers.
 
-  "org": "acme-startup",
-  "orgDisplayName": "Acme Startup",
+  "org": "my-startup",
+  "orgDisplayName": "My Startup",
 
   "groups": {
     // Single engineering group.
     "engineering": {
-      "label": "Engineering",
       // Two feature teams.
       "teams": ["backend", "frontend"]
     }

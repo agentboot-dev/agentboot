@@ -1,6 +1,6 @@
 {
   "name": "Test Generator",
-  "description": "Test-driven engineer — writes tests as the primary artifact",
+  "description": "Top QA engineer — writes tests, audits coverage, finds gaps, manages test plans",
   "invocation": "/gen-tests",
   "traits": [
     "structured-output",

@@ -45,27 +45,27 @@ scaffolding, doctor, and uninstall all work. Basic prompt quality checks in plac
 | # | Feature | Category | Jira | Status |
 |---|---------|----------|------|--------|
 | 14 | Scope merging (org → group → team → repo) | [BUILD] | AB-16 | ✓ Done |
-| 15 | CLI scaffolding (commander, entry point, --help) | [CLI] | AB-29 | |
-| 16 | `agentboot build` command | [CLI] | AB-30 | |
-| 17 | `agentboot validate` command | [CLI] | AB-31 | |
-| 18 | `agentboot sync` command | [CLI] | AB-32 | |
-| 19 | `agentboot setup` wizard (interactive) | [CLI] | AB-33 | |
-| 20 | `agentboot add persona` scaffolding | [CLI] | AB-34 | |
-| 21 | `agentboot add trait` scaffolding | [CLI] | AB-35 | |
-| 22 | `agentboot doctor` | [CLI] | AB-36 | |
-| 23 | `agentboot uninstall` | [CLI] | AB-45 | |
+| 15 | CLI scaffolding (commander, entry point, --help) | [CLI] | AB-29 | ✓ Done |
+| 16 | `agentboot build` command | [CLI] | AB-30 | ✓ Done |
+| 17 | `agentboot validate` command | [CLI] | AB-31 | ✓ Done |
+| 18 | `agentboot sync` command | [CLI] | AB-32 | ✓ Done |
+| 19 | `agentboot setup` wizard (interactive) | [CLI] | AB-33 | ✓ Done |
+| 20 | `agentboot add persona` scaffolding | [CLI] | AB-34 | ✓ Done |
+| 21 | `agentboot add trait` scaffolding | [CLI] | AB-35 | ✓ Done |
+| 22 | `agentboot doctor` | [CLI] | AB-36 | ✓ Done |
+| 23 | `agentboot uninstall` | [CLI] | AB-45 | ✓ Done |
 | 24 | .agentboot-manifest.json (track managed files) | [BUILD] | AB-24 | ✓ Done |
-| 25 | CC-native output: .claude/skills/ with context:fork | [BUILD] | AB-18 | |
+| 25 | CC-native output: .claude/skills/ with context:fork | [BUILD] | AB-18 | ✓ Done |
 | 26 | Cross-platform output: standalone SKILL.md (traits inlined) | [BUILD] | AB-21 | ✓ Done |
 | 27 | Cross-platform output: copilot-instructions.md | [BUILD] | AB-22 | ✓ Done |
 | 28 | PERSONAS.md auto-generation | [BUILD] | AB-23 | ✓ Done |
-| 29 | Gotchas rules concept (path-scoped knowledge) | [PERSONA] | AB-52 | |
-| 30 | Prompt style guide in scaffolding templates | [PERSONA] | AB-55 | |
-| 31 | `agentboot lint` (static prompt analysis) | [CLI] | AB-38 | |
+| 29 | Gotchas rules concept (path-scoped knowledge) | [PERSONA] | AB-52 | ✓ Done |
+| 30 | Prompt style guide in scaffolding templates | [PERSONA] | AB-55 | ✓ Done |
+| 31 | `agentboot lint` (static prompt analysis) | [CLI] | AB-38 | ✓ Done |
 | 32 | Token budget calculation at build time | [BUILD] | AB-25 | ✓ Done |
-| 33 | `agentboot status` | [CLI] | AB-37 | |
-| 34 | `agentboot config repo platform <name>` (switch repo platform) | [CLI] | — | |
-| 35 | First-session welcome fragment in CLAUDE.md | [ONBOARD] | AB-77 | |
+| 33 | `agentboot status` | [CLI] | AB-37 | ✓ Done |
+| 34 | `agentboot config repo platform <name>` (switch repo platform) | [CLI] | — | ✓ Done |
+| 35 | First-session welcome fragment in CLAUDE.md | [ONBOARD] | AB-77 | ✓ Done |
 
 ---
 

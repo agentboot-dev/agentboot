@@ -16,6 +16,16 @@ npm run lint         # TypeScript type checking + lint
 npm run test         # Run vitest
 npm run test:watch   # Watch mode testing
 npm run typecheck    # TypeScript type checking (tsc --noEmit)
+npm run cli          # Run the agentboot CLI (e.g., npm run cli -- build)
+```
+
+The CLI (`scripts/cli.ts`) wraps all pipeline commands with proper argument parsing:
+```bash
+npx tsx scripts/cli.ts build [-c config]
+npx tsx scripts/cli.ts validate [--strict]
+npx tsx scripts/cli.ts sync [--repos-file path] [--dry-run]
+npx tsx scripts/cli.ts full-build
+npx tsx scripts/cli.ts --help
 ```
 
 Run a single test file: `npx vitest run <path-to-test-file>`
@@ -33,6 +43,8 @@ AgentBoot is a **build tool** (not a runtime framework) that compiles agentic pe
 - `persona.config.json` — build metadata specifying which traits to inject
 
 **Always-on Instructions** (`core/instructions/`) are universal guardrails distributed to every repo regardless of persona configuration.
+
+**Gotchas** (`core/gotchas/`) are path-scoped knowledge rules that encode battle-tested operational knowledge. They use `paths:` frontmatter to activate only for matching files and are compiled into `.claude/rules/` during build.
 
 ### Build Pipeline
 
@@ -210,7 +222,6 @@ Total: ~9,900 lines of planning documentation with ~103 open questions to resolv
 
 ## Known Gaps
 
-- `scripts/cli.ts` doesn't exist — blocks `agentboot setup` bin command (Phase 2)
 - No cursor or gemini output formats (Phase 2)
 - Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not (Phase 2)
 - No runtime config schema validation (zod planned but not wired in) (Phase 2)

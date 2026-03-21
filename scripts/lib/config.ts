@@ -15,7 +15,7 @@ export interface AgentBootConfig {
   groups?: Record<string, GroupConfig>;
   personas?: {
     enabled?: string[];
-    extend?: string;
+    customDir?: string;
     outputFormats?: string[];
   };
   traits?: {
@@ -28,7 +28,7 @@ export interface AgentBootConfig {
     distPath?: string;
     provenanceHeaders?: boolean;
     failOnDirtyDist?: boolean;
-    tokenBudget?: { perPersona?: number };
+    tokenBudget?: { warnAt?: number };
   };
   sync?: {
     repos?: string;
@@ -53,7 +53,6 @@ export interface AgentBootConfig {
 }
 
 export interface GroupConfig {
-  label?: string;
   teams?: string[];
 }
 

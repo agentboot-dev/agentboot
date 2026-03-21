@@ -303,28 +303,13 @@ function syncRepo(
     }
   }
 
-  // Write .mcp.json to repo root (CC reads it from project root, not .claude/).
+  // Write root-level files (CC reads .mcp.json and CLAUDE.md from project root, not .claude/).
   if (platform !== "copilot") {
-    for (const [relPath, file] of merged) {
-      if (relPath === ".mcp.json") {
-        const destPath = path.join(repoPath, ".mcp.json");
-        const content = fs.readFileSync(file.absolutePath, "utf-8");
-        const status = writeFile(destPath, content, dryRun);
-        const relDest = path.relative(repoPath, destPath);
-        if (status === "written") {
-          result.filesWritten.push(relDest);
-        } else {
-          result.filesSkipped.push(relDest);
-        }
-      }
-    }
-  }
-
-  // Write CLAUDE.md to repo root (CC reads it from project root).
-  if (platform !== "copilot") {
-    for (const [relPath, file] of merged) {
-      if (relPath === "CLAUDE.md") {
-        const destPath = path.join(repoPath, "CLAUDE.md");
+    const rootFiles = [".mcp.json", "CLAUDE.md"];
+    for (const rootFile of rootFiles) {
+      const file = merged.get(rootFile);
+      if (file) {
+        const destPath = path.join(repoPath, rootFile);
         const content = fs.readFileSync(file.absolutePath, "utf-8");
         const status = writeFile(destPath, content, dryRun);
         const relDest = path.relative(repoPath, destPath);
@@ -399,6 +384,15 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
     }
   }
 
+  // Validate platform
+  const validPlatforms = ["skill", "claude", "copilot"];
+  const platform = entry.platform ?? "claude";
+  if (!validPlatforms.includes(platform)) {
+    errors.push(
+      `[${label}] Platform "${platform}" is not supported. Valid: ${validPlatforms.join(", ")}`
+    );
+  }
+
   return errors;
 }
 
@@ -467,6 +461,10 @@ function createSyncPR(
     result.errors.push(`Invalid branchPrefix: "${branchPrefix}" — only alphanumeric, /, _, ., - allowed`);
     return;
   }
+  if (!/^[a-zA-Z0-9 :/_.,!-]+$/.test(titleTemplate)) {
+    result.errors.push(`Invalid titleTemplate: "${titleTemplate}" — only alphanumeric, spaces, and common punctuation allowed`);
+    return;
+  }
 
   // Check if there are actual changes
   const diffResult = spawnSync("git", ["diff", "--quiet"], { cwd: repoPath, stdio: "pipe" });
@@ -505,6 +503,12 @@ function createSyncPR(
     const addPaths = [targetDir];
     if (fs.existsSync(path.join(repoPath, ".github"))) {
       addPaths.push(".github/");
+    }
+    // Root-level files written outside targetDir
+    for (const rootFile of [".mcp.json", "CLAUDE.md"]) {
+      if (fs.existsSync(path.join(repoPath, rootFile))) {
+        addPaths.push(rootFile);
+      }
     }
     run("git", ["add", ...addPaths]);
     run("git", ["commit", "-m", titleTemplate]);

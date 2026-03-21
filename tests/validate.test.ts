@@ -62,7 +62,7 @@ describe("stripJsoncComments", () => {
     const raw = fs.readFileSync(configPath, "utf-8");
     const stripped = stripJsoncComments(raw);
     const config = JSON.parse(stripped);
-    expect(config.org).toBe("acme-corp");
+    expect(config.org).toBe("your-org");
     expect(config.personas.enabled).toContain("code-reviewer");
   });
 });

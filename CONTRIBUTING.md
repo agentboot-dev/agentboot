@@ -40,7 +40,7 @@ inside trait and persona files are always welcome.
 
 ## What is NOT in scope
 
-- **Org-specific personas.** A persona built for Acme Corp's engineering standards is
+- **Org-specific personas.** A persona built for one company's engineering standards is
   not useful to anyone else. Fork the repo or use the `extend` field in
   `agentboot.config.json` to keep it private.
 - **Proprietary domain content.** Do not contribute traits or personas that contain
@@ -127,6 +127,18 @@ scope boundaries it must not cross.
 **Example.** Every new persona must include at least one worked example: a realistic
 input and the expected output. This is the primary way reviewers verify that the persona
 does what it claims.
+
+---
+
+## Contributor License Agreement
+
+First-time contributors must sign our CLA. When you open your first pull request,
+the CLA bot will post a comment with instructions. This is a one-time process that
+takes about 30 seconds — you sign by posting a comment on the PR.
+
+The CLA grants the project maintainers the right to relicense your contributions if
+needed for the long-term sustainability of the project. Your contributions remain
+attributed to you. The full agreement is in [`CLA.md`](CLA.md).
 
 ---
 
