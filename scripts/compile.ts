@@ -346,20 +346,21 @@ function compilePersona(
     const agentDir = path.join(distPath, "claude", scopePath, "agents");
     ensureDir(agentDir);
 
-    const model = personaConfig?.model ?? "inherit";
-    const permMode = personaConfig?.permissionMode ?? "default";
+    const model = personaConfig?.model;  // undefined = omit from frontmatter
+    const permMode = personaConfig?.permissionMode;
     const agentDescription = personaConfig?.description ?? personaName;
+    // Escape newlines and quotes in description to prevent YAML injection
+    const safeDescription = agentDescription.replace(/\n/g, " ").replace(/"/g, '\\"');
     const withoutFrontmatter = composed.replace(/^---\n(?:(?!---).*\n)*---\n*/, "");
-    const agentContent = [
+    const agentFrontmatter: string[] = [
       "---",
       `name: ${personaName}`,
-      `description: ${agentDescription}`,
-      `model: ${model}`,
-      `permissionMode: ${permMode}`,
-      "---",
-      "",
-      withoutFrontmatter,
-    ].join("\n");
+      `description: ${safeDescription}`,
+    ];
+    if (model) agentFrontmatter.push(`model: ${model}`);
+    if (permMode && permMode !== "default") agentFrontmatter.push(`permissionMode: ${permMode}`);
+    agentFrontmatter.push("---");
+    const agentContent = [...agentFrontmatter, "", withoutFrontmatter].join("\n");
 
     fs.writeFileSync(path.join(agentDir, `${personaName}.md`), agentContent, "utf-8");
   }
@@ -562,6 +563,24 @@ function generateSettingsJson(
 
   if (!hooks && !permissions) return;
 
+  // Validate hooks structure (must be an object with string keys)
+  if (hooks && typeof hooks !== "object") {
+    log(chalk.yellow("  ⚠ config.claude.hooks must be an object — skipping settings.json"));
+    return;
+  }
+  if (permissions) {
+    if (permissions.allow && !Array.isArray(permissions.allow)) {
+      log(chalk.yellow("  ⚠ config.claude.permissions.allow must be an array — skipping"));
+      return;
+    }
+    if (permissions.deny && !Array.isArray(permissions.deny)) {
+      log(chalk.yellow("  ⚠ config.claude.permissions.deny must be an array — skipping"));
+      return;
+    }
+  }
+
+  log(chalk.yellow("  ⚠ Generating settings.json with hooks/permissions — these will be synced to all target repos"));
+
   const settings: Record<string, unknown> = {};
   if (hooks) settings.hooks = hooks;
   if (permissions) settings.permissions = permissions;
@@ -581,6 +600,13 @@ function generateMcpJson(
 ): void {
   const mcpServers = config.claude?.mcpServers;
   if (!mcpServers) return;
+
+  if (typeof mcpServers !== "object") {
+    log(chalk.yellow("  ⚠ config.claude.mcpServers must be an object — skipping .mcp.json"));
+    return;
+  }
+
+  log(chalk.yellow("  ⚠ Generating .mcp.json with MCP servers — these will be synced to all target repos"));
 
   const mcpJson = { mcpServers };
   const mcpPath = path.join(distPath, "claude", scopePath, ".mcp.json");

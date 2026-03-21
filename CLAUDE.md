@@ -11,6 +11,8 @@ npm run build        # Compile traits into persona output files
 npm run sync         # Distribute compiled output to target repos
 npm run clean        # Remove dist/
 npm run full-build   # clean → validate → build → dev-sync pipeline
+npm run dev-sync     # Copy dist/ to local repo for dogfooding (gitignored)
+npm run lint         # TypeScript type checking + lint
 npm run test         # Run vitest
 npm run test:watch   # Watch mode testing
 npm run typecheck    # TypeScript type checking (tsc --noEmit)
