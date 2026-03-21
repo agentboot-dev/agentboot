@@ -7,7 +7,7 @@
  *
  * Usage:
  *   npm run dev-sync         (after npm run build)
- *   npm run full-build && npm run dev-sync
+ *   npm run dev-build && npm run dev-sync
  */
 
 import fs from "node:fs";

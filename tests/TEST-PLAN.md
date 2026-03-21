@@ -74,7 +74,7 @@
 | `agentboot uninstall` directory cleanup | Tested indirectly via hash-match removal |
 | `agentboot lint --fix` | Not yet implemented |
 | `agentboot config` write mutation | Not yet implemented |
-| `agentboot full-build` via CLI | Tested via npm scripts in pipeline.test.ts |
+| `agentboot dev-build` via CLI | Tested via npm scripts in pipeline.test.ts |
 | Compile with external config pointing to different core/ | compile.ts hardcodes ROOT for coreDir — design limitation |
 | Token budget for group/team scope personas | compile.ts only checks core scope — known issue |
 | JSONC block comments (`/* */`) | Only `//` comments supported — documented |
@@ -86,7 +86,7 @@ Run before each release:
 
 - [ ] `npx tsx scripts/cli.ts --help` — all commands listed
 - [ ] `npx tsx scripts/cli.ts --version` — matches package.json
-- [ ] `npx tsx scripts/cli.ts full-build` — clean pipeline completes
+- [ ] `npx tsx scripts/cli.ts dev-build` — clean pipeline completes
 - [ ] `npx tsx scripts/cli.ts doctor` — all checks pass
 - [ ] `npx tsx scripts/cli.ts status` — shows org info
 - [ ] `npx tsx scripts/cli.ts lint` — reports trait length warnings

@@ -10,7 +10,7 @@ npm run validate     # Run pre-build validation checks
 npm run build        # Compile traits into persona output files
 npm run sync         # Distribute compiled output to target repos
 npm run clean        # Remove dist/
-npm run full-build   # clean → validate → build → dev-sync pipeline
+npm run dev-build   # clean → validate → build → dev-sync pipeline
 npm run dev-sync     # Copy dist/ to local repo for dogfooding (gitignored)
 npm run lint         # TypeScript type checking + lint
 npm run test         # Run vitest
@@ -24,7 +24,7 @@ The CLI (`scripts/cli.ts`) wraps all pipeline commands with proper argument pars
 npx tsx scripts/cli.ts build [-c config]
 npx tsx scripts/cli.ts validate [--strict]
 npx tsx scripts/cli.ts sync [--repos-file path] [--dry-run]
-npx tsx scripts/cli.ts full-build
+npx tsx scripts/cli.ts dev-build
 npx tsx scripts/cli.ts --help
 ```
 
@@ -56,7 +56,7 @@ AgentBoot is a **build tool** (not a runtime framework) that compiles agentic pe
 3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
-Each `dist/{platform}/` folder is self-contained. Scope hierarchy (core → groups → teams) is preserved within each platform folder. Duplication across platforms is intentional (generated files are cattle not pets). `full-build` runs dev-sync (not sync) to load compiled personas locally.
+Each `dist/{platform}/` folder is self-contained. Scope hierarchy (core → groups → teams) is preserved within each platform folder. Duplication across platforms is intentional (generated files are cattle not pets). `dev-build` runs dev-sync (not sync) to load compiled personas locally.
 
 ### Scope Hierarchy
 

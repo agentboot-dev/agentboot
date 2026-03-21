@@ -133,5 +133,21 @@ export function loadConfig(configPath: string): AgentBootConfig {
   }
   const raw = fs.readFileSync(configPath, "utf-8");
   const stripped = stripJsoncComments(raw);
-  return JSON.parse(stripped) as AgentBootConfig;
+  const parsed = JSON.parse(stripped);
+
+  // Minimal runtime validation for critical fields
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Config must be a JSON object");
+  }
+  if (typeof parsed.org !== "string" || parsed.org.length === 0) {
+    throw new Error('Config requires a non-empty "org" field (string)');
+  }
+  if (parsed.personas?.enabled !== undefined && !Array.isArray(parsed.personas.enabled)) {
+    throw new Error('"personas.enabled" must be an array of strings');
+  }
+  if (parsed.sync?.targetDir !== undefined && typeof parsed.sync.targetDir !== "string") {
+    throw new Error('"sync.targetDir" must be a string');
+  }
+
+  return parsed as AgentBootConfig;
 }

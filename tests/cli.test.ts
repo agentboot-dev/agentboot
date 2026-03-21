@@ -703,3 +703,41 @@ describe("CLI global behavior", () => {
     expect(output).toContain("config");
   });
 });
+
+// ---------------------------------------------------------------------------
+// dev-sync script
+// ---------------------------------------------------------------------------
+
+describe("dev-sync script", () => {
+  it("syncs dist/ to local repo directories", () => {
+    // dev-sync requires dist/ to exist (from prior build)
+    const distPath = path.join(ROOT, "dist");
+    if (!fs.existsSync(distPath)) {
+      // Build first if dist/ missing
+      execSync(`${TSX} ${path.join(ROOT, "scripts", "compile.ts")}`, { cwd: ROOT, stdio: "pipe" });
+    }
+
+    const output = execSync(`${TSX} ${path.join(ROOT, "scripts", "dev-sync.ts")}`, {
+      cwd: ROOT,
+      encoding: "utf-8",
+    });
+
+    expect(output).toContain("Dev-synced");
+    expect(output).toContain("claude");
+
+    // Verify files were actually copied
+    expect(fs.existsSync(path.join(ROOT, ".claude", "skills"))).toBe(true);
+  });
+
+  it("copies files to platform-native locations", () => {
+    // Verify claude platform files end up in .claude/
+    const skillsDir = path.join(ROOT, ".claude", "skills");
+    expect(fs.existsSync(skillsDir)).toBe(true);
+    const skills = fs.readdirSync(skillsDir);
+    expect(skills.length).toBeGreaterThan(0);
+
+    // Verify copilot platform files end up in .github/copilot/
+    const copilotDir = path.join(ROOT, ".github", "copilot");
+    expect(fs.existsSync(copilotDir)).toBe(true);
+  });
+});

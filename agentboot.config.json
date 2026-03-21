@@ -5,7 +5,7 @@
   // Convention over configuration: every field has a sensible default.
   // You only need to specify what's different about your organization.
   //
-  // Run `npm run full-build` after editing to validate, compile, and sync.
+  // Run `npm run dev-build` after editing to validate, compile, and sync.
 
   // ---------------------------------------------------------------------------
   // Organization identity
@@ -184,6 +184,9 @@
   // Claude Code-specific output configuration (only applies to "claude" platform).
   // ---------------------------------------------------------------------------
 
+  // Claude Code-specific output (experimental — Phase 2).
+  // Generates settings.json and .mcp.json when uncommented.
+  // Requires Claude Code to support these features.
   // "claude": {
   //   "hooks": {},
   //   "permissions": { "allow": [], "deny": [] },

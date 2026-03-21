@@ -15,7 +15,7 @@ Legend:
 
 ## Phase 1: "AgentBoot Builds Itself"
 
-**Definition of done:** `npm run full-build` compiles all 4 personas and syncs them back
+**Definition of done:** `npm run dev-build` compiles all 4 personas and syncs them back
 into the AgentBoot repo. Claude Code uses AgentBoot's own personas when working on
 AgentBoot code.
 

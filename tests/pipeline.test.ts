@@ -338,8 +338,16 @@ describe("sync script", () => {
   let syncTarget: string;
   let originalRepos: string;
 
+  // Safety: restore repos.json even if tests crash
+  const restoreRepos = () => {
+    if (originalRepos) {
+      try { fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos); } catch { /* best effort */ }
+    }
+  };
+
   beforeAll(() => {
     originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    process.on("exit", restoreRepos);
     syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-sync-"));
     fs.writeFileSync(
       path.join(ROOT, "repos.json"),
@@ -348,6 +356,7 @@ describe("sync script", () => {
   });
 
   afterAll(() => {
+    process.removeListener("exit", restoreRepos);
     fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
     if (syncTarget) {
       fs.rmSync(syncTarget, { recursive: true, force: true });
@@ -472,11 +481,13 @@ describe("sync script", () => {
       JSON.stringify([{ path: prTarget, label: "pr-test", platform: "claude" }])
     );
 
+    let caught = false;
     try {
       // PR creation will fail (no remote) — sync reports the error but still completes.
       // execSync throws on non-zero exit, so we catch and verify the output.
       run("scripts/sync.ts -- --mode pr");
     } catch (err: unknown) {
+      caught = true;
       // Verify the error is from PR creation (expected), not a process crash
       const output = (err as { stdout?: Buffer })?.stdout?.toString() ?? "";
       expect(output).toContain("PR creation failed");
@@ -487,6 +498,8 @@ describe("sync script", () => {
       );
       fs.rmSync(prTarget, { recursive: true, force: true });
     }
+    // Ensure we actually tested something — if run() succeeded, no assertions ran
+    expect(caught).toBe(true);
   });
 });
 

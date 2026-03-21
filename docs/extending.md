@@ -237,7 +237,7 @@ customization. It can reference:
   "org": "my-org",
   "personas": {
     "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
-    "extend": "./personas"
+    "customDir": "./personas"
   },
   "extend": {
     "domains": [
@@ -253,7 +253,7 @@ customization. It can reference:
 1. Core traits and personas form the base.
 2. Domain layers are applied in the order listed. Later domains can add to but not
    remove core traits or personas.
-3. The `personas.extend` directory adds org-specific personas on top of domain layers.
+3. The `personas.customDir` directory adds org-specific personas on top of domain layers.
 4. Team-level configuration (scoped via group/team in `repos.json`) layers on top of
    all of the above for repos in that team.
 

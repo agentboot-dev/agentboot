@@ -32,7 +32,7 @@ Pre-release audit of `agentboot.config.json` and `persona.config.json` schemas. 
 `GroupConfig.label` exists in the TypeScript interface but no code reads it. Dead field in the schema.
 - Recommendation: Remove from interface and example config, or implement display in PERSONAS.md output.
 
-**2. `personas.extend` — unclear name**
+**2. `personas.customDir` — unclear name**
 Does it extend, override, or supplement core personas? The behavior is "load additional personas from this path" but the name suggests inheritance.
 - Recommendation: Rename to `personas.customDir` or `personas.additionalDir`.
 
@@ -46,7 +46,7 @@ Accepts any string but only recognizes `"skill"`, `"claude"`, `"copilot"`. Inval
 `"cursor"` and `"gemini"` are accepted in repos.json but compile.ts doesn't generate output for them.
 - Recommendation: Restrict to implemented platforms or emit a clear warning.
 
-**5. `output.tokenBudget.perPersona` — unclear intent**
+**5. `output.tokenBudget.warnAt` — unclear intent**
 Warns when exceeded but doesn't block. Is this informational or a hard limit?
 - Recommendation: Document design intent. If informational, rename to `output.tokenBudget.warnAt`. If hard limit, enforce it.
 
@@ -64,8 +64,8 @@ PR mode works in code but users can't discover it from the config file.
 These generate settings.json and .mcp.json but CC integration is incomplete. Users may expect full functionality.
 - Recommendation: Add clear comments marking these as experimental.
 
-**9. `output.tokenBudget.perPersona` — deeply nested for one field**
-`output.tokenBudget.perPersona` is 3 levels deep for a single number.
+**9. `output.tokenBudget.warnAt` — deeply nested for one field**
+`output.tokenBudget.warnAt` is 3 levels deep for a single number.
 - Recommendation: Keep for now (anticipate adding `perTrait`, `total` later), but document why.
 
 **10. Default values not documented in example config**
@@ -106,7 +106,7 @@ These generate settings.json and .mcp.json but CC integration is incomplete. Use
 ## Before Public Release Checklist
 
 - [ ] Remove `groups[].label` or implement it
-- [ ] Rename `personas.extend` to `personas.customDir`
+- [ ] Rename `personas.customDir` to `personas.customDir`
 - [ ] Validate `personas.outputFormats` against allowed set
 - [ ] Restrict `repos[].platform` to implemented platforms
 - [ ] Clarify `tokenBudget` design intent
@@ -118,4 +118,4 @@ These generate settings.json and .mcp.json but CC integration is incomplete. Use
 
 ## Recommendation
 
-The schema is ~85% production-ready. The critical issue is `groups.label` (dead code) and `personas.extend` (unclear name). Everything else is polish. No fundamental restructuring needed — the hierarchy (org → groups → teams, traits → personas → output) is sound.
+The schema is ~85% production-ready. The critical issue is `groups.label` (dead code) and `personas.customDir` (unclear name). Everything else is polish. No fundamental restructuring needed — the hierarchy (org → groups → teams, traits → personas → output) is sound.

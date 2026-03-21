@@ -110,7 +110,7 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
 
   const corePersonasDir = path.join(ROOT, "core", "personas");
   const extendDir = config.personas?.customDir
-    ? path.resolve(configDir, config.personas.extend)
+    ? path.resolve(configDir, config.personas.customDir)
     : null;
 
   // Collect all available persona directories.
@@ -183,7 +183,7 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
   // Scan all persona.config.json files.
   const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
   if (config.personas?.customDir) {
-    const ext = path.resolve(configDir, config.personas.extend);
+    const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
   }
 
@@ -243,7 +243,7 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
 
   const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
   if (config.personas?.customDir) {
-    const ext = path.resolve(configDir, config.personas.extend);
+    const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
   }
 
@@ -295,9 +295,14 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
 // ---------------------------------------------------------------------------
 
 function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
-  const configPatterns = (config.validation?.secretPatterns ?? []).map(
-    (p) => new RegExp(p)
-  );
+  const configPatterns: RegExp[] = [];
+  for (const p of config.validation?.secretPatterns ?? []) {
+    try {
+      configPatterns.push(new RegExp(p));
+    } catch (e: unknown) {
+      console.error(`  ⚠ Invalid secretPattern regex "${p}": ${e instanceof Error ? e.message : String(e)} — skipping`);
+    }
+  }
   return [...DEFAULT_SECRET_PATTERNS, ...configPatterns];
 }
 
@@ -311,7 +316,7 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
   ];
 
   if (config.personas?.customDir) {
-    const ext = path.resolve(configDir, config.personas.extend);
+    const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) scanRoots.push(ext);
   }
 

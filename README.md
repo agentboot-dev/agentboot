@@ -29,19 +29,20 @@ The output works without AgentBoot installed. Any platform that reads Markdown c
 ## Quickstart
 
 ```bash
-# Install
-npm install agentboot
+# Install (pick one)
+brew tap agentboot-dev/agentboot && brew install agentboot
+npm install -g agentboot
 
 # Set up a new personas repo
-npx agentboot setup
+agentboot setup
 
 # Configure your org
 # Edit agentboot.config.json with your org name, groups, and teams
 
 # Build and sync
-npx agentboot build
-npx agentboot sync --dry-run   # preview first
-npx agentboot sync             # deploy to repos
+agentboot build
+agentboot sync --dry-run   # preview first
+agentboot sync             # deploy to repos
 ```
 
 Your repos now have:
@@ -123,7 +124,7 @@ Everything is driven by `agentboot.config.json`:
 agentboot build          # Compile personas from traits
 agentboot validate       # Pre-build validation checks
 agentboot sync           # Distribute to target repos
-agentboot full-build     # clean → validate → build → sync pipeline
+agentboot dev-build      # clean → validate → build → dev-sync pipeline
 agentboot setup          # Scaffold a new personas repo
 agentboot add <type>     # Create a new persona, trait, or gotcha
 agentboot doctor         # Diagnose configuration issues
