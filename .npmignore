@@ -1,0 +1,34 @@
+# Tests
+tests/
+
+# Documentation
+docs/
+*.md
+!README.md
+!LICENSE
+!NOTICE
+!CLA.md
+
+# Examples and templates
+examples/
+domains/
+
+# Build artifacts
+dist/
+
+# Dev config
+.github/
+.claude/
+.agentboot/
+tsconfig.json
+vitest.config.*
+.gitignore
+
+# Temp files
+temp/
+
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

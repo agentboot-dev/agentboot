@@ -63,7 +63,7 @@ npx tsx scripts/cli.ts --help | grep -E "build|validate|sync|setup|add|doctor|st
 
 ```gherkin
 Given dist/ does not exist
-When the user runs full-build
+When the user runs dev-build
 Then validate passes all 4 checks
 And compile produces output for 3 platforms
 And dev-sync copies files to .claude/
@@ -75,19 +75,19 @@ And the exit code is 0
 rm -rf dist/
 
 # When
-npx tsx scripts/cli.ts full-build
+npx tsx scripts/cli.ts dev-build
 
 # Then — verify output contains:
 #   "All 4 checks passed"
 #   "Compiled 4 persona(s) × 3 platform(s)"
 #   "Dev-synced N files across 3 platforms"
-#   "full-build complete"
+#   "dev-build complete"
 ```
 
 ### Scenario: Build output has correct structure
 
 ```gherkin
-Given a full-build has completed
+Given a dev-build has completed
 When the user inspects dist/
 Then each platform has a core/ directory
 And claude has skills/, agents/, traits/, rules/
@@ -113,7 +113,7 @@ ls dist/copilot/core/
 ### Scenario: Skills have context:fork frontmatter
 
 ```gherkin
-Given a full-build has completed
+Given a dev-build has completed
 When the user reads a compiled CC skill file
 Then the frontmatter contains context: fork
 And the frontmatter contains a quoted agent reference
@@ -147,7 +147,7 @@ done
 ### Scenario: CLAUDE.md has correct imports and welcome fragment
 
 ```gherkin
-Given a full-build has completed
+Given a dev-build has completed
 When the user reads dist/claude/core/CLAUDE.md
 Then it contains @import directives for all 6 traits
 And instruction imports do NOT have double .md.md extension
@@ -185,7 +185,7 @@ grep '/gen-testdata' dist/claude/core/CLAUDE.md
 ### Scenario: Agent files have quoted YAML frontmatter
 
 ```gherkin
-Given a full-build has completed
+Given a dev-build has completed
 When the user reads a compiled agent file
 Then name and description are double-quoted in YAML
 And model is only present if explicitly configured

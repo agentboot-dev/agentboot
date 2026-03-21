@@ -15,7 +15,7 @@ Pre-release audit of all CLI command and flag names. These become the public API
 | `validate` | `--config`, `--strict` | Pre-build validation |
 | `sync` | `--config`, `--repos`, `--dry-run` | Distribute to target repos |
 | `dev-sync` | `--config` | Copy dist/ locally for dogfooding |
-| `full-build` | `--config` | clean → validate → build → dev-sync |
+| `dev-build` | `--config` | clean → validate → build → dev-sync |
 | `setup` | `--skip-detect` | Scaffold new personas repo |
 | `add <type> <name>` | — | Create persona, trait, or gotcha |
 | `doctor` | `--config` | Diagnose config issues |
@@ -64,9 +64,9 @@ End users don't need this. It's for AgentBoot contributors.
 `--dry-run` is typed frequently but has no short form.
 - Recommendation: Add `-d` for `--dry-run`, `-s` for `--strict`.
 
-**8. `full-build` runs `dev-sync`, not `sync`**
+**8. `dev-build` runs `dev-sync`, not `sync`**
 The name suggests a complete build, but it only syncs locally.
-- Recommendation: Either rename to `dev-build` or make `full-build` run actual `sync` (with `--dry-run` default for safety).
+- Recommendation: Either rename to `dev-build` or make `dev-build` run actual `sync` (with `--dry-run` default for safety).
 
 **9. `add` subcommands incomplete**
 Implemented: `persona`, `trait`, `gotcha`. Design doc specifies: `domain`, `hook`, `repo`, `prompt`.
@@ -81,7 +81,7 @@ Only `--repo` and `--dry-run`. Design doc specifies: `--all-repos`, `--plugin`, 
 ## Naming Consistency
 
 **Good patterns (keep):**
-- Hyphenated commands: `dev-sync`, `full-build`
+- Hyphenated commands: `dev-sync`, `dev-build`
 - Hyphenated flags: `--dry-run`, `--skip-detect`
 - Lowercase type arguments: `persona`, `trait`, `gotcha`
 

@@ -250,7 +250,7 @@ Then register the extension in `agentboot.config.json`:
 {
   "personas": {
     "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
-    "extend": "./personas"
+    "customDir": "./personas"
   }
 }
 ```

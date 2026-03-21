@@ -236,8 +236,12 @@ function buildClaudeOutput(
   const invocation = personaConfig?.invocation ?? `/${personaName}`;
   const skillName = invocation.replace(/^\//, "");
   const description = personaConfig?.description ?? personaName;
-  // Escape newlines and quotes in description to prevent YAML injection
-  const safeDescription = description.replace(/\n/g, " ").replace(/"/g, '\\"');
+  // Escape for YAML double-quoted strings
+  const safeDescription = description
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, " ")
+    .replace(/---/g, "\\-\\-\\-");
 
   // AB-18: CC skill frontmatter with context:fork → delegates to agent
   const frontmatterLines: string[] = [
@@ -363,9 +367,12 @@ function compilePersona(
     const model = personaConfig?.model;  // undefined = omit from frontmatter
     const permMode = personaConfig?.permissionMode;
     const agentDescription = personaConfig?.description ?? personaName;
-    // Escape newlines and quotes in description to prevent YAML injection.
-    // JS '\\"' produces the string \" which is the correct YAML double-quote escape.
-    const safeDescription = agentDescription.replace(/\n/g, " ").replace(/"/g, '\\"');
+    // Escape for YAML double-quoted strings: backslashes, quotes, newlines, and --- sequences.
+    const safeDescription = agentDescription
+      .replace(/\\/g, "\\\\")   // backslashes first (before other escapes add more)
+      .replace(/"/g, '\\"')     // double quotes
+      .replace(/\n/g, " ")      // newlines → spaces
+      .replace(/---/g, "\\-\\-\\-"); // prevent YAML document markers
     const withoutFrontmatter = composed.replace(/^---\n[\s\S]*?\n---\n*/, "");
     const agentFrontmatter: string[] = [
       "---",
@@ -651,7 +658,23 @@ function generateSettingsJson(
     }
   }
 
-  log(chalk.yellow("  ⚠ Generating settings.json with hooks/permissions — these will be synced to all target repos"));
+  // Security: hooks execute shell commands in target repos — warn prominently
+  if (hooks) {
+    log(chalk.red("  ⚠ CAUTION: settings.json contains hooks that execute shell commands in target repos."));
+    log(chalk.red("    Review claude.hooks in agentboot.config.json carefully before syncing."));
+    // Validate hook event names against known CC events
+    const validEvents = [
+      "PreToolUse", "PostToolUse", "Notification", "Stop",
+      "SubagentStop", "SubagentStart",
+    ];
+    for (const key of Object.keys(hooks)) {
+      if (!validEvents.includes(key)) {
+        log(chalk.yellow(`    ⚠ Unknown hook event: "${key}" — may not be recognized by Claude Code`));
+      }
+    }
+  } else {
+    log(chalk.yellow("  ⚠ Generating settings.json with permissions — these will be synced to all target repos"));
+  }
 
   const settings: Record<string, unknown> = {};
   if (hooks) settings.hooks = hooks;
@@ -755,7 +778,7 @@ function main(): void {
   }
 
   if (config.personas?.customDir) {
-    const extendDir = path.resolve(configDir, config.personas.extend);
+    const extendDir = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(extendDir)) {
       for (const entry of fs.readdirSync(extendDir)) {
         const dir = path.join(extendDir, entry);

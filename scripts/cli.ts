@@ -140,7 +140,7 @@ program
 program
   .command("validate")
   .description("Run pre-build validation checks")
-  .option("--strict", "treat warnings as errors")
+  .option("-s, --strict", "treat warnings as errors")
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const args = collectGlobalArgs({ config: globalOpts.config });
@@ -163,7 +163,7 @@ program
   .command("sync")
   .description("Distribute compiled output to target repositories")
   .option("--repos-file <path>", "path to repos.json")
-  .option("--dry-run", "preview changes without writing")
+  .option("-d, --dry-run", "preview changes without writing")
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const args = collectGlobalArgs({ config: globalOpts.config });
@@ -200,10 +200,10 @@ program
     });
   });
 
-// ---- full-build -----------------------------------------------------------
+// ---- dev-build -----------------------------------------------------------
 
 program
-  .command("full-build")
+  .command("dev-build")
   .description("Run clean → validate → build → dev-sync pipeline")
   .action((_opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
@@ -224,6 +224,10 @@ program
       ["tsx", path.join(SCRIPTS_DIR, "validate.ts"), ...baseArgs],
       { cwd: ROOT, stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit" },
     );
+    if (valResult.error) {
+      console.error(`Validation failed to start: ${valResult.error.message}`);
+      process.exit(1);
+    }
     if (valResult.status !== 0) {
       console.error("Validation failed.");
       process.exit(valResult.status ?? 1);
@@ -236,6 +240,10 @@ program
       ["tsx", path.join(SCRIPTS_DIR, "compile.ts"), ...baseArgs],
       { cwd: ROOT, stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit" },
     );
+    if (buildResult.error) {
+      console.error(`Build failed to start: ${buildResult.error.message}`);
+      process.exit(1);
+    }
     if (buildResult.status !== 0) {
       console.error("Build failed.");
       process.exit(buildResult.status ?? 1);
@@ -248,12 +256,17 @@ program
       ["tsx", path.join(SCRIPTS_DIR, "dev-sync.ts"), ...baseArgs],
       { cwd: ROOT, stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit" },
     );
+    if (syncResult.error) {
+      console.error(`Dev-sync failed to start: ${syncResult.error.message}`);
+      process.exit(1);
+    }
     if (syncResult.status !== 0) {
       console.error("Dev-sync failed.");
       process.exit(syncResult.status ?? 1);
     }
 
-    if (!quiet) console.log("✓ full-build complete");
+    if (!quiet) console.log("✓ dev-build complete");
+    process.exit(0);
   });
 
 // ---- setup (AB-33) --------------------------------------------------------
@@ -293,7 +306,7 @@ program
       }
     } catch { /* no git, use default */ }
 
-    console.log(chalk.cyan(`  Detected org: ${orgName}`));
+    console.log(chalk.cyan(`  Detected org: ${orgName}`) + chalk.gray(" (edit agentboot.config.json to change)"));
 
     // Scaffold config
     const configContent = JSON.stringify({
@@ -351,8 +364,8 @@ program
   .argument("<name>", "name for the new item (lowercase-with-hyphens)")
   .action((type: string, name: string) => {
     // Validate name format
-    if (!/^[a-z][a-z0-9-]*$/.test(name)) {
-      console.error(chalk.red(`Name must be lowercase alphanumeric with hyphens: got '${name}'`));
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
+      console.error(chalk.red(`Name must be 1-64 lowercase alphanumeric chars with hyphens: got '${name}'`));
       process.exit(1);
     }
 
@@ -636,7 +649,13 @@ program
       process.exit(1);
     }
 
-    const config = loadConfig(configPath);
+    let config;
+    try {
+      config = loadConfig(configPath);
+    } catch (e: unknown) {
+      console.error(chalk.red(`Failed to parse config: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
     const pkgPath = path.join(ROOT, "package.json");
     const version = fs.existsSync(pkgPath) ? JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version : "unknown";
 
@@ -734,7 +753,13 @@ program
       process.exit(1);
     }
 
-    const config = loadConfig(configPath);
+    let config;
+    try {
+      config = loadConfig(configPath);
+    } catch (e: unknown) {
+      console.error(chalk.red(`Failed to parse config: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
     const isJson = opts.format === "json";
     if (!isJson) console.log(chalk.bold("\nAgentBoot — lint\n"));
 
@@ -752,6 +777,7 @@ program
 
     const personasDir = path.join(cwd, "core", "personas");
     const enabledPersonas = config.personas?.enabled ?? [];
+    const enabledTraits = config.traits?.enabled ?? [];
     const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
 
     // Vague language patterns
@@ -861,7 +887,6 @@ program
 
         // Check for unused trait
         const traitName = file.replace(/\.md$/, "");
-        const enabledTraits = config.traits?.enabled ?? [];
         if (enabledTraits.length > 0 && !enabledTraits.includes(traitName)) {
           findings.push({ rule: "unused-trait", severity: "info", file: `core/traits/${file}`, message: `Trait not in traits.enabled list` });
         }
@@ -921,7 +946,7 @@ program
   .command("uninstall")
   .description("Remove AgentBoot managed files from a repository")
   .option("--repo <path>", "target repository path")
-  .option("--dry-run", "preview what would be removed")
+  .option("-d, --dry-run", "preview what would be removed")
   .action((opts) => {
     const targetRepo = opts.repo ? path.resolve(opts.repo) : process.cwd();
     const dryRun = opts.dryRun ?? false;
@@ -1023,9 +1048,12 @@ program
   .description("View configuration (read-only)")
   .argument("[key]", "config key (e.g., personas.enabled)")
   .argument("[value]", "not yet supported")
-  .action((key?: string, value?: string) => {
+  .action((key: string | undefined, value: string | undefined, _opts, cmd) => {
+    const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
-    const configPath = path.join(cwd, "agentboot.config.json");
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config)
+      : path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
       console.error(chalk.red("No agentboot.config.json found."));

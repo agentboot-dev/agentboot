@@ -1,6 +1,6 @@
 {
   "name": "agentboot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Convention over configuration for agentic development teams. The Spring Boot of Claude Code governance.",
   "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",
@@ -44,7 +44,7 @@
     "build": "tsx scripts/compile.ts",
     "validate": "tsx scripts/validate.ts",
     "sync": "tsx scripts/sync.ts",
-    "full-build": "npm run clean && npm run validate && npm run build && npm run dev-sync",
+    "dev-build": "npm run clean && npm run validate && npm run build && npm run dev-sync",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

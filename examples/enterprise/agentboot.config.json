@@ -23,12 +23,6 @@
         "infra",         // Terraform, CI/CD, cloud infrastructure
         "data",          // Data platform, pipelines, warehousing
         "security"       // AppSec, SAST/DAST, incident response
-      ],
-      // Every Platform engineer gets schema-awareness and source-citation
-      // in addition to the org-wide trait defaults.
-      "traitsEnabled": [
-        "schema-awareness",
-        "source-citation"
       ]
     },
 
@@ -40,10 +34,6 @@
         "mobile",        // iOS and Android (React Native)
         "growth",        // A/B testing, analytics, experimentation
         "design-systems" // Component library and tokens
-      ],
-      "traitsEnabled": [
-        "source-citation"
-        // Planned trait (not yet authored): "minimal-diff"
       ]
     },
 
@@ -54,14 +44,6 @@
         "hipaa",         // Healthcare data / PHI handling
         "pci",           // Payment card data flows
         "legal-tech"     // Contract analysis, e-discovery tooling
-      ],
-      // Compliance teams always run critical-thinking at HIGH and
-      // must always produce structured output for audit trails.
-      "traitsEnabled": [
-        "critical-thinking",
-        "structured-output",
-        "source-citation"
-        // Planned trait (not yet authored): "explain-reasoning"
       ]
     }
   },

@@ -272,7 +272,7 @@ Group-level trait configuration. Same merge semantics as `groups[name].personas`
 **Default:** `null`
 
 Path to a directory containing group-level persona extensions. Same format as
-`personas.extend` at the org level.
+`personas.customDir` at the org level.
 
 ---
 
@@ -306,7 +306,7 @@ repos.
 
 ---
 
-### `personas.extend`
+### `personas.customDir`
 
 **Type:** `string | null`
 **Required:** No
@@ -320,7 +320,7 @@ the `enabled` list from core. The directory must follow the same structure as
 ```json
 "personas": {
   "enabled": ["code-reviewer", "security-reviewer"],
-  "extend": "./personas"
+  "customDir": "./personas"
 }
 ```
 
@@ -609,7 +609,7 @@ Claude Code session across your entire organization.
   },
   "personas": {
     "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
-    "extend": "./personas"
+    "customDir": "./personas"
   },
   "traits": {
     "enabled": [

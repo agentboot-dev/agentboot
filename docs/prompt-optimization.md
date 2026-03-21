@@ -232,7 +232,7 @@ model: sonnet
 {
   "lint": {
     "tokenBudget": {
-      "perPersona": 6000,        // Max tokens for any single persona
+      "warnAt": 6000,        // Max tokens for any single persona
       "perTrait": 1500,          // Max tokens for any single trait
       "totalAlwaysOn": 3000,     // Max tokens for always-on instructions
       "claudeMd": 2000           // Max tokens for generated CLAUDE.md
