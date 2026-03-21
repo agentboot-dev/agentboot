@@ -24,6 +24,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import {
@@ -63,6 +65,7 @@ interface SyncResult {
   filesSkipped: string[];  // unchanged files (same content)
   errors: string[];
   dryRun: boolean;
+  prUrl?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +316,17 @@ function syncRepo(
     }
   }
 
+  // AB-24: Generate manifest after all files are written.
+  const manifestRelPath = generateManifest(
+    repoPath,
+    targetDir,
+    result.filesWritten,
+    entry.group,
+    entry.team,
+    dryRun
+  );
+  result.filesWritten.push(manifestRelPath);
+
   return result;
 }
 
@@ -347,6 +361,102 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
   }
 
   return errors;
+}
+
+// ---------------------------------------------------------------------------
+// AB-24: Manifest generation
+// ---------------------------------------------------------------------------
+
+function generateManifest(
+  repoPath: string,
+  targetDir: string,
+  filesWritten: string[],
+  group?: string,
+  team?: string,
+  dryRun?: boolean
+): string {
+  // Read version from package.json
+  const pkgJsonPath = path.join(ROOT, "package.json");
+  const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
+
+  // Compute SHA-256 hashes of written files
+  const fileEntries: { path: string; hash: string }[] = [];
+  for (const relPath of filesWritten) {
+    const absPath = path.join(repoPath, relPath);
+    if (fs.existsSync(absPath)) {
+      const content = fs.readFileSync(absPath);
+      const hash = createHash("sha256").update(content).digest("hex");
+      fileEntries.push({ path: relPath, hash });
+    }
+  }
+
+  const manifest = {
+    managed_by: "agentboot",
+    version: pkg.version,
+    synced_at: new Date().toISOString(),
+    scope: { group: group ?? null, team: team ?? null },
+    files: fileEntries,
+  };
+
+  const manifestRelPath = path.join(targetDir, ".agentboot-manifest.json");
+  const manifestAbsPath = path.join(repoPath, manifestRelPath);
+
+  if (!dryRun) {
+    ensureDir(path.dirname(manifestAbsPath), false);
+    fs.writeFileSync(manifestAbsPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  }
+
+  return manifestRelPath;
+}
+
+// ---------------------------------------------------------------------------
+// AB-28: PR mode (sync via git/gh)
+// ---------------------------------------------------------------------------
+
+function createSyncPR(
+  repoPath: string,
+  targetDir: string,
+  config: AgentBootConfig,
+  result: SyncResult
+): void {
+  const prConfig = config.sync?.pr;
+  const branchPrefix = prConfig?.branchPrefix ?? "agentboot/sync-";
+  const titleTemplate = prConfig?.titleTemplate ?? "chore: AgentBoot persona sync";
+
+  // Check if there are actual changes
+  try {
+    execSync("git diff --quiet", { cwd: repoPath, stdio: "pipe" });
+    execSync("git diff --cached --quiet", { cwd: repoPath, stdio: "pipe" });
+    // Also check for untracked files in targetDir
+    const untrackedOutput = execSync(
+      `git ls-files --others --exclude-standard ${targetDir}`,
+      { cwd: repoPath, stdio: "pipe" }
+    ).toString().trim();
+    if (!untrackedOutput) {
+      // No changes at all
+      return;
+    }
+  } catch {
+    // git diff --quiet exits non-zero when there are changes — this is expected
+  }
+
+  const dateSlug = new Date().toISOString().slice(0, 10);
+  const branch = `${branchPrefix}${dateSlug}`;
+
+  try {
+    execSync(`git checkout -b ${branch}`, { cwd: repoPath, stdio: "pipe" });
+    execSync(`git add ${targetDir} .github/`, { cwd: repoPath, stdio: "pipe" });
+    execSync(`git commit -m "${titleTemplate}"`, { cwd: repoPath, stdio: "pipe" });
+    execSync(`git push -u origin ${branch}`, { cwd: repoPath, stdio: "pipe" });
+    const prOutput = execSync(
+      `gh pr create --title "${titleTemplate}" --body "Automated AgentBoot sync"`,
+      { cwd: repoPath, stdio: "pipe" }
+    ).toString().trim();
+    result.prUrl = prOutput;
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    result.errors.push(`PR creation failed: ${errMsg}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +499,10 @@ function printSyncResult(result: SyncResult): void {
     }
     console.log(chalk.gray(`      ... and ${written - 5} more`));
   }
+
+  if (result.prUrl) {
+    console.log(chalk.cyan(`      PR: ${result.prUrl}`));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +514,8 @@ async function main(): Promise<void> {
   const configPath = resolveConfigPath(argv, ROOT);
   const isDryRun =
     argv.includes("--dry-run") || argv.includes("--dryRun");
+  const modeIdx = argv.indexOf("--mode");
+  const cliMode = modeIdx !== -1 ? argv[modeIdx + 1] : undefined;
 
   console.log(chalk.bold("\nAgentBoot — sync"));
   console.log(chalk.gray(`Config: ${configPath}`));
@@ -454,10 +570,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Determine sync mode: "local" (default) or "pr"
+  const isPrMode = cliMode === "pr" || (config.sync?.pr?.enabled === true);
+
   // Sync each repo.
   const results: SyncResult[] = [];
   for (const entry of repos) {
     const result = syncRepo(entry, distPath, config, dryRun);
+
+    // AB-28: Create PR if in PR mode and not dry-run
+    if (isPrMode && !dryRun && result.errors.length === 0 && result.filesWritten.length > 0) {
+      const targetDir = config.sync?.targetDir ?? ".claude";
+      createSyncPR(path.resolve(entry.path), targetDir, config, result);
+    }
+
     results.push(result);
     printSyncResult(result);
   }

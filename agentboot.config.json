@@ -147,6 +147,13 @@
     // If true, sync will not modify any files. Prints what would change.
     // Override at runtime with: npm run sync -- --dry-run
     "dryRun": false
+
+    // PR mode: create a PR instead of writing directly.
+    // "pr": {
+    //   "enabled": false,
+    //   "branchPrefix": "agentboot/sync-",
+    //   "titleTemplate": "chore: AgentBoot persona sync"
+    // }
   },
 
   // ---------------------------------------------------------------------------
@@ -170,7 +177,21 @@
     // Useful in CI to prevent stale artifacts from silently persisting.
     // Default: false
     "failOnDirtyDist": false
+
+    // Token budget per persona (estimated tokens). Warns when exceeded.
+    // Default: 8000
+    // "tokenBudget": { "perPersona": 8000 }
   },
+
+  // ---------------------------------------------------------------------------
+  // Claude Code-specific output configuration (only applies to "claude" platform).
+  // ---------------------------------------------------------------------------
+
+  // "claude": {
+  //   "hooks": {},
+  //   "permissions": { "allow": [], "deny": [] },
+  //   "mcpServers": {}
+  // },
 
   // ---------------------------------------------------------------------------
   // Validation configuration

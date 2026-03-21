@@ -37,9 +37,9 @@ AgentBoot is a **build tool** (not a runtime framework) that compiles agentic pe
 1. **`scripts/validate.ts`** — 4 pre-build checks: persona existence, trait references, SKILL.md frontmatter, secret scanning
 2. **`scripts/compile.ts`** — loads `agentboot.config.json`, resolves trait references from `persona.config.json`, and emits **one self-contained folder per platform** under `dist/`:
    - **`dist/skill/`** — cross-platform SKILL.md (agentskills.io format, traits inlined) + PERSONAS.md
-   - **`dist/claude/`** — CC-native skills (`.claude/skills/{name}/SKILL.md` with description frontmatter) + rules
+   - **`dist/claude/`** — CC-native: agents, skills, rules, traits, CLAUDE.md (`@imports`), settings.json, .mcp.json
    - **`dist/copilot/`** — per-persona copilot-instructions.md fragments + instructions
-3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations
+3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
 Each `dist/{platform}/` folder is self-contained. Scope hierarchy (core → groups → teams) is preserved within each platform folder. Duplication across platforms is intentional (generated files are cattle not pets). `full-build` runs dev-sync (not sync) to load compiled personas locally.
@@ -52,7 +52,7 @@ Four-level hierarchy: Org → Group → Team → Repo. More specific scopes laye
 
 Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/skill/` — cross-platform SKILL.md (agentskills.io format, traits inlined) + persona.config.json + PERSONAS.md
-- `dist/claude/` — CC-native skills + rules + PERSONAS.md
+- `dist/claude/` — CC-native: agents, skills, rules, traits, CLAUDE.md (@imports), settings.json, .mcp.json, PERSONAS.md
 - `dist/copilot/` — per-persona copilot-instructions.md fragments + instructions + PERSONAS.md
 
 Cursor and Gemini output are planned for Phase 2.
@@ -209,9 +209,6 @@ Total: ~9,900 lines of planning documentation with ~103 open questions to resolv
 ## Known Gaps
 
 - `scripts/cli.ts` doesn't exist — blocks `agentboot setup` bin command (Phase 2)
-- Claude output generates skills only, not agents (no `model`, `permissionMode` frontmatter yet) (Phase 2)
-- No CLAUDE.md generation with `@import` directives (Phase 2)
-- No settings.json (hooks) or .mcp.json generation (Phase 2)
 - No cursor or gemini output formats (Phase 2)
 - Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not (Phase 2)
 - No runtime config schema validation (zod planned but not wired in) (Phase 2)
