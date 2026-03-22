@@ -1,3 +1,8 @@
+---
+sidebar_label: "Privacy & Safety"
+sidebar_position: 3
+---
+
 # Privacy, Safety & the Prompt Confidentiality Model
 
 How AgentBoot balances organizational learning with individual psychological safety.
@@ -380,7 +385,7 @@ the private zone. AgentBoot's optimization tools for developer prompts operate
 on aggregates and patterns extracted via `/insights` — never on the prompts
 themselves, and never visible to the org unless the developer explicitly opts in.
 
-See [`docs/prompt-optimization.md`](prompt-optimization.md#two-types-of-prompts-two-different-models)
+See [`docs/prompt-guide.md`](prompt-guide.md#two-types-of-prompts-two-different-models)
 for how each optimization tool maps to these two types.
 
 ---

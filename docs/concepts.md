@@ -1,3 +1,8 @@
+---
+sidebar_label: "Core Concepts"
+sidebar_position: 2
+---
+
 # AgentBoot Concepts
 
 This document explains the conceptual foundation of AgentBoot. Read this before reading
@@ -31,9 +36,8 @@ A trait is not:
 - A prompt template. Traits are building blocks, not invocation patterns.
 
 The trait files in `core/traits/` are the authoritative definitions. Each one defines
-the behavior at each applicable configuration level (HIGH / MEDIUM / LOW, or whatever
-axes of variation the trait exposes), the anti-patterns to avoid, and the interaction
-effects with other traits.
+the behavior, the anti-patterns to avoid, and the interaction effects with other traits.
+(A planned trait weight system will add HIGH / MEDIUM / LOW calibration — see below.)
 
 ---
 
@@ -110,7 +114,8 @@ migrations directory might activate schema review guardrails.
 **Precedence:** More specific scopes win on optional behaviors; more general scopes win
 on mandatory behaviors. Rules (always-on instructions) are mandatory by nature — they
 cannot be disabled at lower scopes. Personas and traits are optional — lower scopes
-can adjust weights, add personas, or set trait weights to zero. To make a specific
+can add personas or disable traits at their scope. (In a future release, lower scopes
+will be able to adjust trait weights.) To make a specific
 behavior mandatory, encode it as a rule rather than marking a persona as required.
 
 This hierarchy matters for two reasons. First, it ensures that governance propagates
@@ -535,6 +540,10 @@ git. There is no "write it anyway" option.
 
 ## The trait weight system
 
+> **Planned (Phase 2).** Trait weights are designed but not yet implemented. Today,
+> traits are included or excluded (boolean). The weight system described below is the
+> target design for a future release.
+
 Several core traits — `critical-thinking` is the primary example — expose a weight axis:
 `HIGH`, `MEDIUM`, and `LOW`. This is not a priority system; it is a calibration system.
 
@@ -670,6 +679,8 @@ governance system needs both.
 
 ## Numeric trait weights
 
+> **Planned (Phase 2).** Numeric weights are part of the same future weight system.
+
 The HIGH / MEDIUM / LOW weight system described earlier is the simplified interface.
 Under the hood, traits that support calibration use a numeric 0.0–1.0 scale that maps
 to finer-grained behavior:
@@ -696,8 +707,8 @@ In `persona.config.json`, you can use either form:
 The build system resolves named weights to their numeric equivalents. The persona's
 compiled SKILL.md receives the calibration instructions appropriate for its weight.
 
-The `creative-suggestion` trait is the counterpart to `critical-thinking`. Where
-critical thinking is the tear-down dial (skepticism), creative suggestion is the
+The `creative-suggestion` trait (**planned**) is the counterpart to `critical-thinking`.
+Where critical thinking is the tear-down dial (skepticism), creative suggestion is the
 build-up dial (proactive improvement suggestions). Security reviewers typically use
 high critical thinking and low creative suggestion. Code reviewers use moderate
 levels of both.

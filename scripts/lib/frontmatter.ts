@@ -8,7 +8,9 @@
 // Frontmatter parsing
 // ---------------------------------------------------------------------------
 
-const FRONTMATTER_RE = /^---\n([\s\S]+?)\n---/;
+// Matches YAML frontmatter blocks. Uses [\s\S]*? (zero or more) so that
+// empty frontmatter (---\n---) returns an empty Map rather than null.
+const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
 
 export function parseFrontmatter(content: string): Map<string, string> | null {
   const match = FRONTMATTER_RE.exec(content);

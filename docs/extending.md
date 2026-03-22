@@ -1,3 +1,8 @@
+---
+sidebar_label: "Extending AgentBoot"
+sidebar_position: 1
+---
+
 # Extending AgentBoot
 
 AgentBoot ships generic. Your organization almost certainly has requirements that are
@@ -445,4 +450,4 @@ the native Claude Code mechanism for HARD guardrails.
 *See also:*
 - [`docs/concepts.md`](concepts.md) — the scope hierarchy and trait system explained
 - [`docs/configuration.md`](configuration.md) — complete `agentboot.config.json` reference
-- [`domains/compliance-template/README.md`](../domains/compliance-template/README.md) — worked example domain template
+- Use `agentboot add domain <name>` to scaffold a domain template

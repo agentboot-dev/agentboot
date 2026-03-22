@@ -1,3 +1,8 @@
+---
+sidebar_label: "Configuration"
+sidebar_position: 3
+---
+
 # Configuration Reference
 
 This document is the complete reference for `agentboot.config.json`. Every field is

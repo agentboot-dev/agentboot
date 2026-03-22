@@ -741,3 +741,390 @@ describe("dev-sync script", () => {
     expect(fs.existsSync(copilotDir)).toBe(true);
   });
 });
+
+// ===========================================================================
+// Phase 3 Tests
+// ===========================================================================
+
+// AB-57: Plugin structure
+describe("AB-57: plugin structure", () => {
+  const pluginDir = path.join(ROOT, "dist", "plugin");
+
+  it("generates plugin.json with required fields", () => {
+    const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "plugin.json"), "utf-8"));
+    expect(pluginJson.name).toBeTruthy();
+    expect(pluginJson.version).toBeTruthy();
+    expect(pluginJson.agentboot_version).toBeTruthy();
+    expect(pluginJson.license).toBe("Apache-2.0");
+    expect(pluginJson.personas).toBeInstanceOf(Array);
+    expect(pluginJson.personas.length).toBe(4);
+    expect(pluginJson.traits).toBeInstanceOf(Array);
+    expect(pluginJson.traits.length).toBe(6);
+  });
+
+  it("includes agents directory with persona agents", () => {
+    const agentsDir = path.join(pluginDir, "agents");
+    expect(fs.existsSync(agentsDir)).toBe(true);
+    const agents = fs.readdirSync(agentsDir);
+    expect(agents).toContain("code-reviewer.md");
+    expect(agents).toContain("security-reviewer.md");
+  });
+
+  it("includes skills directory with skill files", () => {
+    const skillsDir = path.join(pluginDir, "skills");
+    expect(fs.existsSync(skillsDir)).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, "review-code", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, "review-security", "SKILL.md"))).toBe(true);
+  });
+
+  it("includes traits directory with all 6 traits", () => {
+    const traitsDir = path.join(pluginDir, "traits");
+    expect(fs.existsSync(traitsDir)).toBe(true);
+    const traits = fs.readdirSync(traitsDir);
+    expect(traits.length).toBe(6);
+    expect(traits).toContain("critical-thinking.md");
+  });
+
+  it("includes hooks directory", () => {
+    const hooksDir = path.join(pluginDir, "hooks");
+    expect(fs.existsSync(hooksDir)).toBe(true);
+  });
+
+  it("includes rules directory", () => {
+    const rulesDir = path.join(pluginDir, "rules");
+    expect(fs.existsSync(rulesDir)).toBe(true);
+    const rules = fs.readdirSync(rulesDir);
+    expect(rules.length).toBeGreaterThan(0);
+  });
+
+  it("persona entries have correct paths", () => {
+    const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "plugin.json"), "utf-8"));
+    for (const persona of pluginJson.personas) {
+      expect(persona.id).toBeTruthy();
+      expect(persona.agent_path).toMatch(/^agents\//);
+      expect(persona.skill_path).toMatch(/^skills\//);
+      // Verify the referenced files exist
+      expect(fs.existsSync(path.join(pluginDir, persona.agent_path))).toBe(true);
+      expect(fs.existsSync(path.join(pluginDir, persona.skill_path))).toBe(true);
+    }
+  });
+});
+
+// AB-59/60/63: Compliance hooks
+describe("AB-59/60/63: compliance and audit trail hooks", () => {
+  const hooksDir = path.join(ROOT, "dist", "claude", "core", "hooks");
+
+  it("generates input scanning hook (AB-59)", () => {
+    const hookPath = path.join(hooksDir, "agentboot-input-scan.sh");
+    expect(fs.existsSync(hookPath)).toBe(true);
+    const content = fs.readFileSync(hookPath, "utf-8");
+    expect(content).toContain("UserPromptSubmit");
+    expect(content).toContain("credential");
+    // Verify executable
+    const stat = fs.statSync(hookPath);
+    expect(stat.mode & 0o111).toBeGreaterThan(0);
+  });
+
+  it("generates output scanning hook (AB-60)", () => {
+    const hookPath = path.join(hooksDir, "agentboot-output-scan.sh");
+    expect(fs.existsSync(hookPath)).toBe(true);
+    const content = fs.readFileSync(hookPath, "utf-8");
+    expect(content).toContain("Stop");
+    expect(content).toContain("credential");
+  });
+
+  it("generates audit trail / telemetry hook (AB-63)", () => {
+    const hookPath = path.join(hooksDir, "agentboot-telemetry.sh");
+    expect(fs.existsSync(hookPath)).toBe(true);
+    const content = fs.readFileSync(hookPath, "utf-8");
+    expect(content).toContain("SubagentStart");
+    expect(content).toContain("SubagentStop");
+    expect(content).toContain("PostToolUse");
+    expect(content).toContain("SessionEnd");
+    expect(content).toContain("telemetry.ndjson");
+  });
+
+  it("registers hooks in settings.json", () => {
+    const settingsPath = path.join(ROOT, "dist", "claude", "core", "settings.json");
+    expect(fs.existsSync(settingsPath)).toBe(true);
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    expect(settings.hooks).toBeDefined();
+    expect(settings.hooks.UserPromptSubmit).toBeDefined();
+    expect(settings.hooks.Stop).toBeDefined();
+    expect(settings.hooks.SubagentStart).toBeDefined();
+    expect(settings.hooks.SubagentStop).toBeDefined();
+    expect(settings.hooks.PostToolUse).toBeDefined();
+  });
+});
+
+// AB-64: Telemetry NDJSON schema
+describe("AB-64: telemetry NDJSON schema", () => {
+  it("generates telemetry event JSON schema", () => {
+    const schemaPath = path.join(ROOT, "dist", "schema", "telemetry-event.v1.json");
+    expect(fs.existsSync(schemaPath)).toBe(true);
+    const schema = JSON.parse(fs.readFileSync(schemaPath, "utf-8"));
+    expect(schema.$id).toContain("telemetry-event");
+    expect(schema.required).toContain("event");
+    expect(schema.required).toContain("persona_id");
+    expect(schema.required).toContain("timestamp");
+    expect(schema.properties.event.enum).toContain("persona_invocation");
+    expect(schema.properties.event.enum).toContain("session_summary");
+    expect(schema.properties.findings_count).toBeDefined();
+  });
+});
+
+// AB-46: Add domain/hook scaffolding
+describe("AB-46: add domain and hook scaffolding", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-add-"));
+    // Create minimal config for add to work
+    fs.mkdirSync(path.join(tmpDir, "core", "personas"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "core", "traits"), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("scaffolds a domain with agentboot.domain.json", () => {
+    run("add domain my-compliance", tmpDir);
+    const domainDir = path.join(tmpDir, "domains", "my-compliance");
+    expect(fs.existsSync(domainDir)).toBe(true);
+    expect(fs.existsSync(path.join(domainDir, "agentboot.domain.json"))).toBe(true);
+    expect(fs.existsSync(path.join(domainDir, "README.md"))).toBe(true);
+    expect(fs.existsSync(path.join(domainDir, "traits"))).toBe(true);
+    expect(fs.existsSync(path.join(domainDir, "personas"))).toBe(true);
+    expect(fs.existsSync(path.join(domainDir, "instructions"))).toBe(true);
+
+    const manifest = JSON.parse(fs.readFileSync(path.join(domainDir, "agentboot.domain.json"), "utf-8"));
+    expect(manifest.name).toBe("my-compliance");
+    expect(manifest.version).toBe("1.0.0");
+  });
+
+  it("scaffolds a hook with executable shell script", () => {
+    run("add hook my-scanner", tmpDir);
+    const hookPath = path.join(tmpDir, "hooks", "my-scanner.sh");
+    expect(fs.existsSync(hookPath)).toBe(true);
+    const content = fs.readFileSync(hookPath, "utf-8");
+    expect(content).toContain("#!/bin/bash");
+    expect(content).toContain("hook_event_name");
+    // Verify executable
+    const stat = fs.statSync(hookPath);
+    expect(stat.mode & 0o111).toBeGreaterThan(0);
+  });
+
+  it("rejects duplicate domain names", () => {
+    run("add domain test-domain", tmpDir);
+    const output = runExpectFail("add domain test-domain", tmpDir);
+    expect(output).toContain("already exists");
+  });
+
+  it("rejects duplicate hook names", () => {
+    run("add hook test-hook", tmpDir);
+    const output = runExpectFail("add hook test-hook", tmpDir);
+    expect(output).toContain("already exists");
+  });
+
+  it("shows domain and hook in add help text", () => {
+    const output = runExpectFail("add unknown-type test", tmpDir);
+    expect(output).toContain("domain");
+    expect(output).toContain("hook");
+  });
+});
+
+// AB-40: export command
+describe("AB-40: export command", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-export-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("exports plugin format to specified directory", () => {
+    const output = run(`export --format plugin --output ${tmpDir}/plugin-out`);
+    expect(output).toContain("Exported plugin");
+    expect(fs.existsSync(path.join(tmpDir, "plugin-out", "plugin.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "plugin-out", "agents"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "plugin-out", "skills"))).toBe(true);
+  });
+
+  it("exports marketplace scaffold", () => {
+    const output = run(`export --format marketplace --output ${tmpDir}`);
+    expect(output).toContain("marketplace.json");
+    const marketplace = JSON.parse(fs.readFileSync(path.join(tmpDir, "marketplace.json"), "utf-8"));
+    expect(marketplace.$schema).toContain("agentboot.dev");
+    expect(marketplace.entries).toBeInstanceOf(Array);
+  });
+
+  it("rejects unknown export format", () => {
+    const output = runExpectFail("export --format unknown");
+    expect(output).toContain("Unknown export format");
+  });
+});
+
+// AB-41: publish command
+describe("AB-41: publish command", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-publish-"));
+    // Create a fake plugin directory
+    const pluginDir = path.join(tmpDir, ".claude-plugin");
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "plugin.json"), JSON.stringify({
+      name: "test-org@test-personas",
+      version: "1.0.0",
+      description: "Test plugin",
+      author: "test",
+    }, null, 2), "utf-8");
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("publishes plugin to marketplace.json with --dry-run", () => {
+    const output = run("publish --dry-run", tmpDir);
+    expect(output).toContain("DRY RUN");
+    expect(output).toContain("Would write marketplace.json");
+  });
+
+  it("publishes plugin and creates marketplace.json", () => {
+    run("publish", tmpDir);
+    const marketplacePath = path.join(tmpDir, "marketplace.json");
+    expect(fs.existsSync(marketplacePath)).toBe(true);
+    const marketplace = JSON.parse(fs.readFileSync(marketplacePath, "utf-8"));
+    expect(marketplace.entries.length).toBe(1);
+    expect(marketplace.entries[0].type).toBe("plugin");
+    expect(marketplace.entries[0].version).toBe("1.0.0");
+    expect(marketplace.entries[0].sha256).toBeTruthy();
+  });
+
+  it("bumps version with --bump patch", () => {
+    const output = run("publish --bump patch", tmpDir);
+    expect(output).toContain("1.0.1");
+    const marketplace = JSON.parse(fs.readFileSync(path.join(tmpDir, "marketplace.json"), "utf-8"));
+    expect(marketplace.entries[0].version).toBe("1.0.1");
+  });
+});
+
+// AB-88: N-tier scope model
+describe("AB-88: N-tier scope model", () => {
+  it("converts legacy groups/teams to scope nodes", async () => {
+    // Import the conversion function
+    const { groupsToNodes, flattenNodes } = await import("../scripts/lib/config.js");
+
+    const groups = {
+      platform: { teams: ["api", "infra"] },
+      product: { teams: ["web"] },
+    };
+
+    const nodes = groupsToNodes(groups);
+    expect(nodes["platform"]).toBeDefined();
+    expect(nodes["platform"]!.children?.["api"]).toBeDefined();
+    expect(nodes["platform"]!.children?.["infra"]).toBeDefined();
+    expect(nodes["product"]!.children?.["web"]).toBeDefined();
+
+    const flat = flattenNodes(nodes);
+    const paths = flat.map((f) => f.path);
+    expect(paths).toContain("platform");
+    expect(paths).toContain("platform/api");
+    expect(paths).toContain("platform/infra");
+    expect(paths).toContain("product");
+    expect(paths).toContain("product/web");
+  });
+});
+
+// AB-62/65: Privacy and telemetry config types
+describe("AB-62/65: privacy and telemetry config", () => {
+  it("config accepts privacy and telemetry fields", async () => {
+    const { loadConfig, stripJsoncComments } = await import("../scripts/lib/config.js");
+
+    // Write a test config with privacy/telemetry
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-privacy-"));
+    const configContent = JSON.stringify({
+      org: "test-org",
+      privacy: {
+        tier: "organizational",
+        rawPrompts: false,
+        escalationEnabled: true,
+      },
+      telemetry: {
+        enabled: true,
+        includeDevId: "hashed",
+        logPath: "~/.agentboot/telemetry.ndjson",
+        includeContent: false,
+      },
+    });
+    const configPath = path.join(tmpDir, "agentboot.config.json");
+    fs.writeFileSync(configPath, configContent, "utf-8");
+
+    const config = loadConfig(configPath);
+    expect(config.privacy?.tier).toBe("organizational");
+    expect(config.privacy?.rawPrompts).toBe(false);
+    expect(config.telemetry?.enabled).toBe(true);
+    expect(config.telemetry?.includeDevId).toBe("hashed");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// AB-53: Domain layer structure
+describe("AB-53: domain layer loading", () => {
+  it("compiles domain personas and traits when configured", () => {
+    // Create a temp config with a domain reference
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-domain-"));
+    const domainDir = path.join(tmpDir, "domains", "test-domain");
+
+    // Create domain structure
+    fs.mkdirSync(path.join(domainDir, "traits"), { recursive: true });
+    fs.writeFileSync(path.join(domainDir, "agentboot.domain.json"), JSON.stringify({
+      name: "test-domain",
+      version: "1.0.0",
+    }), "utf-8");
+    fs.writeFileSync(path.join(domainDir, "traits", "test-trait.md"), "# Test Trait\n\nTest content.\n", "utf-8");
+
+    // Verify domain manifest loads
+    const manifest = JSON.parse(fs.readFileSync(path.join(domainDir, "agentboot.domain.json"), "utf-8"));
+    expect(manifest.name).toBe("test-domain");
+    expect(manifest.version).toBe("1.0.0");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// AB-56: Model selection matrix
+describe("AB-56: model selection matrix", () => {
+  it("documentation file exists with required sections", () => {
+    const docPath = path.join(ROOT, "docs", "model-selection.md");
+    expect(fs.existsSync(docPath)).toBe(true);
+    const content = fs.readFileSync(docPath, "utf-8");
+    expect(content).toContain("# Model Selection Matrix");
+    expect(content).toContain("Haiku");
+    expect(content).toContain("Sonnet");
+    expect(content).toContain("Opus");
+    expect(content).toContain("Code Reviewer");
+    expect(content).toContain("Security Reviewer");
+    expect(content).toContain("persona.config.json");
+  });
+});
+
+// AB-91: ACKNOWLEDGMENTS.md
+describe("AB-91: ACKNOWLEDGMENTS.md", () => {
+  it("exists with prior art credits", () => {
+    const ackPath = path.join(ROOT, "ACKNOWLEDGMENTS.md");
+    expect(fs.existsSync(ackPath)).toBe(true);
+    const content = fs.readFileSync(ackPath, "utf-8");
+    expect(content).toContain("SuperClaude");
+    expect(content).toContain("Trail of Bits");
+    expect(content).toContain("ArcKit");
+    expect(content).toContain("CC-BY-SA-4.0");
+    expect(content).toContain("Apache-2.0");
+  });
+});

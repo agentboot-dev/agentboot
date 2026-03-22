@@ -120,7 +120,7 @@ See `docs/concepts.md` for full design rationale.
 
 ### Prompt & Cost Optimization
 
-`docs/prompt-optimization.md` — 8 sections covering the full optimization lifecycle:
+`docs/prompt-guide.md` — 8 sections covering the full optimization lifecycle:
 - `agentboot lint` — static prompt analysis (token budgets, vague language, conflicts, security)
 - Token budget system — per-persona context cost calculation and enforcement
 - Model selection matrix — Haiku/Sonnet/Opus guidance per persona type
@@ -130,20 +130,13 @@ See `docs/concepts.md` for full design rationale.
 - `agentboot test` — deterministic (free) + behavioral (LLM) + regression (snapshot) testing
 - Continuous optimization loop — weekly review process with metrics-driven prompt improvements
 
-### CLI Design
+### CLI Reference
 
-`docs/cli-design.md` — standalone binary via `brew install agentboot`:
-- `agentboot setup` — interactive wizard that detects role/tools/org and executes the right setup
-- `agentboot build/sync/export/publish` — build pipeline for platform teams
-- `agentboot connect` — developer self-service org connection
-- `agentboot doctor/status` — diagnostics and deployment dashboard
-- `agentboot add` — scaffold personas, traits, domains, gotchas, hooks; `add prompt` ingests raw prompts
-- `agentboot discover` — scan repos/machines for existing agentic content, overlap analysis, migration plan
-- Distributed via brew/apt/choco (zero runtime deps), npm/npx as fallback
+`docs/cli-reference.md` — all implemented CLI commands with full syntax, flags, and examples.
 
 ### Knowledge Layer
 
-`docs/knowledge-layer.md` — three-stage progression from flat files to RAG:
+`docs/internal/plans/knowledge-layer.md` — three-stage progression from flat files to RAG:
 - **Stage 1 (Flat files):** Current default. Markdown gotchas/traits with path scoping. Works for 5-50 items.
 - **Stage 2 (Structured store):** SQLite index generated from frontmatter. MCP server exposes tag/category queries. Handles 50-500 items. Zero new infrastructure.
 - **Stage 3 (Vector/RAG):** Embeddings + semantic retrieval via sqlite-vss. Personas find knowledge by relevance, not keywords. "This code is similar to an incident last year." Handles 500+ items.
@@ -153,7 +146,7 @@ See `docs/concepts.md` for full design rationale.
 
 ### Test Plan
 
-`docs/test-plan.md` — 6-layer test pyramid:
+`docs/internal/plans/test-plan.md` — 6-layer test pyramid:
 - **Unit/Schema** (free, every commit): config validation, frontmatter, trait composition, lint rules
 - **Integration** (free, every commit): full build pipeline, plugin export, sync, uninstall
 - **Behavioral** (~$5/PR): `claude -p` with known-buggy code, assert on findings patterns, 2-of-3 flake tolerance
@@ -166,7 +159,7 @@ See `docs/concepts.md` for full design rationale.
 
 ### Developer Onboarding
 
-`docs/developer-onboarding.md` — lightweight agentic training assist (not an LMS):
+`docs/internal/plans/developer-onboarding.md` — lightweight agentic training assist (not an LMS):
 - First-session welcome (~80 tokens in CLAUDE.md — try these personas now)
 - `/learn` skill — contextual help ("how do I review one file?", "what do severity levels mean?")
 - Curated external resource links (Anthropic docs, community guides) — AgentBoot curates, doesn't build content
@@ -185,19 +178,9 @@ See `docs/concepts.md` for full design rationale.
 - CC plugin packaging: each domain/category = one installable plugin
 - Monetization paths documented for V2+ (premium domains, managed marketplace, consulting, certification)
 
-### Third-Party Ecosystem
-
-`docs/third-party-ecosystem.md` — 5 key tools analyzed (SuperClaude, ArcKit, spec-kit, Trail of Bits config + skills):
-- AgentBoot is the governance/distribution layer, not competing with content tools
-- All ideas developed independently; 3P tools are prior art (parallel evolution, not derivation)
-- Marketplace curation (point to upstream) is the recommended partnership model over bundling
-- Apache 2.0 license for core; domain layers carry their own licenses
-- ACKNOWLEDGMENTS.md with prior art / complementary / integrated / includes categories
-- CC-BY-SA-4.0 (ToB skills) requires ShareAlike — cannot be relicensed as MIT
-
 ### CI/CD & Automation
 
-`docs/ci-cd-automation.md` covers 5 CI methods:
+`docs/internal/plans/ci-cd-automation.md` covers 5 CI methods:
 - `claude -p --agent --output-format json` is the primary CI interface (cost-bounded, schema-enforced)
 - Hook scripts for deterministic compliance gates (free, <1s, no LLM)
 - `agentboot validate/build/sync` for the personas repo pipeline
@@ -206,19 +189,23 @@ See `docs/concepts.md` for full design rationale.
 
 ### Claude Code Reference
 
-`docs/claude-code-reference/` is the living knowledge base of every CC feature:
+`docs/internal/claude-code-reference/` is the living knowledge base of every CC feature:
 - `feature-inventory.md` — exhaustive reference (35 tools, 25 hook events, all settings, all frontmatter fields)
 - `agentboot-coverage.md` — gap analysis with 24 prioritized action items
 
 ### Planning Documents
 
-`docs/plans/` contains the formal planning docs synthesized from all design work:
-- `prd.md` (2,090 lines) — problem, users, vision, 52 feature requirements across 9 subsystems, 8 non-goals, success metrics, 32 open questions, 40+ term glossary
-- `architecture.md` (2,658 lines) — system context, 8 component diagrams, data schemas, scope merge semantics, build pipeline, distribution, security, cross-platform, 15 architectural decisions (AD-01–AD-15), 20 open questions
-- `technical-spec.md` (2,943 lines) — all 21 CLI commands specified, build system algorithms, persona.config.json schema (newly designed), 15 lint rules, canonical test YAML format, telemetry schema, MCP tools, plugin packaging, 20 open questions
-- `design.md` (2,213 lines) — UX per user segment, privacy deep dive (13 subsections), marketplace/community, prompt lifecycle, onboarding flows, uninstall, brand, licensing, 31 open questions
+`docs/internal/plans/` contains the formal planning docs synthesized from all design work:
+- `prd.md` — problem, users, vision, 52 feature requirements across 9 subsystems, 8 non-goals, success metrics
+- `architecture.md` — system context, 8 component diagrams, data schemas, scope merge semantics, 15 architectural decisions (AD-01–AD-15)
+- `technical-spec.md` — all 21 CLI commands specified, build system algorithms, persona.config.json schema, telemetry schema, MCP tools, plugin packaging
+- `design.md` — UX per user segment, privacy deep dive, marketplace/community, prompt lifecycle, onboarding flows, licensing
+- `stack-rank.md` — feature priority by phase with Jira tracking
+- `reorg-documentation.md` — documentation reorganization plan and domain strategy
 
-Total: ~9,900 lines of planning documentation with ~103 open questions to resolve.
+### Internal Operations
+
+`docs/internal/action-items.md` — centralized tracker of all open questions, audit doubts, and TODOs (88 items across 5 priority tiers).
 
 ## Known Gaps
 

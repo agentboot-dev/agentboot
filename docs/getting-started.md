@@ -1,3 +1,8 @@
+---
+sidebar_label: "Getting Started"
+sidebar_position: 1
+---
+
 # Getting Started with AgentBoot
 
 This guide takes you from zero to a working AgentBoot deployment in one sitting. By the

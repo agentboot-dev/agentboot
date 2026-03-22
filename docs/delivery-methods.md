@@ -1,3 +1,8 @@
+---
+sidebar_label: "Delivery Methods"
+sidebar_position: 1
+---
+
 # AgentBoot Delivery Methods — Analysis & Recommendations
 
 How organizations install, configure, and use AgentBoot. Evaluated through the lens
