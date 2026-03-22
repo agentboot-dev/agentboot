@@ -69,31 +69,43 @@ scaffolding, doctor, and uninstall all work. Basic prompt quality checks in plac
 
 ---
 
-## Phase 3: "Distribution & Trust"
+## Phase 3: "Ship It"
 
-**Definition of done:** Personas can be packaged as CC plugins and published. Privacy model
-and compliance hooks are in place. Sync creates PRs instead of direct writes.
+**Epic:** AB-87
 
-| # | Feature | Category | Jira | Status |
-|---|---------|----------|------|--------|
-| 35 | Plugin structure (plugin.json, agents/, skills/, hooks/) | [DELIVER] | AB-57 | |
-| 36 | `agentboot export --format plugin` | [CLI] | AB-40 | |
-| 37 | `agentboot publish` | [CLI] | AB-41 | |
-| 38 | Private marketplace template (marketplace.json) | [DELIVER] | AB-58 | |
-| 39 | Brew tap distribution | [CLI] | AB-39 | |
-| 40 | CC-native output: .claude/settings.json (hooks) | [BUILD] | AB-26 | ✓ Done |
-| 41 | Compliance hooks — input scanning (UserPromptSubmit) | [DELIVER] | AB-59 | |
-| 42 | Compliance hooks — output scanning (Stop) | [DELIVER] | AB-60 | |
-| 43 | Three-tier privacy model (config: rawPrompts false) | [PRIVACY] | AB-62 | |
-| 44 | Telemetry config (includeDevId: false/hashed/email) | [PRIVACY] | AB-65 | |
-| 45 | Audit trail hooks (SubagentStart/Stop, PostToolUse) | [PRIVACY] | AB-63 | |
-| 46 | Telemetry NDJSON output (canonical schema) | [PRIVACY] | AB-64 | |
-| 47 | Managed settings artifact generation | [DELIVER] | AB-61 | |
-| 48 | Sync via GitHub API (PR creation mode) | [BUILD] | AB-28 | ✓ Done |
-| 49 | CC-native output: .mcp.json generation | [BUILD] | AB-27 | ✓ Done |
-| 50 | Per-persona extensions (extend without modify) | [PERSONA] | AB-54 | |
-| 51 | Domain layer structure (agentboot.domain.json) | [PERSONA] | AB-53 | |
-| 52 | `agentboot add gotcha/domain/hook` scaffolding | [CLI] | AB-46 | |
+**Definition of done:** AgentBoot is installable, distributable as a CC plugin, and the
+scope model supports real org structures. Compliance and privacy foundations are in place.
+
+**Ranking criteria:** Value-first with dependencies naturally rising above. Cost measured
+in remaining research, design, and unknowns — not implementation effort.
+
+| Rank | Feature | Category | Jira | Status |
+|------|---------|----------|------|--------|
+| 1 | Plugin structure (plugin.json, agents/, skills/, hooks/) | [DELIVER] | AB-57 | ✓ Done |
+| 2 | `agentboot export --format plugin` | [CLI] | AB-40 | ✓ Done |
+| 3 | `agentboot publish` to marketplace | [CLI] | AB-41 | ✓ Done |
+| 4 | Private marketplace template (marketplace.json) | [DELIVER] | AB-58 | ✓ Done |
+| 5 | Claim "agentboot" CC plugin name | [OPS] | AB-89 | ⏳ Manual |
+| 6 | Claim GitHub org "agentboot" | [OPS] | AB-90 | ⏳ Manual |
+| 7 | N-tier scope model (nodes replace groups/teams) | [BUILD] | AB-88 | ✓ Done |
+| 8 | `agentboot add gotcha/domain/hook` scaffolding | [CLI] | AB-46 | ✓ Done |
+| 9 | Per-persona extensions (extend without modify) | [PERSONA] | AB-54 | ✓ Done |
+| 10 | Domain layer structure (agentboot.domain.json) | [PERSONA] | AB-53 | ✓ Done |
+| 11 | Compliance hooks — input scanning (UserPromptSubmit) | [DELIVER] | AB-59 | ✓ Done |
+| 12 | Compliance hooks — output scanning (Stop) | [DELIVER] | AB-60 | ✓ Done |
+| 13 | Audit trail hooks (SubagentStart/Stop, PostToolUse) | [PRIVACY] | AB-63 | ✓ Done |
+| 14 | Telemetry NDJSON output (canonical schema) | [PRIVACY] | AB-64 | ✓ Done |
+| 15 | Three-tier privacy model (config: rawPrompts false) | [PRIVACY] | AB-62 | ✓ Done |
+| 16 | Telemetry config (includeDevId: false/hashed/email) | [PRIVACY] | AB-65 | ✓ Done |
+| 17 | Model selection matrix documentation | [PERSONA] | AB-56 | ✓ Done |
+| 18 | ACKNOWLEDGMENTS.md (prior art credit) | [MARKET] | AB-91 | ✓ Done |
+| 19 | Managed settings artifact generation | [DELIVER] | AB-61 | ✓ Done |
+
+**Previously completed (moved to Phase 2 or earlier):**
+- Brew tap distribution (AB-39) — ✓ Done
+- CC-native output: .claude/settings.json hooks (AB-26) — ✓ Done
+- Sync via GitHub API / PR creation mode (AB-28) — ✓ Done
+- CC-native output: .mcp.json generation (AB-27) — ✓ Done
 
 ---
 

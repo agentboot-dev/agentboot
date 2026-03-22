@@ -1,5 +1,7 @@
 node_modules/
 dist/
+website/build/
+website/.docusaurus/
 
 # dev-sync output (local dogfooding, not committed)
 .claude/
@@ -9,5 +11,6 @@ dist/
 .gemini/agentboot/
 .github/copilot-instructions.md
 
-/docs/internal/
+# Confidential persona origins (real org names)
+/docs/internal/persona-origins/
 /temp/

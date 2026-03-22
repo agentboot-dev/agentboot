@@ -6,8 +6,9 @@
 |------|-------|-------|---------|
 | `validate.test.ts` | 20 | Unit: JSONC parsing, frontmatter, secret scanning, persona config validation | <100ms |
 | `pipeline.test.ts` | 33 | Integration: compile → sync pipeline, scope merging, platform output | ~3s |
-| `cli.test.ts` | 54 | Integration: CLI commands (AB-2 epic), compile features, uninstall safety | ~9s |
-| **Total** | **107** | | ~12s |
+| `cli.test.ts` | 84 | Integration: CLI commands (AB-2 epic), compile features, uninstall safety | ~9s |
+| `lib.test.ts` | 50 | Unit: config utilities, frontmatter edge cases, secret scanning, scope models | <300ms |
+| **Total** | **187** | | ~12s |
 
 ## Coverage by Feature
 
@@ -64,6 +65,18 @@
 | YAML frontmatter safety | — | 3 | cli.test.ts: quoted descriptions in skills, quoted names in agents, special chars |
 | CLI global | — | 2 | cli.test.ts: --version, --help |
 
+### Shared Libraries (lib.test.ts)
+
+| Feature | Tests | Notes |
+|---------|-------|-------|
+| stripJsoncComments edge cases | 8 | Empty input, no comments, comment-only lines, multiple comments, trailing whitespace, escaped quotes, no newlines, protocol URLs |
+| resolveConfigPath | 5 | Default path, custom path, relative path, mixed flags, missing value |
+| loadConfig | 9 | Valid config, JSONC stripping, missing file, array input, null input, missing org, empty org, bad personas.enabled, bad targetDir, minimal config |
+| flattenNodes | 6 | Empty input, single node, two-level tree, three-level tree, siblings, prefix parameter |
+| groupsToNodes | 5 | Empty groups, group with teams, no teams, empty teams array, multiple groups |
+| parseFrontmatter edge cases | 9 | Empty block, blank-only block, minimal valid, empty values, no-colon lines, duplicate keys, value with colons, non-start position, whitespace values |
+| scanForSecrets additional | 8 | Slack tokens, line numbers, multiple secrets, custom patterns, empty content, non-assignment mentions, DEFAULT_SECRET_PATTERNS validation |
+
 ## Known Gaps
 
 ### Not Tested (by design or limitation)
@@ -109,3 +122,5 @@ Run before each release:
 10. **WARN: Model/permissionMode unquoted in YAML** — inconsistent with other fields (fixed)
 11. **WARN: Pipeline test substring match** — `toContain` masked .md.md bug (fixed to regex)
 12. **WARN: Platform containment test** — didn't filter `gotchas/` directory (fixed)
+13. **WARN: loadConfig array bypass** — `typeof [] === "object"` passes the non-object check; arrays fall through to org validation instead of getting the "must be a JSON object" error (unfixed — low risk)
+14. **INFO: parseFrontmatter empty block** — `---\n---` (no content) returns `null` because regex requires `[\s\S]+?` (1+ chars). Empty frontmatter is rejected silently (by design — valid SKILL.md files always have fields)

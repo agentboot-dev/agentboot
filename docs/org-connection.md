@@ -1,3 +1,8 @@
+---
+sidebar_label: "Org Connection"
+sidebar_position: 2
+---
+
 # How Developers Get Their Org's AgentBoot
 
 The gap: AgentBoot (generic framework) and Acme-AgentBoot (org's custom rules, personas,
