@@ -32,6 +32,31 @@ Before you start, you need:
 
 ---
 
+## Step 0: Install AgentBoot
+
+```bash
+# Recommended
+npm install -g agentboot
+
+# Or via Homebrew (macOS Sequoia and earlier)
+brew tap agentboot-dev/agentboot && brew install agentboot
+
+# Or run without installing
+npx agentboot --help
+```
+
+> **macOS Tahoe (macOS 26) users:** Homebrew's sandbox is currently incompatible with
+> macOS Tahoe. Use `npm install -g agentboot` instead. See
+> [Troubleshooting](./troubleshooting.md#homebrew-install-fails-on-macos-tahoe) for details.
+
+Verify the install:
+
+```bash
+agentboot --version
+```
+
+---
+
 ## Step 1: Create your org personas repo from the AgentBoot template
 
 The AgentBoot repo is a GitHub template. Use it to create your private org hub.
