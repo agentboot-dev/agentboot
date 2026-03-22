@@ -29,9 +29,11 @@ The output works without AgentBoot installed. Any platform that reads Markdown c
 ## Quickstart
 
 ```bash
-# Install (pick one)
-brew tap agentboot-dev/agentboot && brew install agentboot
+# Install
 npm install -g agentboot
+
+# Or via Homebrew (macOS Sequoia and earlier)
+brew tap agentboot-dev/agentboot && brew install agentboot
 
 # Set up a new personas repo
 agentboot setup

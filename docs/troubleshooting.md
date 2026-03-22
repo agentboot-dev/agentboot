@@ -7,6 +7,36 @@ sidebar_position: 2
 
 Common issues and solutions when using AgentBoot.
 
+## Installation Issues
+
+### Homebrew install fails on macOS Tahoe
+
+**Symptom:**
+```
+nice: Operation not permitted
+Error: Failure while executing; `/usr/bin/sandbox-exec ...` exited with 126.
+```
+
+**Cause:** macOS Tahoe (macOS 26) blocks the `nice` command inside Homebrew's sandbox. This affects all Homebrew formulae that run `npm install` during build, not just AgentBoot.
+
+**Fix:** Install via npm instead:
+
+```bash
+brew uninstall agentboot 2>/dev/null
+npm install -g agentboot
+agentboot --version
+```
+
+Or use npx without installing:
+
+```bash
+npx agentboot --help
+```
+
+macOS Sequoia (macOS 15) and earlier are not affected. The Homebrew formula will work again once Homebrew ships a fix for the Tahoe sandbox incompatibility.
+
+---
+
 ## Build Issues
 
 ### `Config file not found: agentboot.config.json`
