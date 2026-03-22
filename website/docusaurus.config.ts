@@ -11,8 +11,9 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://agentboot.dev',
-  baseUrl: '/',
+  // When custom domain (agentboot.dev) is configured, change baseUrl back to '/'
+  url: 'https://agentboot-dev.github.io',
+  baseUrl: '/agentboot/',
 
   organizationName: 'agentboot-dev',
   projectName: 'agentboot',
