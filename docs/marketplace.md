@@ -1,3 +1,8 @@
+---
+sidebar_label: "Marketplace"
+sidebar_position: 1
+---
+
 # AgentBoot Marketplace — Community Sharing & Curation
 
 How developers and organizations contribute, discover, and share traits, personas,
@@ -809,8 +814,76 @@ conversation based on what the community actually values.
 
 ---
 
+## Ecosystem
+
+AgentBoot is the **governance and distribution layer**, not a content framework. It
+does not compete with tools that produce traits, agents, or skills — it governs and
+distributes them. An org could use SuperClaude's traits, ArcKit's architecture commands,
+and Trail of Bits' security skills, all composed and distributed through AgentBoot's
+scope hierarchy.
+
+### Tool Profiles
+
+| Tool | Problem It Solves | Audience | License | Relationship |
+|------|-------------------|----------|---------|-------------|
+| [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework) | Better Claude Code behavior via composable traits and agents | Individual developer | MIT | Prior art — composable trait architecture |
+| [ArcKit](https://github.com/tractorjuice/arc-kit) | Systematic enterprise architecture governance | Enterprise architects | MIT | Prior art — hook-as-governance patterns |
+| [spec-kit](https://github.com/github/spec-kit) | Specifications before coding (spec-driven development) | Teams starting projects | MIT | Complementary — operates in planning phase, AgentBoot in development phase |
+| [Trail of Bits config](https://github.com/trailofbits/claude-code-config) | Security-first Claude Code configuration | Security teams | Check repo | Prior art — "guardrails, not walls" philosophy |
+| [Trail of Bits skills](https://github.com/trailofbits/skills) | Security audit skills (CodeQL, Semgrep, variant analysis) | Security researchers | CC-BY-SA-4.0 | Domain layer — consumable via AgentBoot's scope hierarchy |
+
+### Licensing Compatibility
+
+AgentBoot core is Apache 2.0. Domain layers carry their own licenses.
+
+| Upstream License | Can AgentBoot bundle it? | Requirements |
+|-----------------|------------------------|-------------|
+| MIT | Yes | Include license text |
+| Apache-2.0 | Yes | Include license + NOTICE |
+| CC-BY-4.0 | As domain layer only | Attribution |
+| CC-BY-SA-4.0 | As domain layer only | Attribution + ShareAlike (cannot relicense) |
+| GPL-3.0 | No (core); isolated domain layer only | Viral — infects composed output |
+
+### Partnership Models
+
+**Marketplace curation (recommended).** AgentBoot's marketplace points to upstream
+repos rather than copying content. No bundling, no license complexity. The user
+installs directly from the upstream project. AgentBoot acts as curator, not distributor.
+
+**Domain layer distribution.** Third-party tools packaged as optional domain layers
+(`agentboot add domain superclaude`). Thin wrappers that map upstream files into
+AgentBoot's directory structure. Upstream license preserved. Requires maintainer
+permission (courteous even for MIT).
+
+**Co-development.** Joint trait format standards, shared hook recipes, architecture
+integration. Requires active maintainer relationships and is not feasible until
+AgentBoot has users and credibility.
+
+**Upstream contribution.** When AgentBoot develops reusable patterns (trait format spec,
+governance patterns, cross-platform compilation), contribute them back to the ecosystem.
+
+### Attribution
+
+AgentBoot's core concepts were developed independently. The third-party tools listed
+here were discovered after the design was complete. This is parallel evolution — multiple
+teams arrived at composable traits, hook-based governance, and agent personas because
+these are natural solutions to the same problems. AgentBoot acknowledges prior art,
+respects the work, and seeks to partner rather than compete.
+
+Attribution levels:
+
+| Level | When to Use | Format |
+|-------|-------------|--------|
+| Prior art | Independent parallel development; they shipped first | "See also \[Project\](link)" |
+| Complementary | Adjacent tool we recommend | "Works well with \[Project\](link)" |
+| Integrated | Direct integration (domain layer, marketplace listing) | Attribution in README + ACKNOWLEDGMENTS.md |
+| Includes | Bundled content | Full license text + attribution in distribution |
+
+See `ACKNOWLEDGMENTS.md` for the full attribution record.
+
+---
+
 *See also:*
-- [`docs/third-party-ecosystem.md`](third-party-ecosystem.md) — SuperClaude, ArcKit, spec-kit analysis
 - [`docs/delivery-methods.md`](delivery-methods.md) — CC plugin marketplace mechanics
 - [`docs/org-connection.md`](org-connection.md) — private marketplace hosting for orgs
 - [`docs/extending.md`](extending.md) — domain layer structure
@@ -819,4 +892,8 @@ Sources:
 - [Create and distribute a plugin marketplace — Claude Code Docs](https://code.claude.com/docs/en/plugin-marketplaces)
 - [Official Claude Code Plugins — GitHub](https://github.com/anthropics/claude-plugins-official)
 - [SuperClaude Framework — GitHub](https://github.com/SuperClaude-Org/SuperClaude_Framework)
+- [ArcKit — GitHub](https://github.com/tractorjuice/arc-kit)
+- [spec-kit — GitHub](https://github.com/github/spec-kit)
+- [Trail of Bits claude-code-config — GitHub](https://github.com/trailofbits/claude-code-config)
+- [Trail of Bits skills — GitHub](https://github.com/trailofbits/skills)
 - [Claude Code Plugin Marketplace — claudemarketplaces.com](https://claudemarketplaces.com/)

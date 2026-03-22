@@ -1,6 +1,6 @@
 {
   "name": "agentboot",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Convention over configuration for agentic development teams. The Spring Boot of Claude Code governance.",
   "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",

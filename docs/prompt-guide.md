@@ -1,3 +1,8 @@
+---
+sidebar_label: "Prompt Authoring"
+sidebar_position: 3
+---
+
 # Prompt & Cost Optimization
 
 AgentBoot's core claim is "prompts as code." If prompts are code, they need the same
@@ -99,7 +104,7 @@ Team reviews (fair game)             filed issue (fair game)
 The optimization tools in this doc mostly target **Type 1** (persona definitions) —
 linting, testing, cost estimation for the prompts that the platform team authors.
 For **Type 2** (developer conversations), see
-[`docs/privacy-and-safety.md`](privacy-and-safety.md) for the privacy model.
+[`docs/privacy.md`](privacy.md) for the privacy model.
 
 This isn't just about privacy — it's about **learning without humiliation.** A
 developer who's new to prompt engineering needs to be able to write a bad persona
@@ -1058,8 +1063,8 @@ compaction may discard persona findings that need to be referenced later.
 
 *See also:*
 - [`docs/concepts.md`](concepts.md) — structured telemetry, self-improvement reflections
-- [`docs/ci-cd-automation.md`](ci-cd-automation.md) — `claude -p` with `--json-schema` and `--max-budget-usd`
-- [`docs/claude-code-reference/feature-inventory.md`](claude-code-reference/feature-inventory.md) — /cost, /compact, model pricing
+- CI/CD Automation (internal) — `claude -p` with `--json-schema` and `--max-budget-usd`
+- CC Feature Inventory (internal) — /cost, /compact, model pricing
 - [Manage costs effectively — Claude Code Docs](https://code.claude.com/docs/en/costs)
 - [Demystifying evals for AI agents — Anthropic](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
 

@@ -166,7 +166,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE). "AgentBoot" is a trademark of Michel Saavedra — see [TRADEMARK.md](TRADEMARK.md).
 
 ---
 
