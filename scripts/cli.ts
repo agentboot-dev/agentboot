@@ -10,7 +10,7 @@
  *   agentboot build [-c config]
  *   agentboot validate [--strict]
  *   agentboot sync [--repos-file path] [--dry-run]
- *   agentboot setup [--skip-detect]
+ *   agentboot install [--hub] [--connect] [--org name] [--path dir]
  *   agentboot add <type> <name>
  *   agentboot doctor [--format text|json]
  *   agentboot status [--format text|json]
@@ -178,6 +178,7 @@ program
   .description("Distribute compiled output to target repositories")
   .option("--repos-file <path>", "path to repos.json")
   .option("-d, --dry-run", "preview changes without writing")
+  .option("--force", "override drift detection (overwrite modified files)")
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const args = collectGlobalArgs({ config: globalOpts.config });
@@ -187,6 +188,9 @@ program
     }
     if (opts.dryRun) {
       args.push("--dry-run");
+    }
+    if (opts.force) {
+      args.push("--force");
     }
 
     runScript({
@@ -283,102 +287,85 @@ program
     process.exit(0);
   });
 
-// ---- setup (AB-33) --------------------------------------------------------
+// ---- install (AB-33.2) — redesigned two-path onboarding ------------------
+
+const installAction = async (opts: Record<string, unknown>) => {
+  const { runInstall, AgentBootError } = await import("./lib/install.js");
+  try {
+    await runInstall({
+      hub: opts["hub"] as boolean | undefined,
+      connect: opts["connect"] as boolean | undefined,
+      org: opts["org"] as string | undefined,
+      path: opts["path"] as string | undefined,
+      hubPath: opts["hubPath"] as string | undefined,
+      nonInteractive: opts["nonInteractive"] as boolean | undefined,
+      noSync: opts["skipSync"] as boolean | undefined,
+    });
+  } catch (err) {
+    if (err instanceof AgentBootError) {
+      process.exit(err.exitCode);
+    }
+    throw err;
+  }
+};
 
 program
-  .command("setup")
-  .description("Interactive setup wizard for new repos")
-  .option("--skip-detect", "skip auto-detection")
+  .command("install")
+  .description("Interactive onboarding — create a personas repo or connect to one")
+  .option("--hub", "create a new personas repo (architect path)")
+  .option("--connect", "connect this repo to an existing personas hub (developer path)")
+  .option("--org <name>", "organization name")
+  .option("--path <dir>", "where to create the personas repo")
+  .option("--hub-path <dir>", "path to existing personas repo (for --connect)")
+  .option("--non-interactive", "run without prompts (not yet implemented)")
+  .option("--skip-sync", "skip the optional sync step")
+  .action(installAction);
+
+// Hidden alias: setup → install (deprecated)
+program
+  .command("setup", { hidden: true })
+  .description("Deprecated — use `agentboot install`")
+  .action(async () => {
+    console.log(chalk.yellow("\n  `agentboot setup` is deprecated. Use `agentboot install` instead.\n"));
+    await installAction({});
+  });
+
+// ---- import (AB-43) — LLM-powered content classification -----------------
+
+program
+  .command("import")
+  .description("Scan and classify existing AI agent content (LLM-powered)")
+  .option("--path <dir>", "directory or repo to scan (default: cwd)")
+  .option("--hub-path <dir>", "path to personas repo")
+  .option("--overlap", "run heuristic overlap analysis")
+  .option("--apply", "apply an existing import plan")
   .action(async (opts) => {
-    const cwd = process.cwd();
-    console.log(chalk.bold("\nAgentBoot — setup\n"));
-
-    // Detect existing setup
-    if (!opts.skipDetect) {
-      const hasConfig = fs.existsSync(path.join(cwd, "agentboot.config.json"));
-      const hasClaude = fs.existsSync(path.join(cwd, ".claude"));
-      if (hasConfig) {
-        console.log(chalk.yellow("  ⚠ agentboot.config.json already exists in this directory."));
-        console.log(chalk.gray("  Run `agentboot doctor` to check your configuration.\n"));
-        process.exit(0);
-      }
-      if (hasClaude) {
-        console.log(chalk.gray("  Detected existing .claude/ directory."));
-      }
-    }
-
-    // Detect org from git remote
-    let orgName = "my-org";
+    const { runImport, AgentBootError } = await import("./lib/import.js");
     try {
-      const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
-        cwd,
-        encoding: "utf-8",
+      await runImport({
+        path: opts["path"] as string | undefined,
+        hubPath: opts["hubPath"] as string | undefined,
+        overlap: opts["overlap"] as boolean | undefined,
+        apply: opts["apply"] as boolean | undefined,
       });
-      if (gitResult.stdout) {
-        const match = gitResult.stdout.match(/[/:]([\w-]+)\//);
-        if (match) orgName = match[1]!;
+    } catch (err) {
+      if (err instanceof AgentBootError) {
+        process.exit(err.exitCode);
       }
-    } catch { /* no git, use default */ }
-
-    console.log(chalk.cyan(`  Detected org: ${orgName}`) + chalk.gray(" (edit agentboot.config.json to change)"));
-
-    // Scaffold config
-    const configContent = JSON.stringify({
-      org: orgName,
-      orgDisplayName: orgName,
-      groups: {},
-      personas: {
-        enabled: ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"],
-        outputFormats: ["skill", "claude", "copilot"],
-      },
-      traits: {
-        enabled: [
-          "critical-thinking", "structured-output", "source-citation",
-          "confidence-signaling", "audit-trail", "schema-awareness",
-        ],
-      },
-      instructions: { enabled: ["baseline.instructions", "security.instructions"] },
-      output: { distPath: "./dist", provenanceHeaders: true, tokenBudget: { warnAt: 8000 } },
-      sync: { repos: "./repos.json", dryRun: false },
-    }, null, 2);
-
-    fs.writeFileSync(path.join(cwd, "agentboot.config.json"), configContent + "\n", "utf-8");
-    console.log(chalk.green("  ✓ Created agentboot.config.json"));
-
-    // Scaffold repos.json if it doesn't exist
-    if (!fs.existsSync(path.join(cwd, "repos.json"))) {
-      fs.writeFileSync(path.join(cwd, "repos.json"), "[]\n", "utf-8");
-      console.log(chalk.green("  ✓ Created repos.json"));
+      throw err;
     }
-
-    // Create core directories
-    const dirs = ["core/personas", "core/traits", "core/instructions", "core/gotchas"];
-    for (const dir of dirs) {
-      const fullPath = path.join(cwd, dir);
-      if (!fs.existsSync(fullPath)) {
-        fs.mkdirSync(fullPath, { recursive: true });
-        console.log(chalk.green(`  ✓ Created ${dir}/`));
-      }
-    }
-
-    console.log(chalk.bold(`\n${chalk.green("✓")} Setup complete.`));
-    console.log(chalk.gray("\n  Next steps:"));
-    console.log(chalk.gray("    1. Add personas to core/personas/"));
-    console.log(chalk.gray("    2. Add traits to core/traits/"));
-    console.log(chalk.gray("    3. Run: agentboot build"));
-    console.log(chalk.gray("    4. Run: agentboot sync\n"));
   });
 
 // ---- add (AB-34/35/55) ----------------------------------------------------
 
 program
   .command("add")
-  .description("Scaffold a new persona, trait, gotcha, domain, or hook")
-  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook")
+  .description("Scaffold a new persona, trait, gotcha, domain, hook, or classify a prompt")
+  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt")
   .argument("<name>", "name for the new item (lowercase-with-hyphens)")
-  .action((type: string, name: string) => {
-    // Validate name format
-    if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
+  .action(async (type: string, name: string) => {
+    // Validate name format (skip for prompt type — name is content/path, not an identifier)
+    if (type !== "prompt" && !/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
       console.error(chalk.red(`Name must be 1-64 lowercase alphanumeric chars with hyphens: got '${name}'`));
       process.exit(1);
     }
@@ -650,8 +637,41 @@ exit 0
       console.log(chalk.gray(`  Next: Edit the hook script to add your compliance logic.`));
       console.log(chalk.gray(`  Then: Register in agentboot.config.json under claude.hooks\n`));
 
+    } else if (type === "prompt") {
+      // AB-44: add prompt — classify and save a raw prompt or file.
+      // `name` here is actually the content or file path.
+      const contentOrPath = name;
+      const cwd = process.cwd();
+      const { runImport, AgentBootError: ImportError } = await import("./lib/import.js");
+
+      try {
+        // Check if it's a file path
+        const resolvedPath = path.resolve(cwd, contentOrPath);
+        const isFile = fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile();
+
+        if (!isFile) {
+          // Inline prompt text — write to temp file, classify it
+          const tmpDir = fs.mkdtempSync(path.join(cwd, ".agentboot-prompt-"));
+          const tmpFile = path.join(tmpDir, "prompt.md");
+          fs.writeFileSync(tmpFile, contentOrPath, "utf-8");
+          try {
+            await runImport({ file: tmpFile });
+          } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+          }
+        } else {
+          // File path — classify the single file
+          await runImport({ file: resolvedPath });
+        }
+      } catch (err) {
+        if (err instanceof ImportError) {
+          process.exit(err.exitCode);
+        }
+        throw err;
+      }
+
     } else {
-      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook`));
+      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook, prompt`));
       process.exit(1);
     }
   });
@@ -741,7 +761,7 @@ program
       }
     } else {
       fail("agentboot.config.json not found");
-      if (!isJson) console.log(chalk.gray("    Run `agentboot setup` to create one."));
+      if (!isJson) console.log(chalk.gray("    Run `agentboot install` to create one."));
     }
 
     if (!isJson) console.log("");
@@ -773,7 +793,7 @@ program
       : path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
-      console.error(chalk.red("No agentboot.config.json found. Run `agentboot setup`."));
+      console.error(chalk.red("No agentboot.config.json found. Run `agentboot install`."));
       process.exit(1);
     }
 
@@ -1166,7 +1186,78 @@ program
 
     console.log("");
     const verb = dryRun ? "would remove" : "removed";
-    console.log(chalk.bold(`  ${verb}: ${removed}, skipped (modified): ${modified}, already gone: ${missing}\n`));
+    console.log(chalk.bold(`  ${verb}: ${removed}, skipped (modified): ${modified}, already gone: ${missing}`));
+
+    // Auto-restore from archive if it exists.
+    const archiveDir = path.join(targetRepo, targetDir, ".agentboot-archive");
+    const archiveManifestPath = path.join(archiveDir, "archive-manifest.json");
+
+    if (fs.existsSync(archiveManifestPath)) {
+      let archiveManifest: { files?: Array<{ path: string }> };
+      try {
+        archiveManifest = JSON.parse(fs.readFileSync(archiveManifestPath, "utf-8"));
+      } catch {
+        console.log(chalk.yellow("\n  Archive manifest unreadable — skipping restore.\n"));
+        return;
+      }
+
+      const archiveFiles = archiveManifest.files ?? [];
+      console.log(chalk.cyan(`\n  Restoring ${archiveFiles.length} pre-AgentBoot file(s) from archive...`));
+
+      let restored = 0;
+      const targetBase = path.join(targetRepo, targetDir);
+
+      const resolvedArchiveDir = path.resolve(archiveDir);
+      const resolvedTargetBase = path.resolve(targetBase);
+
+      for (const entry of archiveFiles) {
+        const srcPath = path.resolve(archiveDir, entry.path);
+
+        // Root files archived under __root__/ are restored to repo root
+        let destPath: string;
+        if (entry.path.startsWith("__root__/")) {
+          destPath = path.resolve(targetRepo, entry.path.replace("__root__/", ""));
+        } else {
+          destPath = path.resolve(targetBase, entry.path);
+        }
+
+        // Path traversal protection
+        if (!srcPath.startsWith(resolvedArchiveDir + path.sep)) {
+          console.log(chalk.red(`    rejected ${entry.path} (path escapes archive boundary)`));
+          continue;
+        }
+        const resolvedRepo = path.resolve(targetRepo);
+        if (!destPath.startsWith(resolvedTargetBase + path.sep) &&
+            !destPath.startsWith(resolvedRepo + path.sep)) {
+          console.log(chalk.red(`    rejected ${entry.path} (path escapes repo boundary)`));
+          continue;
+        }
+
+        if (!fs.existsSync(srcPath)) {
+          console.log(chalk.gray(`    skip ${entry.path} (not in archive)`));
+          continue;
+        }
+
+        if (dryRun) {
+          console.log(chalk.gray(`    would restore ${entry.path}`));
+        } else {
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          fs.copyFileSync(srcPath, destPath);
+          console.log(chalk.green(`    restored ${entry.path}`));
+        }
+        restored++;
+      }
+
+      // Remove the archive directory after restore (also when no files could be restored)
+      if (!dryRun) {
+        fs.rmSync(archiveDir, { recursive: true, force: true });
+        console.log(chalk.green(`    removed .agentboot-archive/`));
+      }
+
+      console.log(chalk.bold(`\n  Restored ${restored} file(s) to pre-AgentBoot state.\n`));
+    } else {
+      console.log("");
+    }
   });
 
 // ---- config ---------------------------------------------------------------
@@ -1233,7 +1324,7 @@ program
       : path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
-      console.error(chalk.red("No agentboot.config.json found. Run `agentboot setup`."));
+      console.error(chalk.red("No agentboot.config.json found. Run `agentboot install`."));
       process.exit(1);
     }
 

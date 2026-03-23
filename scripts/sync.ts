@@ -53,6 +53,8 @@ interface RepoEntry {
   team?: string;
   // Human-readable label. Used in sync output only.
   label?: string;
+  // If true, suppress org-identifying information in generated file headers.
+  public?: boolean;
 }
 
 interface SyncResult {
@@ -181,7 +183,8 @@ function mergeScopes(
  */
 function buildCopilotInstructions(
   mergedFiles: Map<string, ScopedFile>,
-  org: string
+  org: string,
+  isPublic?: boolean
 ): string | null {
   const fragments: string[] = [];
 
@@ -193,13 +196,188 @@ function buildCopilotInstructions(
 
   if (fragments.length === 0) return null;
 
-  const header = [
-    `<!-- AgentBoot merged copilot instructions — do not edit manually. -->`,
-    `<!-- Org: ${org} | Generated: ${new Date().toISOString()} -->`,
-    "",
-  ].join("\n");
+  // Suppress org-identifying info for public repos
+  const header = isPublic
+    ? `<!-- AgentBoot merged copilot instructions — do not edit manually. -->\n\n`
+    : [
+        `<!-- AgentBoot merged copilot instructions — do not edit manually. -->`,
+        `<!-- Org: ${org} | Generated: ${new Date().toISOString()} -->`,
+        "",
+      ].join("\n");
 
   return `${header}${fragments.join("\n\n---\n\n")}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// Archive: snapshot existing .claude/ before first sync
+// ---------------------------------------------------------------------------
+
+interface ArchiveManifestEntry {
+  path: string;
+  timestamp: string;
+  size: number;
+}
+
+interface ArchiveManifest {
+  archived_by: "agentboot";
+  archived_at: string;
+  source_dir: string;
+  files: ArchiveManifestEntry[];
+}
+
+/**
+ * Archive all existing content in the target directory before first sync.
+ * Only runs when no archive already exists (first sync to this repo).
+ * Returns true if archive was created or already existed, false on error.
+ */
+function archiveExistingContent(
+  repoPath: string,
+  targetDir: string,
+  dryRun: boolean
+): { archived: boolean; fileCount: number } {
+  const targetBase = path.join(repoPath, targetDir);
+  const archiveDir = path.join(targetBase, ".agentboot-archive");
+  const archiveManifestPath = path.join(archiveDir, "archive-manifest.json");
+
+  // If archive already exists, this is not a first sync — skip.
+  if (fs.existsSync(archiveManifestPath)) {
+    return { archived: false, fileCount: 0 };
+  }
+
+  // BUG-7: Also check for sync manifest — if it exists, a previous sync happened
+  // and the archive was deleted. Do not re-archive (would capture AgentBoot artifacts).
+  const syncManifestPath = path.join(targetBase, ".agentboot-manifest.json");
+  if (fs.existsSync(syncManifestPath)) {
+    return { archived: false, fileCount: 0 };
+  }
+
+  // Collect all existing files (excluding any prior agentboot artifacts).
+  const filesToArchive: { relPath: string; absPath: string }[] = [];
+
+  // Walk .claude/ directory (if it exists)
+  if (fs.existsSync(targetBase)) {
+    function walk(dir: string, relBase: string): void {
+      for (const entry of fs.readdirSync(dir)) {
+        // Skip agentboot artifacts
+        if (relBase === "" && (entry === ".agentboot-archive" || entry === ".agentboot-manifest.json")) continue;
+        const absPath = path.join(dir, entry);
+        const relPath = relBase ? `${relBase}/${entry}` : entry;
+        const stat = fs.statSync(absPath);
+        if (stat.isDirectory()) {
+          walk(absPath, relPath);
+        } else {
+          filesToArchive.push({ relPath, absPath });
+        }
+      }
+    }
+    walk(targetBase, "");
+  }
+
+  // BUG-6: Also archive repo-root files that sync will overwrite
+  const rootFiles = ["CLAUDE.md", ".mcp.json"];
+  for (const rootFile of rootFiles) {
+    const absPath = path.join(repoPath, rootFile);
+    if (fs.existsSync(absPath)) {
+      filesToArchive.push({ relPath: `__root__/${rootFile}`, absPath });
+    }
+  }
+  const copilotPath = path.join(repoPath, ".github", "copilot-instructions.md");
+  if (fs.existsSync(copilotPath)) {
+    filesToArchive.push({ relPath: "__root__/.github/copilot-instructions.md", absPath: copilotPath });
+  }
+
+  if (filesToArchive.length === 0) {
+    return { archived: false, fileCount: 0 };
+  }
+
+  if (dryRun) {
+    return { archived: true, fileCount: filesToArchive.length };
+  }
+
+  // Create archive directory and copy files.
+  fs.mkdirSync(archiveDir, { recursive: true });
+
+  const manifestEntries: ArchiveManifestEntry[] = [];
+
+  for (const file of filesToArchive) {
+    const destPath = path.join(archiveDir, file.relPath);
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.copyFileSync(file.absPath, destPath);
+    const stat = fs.statSync(file.absPath);
+    manifestEntries.push({
+      path: file.relPath,
+      timestamp: stat.mtime.toISOString(),
+      size: stat.size,
+    });
+  }
+
+  // Write archive manifest.
+  const manifest: ArchiveManifest = {
+    archived_by: "agentboot",
+    archived_at: new Date().toISOString(),
+    source_dir: targetDir,
+    files: manifestEntries,
+  };
+
+  fs.writeFileSync(
+    archiveManifestPath,
+    JSON.stringify(manifest, null, 2) + "\n",
+    "utf-8"
+  );
+
+  return { archived: true, fileCount: filesToArchive.length };
+}
+
+// ---------------------------------------------------------------------------
+// Drift detection: check if managed files were modified outside AgentBoot
+// ---------------------------------------------------------------------------
+
+interface DriftResult {
+  drifted: string[];
+  clean: boolean;
+}
+
+/**
+ * Check managed files against the manifest. Returns list of files that
+ * have been modified since last sync (hash mismatch).
+ */
+function detectDrift(
+  repoPath: string,
+  targetDir: string
+): DriftResult {
+  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
+
+  if (!fs.existsSync(manifestPath)) {
+    return { drifted: [], clean: true };
+  }
+
+  let manifest: { files?: Array<{ path: string; hash: string }> };
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  } catch {
+    // Corrupt manifest = broken integrity check. Refuse sync.
+    return { drifted: [".agentboot-manifest.json (unreadable — corrupt or malformed)"], clean: false };
+  }
+
+  const drifted: string[] = [];
+  for (const entry of manifest.files ?? []) {
+    // Skip the manifest's own entry (it contains a timestamp so it always "drifts")
+    if (entry.path.endsWith(".agentboot-manifest.json")) continue;
+
+    const fullPath = path.resolve(repoPath, entry.path);
+    if (!fs.existsSync(fullPath)) {
+      // BUG-4: Deleted managed files are drift — someone removed an AgentBoot file
+      drifted.push(`${entry.path} (deleted)`);
+      continue;
+    }
+    const content = fs.readFileSync(fullPath);
+    const currentHash = createHash("sha256").update(content).digest("hex");
+    if (currentHash !== entry.hash) {
+      drifted.push(entry.path);
+    }
+  }
+
+  return { drifted, clean: drifted.length === 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +388,8 @@ function syncRepo(
   entry: RepoEntry,
   distPath: string,
   config: AgentBootConfig,
-  dryRun: boolean
+  dryRun: boolean,
+  force: boolean
 ): SyncResult {
   const repoPath = path.resolve(entry.path);
   const targetDir = config.sync?.targetDir ?? ".claude";
@@ -232,6 +411,29 @@ function syncRepo(
   if (!fs.existsSync(repoPath)) {
     result.errors.push(`Repo path does not exist: ${repoPath}`);
     return result;
+  }
+
+  // Drift detection: check if managed files were modified outside AgentBoot.
+  const drift = detectDrift(repoPath, targetDir);
+  if (!drift.clean && !force) {
+    result.errors.push(
+      `Drift detected — ${drift.drifted.length} managed file(s) modified outside AgentBoot:\n` +
+      drift.drifted.map(f => `        ${f}`).join("\n") + "\n" +
+      `      AgentBoot manages ${targetDir}/ exclusively after install.\n` +
+      `      To incorporate your changes: agentboot import --path .\n` +
+      `      To override: agentboot sync --force`
+    );
+    return result;
+  }
+  if (!drift.clean && force) {
+    console.log(chalk.yellow(`    ⚠ Overriding drift in ${drift.drifted.length} file(s) (--force)`));
+  }
+
+  // Archive existing content before first sync.
+  const archive = archiveExistingContent(repoPath, targetDir, dryRun);
+  if (archive.archived) {
+    const verb = dryRun ? "Would archive" : "Archived";
+    console.log(chalk.cyan(`    ${verb} ${archive.fileCount} existing file(s) to ${targetDir}/.agentboot-archive/`));
   }
 
   // Collect files from applicable scopes within the platform distribution.
@@ -290,7 +492,7 @@ function syncRepo(
   }
 
   // Write merged copilot-instructions.md to .github/.
-  const copilotContent = buildCopilotInstructions(merged, org);
+  const copilotContent = buildCopilotInstructions(merged, org, entry.public);
   if (copilotContent) {
     const copilotDest = path.join(repoPath, ".github", "copilot-instructions.md");
     ensureDir(path.dirname(copilotDest), dryRun);
@@ -393,6 +595,21 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
     );
   }
 
+  // Validate repo path safety
+  const resolvedPath = path.resolve(entry.path);
+  const dangerousPaths = ["/", "/etc", "/usr", "/var", "/tmp", "/home", "/root", "/bin", "/sbin", "/lib", "/opt"];
+  if (dangerousPaths.includes(resolvedPath)) {
+    errors.push(
+      `[${label}] Repo path "${resolvedPath}" is a system directory — refusing to sync`
+    );
+  }
+  if (fs.existsSync(resolvedPath) && !fs.existsSync(path.join(resolvedPath, ".git"))) {
+    // Warn but don't block — temp dirs in tests and some workflows don't have .git
+    console.warn(
+      chalk.yellow(`  ⚠ [${label}] Repo path "${resolvedPath}" has no .git directory — is this a git repo?`)
+    );
+  }
+
   return errors;
 }
 
@@ -461,7 +678,7 @@ function createSyncPR(
     result.errors.push(`Invalid branchPrefix: "${branchPrefix}" — only alphanumeric, /, _, ., - allowed`);
     return;
   }
-  if (!/^[a-zA-Z0-9 :/_.,!-]+$/.test(titleTemplate)) {
+  if (!/^[a-zA-Z0-9 :/_.,-]+$/.test(titleTemplate)) {
     result.errors.push(`Invalid titleTemplate: "${titleTemplate}" — only alphanumeric, spaces, and common punctuation allowed`);
     return;
   }
@@ -576,6 +793,7 @@ async function main(): Promise<void> {
   const configPath = resolveConfigPath(argv, ROOT);
   const isDryRun =
     argv.includes("--dry-run") || argv.includes("--dryRun");
+  const isForce = argv.includes("--force");
   const modeIdx = argv.indexOf("--mode");
   const cliMode = modeIdx !== -1 ? argv[modeIdx + 1] : undefined;
 
@@ -638,7 +856,7 @@ async function main(): Promise<void> {
   // Sync each repo.
   const results: SyncResult[] = [];
   for (const entry of repos) {
-    const result = syncRepo(entry, distPath, config, dryRun);
+    const result = syncRepo(entry, distPath, config, dryRun, isForce);
 
     // AB-28: Create PR if in PR mode and not dry-run
     if (isPrMode && !dryRun && result.errors.length === 0 && result.filesWritten.length > 0) {
@@ -682,6 +900,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(chalk.red("Unexpected error:"), err);
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(chalk.red(`Unexpected error: ${message}`));
+  if (process.argv.includes("--verbose")) {
+    console.error(err);
+  }
   process.exit(1);
 });

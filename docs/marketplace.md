@@ -163,7 +163,7 @@ Traits and personas that ship with AgentBoot. The reference implementations.
 **Quality bar:** Maintained by the AgentBoot project. Tested, documented, versioned
 with the framework. Apache 2.0 licensed.
 
-**How to get it:** Included when you `agentboot setup`. Always available.
+**How to get it:** Included when you `agentboot install`. Always available.
 
 ### Layer 2: Verified (Reviewed + Attributed)
 

@@ -6,9 +6,10 @@
 |------|-------|-------|---------|
 | `validate.test.ts` | 20 | Unit: JSONC parsing, frontmatter, secret scanning, persona config validation | <100ms |
 | `pipeline.test.ts` | 33 | Integration: compile → sync pipeline, scope merging, platform output | ~3s |
-| `cli.test.ts` | 84 | Integration: CLI commands (AB-2 epic), compile features, uninstall safety | ~9s |
+| `cli.test.ts` | 100 | Integration: CLI commands (AB-2/3 epics), compile features, uninstall safety, plugin, compliance, telemetry | ~9s |
 | `lib.test.ts` | 50 | Unit: config utilities, frontmatter edge cases, secret scanning, scope models | <300ms |
-| **Total** | **187** | | ~12s |
+| `config-security.test.ts` | 31 | Unit: path traversal rejection, targetDir validation, type safety, adversarial JSONC | <100ms |
+| **Total** | **234** | | ~12s |
 
 ## Coverage by Feature
 
@@ -65,6 +66,23 @@
 | YAML frontmatter safety | — | 3 | cli.test.ts: quoted descriptions in skills, quoted names in agents, special chars |
 | CLI global | — | 2 | cli.test.ts: --version, --help |
 
+### Phase 3 (AB-3)
+
+| Feature | Jira | Tests | Notes |
+|---------|------|-------|-------|
+| Plugin structure (AB-57) | AB-57 | 7 | cli.test.ts: plugin.json fields, agents dir, skills dir, traits dir, hooks dir, rules dir, persona paths |
+| Compliance hooks (AB-59/60/63) | AB-59 | 5 | cli.test.ts: input scan hook, output scan hook, telemetry hook, settings.json registration |
+| Telemetry schema (AB-64) | AB-64 | 1 | cli.test.ts: JSON schema with required fields and event enum |
+| Add domain/hook (AB-46) | AB-46 | 5 | cli.test.ts: domain scaffold, hook scaffold, duplicate rejection, help text |
+| Export command (AB-40) | AB-40 | 3 | cli.test.ts: plugin export, marketplace export, unknown format rejection |
+| Publish command (AB-41) | AB-41 | 3 | cli.test.ts: dry-run, marketplace.json creation, version bump |
+| N-tier scope model (AB-88) | AB-88 | 1 | cli.test.ts: legacy groups/teams to nodes conversion |
+| Privacy/telemetry config (AB-62/65) | AB-62 | 1 | cli.test.ts: config accepts privacy and telemetry fields |
+| Domain layer loading (AB-53) | AB-53 | 1 | cli.test.ts: domain manifest loads correctly |
+| Model selection matrix (AB-56) | AB-56 | 1 | cli.test.ts: documentation file exists with required sections |
+| ACKNOWLEDGMENTS (AB-91) | AB-91 | 1 | cli.test.ts: file exists with prior art credits |
+| dev-sync | — | 2 | cli.test.ts: syncs to local dirs, copies to platform-native locations |
+
 ### Shared Libraries (lib.test.ts)
 
 | Feature | Tests | Notes |
@@ -76,6 +94,16 @@
 | groupsToNodes | 5 | Empty groups, group with teams, no teams, empty teams array, multiple groups |
 | parseFrontmatter edge cases | 9 | Empty block, blank-only block, minimal valid, empty values, no-colon lines, duplicate keys, value with colons, non-start position, whitespace values |
 | scanForSecrets additional | 8 | Slack tokens, line numbers, multiple secrets, custom patterns, empty content, non-assignment mentions, DEFAULT_SECRET_PATTERNS validation |
+
+### Config Security (config-security.test.ts)
+
+| Feature | Tests | Notes |
+|---------|-------|-------|
+| Path traversal rejection | 5 | sync.repos, output.distPath, personas.customDir with "..", clean paths accepted, strict ".." detection |
+| sync.targetDir validation | 11 | Valid targets (.claude, .cursor, .agentboot, custom), rejected targets (no dot, path separator, single dot, double dot, spaces, empty, digit after dot) |
+| Type safety | 10 | Non-string org (number, boolean, null), array config, string config, number config, invalid JSON, non-string targetDir, object personas.enabled |
+| Full config acceptance | 1 | All optional sections populated and returned correctly |
+| Adversarial JSONC | 5 | Single-quoted strings, nested escaped quotes, line with only //, extremely long lines, triple slashes |
 
 ## Known Gaps
 
@@ -92,6 +120,11 @@
 | Token budget for group/team scope personas | compile.ts only checks core scope — known issue |
 | JSONC block comments (`/* */`) | Only `//` comments supported — documented |
 | Concurrent builds | Single-user build tool, no locking needed |
+| sync.ts pure functions (mergeScopes, detectDrift, etc.) | Not exported — only tested via integration. Export to lib for unit testing |
+| validate.ts isUnsafeRegex/buildSecretPatterns | Not exported — only exercised indirectly via integration tests |
+| import.ts scanPath/classifyFile | Deterministic but untested — only normalizeContent and jaccardSimilarity have coverage |
+| dev-sync.ts copyRecursive/cleanMatchingFiles | Not exported — only tested via integration |
+| compile.ts pure functions | Not exported — only tested via CLI integration |
 
 ### Manual Test Checklist
 
@@ -122,5 +155,6 @@ Run before each release:
 10. **WARN: Model/permissionMode unquoted in YAML** — inconsistent with other fields (fixed)
 11. **WARN: Pipeline test substring match** — `toContain` masked .md.md bug (fixed to regex)
 12. **WARN: Platform containment test** — didn't filter `gotchas/` directory (fixed)
-13. **WARN: loadConfig array bypass** — `typeof [] === "object"` passes the non-object check; arrays fall through to org validation instead of getting the "must be a JSON object" error (unfixed — low risk)
+13. **WARN: loadConfig array bypass** — `typeof [] === "object"` passes the non-object check. However, `Array.isArray(parsed)` in the same condition now correctly catches arrays and throws "Config must be a JSON object". The original lib.test.ts comment claiming arrays fall through is stale — verified by config-security.test.ts (fixed)
 14. **INFO: parseFrontmatter empty block** — `---\n---` (no content) returns `null` because regex requires `[\s\S]+?` (1+ chars). Empty frontmatter is rejected silently (by design — valid SKILL.md files always have fields)
+15. **INFO: lib.test.ts stale comment** — lib.test.ts:180-182 NOTE claims arrays bypass the object check and fall through to org validation. This is incorrect — `Array.isArray(parsed)` catches arrays. The test at line 188 only asserts `toThrow()` without checking the message, which masked this (unfixed comment — low priority)

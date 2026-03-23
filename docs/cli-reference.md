@@ -81,21 +81,63 @@ Exits on the first failure.
 
 ---
 
-## `agentboot setup`
+## `agentboot install`
 
-Interactive setup wizard. Detects existing configuration and org from git remote,
-then scaffolds `agentboot.config.json`, `repos.json`, and `core/` directories.
+Interactive onboarding wizard. Establishes the personas repo (the org's prompt
+source code) or connects a code repo to an existing one.
 
 ```
-agentboot setup
-agentboot setup --skip-detect
+agentboot install
+agentboot install --hub --org acme
+agentboot install --connect --hub-path ~/work/personas
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--skip-detect` | Skip auto-detection of existing config and `.claude/` directory |
+| `--hub` | Create a new personas repo (architect path) |
+| `--connect` | Connect this repo to an existing personas hub (developer path) |
+| `--org <name>` | Organization name (auto-detected from git remote if omitted) |
+| `--path <dir>` | Where to create the personas repo (default: recommended based on cwd) |
+| `--hub-path <dir>` | Path to existing personas repo (for `--connect`) |
+| `--non-interactive` | Not yet implemented — planned for Phase 5 |
+| `--skip-sync` | Skip the optional sync step after connecting |
 
-If `agentboot.config.json` already exists, setup exits with a message to use `doctor` instead.
+**Two paths:**
+- **Path 1 (architect):** Creates a new personas repo with config, traits, personas,
+  and instructions. Auto-runs `agentboot build`. Optionally registers and syncs the
+  first target repo.
+- **Path 2 (developer):** Finds the org's personas repo (scans siblings, checks GitHub
+  org via `gh`), creates a branch with the `repos.json` change, and offers to open a PR.
+
+If `agentboot.config.json` already exists in cwd, exits with a message to use `doctor`.
+
+`setup` is a hidden alias for `install` (deprecated).
+
+---
+
+## `agentboot import`
+
+Scan and classify existing AI agent content (`.claude/`, CLAUDE.md, `.cursorrules`,
+Copilot instructions) into personas, traits, gotchas, and instructions in the
+personas repo. Never modifies or deletes original files.
+
+```
+agentboot import
+agentboot import --path ~/work/
+agentboot import --overlap
+agentboot import --apply
+```
+
+| Flag | Description |
+|------|-------------|
+| `--path <dir>` | Directory or repo to scan (default: cwd) |
+| `--hub-path <dir>` | Path to personas repo (auto-detected from siblings if omitted) |
+| `--overlap` | Run heuristic overlap analysis against hub and cross-import content |
+| `--apply` | Apply a previously generated import plan (`.agentboot-import-plan.json`) |
+
+This is an **LLM-powered command** — it uses `claude -p` to classify content.
+Requires an active Claude Code login. See [concepts](./concepts.md#llm-and-deterministic-commands)
+for the command classification model.
 
 ---
 
