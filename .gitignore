@@ -11,6 +11,6 @@ website/.docusaurus/
 .gemini/agentboot/
 .github/copilot-instructions.md
 
-# Confidential persona origins (real org names)
-/docs/internal/persona-origins/
+# Internal docs
+/docs/internal/
 /temp/

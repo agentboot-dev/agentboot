@@ -5,11 +5,17 @@ sidebar_position: 1
 
 # Getting Started with AgentBoot
 
-This guide takes you from zero to a working AgentBoot deployment in one sitting. By the
+AgentBoot manages your AI agent behavior as source code — versioned, reviewed,
+tested, and deployed from a central personas repo to every project in your org.
+
+This guide takes you from zero to a working deployment in one sitting. By the
 end you will have: an org personas repo, a working sync to one target repo, and a
 verified `/review-code` invocation in Claude Code.
 
-Estimated time: 20-30 minutes.
+> **Pre-v1.0 notice:** AgentBoot is under active development. Breaking changes may
+> occur without deprecation warnings before v1.0. Release notes will document all
+> changes. We do our best to minimize disruption, but stability is not guaranteed
+> until v1.0.
 
 ---
 
@@ -27,12 +33,12 @@ Before you start, you need:
 3. **GitHub account** with permission to create repositories in your org (or your
    personal account for solo use).
 
-4. **One target repository** that you want to deploy AgentBoot to. This is any existing
-   codebase where you want AI agent governance. You need write access to it.
+4. **One target repository** that you want to deploy AgentBoot personas to. This is
+   any existing codebase where you want AI agent governance. You need write access.
 
 ---
 
-## Step 0: Install AgentBoot
+## Step 0: Install the AgentBoot CLI
 
 ```bash
 # Recommended
@@ -49,7 +55,7 @@ npx agentboot --help
 > macOS Tahoe. Use `npm install -g agentboot` instead. See
 > [Troubleshooting](./troubleshooting.md#homebrew-install-fails-on-macos-tahoe) for details.
 
-Verify the install:
+Verify:
 
 ```bash
 agentboot --version
@@ -57,36 +63,55 @@ agentboot --version
 
 ---
 
-## Step 1: Create your org personas repo from the AgentBoot template
+## Step 1: Create your personas repo
 
-The AgentBoot repo is a GitHub template. Use it to create your private org hub.
+The personas repo is the single source of truth for how every AI agent in your
+org behaves. Think of it like an infrastructure-as-code repo, but for prompts.
+
+### Option A: Interactive install (recommended)
+
+Run `agentboot install` from any directory. The wizard will guide you through
+creating the personas repo in the right location.
 
 ```bash
-# Replace "my-org-personas" with your preferred repo name
-# Replace "my-org" with your GitHub org or username
-gh repo create my-org/my-org-personas \
+agentboot install
+```
+
+The install wizard will:
+1. Ask whether you're creating a new personas repo or connecting to an existing one
+2. Detect your org from your git remote
+3. Recommend a location for the personas repo (separate from your code repos)
+4. Scaffold the persona source code, traits, and instructions
+5. Automatically compile the personas (`agentboot build`)
+6. Optionally register and sync your first target repo
+
+If you already have `.claude/` content, skills, or rules in your repos, the
+wizard will detect them and recommend running `agentboot import` to bring that
+knowledge into your new personas repo.
+
+### Option B: GitHub template
+
+If you prefer to set up manually, the AgentBoot repo is a GitHub template:
+
+```bash
+gh repo create my-org/personas \
   --template agentboot/agentboot \
   --private \
   --clone
-cd my-org-personas
-```
-
-If you prefer the GitHub web UI: go to
-[github.com/agentboot/agentboot](https://github.com/agentboot/agentboot), click
-"Use this template", choose "Create a new repository", and clone the result.
-
-Install dependencies:
-
-```bash
+cd personas
 npm install
 ```
 
+Or use the GitHub web UI: go to
+[github.com/agentboot/agentboot](https://github.com/agentboot/agentboot), click
+"Use this template", choose "Create a new repository", and clone the result.
+
 ---
 
-## Step 2: Edit agentboot.config.json for your org
+## Step 2: Configure your org
 
-Open `agentboot.config.json`. This is the only file you need to edit to configure your
-organization's structure. A minimal starting config:
+Open `agentboot.config.json` in your personas repo. If you used `agentboot install`,
+this was created for you with your org name detected from git. A minimal config:
 
 ```jsonc
 {
@@ -121,6 +146,9 @@ or leave the defaults and come back to it after the first sync.
 The `"enabled"` arrays in `personas` and `traits` control what gets deployed. Start with
 the full V1 set and prune after you see what your team uses.
 
+**Solo developers:** Use your GitHub username as the org name. Everything works the same
+— solo mode is just an org of one person. You go through the same steps.
+
 ---
 
 ## Step 3: Register your first target repo
@@ -131,53 +159,46 @@ that will receive compiled personas on each sync:
 ```json
 [
   {
-    "name": "my-org/my-first-repo",
     "path": "/absolute/local/path/to/my-first-repo",
-    "team": "api",
-    "group": "platform"
+    "label": "my-org/my-first-repo",
+    "group": "platform",
+    "team": "api"
   }
 ]
 ```
 
-`name` is the GitHub slug. `path` is the absolute path to the repo on your local machine
-(the sync script writes to it directly). `team` and `group` tell the build system which
-level of the scope hierarchy this repo belongs to, so it receives the right layered
-configuration.
+`path` is the absolute path to the repo on your local machine (the sync script writes
+to it directly). `label` is a human-readable name (shown in sync output). `group` and
+`team` tell the build system which level of the scope hierarchy this repo belongs to,
+so it receives the right layered configuration. All fields except `path` are optional.
 
 If you do not want to use local paths, the sync script also supports GitHub API mode —
 see [`docs/configuration.md`](configuration.md) for the `sync.mode` field.
 
+**Tip:** Developers on your team can add their own repos by running `agentboot install`
+from their code repo and choosing "Connect this repo to an existing personas repo."
+This creates a branch and PR against the personas repo — no manual `repos.json`
+editing required.
+
 ---
 
-## Step 4: Run the build
+## Step 4: Build and sync
 
-The build step resolves all trait compositions, validates persona frontmatter, and
-produces the compiled output that will be synced to your target repos.
+If you used `agentboot install`, the build was already run for you. Otherwise:
 
 ```bash
-npm run build
+agentboot build
 ```
 
-A successful build produces output in `dist/` and generates an up-to-date `PERSONAS.md`.
-If the build fails, the error output will tell you which persona or trait has a problem.
-
-Common first-run failures:
-- **`agentboot.config.json` validation error:** Check that all persona and trait IDs
-  in `enabled` arrays match actual files in `core/personas/` and `core/traits/`.
-- **Missing `repos.json`:** Create it as described in Step 3.
-- **Node version too old:** Run `node --version` and verify it is 18+.
-
----
-
-## Step 5: Run your first sync
+The build resolves all trait compositions, validates persona frontmatter, and
+produces compiled output in `dist/`. Then sync to your target repos:
 
 ```bash
-npm run sync
+agentboot sync
 ```
 
 The sync script reads `repos.json`, writes the compiled `.claude/` directory to each
-registered repo, and reports what changed. On a fresh target repo, it will write the
-Claude Code-native output:
+registered repo, and reports what changed. On a fresh target repo, it writes:
 
 ```
 .claude/
@@ -201,16 +222,13 @@ Claude Code-native output:
     gotchas-lambda.md
 ```
 
-The agents in `.claude/agents/` use Claude Code's full native frontmatter (model,
-permissionMode, maxTurns, disallowedTools, mcpServers, hooks, memory). The skills in
-`.claude/skills/` use `context: fork` to delegate to the agent with isolated context.
-The CLAUDE.md uses `@.claude/traits/critical-thinking.md` imports instead of inlining.
+If the target repo already has `.claude/` content, sync archives the originals
+to `.claude/.agentboot-archive/` before deploying. You can restore them anytime
+with `agentboot uninstall`.
 
 The sync does not commit or push to the target repo. It writes the files locally. You
 decide when to commit and push — this is intentional, so you can review the output before
 it takes effect.
-
-Commit the output in the target repo:
 
 ```bash
 cd /path/to/my-first-repo
@@ -221,7 +239,7 @@ git push
 
 ---
 
-## Step 6: Verify it works in Claude Code
+## Step 5: Verify it works in Claude Code
 
 Open your target repo in Claude Code:
 
@@ -252,12 +270,13 @@ To verify the test generator:
 /gen-tests src/services/user-service.ts
 ```
 
-If any command is not recognized, check that the `.claude/agents/ and .claude/skills/` directory was written
-correctly in the sync step and that the persona SKILL.md files are present.
+If any command is not recognized, check that the `.claude/agents/` and `.claude/skills/`
+directories were written correctly in the sync step and that the persona SKILL.md files
+are present.
 
 ---
 
-## Step 7: Add your first team-level customization
+## Step 6: Add your first team-level customization
 
 Team-level customization lets you add personas or instructions that apply only to repos
 in a specific team, without affecting the rest of the org.
@@ -285,9 +304,25 @@ Then register the extension in `agentboot.config.json`:
 }
 ```
 
-Run `npm run build && npm run sync` again. Repos registered to the `api` team under
+Run `agentboot build && agentboot sync` again. Repos registered to the `api` team under
 `platform` will now receive the additional always-on instructions and the API contract
 reviewer persona, layered on top of the org defaults. Other repos are unaffected.
+
+---
+
+## Step 7: Set up governance
+
+Your personas repo is a codebase. Treat it like one:
+
+1. **Enable branch protection on `main`.** Persona changes should go through code
+   review — the same discipline you apply to application code.
+
+2. **Add CI validation.** Run `agentboot validate --strict` in your CI pipeline
+   to catch errors before merge.
+
+3. **Encourage contributions.** Developers who use the personas daily are your best
+   contributors. A low-friction PR workflow lets them propose improvements to the
+   prompts they know best.
 
 ---
 
@@ -295,9 +330,9 @@ reviewer persona, layered on top of the org defaults. Other repos are unaffected
 
 Once you have a working deployment, tell your team:
 
-1. **Claude Code reads `.claude/` automatically.** No setup required on each developer's
-   machine beyond having Claude Code installed. The personas and instructions are active
-   the moment they clone the repo and open Claude Code.
+1. **Claude Code reads `.claude/` automatically.** No install required on each
+   developer's machine beyond having Claude Code. The personas and instructions are
+   active the moment they clone the repo and open Claude Code.
 
 2. **Slash commands are ready to use.** Share the invocation table from `PERSONAS.md`
    with your team. The most useful ones to start with:
@@ -306,18 +341,41 @@ Once you have a working deployment, tell your team:
    - `/gen-tests` — generate unit and integration tests
 
 3. **Changes to agent behavior go through the personas repo.** If a developer wants to
-   change how a persona behaves or add a new one, they open a PR against `my-org-personas`,
-   not against the target repo. This keeps governance centralized.
+   change how a persona behaves or add a new one, they open a PR against the personas
+   repo, not against the target repo. This keeps governance centralized.
 
-4. **The always-on instructions in `.claude/CLAUDE.md` apply automatically.** Developers
+4. **Adding new repos is one command.** Developers can run `agentboot install` from
+   their code repo to connect it to the personas hub and open a PR to register it.
+
+5. **The always-on instructions in `.claude/CLAUDE.md` apply automatically.** Developers
    do not need to do anything to activate them. They are active on every Claude Code
    session in that repo.
 
 ---
 
+## Step 9: Import existing prompt knowledge (optional)
+
+If your org already has hand-written `.claude/` content, CLAUDE.md files, Copilot
+instructions, or Cursor rules scattered across repos, you can import them into your
+personas repo:
+
+```bash
+agentboot import --path ~/work/
+```
+
+Import uses AI to scan and classify your existing prompt content into personas, traits,
+gotchas, and instructions. It **never modifies or deletes your original files** — it
+creates new files in the personas repo only. You review and merge the results.
+
+This is an LLM-powered command that requires an active Claude Code session. See
+[CLI Reference](./cli-reference.md) for details.
+
+---
+
 ## Next steps
 
-- **Add more repos:** Edit `repos.json` and run `npm run sync` again.
+- **Add more repos:** Edit `repos.json` or have developers run `agentboot install` from their repos.
+- **Import existing content:** Run `agentboot import` to bring in scattered prompt knowledge.
 - **Add a domain layer:** See [`docs/extending.md`](extending.md) for how to build
   compliance or domain-specific personas on top of AgentBoot core.
 - **Automate sync on merge:** Set up the sync workflow so that every merge to `main` in

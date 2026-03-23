@@ -175,58 +175,190 @@ describe("AB-52: gotchas compilation", () => {
 });
 
 // ===========================================================================
-// AB-33: setup command
+// AB-33.2: install command
 // ===========================================================================
 
-describe("AB-33: setup command", () => {
+describe("AB-33.2: install command", () => {
+  it("exits with error when --non-interactive is used (not yet implemented)", () => {
+    const output = runExpectFail("install --non-interactive");
+    expect(output).toContain("not yet implemented");
+  });
+
+  it("detects existing agentboot.config.json and redirects to doctor", () => {
+    // Run from the project root which has agentboot.config.json
+    const output = run("install --hub");
+    expect(output).toContain("already exists");
+  });
+
+  it("setup command shows deprecation notice", () => {
+    const output = run("setup");
+    expect(output).toContain("deprecated");
+  });
+});
+
+// AB-33.2: install unit tests (pure functions)
+// ===========================================================================
+
+import { detectCwd, scaffoldHub } from "../scripts/lib/install.js";
+
+describe("AB-33.2: detectCwd", () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-setup-"));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-detect-"));
   });
 
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("scaffolds agentboot.config.json in a fresh directory", () => {
-    run("setup --skip-detect", tempDir);
+  it("detects empty directory as not a code repo", () => {
+    const result = detectCwd(tempDir);
+    expect(result.looksLikeCodeRepo).toBe(false);
+    expect(result.hasAgentbootConfig).toBe(false);
+    expect(result.hasClaudeDir).toBe(false);
+  });
+
+  it("detects directory with package.json as a code repo", () => {
+    fs.writeFileSync(path.join(tempDir, "package.json"), "{}");
+    const result = detectCwd(tempDir);
+    expect(result.looksLikeCodeRepo).toBe(true);
+    expect(result.hasPackageJson).toBe(true);
+  });
+
+  it("detects directory with agentboot.config.json as a hub", () => {
+    fs.writeFileSync(path.join(tempDir, "agentboot.config.json"), "{}");
+    const result = detectCwd(tempDir);
+    expect(result.hasAgentbootConfig).toBe(true);
+    expect(result.looksLikeCodeRepo).toBe(false);
+  });
+
+  it("inventories .claude/ artifacts", () => {
+    fs.mkdirSync(path.join(tempDir, ".claude", "rules"), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, ".claude", "CLAUDE.md"), "# test");
+    fs.writeFileSync(path.join(tempDir, ".claude", "rules", "my-rule.md"), "# rule");
+    const result = detectCwd(tempDir);
+    expect(result.hasClaudeDir).toBe(true);
+    expect(result.claudeArtifacts).toContain("CLAUDE.md");
+    expect(result.claudeArtifacts).toContain("rules/my-rule.md");
+  });
+
+  it("detects .agentboot-manifest.json as managed repo", () => {
+    fs.mkdirSync(path.join(tempDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, ".claude", ".agentboot-manifest.json"), "{}");
+    const result = detectCwd(tempDir);
+    expect(result.hasManifest).toBe(true);
+  });
+});
+
+describe("AB-33.2: scaffoldHub", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-scaffold-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("creates agentboot.config.json with correct org", () => {
+    scaffoldHub(tempDir, "test-org");
     const configPath = path.join(tempDir, "agentboot.config.json");
     expect(fs.existsSync(configPath)).toBe(true);
     const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    expect(config.org).toBeDefined();
+    expect(config.org).toBe("test-org");
     expect(config.personas.enabled).toContain("code-reviewer");
     expect(config.traits.enabled).toContain("critical-thinking");
   });
 
-  it("scaffolds repos.json", () => {
-    run("setup --skip-detect", tempDir);
-    expect(fs.existsSync(path.join(tempDir, "repos.json"))).toBe(true);
-    const repos = JSON.parse(fs.readFileSync(path.join(tempDir, "repos.json"), "utf-8"));
-    expect(repos).toEqual([]);
+  it("creates repos.json as empty array", () => {
+    scaffoldHub(tempDir, "test-org");
+    const reposPath = path.join(tempDir, "repos.json");
+    expect(fs.existsSync(reposPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(reposPath, "utf-8"))).toEqual([]);
   });
 
   it("creates core directory structure", () => {
-    run("setup --skip-detect", tempDir);
+    scaffoldHub(tempDir, "test-org");
     expect(fs.existsSync(path.join(tempDir, "core", "personas"))).toBe(true);
     expect(fs.existsSync(path.join(tempDir, "core", "traits"))).toBe(true);
     expect(fs.existsSync(path.join(tempDir, "core", "instructions"))).toBe(true);
     expect(fs.existsSync(path.join(tempDir, "core", "gotchas"))).toBe(true);
   });
 
-  it("does not overwrite existing agentboot.config.json", () => {
-    fs.writeFileSync(path.join(tempDir, "agentboot.config.json"), '{"org": "existing"}');
-    const output = run("setup", tempDir);
-    expect(output).toContain("already exists");
-    // Config should not be overwritten
-    const config = JSON.parse(fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8"));
-    expect(config.org).toBe("existing");
-  });
-
-  it("generates valid JSON config (parseable, no syntax errors)", () => {
-    run("setup --skip-detect", tempDir);
+  it("generates valid JSON config", () => {
+    scaffoldHub(tempDir, "test-org");
     const raw = fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8");
     expect(() => JSON.parse(raw)).not.toThrow();
+  });
+
+  it("does not overwrite existing repos.json", () => {
+    fs.writeFileSync(path.join(tempDir, "repos.json"), '[{"path":"/existing"}]');
+    scaffoldHub(tempDir, "test-org");
+    const repos = JSON.parse(fs.readFileSync(path.join(tempDir, "repos.json"), "utf-8"));
+    expect(repos).toEqual([{ path: "/existing" }]);
+  });
+});
+
+// ===========================================================================
+// AB-43: import pure functions
+// ===========================================================================
+
+import { normalizeContent, jaccardSimilarity } from "../scripts/lib/import.js";
+
+describe("AB-43: import — normalizeContent", () => {
+  it("strips markdown formatting and normalizes whitespace", () => {
+    const tokens = normalizeContent("# Heading\n\n**Bold** text with `code`");
+    expect(tokens).toContain("heading");
+    expect(tokens).toContain("bold");
+    expect(tokens).toContain("text");
+    expect(tokens).toContain("with");
+    expect(tokens).toContain("code");
+    // Short words (<=2 chars) should be filtered
+    expect(tokens.every(t => t.length > 2)).toBe(true);
+  });
+
+  it("returns empty array for empty input", () => {
+    expect(normalizeContent("")).toEqual([]);
+    expect(normalizeContent("   ")).toEqual([]);
+  });
+
+  it("strips horizontal rules", () => {
+    const tokens = normalizeContent("above\n---\nbelow");
+    expect(tokens).toContain("above");
+    expect(tokens).toContain("below");
+    expect(tokens).not.toContain("---");
+  });
+});
+
+describe("AB-43: import — jaccardSimilarity", () => {
+  it("returns 1.0 for identical sets", () => {
+    const a = new Set(["foo", "bar", "baz"]);
+    const b = new Set(["foo", "bar", "baz"]);
+    expect(jaccardSimilarity(a, b)).toBe(1.0);
+  });
+
+  it("returns 0 for disjoint sets", () => {
+    const a = new Set(["foo", "bar"]);
+    const b = new Set(["baz", "qux"]);
+    expect(jaccardSimilarity(a, b)).toBe(0);
+  });
+
+  it("returns correct value for partial overlap", () => {
+    const a = new Set(["foo", "bar", "baz"]);
+    const b = new Set(["bar", "baz", "qux"]);
+    // intersection=2, union=4, similarity=0.5
+    expect(jaccardSimilarity(a, b)).toBe(0.5);
+  });
+
+  it("returns 0 for two empty sets", () => {
+    expect(jaccardSimilarity(new Set(), new Set())).toBe(0);
+  });
+
+  it("returns 0 when one set is empty", () => {
+    const a = new Set(["foo"]);
+    expect(jaccardSimilarity(a, new Set())).toBe(0);
   });
 });
 
@@ -694,7 +826,7 @@ describe("CLI global behavior", () => {
     expect(output).toContain("build");
     expect(output).toContain("validate");
     expect(output).toContain("sync");
-    expect(output).toContain("setup");
+    expect(output).toContain("install");
     expect(output).toContain("add");
     expect(output).toContain("doctor");
     expect(output).toContain("status");
