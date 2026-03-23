@@ -45,7 +45,7 @@ You're running a build command outside the project root. Either `cd` to the dire
 
 ### `Config requires a non-empty "org" field`
 
-Your `agentboot.config.json` is missing the `org` field. Run `agentboot setup` to generate a valid config, or add `"org": "your-org"` to the file.
+Your `agentboot.config.json` is missing the `org` field. Run `agentboot install` to generate a valid config, or add `"org": "your-org"` to the file.
 
 ### `Persona not found: <name>`
 
@@ -89,5 +89,5 @@ Verify the hook scripts are executable (`chmod +x .claude/hooks/*.sh`) and that 
 
 - Run `agentboot doctor` for environment diagnostics
 - Run `agentboot doctor --format json` for machine-readable output
-- Check the [Getting Started guide](./getting-started.md) for setup steps
+- Check the [Getting Started guide](./getting-started.md) for install steps
 - File an issue at [github.com/agentboot-dev/agentboot/issues](https://github.com/agentboot-dev/agentboot/issues)

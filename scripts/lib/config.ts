@@ -391,5 +391,24 @@ export function loadConfig(configPath: string): AgentBootConfig {
     throw new Error('"sync.targetDir" must be a string');
   }
 
+  // Reject path-type fields containing traversal segments
+  const pathFields: Array<[string, unknown]> = [
+    ["sync.repos", parsed.sync?.repos],
+    ["output.distPath", parsed.output?.distPath],
+    ["personas.customDir", parsed.personas?.customDir],
+  ];
+  for (const [fieldName, value] of pathFields) {
+    if (typeof value === "string" && value.includes("..")) {
+      throw new Error(`"${fieldName}" must not contain ".." path segments`);
+    }
+  }
+
+  // Validate sync.targetDir against safe pattern (must start with . and be a simple name)
+  if (parsed.sync?.targetDir !== undefined) {
+    if (!/^\.[a-z][a-z0-9_-]*$/i.test(parsed.sync.targetDir)) {
+      throw new Error('"sync.targetDir" must be a dot-prefixed directory name (e.g., ".claude")');
+    }
+  }
+
   return parsed as AgentBootConfig;
 }
