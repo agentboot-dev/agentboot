@@ -444,7 +444,7 @@ Avoid redundant prefixes — `github.com/acme/acme-personas` repeats the org nam
 Avoid tool-specific names — `acme-agentboot` implies a fork of the build tool.
 Use short names or abbreviations — "ACME Technologies LLC" is just `acme`.
 
-The `agentboot setup` wizard checks for existing `personas` repos and suggests
+The `agentboot install` wizard checks for existing `personas` repos and suggests
 `agent-personas` as the fallback when there's a collision.
 
 ### Hub contents
@@ -482,7 +482,7 @@ The public repo pattern solves this:
 2. **Repo-specific enrichments live in the hub**, not in the target repo, under a
    `public-repos/{repo}/` directory
 3. **Sync still writes locally** — developers get the files, they just aren't committed
-4. **New developers run `agentboot connect`** to pull content from the hub on first clone
+4. **New developers run `agentboot install --connect`** to pull content from the hub on first clone
 
 The prompts-as-code invariant holds: all content is in version control, reviewed, and
 audited — it's just in the hub's private git instead of the spoke's public git.
@@ -522,7 +522,7 @@ hub. The developer never changes directories or thinks about where the file goes
 **If the hub is not available or not writable, the command errors:**
 ```
 ERROR: Hub repo not found or not writable. Your gotcha cannot be persisted.
-       Run `agentboot connect` to link your hub, or check permissions.
+       Run `agentboot install --connect` to link your hub, or check permissions.
 ```
 
 This is a hard error, not a warning. Content never falls through to the public repo's
@@ -535,6 +535,33 @@ git. There is no "write it anyway" option.
   { "path": "../agentboot", "label": "AgentBoot", "platform": "claude", "public": true }
 ]
 ```
+
+---
+
+## LLM and deterministic commands
+
+AgentBoot's CLI has two classes of commands, separated by whether they invoke an LLM.
+
+**Deterministic commands** are pure Node.js — fast, free, predictable, and work offline.
+They never call an LLM, never cost money, and never require a login beyond npm:
+
+`install`, `uninstall`, `build`, `validate`, `sync`, `doctor`, `add`, `lint`, `status`,
+`config`, `export`, `publish`
+
+**LLM-powered commands** use `claude -p` (Claude Code's non-interactive mode) to invoke
+the user's existing Claude Code session. They cost money (billed to the user's Claude
+subscription), produce non-deterministic output, and require an active Claude Code login:
+
+`import`, `test --behavioral`, `review`, `cost-estimate`
+
+The same features are also available as **interactive skills** (`/agentboot import`,
+`/agentboot test`) inside Claude Code sessions, using AgentBoot's MCP server as a bridge.
+The CLI versions are batch-oriented; the skill versions are conversational. Both use the
+same personas repo and the same non-destructive guarantees.
+
+This separation is a deliberate architectural decision. A user running `agentboot build`
+should never be surprised by an LLM call, a cost, or a login prompt. LLM features are
+always opt-in and clearly labeled.
 
 ---
 

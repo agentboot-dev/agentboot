@@ -1,0 +1,65 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: 'Features'
+    labels:
+      - 'feature'
+      - 'enhancement'
+    collapse-after: 5
+  - title: 'Bug Fixes'
+    labels:
+      - 'bug'
+      - 'fix'
+  - title: 'Documentation'
+    labels:
+      - 'documentation'
+    collapse-after: 5
+  - title: 'Maintenance'
+    labels:
+      - 'chore'
+      - 'dependencies'
+    collapse-after: 3
+
+autolabeler:
+  - label: 'feature'
+    title:
+      - '/^feat(\(.+\))?:/i'
+  - label: 'fix'
+    title:
+      - '/^fix(\(.+\))?:/i'
+  - label: 'documentation'
+    title:
+      - '/^docs(\(.+\))?:/i'
+  - label: 'chore'
+    title:
+      - '/^chore(\(.+\))?:/i'
+
+version-resolver:
+  major:
+    labels:
+      - 'semver-major'
+  minor:
+    labels:
+      - 'semver-minor'
+  patch:
+    labels:
+      - 'fix'
+      - 'bug'
+      - 'feature'
+      - 'enhancement'
+      - 'chore'
+      - 'documentation'
+      - 'dependencies'
+  default: patch
+
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&'
+no-changes-template: 'No changes since last release.'
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
