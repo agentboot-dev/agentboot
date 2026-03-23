@@ -29,26 +29,17 @@ jobs:
           git config --global user.name "CI"
           git config --global user.email "ci@agentboot.dev"
 
-      - name: Run tests
-        run: npm test
-
       - name: Validate personas and traits
         run: npm run validate
-        # Exits 1 if any persona is missing required frontmatter fields,
-        # any trait referenced in a persona does not exist, or
-        # agentboot.config.json fails schema validation.
 
       - name: Build
         run: npm run build
-        # Resolves all trait compositions and produces compiled output in .build/.
-        # Fails if any persona cannot be compiled (missing trait, malformed SKILL.md, etc.).
+
+      - name: Run tests
+        run: npm test
 
       - name: Check PERSONAS.md is up to date
         run: |
-          # The build step regenerates PERSONAS.md from the compiled persona set.
-          # If the committed PERSONAS.md differs from the regenerated version,
-          # this step fails. Run `npm run build` locally and commit the updated
-          # PERSONAS.md to fix this check.
           if ! git diff --exit-code PERSONAS.md; then
             echo ""
             echo "PERSONAS.md is out of date."
