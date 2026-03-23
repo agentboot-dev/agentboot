@@ -16,6 +16,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
   release:
@@ -85,9 +86,7 @@ jobs:
 
       - name: Publish to npm
         if: ${{ !inputs.dry-run }}
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance
 
       - name: Update Homebrew formula
         if: ${{ !inputs.dry-run }}
