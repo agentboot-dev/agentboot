@@ -294,9 +294,27 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
 // Check 4: Secret / credential scan
 // ---------------------------------------------------------------------------
 
+/**
+ * Detect regex patterns likely to cause catastrophic backtracking.
+ * Rejects patterns with nested quantifiers like (a+)+, (a*)*b, etc.
+ */
+function isUnsafeRegex(pattern: string): boolean {
+  // Reject patterns longer than 200 chars
+  if (pattern.length > 200) return true;
+  // Reject nested quantifiers: (x+)+, (x*)+, (x+)*, (x{n,})+, etc.
+  if (/\([^)]*[+*][^)]*\)[+*{]/.test(pattern)) return true;
+  // Reject patterns with multiple adjacent overlapping quantifiers
+  if (/[+*]{2,}/.test(pattern)) return true;
+  return false;
+}
+
 function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
   const configPatterns: RegExp[] = [];
   for (const p of config.validation?.secretPatterns ?? []) {
+    if (isUnsafeRegex(p)) {
+      console.error(`  ⚠ Rejected secretPattern "${p.slice(0, 50)}..." — potential catastrophic backtracking`);
+      continue;
+    }
     try {
       configPatterns.push(new RegExp(p));
     } catch (e: unknown) {

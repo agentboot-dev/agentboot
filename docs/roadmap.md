@@ -27,11 +27,11 @@ What shipped:
 
 ## Phase 2: "Usable by Others" -- COMPLETE
 
-Any repo can install AgentBoot personas via CLI. Setup, scaffolding, diagnostics, and uninstall all work.
+Any repo can install AgentBoot personas via CLI. Install, scaffolding, diagnostics, and uninstall all work.
 
 What shipped:
 - Scope merging (org to group to team to repo)
-- Full CLI: `build`, `validate`, `sync`, `setup`, `status`, `doctor`, `uninstall`
+- Full CLI: `build`, `validate`, `sync`, `install`, `status`, `doctor`, `uninstall`
 - Scaffolding: `add persona`, `add trait`
 - Cross-platform output: standalone SKILL.md, copilot-instructions.md
 - PERSONAS.md auto-generation
@@ -72,12 +72,13 @@ What shipped:
 
 ## Phase 4: "Migration & Adoption" -- PLANNED
 
-Organizations can discover existing agentic content, generate a migration plan, and onboard developers. Behavioral tests validate persona quality.
+Organizations can import existing agentic content, generate a migration plan, and onboard developers. Behavioral tests validate persona quality.
 
 Planned features:
-- **Developer self-service connection** -- developers connect to their org's personas independently
-- **Discovery and migration** -- scan repos for existing agentic content, analyze overlap, generate a migration plan
+- **Two-path install** -- `agentboot install` guides architects (create hub) and developers (connect to hub) through the right flow
+- **Import and migration** -- `agentboot import` scans repos for existing agentic content, classifies into personas/traits/gotchas (LLM-powered via `claude -p`)
 - **Prompt ingestion** -- classify raw prompts into traits/personas, batch-decompose existing CLAUDE.md files
+- **Solo mode** -- solo developers use the same flow as orgs; GitHub username as org name
 - **Behavioral testing** -- YAML-defined test cases run against personas via `claude -p` with assertions
 - **Snapshot and regression testing** -- detect unintended persona drift across versions
 - **CI integration** -- reusable GitHub Actions workflow and CI template for personas repos

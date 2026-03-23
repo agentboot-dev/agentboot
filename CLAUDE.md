@@ -183,7 +183,7 @@ See `docs/concepts.md` for full design rationale.
 `docs/internal/plans/ci-cd-automation.md` covers 5 CI methods:
 - `claude -p --agent --output-format json` is the primary CI interface (cost-bounded, schema-enforced)
 - Hook scripts for deterministic compliance gates (free, <1s, no LLM)
-- `agentboot validate/build/sync` for the personas repo pipeline
+- `agentboot install/validate/build/sync/import` for the personas repo pipeline
 - MCP server for non-CC CI environments
 - Reusable GitHub Actions workflow for lowest-friction integration
 
