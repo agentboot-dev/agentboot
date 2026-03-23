@@ -53,6 +53,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Build
+        run: npm run validate && npm run build
+
       - name: Run tests
         run: npm test
 
@@ -61,8 +69,6 @@ jobs:
 
       - name: Commit version bump
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json package-lock.json
           git commit -m "chore: release v${{ inputs.version }}"
 
