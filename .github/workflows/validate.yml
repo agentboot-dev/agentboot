@@ -18,11 +18,19 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
         run: npm install
+
+      - name: Configure git identity (required by tests)
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@agentboot.dev"
+
+      - name: Run tests
+        run: npm test
 
       - name: Validate personas and traits
         run: npm run validate
