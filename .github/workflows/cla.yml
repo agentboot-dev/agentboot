@@ -22,4 +22,4 @@ jobs:
           path-to-signatures: "signatures/cla.json"
           path-to-document: "https://github.com/agentboot-dev/agentboot/blob/main/CLA.md"
           branch: "main"
-          allowlist: "saavyone,dependabot[bot]"
+          allowlist: "saavyone,dependabot[bot],github-actions[bot]"
