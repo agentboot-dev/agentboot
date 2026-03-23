@@ -59,7 +59,7 @@ agentboot-plugin/
 │   ├── review-code/SKILL.md
 │   ├── review-security/SKILL.md
 │   ├── gen-tests/SKILL.md
-│   └── agentboot-setup/SKILL.md  # Interactive setup wizard
+│   └── agentboot-install/SKILL.md # Interactive install wizard
 ├── hooks/
 │   └── hooks.json               # Audit trail, compliance hooks
 ├── .mcp.json                    # Knowledge base, domain tools
@@ -141,10 +141,10 @@ The current approach but needs refinement.
 **How it works:**
 ```bash
 # Bootstrap a new org personas repo
-agentboot setup
+agentboot install
 
-# Interactive setup — asks org name, picks starter personas
-agentboot setup --interactive
+# Create hub with specific org
+agentboot install --hub --org acme
 
 # Build compiled output
 agentboot build
@@ -168,7 +168,7 @@ through other channels.
 | Segment | How |
 |---------|-----|
 | Power Users | Full control over build pipeline; scriptable |
-| Willing Adopters | `agentboot setup` gets them started |
+| Willing Adopters | `agentboot install` gets them started |
 | IT / Platform | CI/CD integration; `agentboot build && agentboot sync` in pipeline |
 
 **Pros:**
@@ -217,7 +217,7 @@ npm run sync
 - Familiar GitHub template workflow
 
 **Cons:**
-- High setup friction — clone, install, configure, build, sync
+- Higher friction than `agentboot install` — clone, configure, build, sync
 - Requires understanding of the entire system before getting value
 - End developers never see or interact with this repo
 - Template repos can't receive upstream updates cleanly
@@ -505,7 +505,7 @@ noting because the IDE is where most developers spend their time.
 | Channel | Action | Effort |
 |---------|--------|--------|
 | **Git Template** | Already exists. Refine `agentboot.config.json` and build pipeline. | LOW |
-| **CLI** | Implement `agentboot setup`, `build`, `sync`, `export --format plugin`. | MEDIUM |
+| **CLI** | Implement `agentboot install`, `build`, `sync`, `export --format plugin`. | MEDIUM |
 | **Direct .claude/ sync** | Already designed. Implement Claude Code-native output. | MEDIUM |
 
 ### Phase 2: Native Distribution (V1 → V1.5)
@@ -537,7 +537,7 @@ noting because the IDE is where most developers spend their time.
 ### Power User Journey
 ```
 1. Discovers AgentBoot (GitHub, marketplace, word of mouth)
-2. `agentboot setup` → scaffolds org personas repo
+2. `agentboot install` → scaffolds org personas repo
 3. Edits agentboot.config.json, writes custom personas/traits
 4. `agentboot build && agentboot export --format plugin`
 5. Publishes to private marketplace

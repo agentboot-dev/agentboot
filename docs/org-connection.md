@@ -59,8 +59,8 @@ The developer only installs one thing.
 
 **Platform team workflow:**
 ```bash
-# One-time setup
-agentboot setup --org acme-corp
+# One-time install
+agentboot install --hub --org acme-corp
 # Edit agentboot.config.json, add custom personas, traits, hooks, domain layers
 agentboot build
 agentboot export --format plugin --name acme
@@ -270,7 +270,7 @@ agentboot sync --mode github-api
 ```
 
 **Pros:**
-- **Zero developer setup** — clone and go
+- **Zero developer install** — clone and go
 - No plugin system dependency
 - No namespace prefix (`/review-code` not `/acme:review-code`)
 - Works for any tool that reads `.claude/` (not just CC plugins)
@@ -337,10 +337,10 @@ delivery — that's what the plugin and sync are for.
 
 ---
 
-### Model E: Self-Service Discovery
+### Model E: Self-Service Install
 
-The developer has AgentBoot installed (generic or org plugin) and runs a setup skill
-that connects them to their org.
+The developer has AgentBoot installed (generic or org plugin) and runs `agentboot install`
+to connect to their org.
 
 **Developer workflow:**
 ```bash
