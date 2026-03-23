@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.4.0)'
+        required: true
+        type: string
+      dry-run:
+        description: 'Dry run — validate without publishing'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version format: ${{ inputs.version }}. Use semver (e.g. 0.4.0)"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check tag does not already exist
+        run: |
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "::error::Tag v${{ inputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Bump version in package.json
+        run: npm version "${{ inputs.version }}" --no-git-tag-version
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore: release v${{ inputs.version }}"
+
+      - name: Tag release
+        run: git tag "v${{ inputs.version }}"
+
+      - name: Push commit and tag
+        if: ${{ !inputs.dry-run }}
+        run: git push origin main "v${{ inputs.version }}"
+
+      - name: Generate release notes
+        id: drafter
+        if: ${{ !inputs.dry-run }}
+        uses: release-drafter/release-drafter@v6
+        with:
+          tag: "v${{ inputs.version }}"
+          version: "${{ inputs.version }}"
+          publish: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry-run }}
+        run: npm publish --provenance
+
+      - name: Update Homebrew formula
+        if: ${{ !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          TARBALL_URL="https://registry.npmjs.org/agentboot/-/agentboot-${VERSION}.tgz"
+
+          # Wait for npm to propagate, then fetch SHA
+          echo "Waiting for npm to propagate..."
+          for i in $(seq 1 30); do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARBALL_URL")
+            if [ "$HTTP_CODE" = "200" ]; then
+              break
+            fi
+            echo "  Attempt $i: HTTP $HTTP_CODE — retrying in 10s..."
+            sleep 10
+          done
+
+          SHA=$(curl -sL "$TARBALL_URL" | shasum -a 256 | cut -d' ' -f1)
+          if [ -z "$SHA" ] || [ "$SHA" = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]; then
+            echo "::error::Failed to fetch tarball SHA for v${VERSION}"
+            exit 1
+          fi
+          echo "SHA256: $SHA"
+
+          # Clone homebrew tap and update formula
+          gh repo clone agentboot-dev/homebrew-agentboot /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          sed -i "s|url \"https://registry.npmjs.org/agentboot/-/agentboot-.*\.tgz\"|url \"${TARBALL_URL}\"|" Formula/agentboot.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/agentboot.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/agentboot.rb
+          git commit -m "chore: update agentboot to v${VERSION}"
+          git push
+
+      - name: Summary
+        run: |
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "### Dry Run Complete" >> $GITHUB_STEP_SUMMARY
+            echo "Would have released **v${{ inputs.version }}**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Released v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "- [GitHub Release](${{ steps.drafter.outputs.html_url }})" >> $GITHUB_STEP_SUMMARY
+            echo "- [npm](https://www.npmjs.com/package/agentboot/v/${{ inputs.version }})" >> $GITHUB_STEP_SUMMARY
+            echo "- Homebrew formula updated" >> $GITHUB_STEP_SUMMARY
+          fi
