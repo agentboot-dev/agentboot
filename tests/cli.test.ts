@@ -305,7 +305,7 @@ describe("AB-33.2: scaffoldHub", () => {
 // AB-43: import pure functions
 // ===========================================================================
 
-import { normalizeContent, jaccardSimilarity } from "../scripts/lib/import.js";
+import { normalizeContent, jaccardSimilarity, scanPath } from "../scripts/lib/import.js";
 
 describe("AB-43: import — normalizeContent", () => {
   it("strips markdown formatting and normalizes whitespace", () => {
@@ -359,6 +359,132 @@ describe("AB-43: import — jaccardSimilarity", () => {
   it("returns 0 when one set is empty", () => {
     const a = new Set(["foo"]);
     expect(jaccardSimilarity(a, new Set())).toBe(0);
+  });
+});
+
+// ===========================================================================
+// AB-43: import — scanPath
+// ===========================================================================
+
+describe("AB-43: import — scanPath", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-scan-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("finds CLAUDE.md at root level", () => {
+    fs.writeFileSync(path.join(tempDir, "CLAUDE.md"), "# Instructions\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("claude-md");
+    expect(result.files[0]!.relativePath).toBe("CLAUDE.md");
+  });
+
+  it("finds .claude/ directory contents", () => {
+    const claudeDir = path.join(tempDir, ".claude");
+    fs.mkdirSync(path.join(claudeDir, "rules"), { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, "CLAUDE.md"), "# Test\n", "utf-8");
+    fs.writeFileSync(path.join(claudeDir, "rules", "baseline.md"), "# Rule\n", "utf-8");
+    const result = scanPath(tempDir);
+    const types = result.files.map(f => f.type);
+    expect(types).toContain("claude-md");
+    expect(types).toContain("rule");
+  });
+
+  it("classifies .cursorrules", () => {
+    fs.writeFileSync(path.join(tempDir, ".cursorrules"), "You are a helpful AI.\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("cursorrules");
+  });
+
+  it("classifies copilot-instructions.md", () => {
+    fs.mkdirSync(path.join(tempDir, ".github"), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, ".github", "copilot-instructions.md"), "# Copilot\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("copilot-instructions");
+  });
+
+  it("classifies .prompt.md files in .github/prompts/", () => {
+    fs.mkdirSync(path.join(tempDir, ".github", "prompts"), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, ".github", "prompts", "review.prompt.md"), "# Review\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("copilot-prompt");
+  });
+
+  it("skips binary files", () => {
+    const buf = Buffer.alloc(100);
+    buf[50] = 0; // null byte = binary
+    fs.mkdirSync(path.join(tempDir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, ".claude", "binary.md"), buf);
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(0);
+  });
+
+  it("skips agentboot artifacts", () => {
+    const claudeDir = path.join(tempDir, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, ".agentboot-manifest.json"), "{}", "utf-8");
+    fs.mkdirSync(path.join(claudeDir, ".agentboot-archive"));
+    fs.writeFileSync(path.join(claudeDir, "CLAUDE.md"), "# Test\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("claude-md");
+  });
+
+  it("returns empty for directory with no agentic content", () => {
+    fs.writeFileSync(path.join(tempDir, "README.md"), "# Hello\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(0);
+  });
+
+  it("counts lines correctly", () => {
+    fs.writeFileSync(path.join(tempDir, "CLAUDE.md"), "line1\nline2\nline3\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files[0]!.lines).toBe(4); // trailing newline creates empty 4th line
+  });
+
+  it("classifies SKILL.md files", () => {
+    const claudeDir = path.join(tempDir, ".claude", "skills", "review");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, "SKILL.md"), "---\nid: test\n---\n# Test\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("skill");
+  });
+
+  it("classifies agent files", () => {
+    const agentsDir = path.join(tempDir, ".claude", "agents");
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, "code-reviewer.md"), "---\nname: reviewer\n---\n", "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("agent");
+  });
+
+  it("classifies settings.json", () => {
+    const claudeDir = path.join(tempDir, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, "settings.json"), '{"env":{}}', "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("settings");
+  });
+
+  it("classifies .mcp.json", () => {
+    const claudeDir = path.join(tempDir, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, ".mcp.json"), '{"mcpServers":{}}', "utf-8");
+    const result = scanPath(tempDir);
+    expect(result.files.length).toBe(1);
+    expect(result.files[0]!.type).toBe("mcp");
   });
 });
 
@@ -506,6 +632,80 @@ describe("AB-36: doctor command", () => {
   it("reports exit code 0 on success", () => {
     // Should not throw
     run("doctor");
+  });
+
+  it("--dry-run without --fix warns user", () => {
+    const output = run("doctor --dry-run");
+    expect(output).toContain("--dry-run has no effect without --fix");
+  });
+
+  it("--fix creates missing repos.json and directories", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-fix-"));
+    try {
+      // Minimal config with a fictional persona and trait
+      const config = {
+        org: "test-org",
+        personas: { enabled: ["fix-test-persona"] },
+        traits: { enabled: ["fix-test-trait"] },
+        sync: { repos: "./repos.json" },
+      };
+      fs.writeFileSync(path.join(tempDir, "agentboot.config.json"), JSON.stringify(config), "utf-8");
+
+      const output = run(`doctor --fix --config ${path.join(tempDir, "agentboot.config.json")}`, tempDir);
+      expect(output).toContain("(fixed)");
+
+      // repos.json created
+      expect(fs.existsSync(path.join(tempDir, "repos.json"))).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(tempDir, "repos.json"), "utf-8"))).toEqual([]);
+
+      // Persona scaffolded
+      expect(fs.existsSync(path.join(tempDir, "core", "personas", "fix-test-persona", "SKILL.md"))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, "core", "personas", "fix-test-persona", "persona.config.json"))).toBe(true);
+
+      // Trait created
+      expect(fs.existsSync(path.join(tempDir, "core", "traits", "fix-test-trait.md"))).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--fix --dry-run reports fixes without writing files", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-dry-"));
+    try {
+      const config = {
+        org: "test-org",
+        personas: { enabled: ["dry-persona"] },
+        traits: { enabled: ["dry-trait"] },
+        sync: { repos: "./repos.json" },
+      };
+      fs.writeFileSync(path.join(tempDir, "agentboot.config.json"), JSON.stringify(config), "utf-8");
+
+      const output = run(`doctor --fix --dry-run --config ${path.join(tempDir, "agentboot.config.json")}`, tempDir);
+      expect(output).toContain("(would fix)");
+
+      // Nothing actually created
+      expect(fs.existsSync(path.join(tempDir, "repos.json"))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, "core"))).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports fixable hint when issues exist without --fix", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-hint-"));
+    try {
+      const config = {
+        org: "test-org",
+        personas: { enabled: ["missing-persona"] },
+        traits: { enabled: [] },
+      };
+      fs.writeFileSync(path.join(tempDir, "agentboot.config.json"), JSON.stringify(config), "utf-8");
+
+      const output = runExpectFail(`doctor --config ${path.join(tempDir, "agentboot.config.json")}`, tempDir);
+      expect(output).toContain("fixable with --fix");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

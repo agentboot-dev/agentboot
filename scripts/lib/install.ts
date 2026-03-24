@@ -496,8 +496,28 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     "      Add `agentboot validate --strict` to your CI pipeline.\n"
   ));
 
-  // Step 1.8: Next steps
+  // Step 1.8: Detect whether hub has a remote
+  let hubHasRemote = false;
+  try {
+    const remoteResult = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: hubDir,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    hubHasRemote = remoteResult.status === 0 && !!remoteResult.stdout?.trim();
+  } catch { /* no git or no remote */ }
+
+  // Step 1.9: Next steps
   console.log(chalk.bold(`${chalk.green("✓")} Persona source code lives at: ${hubDir}\n`));
+
+  if (!hubHasRemote) {
+    console.log(chalk.cyan(
+      "  This repo has no remote — that's fine for evaluation.\n" +
+      "  Everything works locally. When your org is ready:\n\n" +
+      "    gh repo create <org>/personas --source . --private --push\n"
+    ));
+  }
+
   console.log(chalk.gray("  Next steps:"));
   console.log(chalk.gray("    1. Review personas:    Browse core/personas/ and customize"));
   console.log(chalk.gray("    2. Add more repos:     Edit repos.json or run `agentboot install` from a repo"));

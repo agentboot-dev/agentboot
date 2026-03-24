@@ -12,7 +12,7 @@
  *   agentboot sync [--repos-file path] [--dry-run]
  *   agentboot install [--hub] [--connect] [--org name] [--path dir]
  *   agentboot add <type> <name>
- *   agentboot doctor [--format text|json]
+ *   agentboot doctor [--fix] [--dry-run] [--format text|json]
  *   agentboot status [--format text|json]
  *   agentboot lint [--persona name] [--severity level] [--format text|json]
  *   agentboot uninstall [--repo path] [--dry-run]
@@ -682,19 +682,27 @@ program
   .command("doctor")
   .description("Check environment and diagnose configuration issues")
   .option("--format <fmt>", "output format: text, json", "text")
+  .option("--fix", "auto-fix issues that can be resolved automatically")
+  .option("--dry-run", "show what --fix would do without making changes")
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const isJson = opts.format === "json";
+    const fixMode = opts.fix === true;
+    const dryRun = opts.dryRun === true;
+    if (dryRun && !fixMode && !isJson) {
+      console.log(chalk.yellow("Note: --dry-run has no effect without --fix\n"));
+    }
     if (!isJson) console.log(chalk.bold("\nAgentBoot — doctor\n"));
     const cwd = process.cwd();
     let issues = 0;
 
-    interface DoctorCheck { name: string; status: "ok" | "fail" | "warn"; message: string }
+    interface DoctorCheck { name: string; status: "ok" | "fail" | "warn"; message: string; fixable?: boolean; fixed?: boolean }
     const checks: DoctorCheck[] = [];
 
     function ok(msg: string) { checks.push({ name: msg, status: "ok", message: msg }); if (!isJson) console.log(`  ${chalk.green("✓")} ${msg}`); }
-    function fail(msg: string) { issues++; checks.push({ name: msg, status: "fail", message: msg }); if (!isJson) console.log(`  ${chalk.red("✗")} ${msg}`); }
-    function warn(msg: string) { checks.push({ name: msg, status: "warn", message: msg }); if (!isJson) console.log(`  ${chalk.yellow("⚠")} ${msg}`); }
+    function fail(msg: string, fixable = false) { issues++; checks.push({ name: msg, status: "fail", message: msg, fixable }); if (!isJson) console.log(`  ${chalk.red("✗")} ${msg}${fixable && !fixMode ? chalk.gray(" (fixable with --fix)") : ""}`); }
+    function warn(msg: string, fixable = false) { checks.push({ name: msg, status: "warn", message: msg, fixable }); if (!isJson) console.log(`  ${chalk.yellow("⚠")} ${msg}${fixable && !fixMode ? chalk.gray(" (fixable with --fix)") : ""}`); }
+    function fixed(msg: string) { checks.push({ name: msg, status: "ok", message: msg, fixed: true }); if (!isJson) console.log(`  ${chalk.green("✓")} ${msg} ${chalk.cyan(dryRun ? "(would fix)" : "(fixed)")}`); }
 
     // 1. Environment
     if (!isJson) console.log(chalk.cyan("Environment"));
@@ -725,14 +733,53 @@ program
         const config = loadConfig(configPath);
         ok(`Config parses successfully (org: ${config.org})`);
 
+        // Helper: generate a minimal SKILL.md scaffold
+        function scaffoldSkillMd(name: string): string {
+          return [
+            "---",
+            `id: ${name}`,
+            `name: ${name}`,
+            "version: 0.1.0",
+            "---",
+            "",
+            `# ${name}`,
+            "",
+            "<!-- traits:start -->",
+            "<!-- traits:end -->",
+            "",
+            "TODO: Define this persona.",
+            "",
+          ].join("\n");
+        }
+
         // Check personas
         const enabledPersonas = config.personas?.enabled ?? [];
         const personasDir = path.join(cwd, "core", "personas");
         let personaIssues = 0;
         for (const p of enabledPersonas) {
           const pDir = path.join(personasDir, p);
-          if (!fs.existsSync(pDir)) { personaIssues++; fail(`Persona not found: ${p}`); }
-          else if (!fs.existsSync(path.join(pDir, "SKILL.md"))) { personaIssues++; fail(`Missing SKILL.md: ${p}`); }
+          if (!fs.existsSync(pDir)) {
+            if (fixMode) {
+              if (!dryRun) {
+                fs.mkdirSync(pDir, { recursive: true });
+                fs.writeFileSync(path.join(pDir, "SKILL.md"), scaffoldSkillMd(p), "utf-8");
+                const personaConfig = { traits: config.traits?.enabled ?? [] };
+                fs.writeFileSync(path.join(pDir, "persona.config.json"), JSON.stringify(personaConfig, null, 2) + "\n", "utf-8");
+              }
+              fixed(`Scaffolded persona: ${p}`);
+            } else {
+              personaIssues++; fail(`Persona not found: ${p}`, true);
+            }
+          } else if (!fs.existsSync(path.join(pDir, "SKILL.md"))) {
+            if (fixMode) {
+              if (!dryRun) {
+                fs.writeFileSync(path.join(pDir, "SKILL.md"), scaffoldSkillMd(p), "utf-8");
+              }
+              fixed(`Created missing SKILL.md for: ${p}`);
+            } else {
+              personaIssues++; fail(`Missing SKILL.md: ${p}`, true);
+            }
+          }
         }
         if (personaIssues === 0) ok(`All ${enabledPersonas.length} enabled personas found`);
 
@@ -741,20 +788,72 @@ program
         const traitsDir = path.join(cwd, "core", "traits");
         let traitIssues = 0;
         for (const t of enabledTraits) {
-          if (!fs.existsSync(path.join(traitsDir, `${t}.md`))) { traitIssues++; fail(`Trait not found: ${t}`); }
+          if (!fs.existsSync(path.join(traitsDir, `${t}.md`))) {
+            if (fixMode) {
+              if (!dryRun) {
+                fs.mkdirSync(traitsDir, { recursive: true });
+                const traitContent = `# ${t}\n\nTODO: Define this trait.\n`;
+                fs.writeFileSync(path.join(traitsDir, `${t}.md`), traitContent, "utf-8");
+              }
+              fixed(`Created missing trait: ${t}.md`);
+            } else {
+              traitIssues++; fail(`Trait not found: ${t}`, true);
+            }
+          }
         }
         if (traitIssues === 0) ok(`All ${enabledTraits.length} enabled traits found`);
+
+        // Check core directories
+        const coreDirs = ["core/personas", "core/traits", "core/instructions", "core/gotchas"];
+        for (const dir of coreDirs) {
+          const fullDir = path.join(cwd, dir);
+          if (!fs.existsSync(fullDir)) {
+            if (fixMode) {
+              if (!dryRun) fs.mkdirSync(fullDir, { recursive: true });
+              fixed(`Created missing directory: ${dir}/`);
+            } else {
+              warn(`Missing directory: ${dir}/`, true);
+            }
+          }
+        }
 
         // Check repos.json
         const reposPath = config.sync?.repos ?? "./repos.json";
         const fullReposPath = path.resolve(path.dirname(configPath), reposPath);
-        if (fs.existsSync(fullReposPath)) ok(`repos.json found`);
-        else warn(`repos.json not found at ${reposPath}`);
+        if (fs.existsSync(fullReposPath)) {
+          ok(`repos.json found`);
+        } else if (fixMode) {
+          if (!dryRun) fs.writeFileSync(fullReposPath, "[]\n", "utf-8");
+          fixed(`Created empty repos.json`);
+        } else {
+          warn(`repos.json not found at ${reposPath}`, true);
+        }
 
         // Check dist/
         const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
-        if (fs.existsSync(distPath)) ok(`dist/ exists (built)`);
-        else warn(`dist/ not found — run \`agentboot build\``);
+        if (fs.existsSync(distPath)) {
+          ok(`dist/ exists (built)`);
+        } else if (fixMode) {
+          if (!isJson) console.log(`  ${chalk.cyan("→")} Building dist/...`);
+          if (!dryRun) {
+            const compileScript = path.join(SCRIPTS_DIR, "compile.ts");
+            const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
+            const buildResult = spawnSync(tsx, [compileScript], {
+              cwd,
+              encoding: "utf-8",
+              stdio: ["pipe", "pipe", "pipe"],
+            });
+            if (buildResult.status === 0) {
+              fixed(`Built dist/`);
+            } else {
+              fail(`Build failed: ${buildResult.stderr?.trim() ?? "unknown error"}`);
+            }
+          } else {
+            fixed(`Would run \`agentboot build\``);
+          }
+        } else {
+          warn(`dist/ not found — run \`agentboot build\``, true);
+        }
 
       } catch (e: unknown) {
         fail(`Config parse error: ${e instanceof Error ? e.message : String(e)}`);
@@ -772,10 +871,21 @@ program
     }
 
     if (issues > 0) {
-      console.log(chalk.bold(chalk.red(`✗ ${issues} issue${issues !== 1 ? "s" : ""} found\n`)));
+      const fixableCount = checks.filter(c => c.fixable && !c.fixed).length;
+      console.log(chalk.bold(chalk.red(`✗ ${issues} issue${issues !== 1 ? "s" : ""} found`)));
+      if (fixableCount > 0) {
+        console.log(chalk.gray(`  ${fixableCount} fixable — run \`agentboot doctor --fix\`\n`));
+      } else {
+        console.log("");
+      }
       process.exit(1);
     } else {
-      console.log(chalk.bold(chalk.green("✓ All checks passed\n")));
+      const fixedCount = checks.filter(c => c.fixed).length;
+      if (fixedCount > 0) {
+        console.log(chalk.bold(chalk.green(`✓ All checks passed (${fixedCount} issue${fixedCount !== 1 ? "s" : ""} ${dryRun ? "would be " : ""}fixed)\n`)));
+      } else {
+        console.log(chalk.bold(chalk.green("✓ All checks passed\n")));
+      }
     }
   });
 
