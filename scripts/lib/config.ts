@@ -171,7 +171,7 @@ export interface TelemetryConfig {
   enabled?: boolean;
   /** How to identify developers in telemetry.
    *  false = no developer ID, "hashed" = SHA-256 of email, "email" = raw email. */
-  includeDevId?: false | "hashed" | "email";
+  includeDevId?: false | "hashed" | "email" | "email-raw";
   /** Path to NDJSON log file. Default: ~/.agentboot/telemetry.ndjson */
   logPath?: string;
   /** Never include raw prompt content in telemetry. Design invariant. */
@@ -396,10 +396,15 @@ export function loadConfig(configPath: string): AgentBootConfig {
     ["sync.repos", parsed.sync?.repos],
     ["output.distPath", parsed.output?.distPath],
     ["personas.customDir", parsed.personas?.customDir],
+    ["telemetry.logPath", parsed.telemetry?.logPath],
   ];
   for (const [fieldName, value] of pathFields) {
-    if (typeof value === "string" && value.includes("..")) {
-      throw new Error(`"${fieldName}" must not contain ".." path segments`);
+    if (typeof value === "string") {
+      // Check for .. path traversal (normalized for both separators)
+      const normalized = value.replace(/\\/g, "/");
+      if (normalized.split("/").includes("..")) {
+        throw new Error(`"${fieldName}" must not contain ".." path segments`);
+      }
     }
   }
 

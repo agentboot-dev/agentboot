@@ -102,3 +102,4 @@ Planned features:
 - **ADR governance** -- create and manage architectural decision records with exception lifecycle
 - **Autonomy progression** -- per-persona independence levels (Advisory to Autonomous)
 - **Cross-platform output** -- dedicated output formats for Copilot, Cursor, and Gemini
+- **Monorepo support** -- deploy per-package personas within a single repo (see [Monorepo Design Considerations](concepts.md#monorepo-design-considerations))

@@ -1043,10 +1043,15 @@ exit 0
   const includeDevId = config.telemetry?.includeDevId ?? false;
 
   let devIdBlock = "";
-  if (includeDevId === "hashed") {
+  if (includeDevId === "hashed" || includeDevId === "email") {
+    if (includeDevId === "email") {
+      log(chalk.yellow(`  ⚠ telemetry.includeDevId "email" now defaults to hashed for privacy.`));
+      log(chalk.yellow(`    Use "email-raw" to explicitly include raw emails (not recommended).`));
+    }
     devIdBlock = `DEV_ID=$(git config user.email 2>/dev/null | shasum -a 256 | cut -d' ' -f1)`;
-  } else if (includeDevId === "email") {
-    log(chalk.yellow(`  ⚠ telemetry.includeDevId is "email" — raw emails will be in telemetry logs. Consider "hashed" for privacy.`));
+  } else if (includeDevId === "email-raw") {
+    log(chalk.yellow(`  ⚠ telemetry.includeDevId is "email-raw" — raw emails will be in telemetry logs.`));
+    log(chalk.yellow(`    Consider "hashed" for privacy compliance (GDPR, data minimization).`));
     devIdBlock = `DEV_ID=$(git config user.email 2>/dev/null || echo "unknown")`;
   } else {
     devIdBlock = `DEV_ID=""`;
