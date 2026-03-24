@@ -67,17 +67,20 @@ jobs:
         run: npm version "${{ inputs.version }}" --no-git-tag-version
 
       # Branch protection requires PRs for all changes to main.
-      # We create a PR for the version bump, wait for CI, then merge.
+      # RELEASE_PAT is used to push the branch and create the PR so that
+      # CI workflows trigger (GITHUB_TOKEN events don't trigger workflows).
       # Tags bypass the PR rule since they're not branch refs.
       - name: Version bump via PR
         if: ${{ !inputs.dry-run }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
           BRANCH="release/v${{ inputs.version }}"
           git checkout -b "$BRANCH"
           git add package.json package-lock.json
           git commit -m "chore: release v${{ inputs.version }}"
+
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin "$BRANCH"
 
           gh pr create \
@@ -88,8 +91,13 @@ jobs:
 
           # Wait for required status checks to pass, then merge
           echo "Waiting for CI checks on version bump PR..."
-          PR_NUMBER=$(gh pr view "$BRANCH" --json number --jq '.number')
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
+            CHECKS=$(gh pr checks "$BRANCH" 2>&1) || true
+            if echo "$CHECKS" | grep -q "no checks reported"; then
+              echo "  Check $i/90: no checks yet — waiting 10s..."
+              sleep 10
+              continue
+            fi
             STATUS=$(gh pr checks "$BRANCH" --json state --jq '[.[].state] | if all(. == "SUCCESS" or . == "SKIPPED") then "ready" elif any(. == "FAILURE") then "failed" else "pending" end' 2>/dev/null || echo "pending")
             if [ "$STATUS" = "ready" ]; then
               echo "Checks passed. Merging..."
@@ -98,11 +106,14 @@ jobs:
               echo "::error::CI checks failed on version bump PR"
               exit 1
             fi
-            echo "  Check $i/60: $STATUS — waiting 10s..."
+            echo "  Check $i/90: $STATUS — waiting 10s..."
             sleep 10
           done
 
           gh pr merge "$BRANCH" --merge --delete-branch
+
+          # Reset remote back to GITHUB_TOKEN for npm OIDC
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
 
           # Sync local to the merge commit on main
           git fetch origin main
