@@ -66,19 +66,40 @@ jobs:
       - name: Bump version in package.json
         run: npm version "${{ inputs.version }}" --no-git-tag-version
 
-      - name: Commit version bump
+      - name: Commit version bump and push via PR
+        if: ${{ !inputs.dry-run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          BRANCH="release/v${{ inputs.version }}"
+          git checkout -b "$BRANCH"
           git add package.json package-lock.json
           git commit -m "chore: release v${{ inputs.version }}"
+          git push origin "$BRANCH"
+
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: release v${{ inputs.version }}" \
+            --body "Automated version bump for v${{ inputs.version }}. Created by release workflow." \
+            --label "chore")
+          echo "Created PR: $PR_URL"
+
+          # Wait for required checks then merge
+          echo "Waiting for checks..."
+          gh pr checks "$PR_URL" --watch --fail-fast || true
+          gh pr merge "$PR_URL" --merge --admin --delete-branch
+
+          # Update local ref to the merge commit
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
 
       - name: Tag release
-        run: git tag "v${{ inputs.version }}"
-
-      - name: Push commit and tag
         if: ${{ !inputs.dry-run }}
         run: |
-          git remote set-url origin "https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git"
-          git push origin main "v${{ inputs.version }}"
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
 
       - name: Generate release notes
         id: drafter
