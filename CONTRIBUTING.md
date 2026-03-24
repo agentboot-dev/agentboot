@@ -88,7 +88,7 @@ nothing well.
 
 **No domain assumptions.** A trait must not assume any particular framework, language,
 industry, compliance regime, or organizational structure. If your trait works for a
-Spring Boot API team but not for a React frontend team, it is not a core trait.
+Java API team but not for a React frontend team, it is not a core trait.
 
 **Configurable where it matters.** Look at `critical-thinking` as the model: the trait
 defines the behavior at each weight level, and the persona that composes it sets the

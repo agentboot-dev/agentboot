@@ -212,6 +212,13 @@ from their code repo and choosing "Connect this repo to an existing personas rep
 This creates a branch and PR against the personas repo — no manual `repos.json`
 editing required.
 
+**Filesystem layout:** The personas repo and target repos do not need to be siblings
+on disk. `repos.json` uses absolute paths, so they can be anywhere. The install wizard
+suggests a sibling layout and auto-detects sibling repos, but this is a convenience —
+not a requirement. If your repos are in different directories (e.g., `~/work/personas`
+and `~/projects/api-service`), just enter the path manually during `agentboot install`
+or edit `repos.json` directly.
+
 ---
 
 ## Step 4: Build and sync

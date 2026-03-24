@@ -21,11 +21,15 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # Security: assign inputs to env vars to prevent script injection.
+      # Never use ${{ inputs.version }} directly in run: blocks.
+      VERSION: ${{ inputs.version }}
     steps:
       - name: Validate version format
         run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Invalid version format: ${{ inputs.version }}. Use semver (e.g. 0.4.1)"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version format: $VERSION. Use semver (e.g. 0.4.1)"
             exit 1
           fi
 
@@ -37,8 +41,8 @@ jobs:
 
       - name: Check tag does not already exist
         run: |
-          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::Tag v${{ inputs.version }} already exists"
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v${VERSION} already exists"
             exit 1
           fi
 
@@ -64,7 +68,7 @@ jobs:
         run: npm test
 
       - name: Bump version in package.json
-        run: npm version "${{ inputs.version }}" --no-git-tag-version
+        run: npm version "$VERSION" --no-git-tag-version
 
       # Branch protection requires PRs for all changes to main.
       # RELEASE_PAT is used to push the branch and create the PR so that
@@ -75,10 +79,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
-          BRANCH="release/v${{ inputs.version }}"
+          BRANCH="release/v${VERSION}"
           git checkout -b "$BRANCH"
           git add package.json package-lock.json
-          git commit -m "chore: release v${{ inputs.version }}"
+          git commit -m "chore: release v${VERSION}"
 
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin "$BRANCH"
@@ -86,7 +90,7 @@ jobs:
           gh pr create \
             --base main \
             --head "$BRANCH" \
-            --title "chore: release v${{ inputs.version }}" \
+            --title "chore: release v${VERSION}" \
             --body "Automated version bump. Created by release workflow."
 
           # Wait for the required "Validate and build" check to pass.
@@ -118,8 +122,8 @@ jobs:
       - name: Tag and push
         if: ${{ !inputs.dry-run }}
         run: |
-          git tag "v${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         id: drafter
@@ -143,7 +147,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
-          VERSION="${{ inputs.version }}"
           TARBALL_URL="https://registry.npmjs.org/agentboot/-/agentboot-${VERSION}.tgz"
 
           echo "Waiting for npm to propagate..."
@@ -177,10 +180,10 @@ jobs:
         run: |
           if [ "${{ inputs.dry-run }}" = "true" ]; then
             echo "### Dry Run Complete" >> $GITHUB_STEP_SUMMARY
-            echo "Would have released **v${{ inputs.version }}**" >> $GITHUB_STEP_SUMMARY
+            echo "Would have released **v${VERSION}**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "### Released v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "### Released v${VERSION}" >> $GITHUB_STEP_SUMMARY
             echo "- [GitHub Release](${{ steps.drafter.outputs.html_url }})" >> $GITHUB_STEP_SUMMARY
-            echo "- [npm](https://www.npmjs.com/package/agentboot/v/${{ inputs.version }})" >> $GITHUB_STEP_SUMMARY
+            echo "- [npm](https://www.npmjs.com/package/agentboot/v/${VERSION})" >> $GITHUB_STEP_SUMMARY
             echo "- Homebrew formula updated" >> $GITHUB_STEP_SUMMARY
           fi

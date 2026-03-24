@@ -1149,6 +1149,58 @@ personas share behavior, that behavior belongs in a trait that both compose.
 
 ---
 
+## Monorepo design considerations
+
+> **Status:** Future consideration (Phase 5+). Not currently supported.
+
+AgentBoot's distribution model assumes one repo = one sync target. Each entry in
+`repos.json` is a repo with its own `.git/` directory, and sync writes a single
+`.claude/` directory to the repo root. This works well for multi-repo organizations,
+which is the primary target.
+
+Monorepos pose a different challenge:
+
+```
+monorepo/                  ← single .git/
+├── packages/
+│   ├── api-service/       ← wants API-specific personas
+│   ├── web-app/           ← wants frontend-specific personas
+│   └── shared-lib/        ← wants library-specific personas
+```
+
+In this layout, there is one repo but multiple teams with different persona needs.
+Claude Code scopes to the repo root — it reads `.claude/` from the top level, not
+from subdirectories. This means:
+
+**What works today:**
+- One set of personas for the entire monorepo (deploy to `.claude/` at root)
+- Gotchas with `paths:` frontmatter can target specific packages (e.g.,
+  `paths: ["packages/api-service/**"]`) — this gives per-package rules without
+  per-package personas
+
+**What does not work today:**
+- Per-package persona sets (e.g., API team gets `api-contract-reviewer` but
+  web team does not)
+- Per-package trait composition (same persona behaves differently per package)
+- Treating subdirectories as independent sync targets
+
+**Design questions for future phases:**
+- Should `repos.json` support a `scope` field that maps a subdirectory within a
+  repo to a specific group/team in the hierarchy?
+- Should AgentBoot generate a single merged `.claude/` that contains all
+  package-specific personas, relying on `paths:` frontmatter to activate them
+  contextually?
+- Or should monorepo support be a documentation-only concern — recommend that
+  monorepo teams use gotchas for package-specific rules and share a single
+  persona set?
+
+The gotchas-based approach (path-scoped rules, shared personas) covers most
+monorepo needs without new infrastructure. Per-package personas may not be
+necessary if the persona is well-designed and the path-scoped gotchas carry the
+domain knowledge.
+
+---
+
 *See also:*
 - [`docs/getting-started.md`](getting-started.md) — hands-on walkthrough from zero to first sync
 - [`docs/configuration.md`](configuration.md) — complete `agentboot.config.json` reference

@@ -199,7 +199,7 @@ describe("AB-33.2: install command", () => {
 // AB-33.2: install unit tests (pure functions)
 // ===========================================================================
 
-import { detectCwd, scaffoldHub } from "../scripts/lib/install.js";
+import { detectCwd, scaffoldHub, scanNearby } from "../scripts/lib/install.js";
 
 describe("AB-33.2: detectCwd", () => {
   let tempDir: string;
@@ -299,13 +299,114 @@ describe("AB-33.2: scaffoldHub", () => {
     const repos = JSON.parse(fs.readFileSync(path.join(tempDir, "repos.json"), "utf-8"));
     expect(repos).toEqual([{ path: "/existing" }]);
   });
+
+  it("sets orgDisplayName separately from org slug", () => {
+    scaffoldHub(tempDir, "acme-corp", "Acme Corporation");
+    const config = JSON.parse(fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8"));
+    expect(config.org).toBe("acme-corp");
+    expect(config.orgDisplayName).toBe("Acme Corporation");
+  });
+
+  it("defaults orgDisplayName to slug when not provided", () => {
+    scaffoldHub(tempDir, "solo-dev");
+    const config = JSON.parse(fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8"));
+    expect(config.org).toBe("solo-dev");
+    expect(config.orgDisplayName).toBe("solo-dev");
+  });
+});
+
+// ===========================================================================
+// AB-33.2: scanNearby
+// ===========================================================================
+
+describe("AB-33.2: scanNearby", () => {
+  let parentDir: string;
+
+  beforeEach(() => {
+    parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-nearby-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(parentDir, { recursive: true, force: true });
+  });
+
+  it("detects a sibling hub repo", () => {
+    const spoke = path.join(parentDir, "my-app");
+    const hub = path.join(parentDir, "personas");
+    fs.mkdirSync(spoke);
+    fs.mkdirSync(hub);
+    fs.writeFileSync(path.join(hub, "agentboot.config.json"), "{}", "utf-8");
+
+    const results = scanNearby(spoke);
+    const hubs = results.filter(r => r.type === "hub");
+    expect(hubs.length).toBe(1);
+    expect(hubs[0]!.path).toBe(hub);
+  });
+
+  it("detects the parent directory as a hub", () => {
+    // Parent-hub layout: hub is the parent, spokes are children
+    fs.writeFileSync(path.join(parentDir, "agentboot.config.json"), "{}", "utf-8");
+    const spoke = path.join(parentDir, "my-app");
+    fs.mkdirSync(spoke);
+
+    const results = scanNearby(spoke);
+    const hubs = results.filter(r => r.type === "hub");
+    expect(hubs.length).toBe(1);
+    expect(hubs[0]!.path).toBe(parentDir);
+  });
+
+  it("detects sibling repos with .claude/ content", () => {
+    const spoke = path.join(parentDir, "my-app");
+    const other = path.join(parentDir, "other-app");
+    fs.mkdirSync(spoke);
+    fs.mkdirSync(path.join(other, ".claude"), { recursive: true });
+
+    const results = scanNearby(spoke);
+    const claudes = results.filter(r => r.type === "claude");
+    expect(claudes.length).toBe(1);
+    expect(claudes[0]!.path).toBe(other);
+  });
+
+  it("does not include cwd in results", () => {
+    const spoke = path.join(parentDir, "my-app");
+    fs.mkdirSync(spoke);
+    fs.mkdirSync(path.join(spoke, ".claude"));
+
+    const results = scanNearby(spoke);
+    expect(results.find(r => r.path === spoke)).toBeUndefined();
+  });
+
+  it("returns empty for isolated directory", () => {
+    const spoke = path.join(parentDir, "lonely");
+    fs.mkdirSync(spoke);
+
+    const results = scanNearby(spoke);
+    expect(results.length).toBe(0);
+  });
+
+  it("does not double-count parent that is also a sibling entry", () => {
+    // Edge case: parent has config, and a sibling also has config
+    fs.writeFileSync(path.join(parentDir, "agentboot.config.json"), "{}", "utf-8");
+    const spoke = path.join(parentDir, "my-app");
+    const otherHub = path.join(parentDir, "other-hub");
+    fs.mkdirSync(spoke);
+    fs.mkdirSync(otherHub);
+    fs.writeFileSync(path.join(otherHub, "agentboot.config.json"), "{}", "utf-8");
+
+    const results = scanNearby(spoke);
+    const hubs = results.filter(r => r.type === "hub");
+    expect(hubs.length).toBe(2);
+    // Parent and sibling are both detected
+    expect(hubs.map(h => h.path).sort()).toEqual([parentDir, otherHub].sort());
+  });
 });
 
 // ===========================================================================
 // AB-43: import pure functions
 // ===========================================================================
 
-import { normalizeContent, jaccardSimilarity, scanPath } from "../scripts/lib/import.js";
+import { normalizeContent, jaccardSimilarity, scanPath, applyPlan, buildClassificationPrompt, ALLOWED_CLASSIFICATION_DIRS } from "../scripts/lib/import.js";
+import type { Classification } from "../scripts/lib/import.js";
 
 describe("AB-43: import — normalizeContent", () => {
   it("strips markdown formatting and normalizes whitespace", () => {
@@ -485,6 +586,180 @@ describe("AB-43: import — scanPath", () => {
     const result = scanPath(tempDir);
     expect(result.files.length).toBe(1);
     expect(result.files[0]!.type).toBe("mcp");
+  });
+});
+
+// ===========================================================================
+// AB-43: import — applyPlan
+// ===========================================================================
+
+describe("AB-43: import — applyPlan", () => {
+  let hubDir: string;
+  let sourceDir: string;
+  let sourceFile: string;
+
+  beforeEach(() => {
+    hubDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-apply-hub-"));
+    sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-apply-src-"));
+    sourceFile = path.join(sourceDir, "CLAUDE.md");
+    fs.writeFileSync(sourceFile, "line1\nline2\nline3\nline4\nline5\n", "utf-8");
+  });
+
+  afterEach(() => {
+    fs.rmSync(hubDir, { recursive: true, force: true });
+    fs.rmSync(sourceDir, { recursive: true, force: true });
+  });
+
+  function makeClassification(overrides: Partial<Classification> = {}): Classification {
+    return {
+      source_file: sourceFile,
+      lines: [1, 3] as [number, number],
+      content_preview: "line1\nline2\nline3",
+      classification: "trait",
+      suggested_name: "test-trait",
+      suggested_path: "core/traits/test-trait.md",
+      overlaps_with: null,
+      confidence: "high",
+      action: "create",
+      ...overrides,
+    };
+  }
+
+  it("creates files in allowed directories", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification()],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(1);
+    expect(result.errors.length).toBe(0);
+    expect(fs.existsSync(path.join(hubDir, "core/traits/test-trait.md"))).toBe(true);
+  });
+
+  it("rejects path traversal attempts", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ suggested_path: "../../../etc/passwd" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(0);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toContain("escapes hub boundary");
+  });
+
+  it("rejects writes to non-allowed directories", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ suggested_path: "src/malicious.ts" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(0);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toContain("not in allowed directory");
+  });
+
+  it("rejects source files not in trusted set", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ source_file: "/tmp/evil.md" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(0);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toContain("not in original scan");
+  });
+
+  it("skips items with action: skip", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ action: "skip" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+  });
+
+  it("merges into existing files", () => {
+    fs.mkdirSync(path.join(hubDir, "core/traits"), { recursive: true });
+    fs.writeFileSync(path.join(hubDir, "core/traits/test-trait.md"), "existing content", "utf-8");
+
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ action: "merge" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(1);
+    const content = fs.readFileSync(path.join(hubDir, "core/traits/test-trait.md"), "utf-8");
+    expect(content).toContain("existing content");
+    expect(content).toContain("line1");
+  });
+
+  it("allows all documented classification directories", () => {
+    for (const dir of ALLOWED_CLASSIFICATION_DIRS) {
+      expect(dir).toMatch(/^core\//);
+    }
+    expect(ALLOWED_CLASSIFICATION_DIRS).toContain("core/traits/");
+    expect(ALLOWED_CLASSIFICATION_DIRS).toContain("core/gotchas/");
+    expect(ALLOWED_CLASSIFICATION_DIRS).toContain("core/instructions/");
+    expect(ALLOWED_CLASSIFICATION_DIRS).toContain("core/personas/");
+  });
+});
+
+// ===========================================================================
+// AB-43: import — buildClassificationPrompt
+// ===========================================================================
+
+describe("AB-43: import — buildClassificationPrompt", () => {
+  it("includes file content in the prompt", () => {
+    const prompt = buildClassificationPrompt("# My Rules\nDo this.", "CLAUDE.md", {
+      traits: [], personas: [], gotchas: [], instructions: [],
+    });
+    expect(prompt).toContain("# My Rules");
+    expect(prompt).toContain("Do this.");
+  });
+
+  it("includes file path in the prompt", () => {
+    const prompt = buildClassificationPrompt("content", "path/to/CLAUDE.md", {
+      traits: [], personas: [], gotchas: [], instructions: [],
+    });
+    expect(prompt).toContain("path/to/CLAUDE.md");
+  });
+
+  it("includes hub inventory context", () => {
+    const prompt = buildClassificationPrompt("content", "CLAUDE.md", {
+      traits: [{ name: "critical-thinking", firstLine: "Think critically" }],
+      personas: [{ name: "code-reviewer", description: "Reviews code" }],
+      gotchas: [{ name: "postgres-rls", firstLine: "Always use RLS" }],
+      instructions: [{ name: "baseline", firstLine: "Code quality" }],
+    });
+    expect(prompt).toContain("critical-thinking");
+    expect(prompt).toContain("code-reviewer");
+    expect(prompt).toContain("postgres-rls");
+    expect(prompt).toContain("baseline");
+  });
+
+  it("shows (none) for empty inventory sections", () => {
+    const prompt = buildClassificationPrompt("content", "CLAUDE.md", {
+      traits: [], personas: [], gotchas: [], instructions: [],
+    });
+    expect(prompt).toContain("(none)");
+  });
+
+  it("includes classification category descriptions", () => {
+    const prompt = buildClassificationPrompt("content", "CLAUDE.md", {
+      traits: [], personas: [], gotchas: [], instructions: [],
+    });
+    expect(prompt).toContain("trait");
+    expect(prompt).toContain("gotcha");
+    expect(prompt).toContain("persona-rule");
+    expect(prompt).toContain("instruction");
+    expect(prompt).toContain("skip");
   });
 });
 
@@ -965,8 +1240,78 @@ describe("config command", () => {
     expect(output).toContain("Key not found");
   });
 
-  it("config mutation exits non-zero", () => {
-    expect(() => run("config org newvalue")).toThrow();
+  it("writes a top-level string value", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-cfgw-"));
+    try {
+      const configPath = path.join(tempDir, "agentboot.config.json");
+      fs.writeFileSync(configPath, JSON.stringify({ org: "test-org" }, null, 2) + "\n");
+      const output = run(`config orgDisplayName "Acme Engineering" --config ${configPath}`, tempDir);
+      expect(output).toContain("added");
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      expect(config.orgDisplayName).toBe("Acme Engineering");
+      expect(config.org).toBe("test-org");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("overwrites an existing value and shows old → new", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-cfgw-"));
+    try {
+      const configPath = path.join(tempDir, "agentboot.config.json");
+      fs.writeFileSync(configPath, JSON.stringify({ org: "old-org" }, null, 2) + "\n");
+      const output = run(`config org new-org --config ${configPath}`, tempDir);
+      expect(output).toContain("old-org");
+      expect(output).toContain("new-org");
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      expect(config.org).toBe("new-org");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a nested value with dot notation", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-cfgw-"));
+    try {
+      const configPath = path.join(tempDir, "agentboot.config.json");
+      fs.writeFileSync(configPath, JSON.stringify({ org: "test", output: { distPath: "./dist" } }, null, 2) + "\n");
+      const output = run(`config output.distPath ./build --config ${configPath}`, tempDir);
+      expect(output).toContain("./dist");
+      expect(output).toContain("./build");
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      expect(config.output.distPath).toBe("./build");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to write when config has JSONC comments", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-cfgw-"));
+    try {
+      const configPath = path.join(tempDir, "agentboot.config.json");
+      fs.writeFileSync(configPath, '{\n  "org": "test" // my org\n}\n');
+      const output = runExpectFail(`config org new-org --config ${configPath}`, tempDir);
+      expect(output).toContain("comments");
+      // File should be unchanged
+      expect(fs.readFileSync(configPath, "utf-8")).toContain("// my org");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to overwrite non-string values", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-cfgw-"));
+    try {
+      const configPath = path.join(tempDir, "agentboot.config.json");
+      fs.writeFileSync(configPath, JSON.stringify({ org: "test", personas: { enabled: ["code-reviewer"] } }, null, 2) + "\n");
+      const output = runExpectFail(`config personas.enabled foo --config ${configPath}`, tempDir);
+      expect(output).toContain("not a string");
+      // File should be unchanged
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      expect(Array.isArray(config.personas.enabled)).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
