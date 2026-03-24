@@ -89,24 +89,19 @@ jobs:
             --title "chore: release v${{ inputs.version }}" \
             --body "Automated version bump. Created by release workflow."
 
-          # Wait for required status checks to pass, then merge
-          echo "Waiting for CI checks on version bump PR..."
+          # Wait for the required "Validate and build" check to pass.
+          # Only this check is required by the branch ruleset — others (CLA, etc.) are optional.
+          echo "Waiting for 'Validate and build' check..."
           for i in $(seq 1 90); do
-            CHECKS=$(gh pr checks "$BRANCH" 2>&1) || true
-            if echo "$CHECKS" | grep -q "no checks reported"; then
-              echo "  Check $i/90: no checks yet — waiting 10s..."
-              sleep 10
-              continue
-            fi
-            STATUS=$(gh pr checks "$BRANCH" --json state --jq '[.[].state] | if all(. == "SUCCESS" or . == "SKIPPED") then "ready" elif any(. == "FAILURE") then "failed" else "pending" end' 2>/dev/null || echo "pending")
-            if [ "$STATUS" = "ready" ]; then
-              echo "Checks passed. Merging..."
+            RESULT=$(gh pr checks "$BRANCH" --json name,state --jq '.[] | select(.name == "Validate and build") | .state' 2>/dev/null || echo "")
+            if [ "$RESULT" = "SUCCESS" ]; then
+              echo "Validate and build passed. Merging..."
               break
-            elif [ "$STATUS" = "failed" ]; then
-              echo "::error::CI checks failed on version bump PR"
+            elif [ "$RESULT" = "FAILURE" ]; then
+              echo "::error::Validate and build failed on version bump PR"
               exit 1
             fi
-            echo "  Check $i/90: $STATUS — waiting 10s..."
+            echo "  Check $i/90: ${RESULT:-waiting} — 10s..."
             sleep 10
           done
 
