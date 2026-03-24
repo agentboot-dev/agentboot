@@ -135,6 +135,8 @@ jobs:
       - name: Publish to npm
         if: ${{ !inputs.dry-run }}
         run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Update Homebrew formula
         if: ${{ !inputs.dry-run }}
