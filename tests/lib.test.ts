@@ -177,15 +177,11 @@ describe("loadConfig", () => {
     );
   });
 
-  // NOTE: Arrays pass the `typeof parsed !== "object"` check because typeof [] === "object".
-  // The validation falls through to the org field check instead. This is a potential
-  // correctness issue — an array input won't get the "must be a JSON object" error message.
   it("throws when JSON parses to a non-object (array)", () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-loadcfg-"));
     try {
       const configPath = writeTempConfig('[{"org": "test"}]');
-      // Array passes typeof check, but fails on org field validation
-      expect(() => loadConfig(configPath)).toThrow();
+      expect(() => loadConfig(configPath)).toThrow("Config must be a JSON object");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

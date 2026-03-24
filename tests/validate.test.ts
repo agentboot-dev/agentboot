@@ -134,30 +134,35 @@ describe("scanForSecrets", () => {
     const content = `const password = "hunter2";`;
     const hits = scanForSecrets(content);
     expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.pattern).toMatch(/password/i);
   });
 
   it("detects API keys", () => {
     const content = `api_key = "sk-1234567890abcdef"`;
     const hits = scanForSecrets(content);
     expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.pattern).toMatch(/api[_-]?key/i);
   });
 
   it("detects AWS keys", () => {
     const content = `aws_access_key_id = AKIAIOSFODNN7EXAMPLE`;
     const hits = scanForSecrets(content);
     expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.pattern).toContain("aws");
   });
 
   it("detects private keys", () => {
     const content = `-----BEGIN RSA PRIVATE KEY-----\nMIIEpA...`;
     const hits = scanForSecrets(content);
     expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.pattern).toContain("PRIVATE KEY");
   });
 
   it("detects GitHub tokens", () => {
     const content = `ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij`;
     const hits = scanForSecrets(content);
     expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]!.pattern).toContain("ghp");
   });
 
   it("does not flag safe content", () => {

@@ -31,7 +31,8 @@ Before you start, you need:
    use [nvm](https://github.com/nvm-sh/nvm) or download from [nodejs.org](https://nodejs.org).
 
 3. **GitHub account** with permission to create repositories in your org (or your
-   personal account for solo use).
+   personal account for solo use). If you don't have permission yet, see
+   [Local evaluation](#local-evaluation-no-github-repo-required) below.
 
 4. **One target repository** that you want to deploy AgentBoot personas to. This is
    any existing codebase where you want AI agent governance. You need write access.
@@ -106,6 +107,34 @@ Or use the GitHub web UI: go to
 [github.com/agentboot/agentboot](https://github.com/agentboot/agentboot), click
 "Use this template", choose "Create a new repository", and clone the result.
 
+### Local evaluation (no GitHub repo required)
+
+If your org requires approval before creating new repositories, you can evaluate
+AgentBoot entirely locally. The personas repo is a standard git repo — it does not
+need a remote until you're ready to share it.
+
+```bash
+mkdir personas && cd personas
+git init
+agentboot install --hub
+```
+
+This gives you a fully functional personas repo on your local machine. Build, sync
+to a target repo, and prove value — all without touching GitHub. When the org
+approves, push it:
+
+```bash
+gh repo create my-org/personas --source . --private --push
+```
+
+Nothing changes about the repo structure. There is no "local mode" vs "production mode"
+— a personas repo without a remote is the same as one with a remote. Git handles this
+natively.
+
+This is the recommended path for **proof-of-concept evaluations** in locked-down
+environments. The org can audit every file in the personas repo before it goes to
+GitHub, since it's all git-tracked source code.
+
 ---
 
 ## Step 2: Configure your org
@@ -148,6 +177,9 @@ the full V1 set and prune after you see what your team uses.
 
 **Solo developers:** Use your GitHub username as the org name. Everything works the same
 — solo mode is just an org of one person. You go through the same steps.
+
+**Evaluating without a GitHub repo?** See [Local evaluation](#local-evaluation-no-github-repo-required)
+above. You can run everything locally and push to GitHub later.
 
 ---
 

@@ -917,7 +917,7 @@ function analyzeOverlap(
   return matches;
 }
 
-export { analyzeOverlap, normalizeContent, jaccardSimilarity };
+export { analyzeOverlap, normalizeContent, jaccardSimilarity, scanPath };
 
 // ---------------------------------------------------------------------------
 // Hub finder
