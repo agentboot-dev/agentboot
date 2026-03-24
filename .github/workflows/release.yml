@@ -161,7 +161,7 @@ jobs:
           fi
           echo "SHA256: $SHA"
 
-          gh repo clone agentboot-dev/homebrew-agentboot /tmp/homebrew-tap
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/agentboot-dev/homebrew-agentboot.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
 
           sed -i "s|url \"https://registry.npmjs.org/agentboot/-/agentboot-.*\.tgz\"|url \"${TARBALL_URL}\"|" Formula/agentboot.rb
