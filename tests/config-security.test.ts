@@ -86,15 +86,12 @@ describe("loadConfig: path traversal rejection", () => {
     );
   });
 
-  it("rejects '..' embedded in a longer path segment (e.g., 'a..b' is not traversal but still caught)", () => {
-    // The check uses value.includes("..") which is strict — even "a..b" is rejected.
-    // This tests that the check is intentionally strict rather than only matching "/../".
+  it("allows '..' embedded in a filename (not a path traversal)", () => {
+    // "repos..json" is not a traversal — only standalone ".." path segments are rejected.
     withTempConfig(
       JSON.stringify({ org: "test", sync: { repos: "repos..json" } }),
       (configPath) => {
-        expect(() => loadConfig(configPath)).toThrow(
-          '"sync.repos" must not contain ".." path segments'
-        );
+        expect(() => loadConfig(configPath)).not.toThrow();
       }
     );
   });

@@ -27,7 +27,7 @@ import path from "node:path";
 import fs from "node:fs";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
-import { loadConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -615,12 +615,12 @@ Add to \`agentboot.config.json\`:
 #   }
 
 INPUT=$(cat)
-EVENT_NAME=$(echo "$INPUT" | jq -r '.hook_event_name // empty')
+EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty')
 
 # TODO: Add your compliance logic here
 # Example: block a tool if a condition is met
 # if [ "$EVENT_NAME" = "PreToolUse" ]; then
-#   TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+#   TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
 #   if [ "$TOOL" = "Bash" ]; then
 #     echo '{"decision":"block","reason":"Bash tool is restricted by policy"}' >&2
 #     exit 2
@@ -694,15 +694,16 @@ program
     }
     if (!isJson) console.log(chalk.bold("\nAgentBoot — doctor\n"));
     const cwd = process.cwd();
-    let issues = 0;
+    let issuesFound = 0;
+    let issuesFixed = 0;
 
     interface DoctorCheck { name: string; status: "ok" | "fail" | "warn"; message: string; fixable?: boolean; fixed?: boolean }
     const checks: DoctorCheck[] = [];
 
     function ok(msg: string) { checks.push({ name: msg, status: "ok", message: msg }); if (!isJson) console.log(`  ${chalk.green("✓")} ${msg}`); }
-    function fail(msg: string, fixable = false) { issues++; checks.push({ name: msg, status: "fail", message: msg, fixable }); if (!isJson) console.log(`  ${chalk.red("✗")} ${msg}${fixable && !fixMode ? chalk.gray(" (fixable with --fix)") : ""}`); }
+    function fail(msg: string, fixable = false) { issuesFound++; checks.push({ name: msg, status: "fail", message: msg, fixable }); if (!isJson) console.log(`  ${chalk.red("✗")} ${msg}${fixable && !fixMode ? chalk.gray(" (fixable with --fix)") : ""}`); }
     function warn(msg: string, fixable = false) { checks.push({ name: msg, status: "warn", message: msg, fixable }); if (!isJson) console.log(`  ${chalk.yellow("⚠")} ${msg}${fixable && !fixMode ? chalk.gray(" (fixable with --fix)") : ""}`); }
-    function fixed(msg: string) { checks.push({ name: msg, status: "ok", message: msg, fixed: true }); if (!isJson) console.log(`  ${chalk.green("✓")} ${msg} ${chalk.cyan(dryRun ? "(would fix)" : "(fixed)")}`); }
+    function fixed(msg: string) { issuesFound++; issuesFixed++; checks.push({ name: msg, status: "ok", message: msg, fixed: true }); if (!isJson) console.log(`  ${chalk.green("✓")} ${msg} ${chalk.cyan(dryRun ? "(would fix)" : "(fixed)")}`); }
 
     // 1. Environment
     if (!isJson) console.log(chalk.cyan("Environment"));
@@ -733,6 +734,12 @@ program
         const config = loadConfig(configPath);
         ok(`Config parses successfully (org: ${config.org})`);
 
+        // Check for orgDisplayName
+        if (!config.orgDisplayName || config.orgDisplayName === config.org) {
+          warn(`orgDisplayName not set — compiled output will use "${config.org}" as the display name`);
+          if (!isJson) console.log(chalk.gray(`      Set it with: agentboot config orgDisplayName "Your Org Name"`));
+        }
+
         // Helper: generate a minimal SKILL.md scaffold
         function scaffoldSkillMd(name: string): string {
           return [
@@ -756,6 +763,7 @@ program
         const enabledPersonas = config.personas?.enabled ?? [];
         const personasDir = path.join(cwd, "core", "personas");
         let personaIssues = 0;
+        let personasScaffolded = 0;
         for (const p of enabledPersonas) {
           const pDir = path.join(personasDir, p);
           if (!fs.existsSync(pDir)) {
@@ -766,6 +774,7 @@ program
                 const personaConfig = { traits: config.traits?.enabled ?? [] };
                 fs.writeFileSync(path.join(pDir, "persona.config.json"), JSON.stringify(personaConfig, null, 2) + "\n", "utf-8");
               }
+              personasScaffolded++;
               fixed(`Scaffolded persona: ${p}`);
             } else {
               personaIssues++; fail(`Persona not found: ${p}`, true);
@@ -775,18 +784,24 @@ program
               if (!dryRun) {
                 fs.writeFileSync(path.join(pDir, "SKILL.md"), scaffoldSkillMd(p), "utf-8");
               }
+              personasScaffolded++;
               fixed(`Created missing SKILL.md for: ${p}`);
             } else {
               personaIssues++; fail(`Missing SKILL.md: ${p}`, true);
             }
           }
         }
-        if (personaIssues === 0) ok(`All ${enabledPersonas.length} enabled personas found`);
+        if (personaIssues === 0 && personasScaffolded === 0) {
+          ok(`All ${enabledPersonas.length} enabled personas found`);
+        } else if (personaIssues === 0 && personasScaffolded > 0) {
+          ok(`All ${enabledPersonas.length} enabled personas found (${personasScaffolded} scaffolded)`);
+        }
 
         // Check traits
         const enabledTraits = config.traits?.enabled ?? [];
         const traitsDir = path.join(cwd, "core", "traits");
         let traitIssues = 0;
+        let traitsScaffolded = 0;
         for (const t of enabledTraits) {
           if (!fs.existsSync(path.join(traitsDir, `${t}.md`))) {
             if (fixMode) {
@@ -795,13 +810,18 @@ program
                 const traitContent = `# ${t}\n\nTODO: Define this trait.\n`;
                 fs.writeFileSync(path.join(traitsDir, `${t}.md`), traitContent, "utf-8");
               }
+              traitsScaffolded++;
               fixed(`Created missing trait: ${t}.md`);
             } else {
               traitIssues++; fail(`Trait not found: ${t}`, true);
             }
           }
         }
-        if (traitIssues === 0) ok(`All ${enabledTraits.length} enabled traits found`);
+        if (traitIssues === 0 && traitsScaffolded === 0) {
+          ok(`All ${enabledTraits.length} enabled traits found`);
+        } else if (traitIssues === 0 && traitsScaffolded > 0) {
+          ok(`All ${enabledTraits.length} enabled traits found (${traitsScaffolded} scaffolded)`);
+        }
 
         // Check core directories
         const coreDirs = ["core/personas", "core/traits", "core/instructions", "core/gotchas"];
@@ -865,14 +885,16 @@ program
 
     if (!isJson) console.log("");
 
+    const issuesRemaining = issuesFound - issuesFixed;
+
     if (isJson) {
-      console.log(JSON.stringify({ issues, checks }, null, 2));
-      process.exit(issues > 0 ? 1 : 0);
+      console.log(JSON.stringify({ issues: issuesRemaining, issuesFound, issuesFixed, checks }, null, 2));
+      process.exit(issuesRemaining > 0 ? 1 : 0);
     }
 
-    if (issues > 0) {
+    if (issuesRemaining > 0) {
       const fixableCount = checks.filter(c => c.fixable && !c.fixed).length;
-      console.log(chalk.bold(chalk.red(`✗ ${issues} issue${issues !== 1 ? "s" : ""} found`)));
+      console.log(chalk.bold(chalk.red(`✗ ${issuesRemaining} issue${issuesRemaining !== 1 ? "s" : ""} found`)));
       if (fixableCount > 0) {
         console.log(chalk.gray(`  ${fixableCount} fixable — run \`agentboot doctor --fix\`\n`));
       } else {
@@ -880,9 +902,8 @@ program
       }
       process.exit(1);
     } else {
-      const fixedCount = checks.filter(c => c.fixed).length;
-      if (fixedCount > 0) {
-        console.log(chalk.bold(chalk.green(`✓ All checks passed (${fixedCount} issue${fixedCount !== 1 ? "s" : ""} ${dryRun ? "would be " : ""}fixed)\n`)));
+      if (issuesFixed > 0) {
+        console.log(chalk.bold(chalk.green(`✓ All checks passed (${issuesFixed} issue${issuesFixed !== 1 ? "s" : ""} ${dryRun ? "would be " : ""}fixed)\n`)));
       } else {
         console.log(chalk.bold(chalk.green("✓ All checks passed\n")));
       }
@@ -1374,9 +1395,9 @@ program
 
 program
   .command("config")
-  .description("View configuration (read-only)")
-  .argument("[key]", "config key (e.g., personas.enabled)")
-  .argument("[value]", "not yet supported")
+  .description("Read or write configuration values")
+  .argument("[key]", "config key (e.g., org, orgDisplayName, personas.enabled)")
+  .argument("[value]", "value to set (strings only — edit agentboot.config.json for complex values)")
   .action((key: string | undefined, value: string | undefined, _opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
@@ -1413,10 +1434,61 @@ program
       process.exit(0);
     }
 
-    console.error(chalk.red(`Config writes are not yet supported. Edit agentboot.config.json directly.`));
-    console.error(chalk.gray(`  agentboot config ${key}   ← read a value`));
-    console.error(chalk.gray(`  agentboot config         ← show full config`));
-    process.exit(1);
+    // Write a config value
+    const raw = fs.readFileSync(configPath, "utf-8");
+
+    // Detect JSONC comments — writing back would destroy them
+    const stripped = stripJsoncComments(raw);
+    if (stripped !== raw) {
+      console.error(chalk.red("Config file contains comments (JSONC)."));
+      console.error(chalk.gray("  Writing would remove all comments. Edit the file directly:\n"));
+      console.error(chalk.gray(`    ${configPath}\n`));
+      process.exit(1);
+    }
+
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(stripped);
+    } catch {
+      console.error(chalk.red("Failed to parse config for writing."));
+      process.exit(1);
+    }
+
+    const keys = key.split(".");
+    let target: Record<string, unknown> = config;
+    for (let i = 0; i < keys.length - 1; i++) {
+      const k = keys[i]!;
+      if (target[k] === undefined) {
+        // Auto-create intermediate objects
+        target[k] = {};
+        target = target[k] as Record<string, unknown>;
+      } else if (typeof target[k] === "object" && !Array.isArray(target[k]) && target[k] !== null) {
+        target = target[k] as Record<string, unknown>;
+      } else {
+        console.error(chalk.red(`Cannot write to ${key}: "${k}" exists but is ${typeof target[k]}, not an object.`));
+        console.error(chalk.gray("  Edit agentboot.config.json directly.\n"));
+        process.exit(1);
+      }
+    }
+
+    const finalKey = keys[keys.length - 1]!;
+    const oldValue = target[finalKey];
+
+    // Guard against overwriting non-string values (arrays, objects, numbers, booleans)
+    if (oldValue !== undefined && typeof oldValue !== "string") {
+      console.error(chalk.red(`Cannot overwrite ${key}: existing value is ${typeof oldValue}, not a string.`));
+      console.error(chalk.gray("  Edit agentboot.config.json directly for non-string values.\n"));
+      process.exit(1);
+    }
+
+    target[finalKey] = value;
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+    if (oldValue !== undefined) {
+      console.log(chalk.green(`  ${key}: ${JSON.stringify(oldValue)} → ${JSON.stringify(value)}`));
+    } else {
+      console.log(chalk.green(`  ${key}: ${JSON.stringify(value)} (added)`));
+    }
   });
 
 // ---- export (AB-40) -------------------------------------------------------

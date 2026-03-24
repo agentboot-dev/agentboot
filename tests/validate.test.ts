@@ -14,6 +14,8 @@ import {
   scanForSecrets,
   DEFAULT_SECRET_PATTERNS,
 } from "../scripts/lib/frontmatter.js";
+import { isUnsafeRegex, buildSecretPatterns } from "../scripts/validate.js";
+import type { AgentBootConfig } from "../scripts/lib/config.js";
 
 // ---------------------------------------------------------------------------
 // JSONC stripping
@@ -194,6 +196,100 @@ describe("scanForSecrets", () => {
         expect(hits, `Secret found in ${relPath} at line ${hits[0]?.line}`).toHaveLength(0);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isUnsafeRegex
+// ---------------------------------------------------------------------------
+
+describe("isUnsafeRegex", () => {
+  it("rejects patterns longer than 200 chars", () => {
+    expect(isUnsafeRegex("a".repeat(201))).toBe(true);
+  });
+
+  it("accepts patterns under 200 chars", () => {
+    expect(isUnsafeRegex("a".repeat(200))).toBe(false);
+  });
+
+  it("rejects nested quantifiers (x+)+", () => {
+    expect(isUnsafeRegex("(a+)+")).toBe(true);
+  });
+
+  it("rejects nested quantifiers (x*)+", () => {
+    expect(isUnsafeRegex("(a*)+")).toBe(true);
+  });
+
+  it("rejects nested quantifiers (x+)*", () => {
+    expect(isUnsafeRegex("(a+)*")).toBe(true);
+  });
+
+  it("rejects nested quantifiers with braces (x+){2,}", () => {
+    expect(isUnsafeRegex("(a+){2,}")).toBe(true);
+  });
+
+  it("rejects adjacent overlapping quantifiers **", () => {
+    expect(isUnsafeRegex("a**")).toBe(true);
+  });
+
+  it("rejects adjacent overlapping quantifiers ++", () => {
+    expect(isUnsafeRegex("a++")).toBe(true);
+  });
+
+  it("accepts safe patterns", () => {
+    expect(isUnsafeRegex("password\\s*[:=]")).toBe(false);
+    expect(isUnsafeRegex("[a-z]+")).toBe(false);
+    expect(isUnsafeRegex("AKIA[A-Z0-9]{16}")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildSecretPatterns
+// ---------------------------------------------------------------------------
+
+describe("buildSecretPatterns", () => {
+  it("returns DEFAULT_SECRET_PATTERNS when config has no custom patterns", () => {
+    const config = { org: "test" } as AgentBootConfig;
+    const patterns = buildSecretPatterns(config);
+    expect(patterns.length).toBe(DEFAULT_SECRET_PATTERNS.length);
+  });
+
+  it("appends valid custom patterns", () => {
+    const config = {
+      org: "test",
+      validation: { secretPatterns: ["CUSTOM_KEY_[A-Z]+"] },
+    } as AgentBootConfig;
+    const patterns = buildSecretPatterns(config);
+    expect(patterns.length).toBe(DEFAULT_SECRET_PATTERNS.length + 1);
+    expect(patterns[patterns.length - 1]!.source).toBe("CUSTOM_KEY_[A-Z]+");
+  });
+
+  it("rejects unsafe custom patterns", () => {
+    const config = {
+      org: "test",
+      validation: { secretPatterns: ["(a+)+"] },
+    } as AgentBootConfig;
+    const patterns = buildSecretPatterns(config);
+    // Unsafe pattern rejected — only defaults remain
+    expect(patterns.length).toBe(DEFAULT_SECRET_PATTERNS.length);
+  });
+
+  it("rejects invalid regex syntax", () => {
+    const config = {
+      org: "test",
+      validation: { secretPatterns: ["[invalid"] },
+    } as AgentBootConfig;
+    const patterns = buildSecretPatterns(config);
+    expect(patterns.length).toBe(DEFAULT_SECRET_PATTERNS.length);
+  });
+
+  it("handles mix of valid and invalid patterns", () => {
+    const config = {
+      org: "test",
+      validation: { secretPatterns: ["GOOD_[A-Z]+", "(bad+)+", "ALSO_GOOD"] },
+    } as AgentBootConfig;
+    const patterns = buildSecretPatterns(config);
+    expect(patterns.length).toBe(DEFAULT_SECRET_PATTERNS.length + 2);
   });
 });
 

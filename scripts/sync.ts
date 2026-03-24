@@ -595,15 +595,21 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
     );
   }
 
-  // Validate repo path safety
+  // Validate repo path safety — resolve symlinks to check the real target
   const resolvedPath = path.resolve(entry.path);
+  let realPath = resolvedPath;
+  try {
+    if (fs.existsSync(resolvedPath)) {
+      realPath = fs.realpathSync(resolvedPath);
+    }
+  } catch { /* permission denied or broken symlink — use resolved path */ }
   const dangerousPaths = ["/", "/etc", "/usr", "/var", "/tmp", "/home", "/root", "/bin", "/sbin", "/lib", "/opt"];
-  if (dangerousPaths.includes(resolvedPath)) {
+  if (dangerousPaths.includes(realPath)) {
     errors.push(
-      `[${label}] Repo path "${resolvedPath}" is a system directory — refusing to sync`
+      `[${label}] Repo path "${realPath}" resolves to a system directory — refusing to sync`
     );
   }
-  if (fs.existsSync(resolvedPath) && !fs.existsSync(path.join(resolvedPath, ".git"))) {
+  if (fs.existsSync(realPath) && !fs.existsSync(path.join(realPath, ".git"))) {
     // Warn but don't block — temp dirs in tests and some workflows don't have .git
     console.warn(
       chalk.yellow(`  ⚠ [${label}] Repo path "${resolvedPath}" has no .git directory — is this a git repo?`)
