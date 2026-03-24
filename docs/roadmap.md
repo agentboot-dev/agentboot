@@ -77,6 +77,7 @@ Organizations can import existing agentic content, generate a migration plan, an
 Planned features:
 - **Two-path install** -- `agentboot install` guides architects (create hub) and developers (connect to hub) through the right flow
 - **Import and migration** -- `agentboot import` scans repos for existing agentic content, classifies into personas/traits/gotchas (LLM-powered via `claude -p`)
+- **Hub migration** -- `agentboot migrate` takes over an existing agentic repo as the AgentBoot hub: tags the repo for posterity, extracts import candidates, clears and scaffolds, with `--revert` to restore pre-migration state via git
 - **Prompt ingestion** -- classify raw prompts into traits/personas, batch-decompose existing CLAUDE.md files
 - **Solo mode** -- solo developers use the same flow as orgs; GitHub username as org name
 - **Behavioral testing** -- YAML-defined test cases run against personas via `claude -p` with assertions
