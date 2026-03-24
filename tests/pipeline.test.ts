@@ -145,8 +145,9 @@ describe("compile script", () => {
       // model and permissionMode are only included when explicitly set in persona config
       expect(content).not.toContain("model: inherit");
       expect(content).not.toContain("permissionMode: default");
-      // Verify body content (traits should be present)
-      expect(content.length).toBeGreaterThan(500);
+      // Verify body content contains injected traits
+      expect(content).toContain("<!-- traits:start -->");
+      expect(content).toContain("<!-- traits:end -->");
     }
   });
 
@@ -296,6 +297,8 @@ describe("compile script", () => {
       expect(fs.existsSync(settingsPath), "settings.json should be generated").toBe(true);
       const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
       expect(settings.hooks).toBeDefined();
+      expect(typeof settings.hooks).toBe("object");
+      expect(Object.keys(settings.hooks).length).toBeGreaterThan(0);
       expect(settings.permissions).toBeDefined();
       expect(settings.permissions.allow).toContain("Read");
     } finally {
