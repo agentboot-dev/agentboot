@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 0.4.0)'
+        description: 'Version to release (e.g. 0.4.1)'
         required: true
         type: string
       dry-run:
@@ -25,7 +25,7 @@ jobs:
       - name: Validate version format
         run: |
           if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Invalid version format: ${{ inputs.version }}. Use semver (e.g. 0.4.0)"
+            echo "::error::Invalid version format: ${{ inputs.version }}. Use semver (e.g. 0.4.1)"
             exit 1
           fi
 
@@ -66,7 +66,10 @@ jobs:
       - name: Bump version in package.json
         run: npm version "${{ inputs.version }}" --no-git-tag-version
 
-      - name: Commit version bump and push via PR
+      # Branch protection requires PRs for all changes to main.
+      # We create a PR for the version bump, wait for CI, then merge.
+      # Tags bypass the PR rule since they're not branch refs.
+      - name: Version bump via PR
         if: ${{ !inputs.dry-run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -77,31 +80,42 @@ jobs:
           git commit -m "chore: release v${{ inputs.version }}"
           git push origin "$BRANCH"
 
-          PR_URL=$(gh pr create \
+          gh pr create \
             --base main \
             --head "$BRANCH" \
             --title "chore: release v${{ inputs.version }}" \
-            --body "Automated version bump for v${{ inputs.version }}. Created by release workflow." \
-            --label "chore")
-          echo "Created PR: $PR_URL"
+            --body "Automated version bump. Created by release workflow."
 
-          # Wait for required checks then merge
-          echo "Waiting for checks..."
-          gh pr checks "$PR_URL" --watch --fail-fast || true
-          gh pr merge "$PR_URL" --merge --admin --delete-branch
+          # Wait for required status checks to pass, then merge
+          echo "Waiting for CI checks on version bump PR..."
+          PR_NUMBER=$(gh pr view "$BRANCH" --json number --jq '.number')
+          for i in $(seq 1 60); do
+            STATUS=$(gh pr checks "$BRANCH" --json state --jq '[.[].state] | if all(. == "SUCCESS" or . == "SKIPPED") then "ready" elif any(. == "FAILURE") then "failed" else "pending" end' 2>/dev/null || echo "pending")
+            if [ "$STATUS" = "ready" ]; then
+              echo "Checks passed. Merging..."
+              break
+            elif [ "$STATUS" = "failed" ]; then
+              echo "::error::CI checks failed on version bump PR"
+              exit 1
+            fi
+            echo "  Check $i/60: $STATUS — waiting 10s..."
+            sleep 10
+          done
 
-          # Update local ref to the merge commit
+          gh pr merge "$BRANCH" --merge --delete-branch
+
+          # Sync local to the merge commit on main
           git fetch origin main
           git checkout main
           git reset --hard origin/main
 
-      - name: Tag release
+      - name: Tag and push
         if: ${{ !inputs.dry-run }}
         run: |
           git tag "v${{ inputs.version }}"
           git push origin "v${{ inputs.version }}"
 
-      - name: Generate release notes
+      - name: Create GitHub Release
         id: drafter
         if: ${{ !inputs.dry-run }}
         uses: release-drafter/release-drafter@v6
@@ -124,13 +138,10 @@ jobs:
           VERSION="${{ inputs.version }}"
           TARBALL_URL="https://registry.npmjs.org/agentboot/-/agentboot-${VERSION}.tgz"
 
-          # Wait for npm to propagate, then fetch SHA
           echo "Waiting for npm to propagate..."
           for i in $(seq 1 30); do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARBALL_URL")
-            if [ "$HTTP_CODE" = "200" ]; then
-              break
-            fi
+            if [ "$HTTP_CODE" = "200" ]; then break; fi
             echo "  Attempt $i: HTTP $HTTP_CODE — retrying in 10s..."
             sleep 10
           done
@@ -142,7 +153,6 @@ jobs:
           fi
           echo "SHA256: $SHA"
 
-          # Clone homebrew tap and update formula
           gh repo clone agentboot-dev/homebrew-agentboot /tmp/homebrew-tap
           cd /tmp/homebrew-tap
 
