@@ -248,6 +248,47 @@ describe("loadConfig", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("rejects path traversal in sync.repos", () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-loadcfg-"));
+    try {
+      const configPath = writeTempConfig('{"org": "test", "sync": {"repos": "../../../etc/repos.json"}}');
+      expect(() => loadConfig(configPath)).toThrow('must not contain ".."');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects path traversal in output.distPath", () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-loadcfg-"));
+    try {
+      const configPath = writeTempConfig('{"org": "test", "output": {"distPath": "../../other"}}');
+      expect(() => loadConfig(configPath)).toThrow('must not contain ".."');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects sync.targetDir without dot prefix", () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-loadcfg-"));
+    try {
+      const configPath = writeTempConfig('{"org": "test", "sync": {"targetDir": "claude"}}');
+      expect(() => loadConfig(configPath)).toThrow("dot-prefixed directory name");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts valid sync.targetDir", () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-loadcfg-"));
+    try {
+      const configPath = writeTempConfig('{"org": "test", "sync": {"targetDir": ".claude"}}');
+      const config = loadConfig(configPath);
+      expect(config.sync?.targetDir).toBe(".claude");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

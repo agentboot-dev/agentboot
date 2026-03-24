@@ -75,7 +75,7 @@ function Features() {
         />
         <Feature
           title="Convention Over Configuration"
-          description="Sensible defaults for everything. Edit one config file. The Spring Boot of AI agent governance."
+          description="Sensible defaults for everything. Edit one config file. Bootstrap your agentic development teams."
         />
       </div>
     </section>

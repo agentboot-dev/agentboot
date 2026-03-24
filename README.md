@@ -1,8 +1,8 @@
 # AgentBoot
 
-**Convention over configuration for agentic development teams.**
+**Bootstrap your agentic development teams.**
 
-AgentBoot is a build tool that compiles AI agent personas and distributes them across your organization's repositories. Define once, deploy everywhere. The Spring Boot of AI agent governance.
+AgentBoot is a build tool that compiles AI agent personas and distributes them across your organization's repositories. Define once, deploy everywhere. Convention over configuration for AI agent governance.
 
 ## The Problem
 

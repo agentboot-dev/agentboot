@@ -298,7 +298,7 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
  * Detect regex patterns likely to cause catastrophic backtracking.
  * Rejects patterns with nested quantifiers like (a+)+, (a*)*b, etc.
  */
-function isUnsafeRegex(pattern: string): boolean {
+export function isUnsafeRegex(pattern: string): boolean {
   // Reject patterns longer than 200 chars
   if (pattern.length > 200) return true;
   // Reject nested quantifiers: (x+)+, (x*)+, (x+)*, (x{n,})+, etc.
@@ -308,7 +308,7 @@ function isUnsafeRegex(pattern: string): boolean {
   return false;
 }
 
-function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
+export function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
   const configPatterns: RegExp[] = [];
   for (const p of config.validation?.secretPatterns ?? []) {
     if (isUnsafeRegex(p)) {
@@ -438,7 +438,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error(chalk.red("Unexpected error:"), err);
-  process.exit(1);
-});
+// Only run main() when executed directly, not when imported for testing
+const isDirectRun = process.argv[1]?.includes("validate");
+if (isDirectRun) {
+  main().catch((err: unknown) => {
+    console.error(chalk.red("Unexpected error:"), err);
+    process.exit(1);
+  });
+}
