@@ -1,6 +1,6 @@
 {
   "name": "agentboot",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Bootstrap your agentic development teams. Convention over configuration for AI agent governance.",
   "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",
