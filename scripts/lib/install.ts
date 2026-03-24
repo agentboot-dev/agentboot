@@ -142,13 +142,21 @@ function detectGhAuthenticated(): boolean {
 }
 
 /**
- * Shallow scan sibling directories for agentboot.config.json or .claude/.
- * Returns list of found paths with their type.
+ * Scan nearby directories for agentboot.config.json or .claude/.
+ * Checks: the parent directory itself, then sibling directories.
+ * This supports both sibling layouts (hub next to spokes) and parent layouts
+ * (hub is the parent directory containing spoke repos).
  */
-function scanSiblings(cwd: string): Array<{ path: string; type: "hub" | "claude" }> {
+export function scanNearby(cwd: string): Array<{ path: string; type: "hub" | "claude" }> {
   const parent = path.dirname(cwd);
   const results: Array<{ path: string; type: "hub" | "claude" }> = [];
 
+  // Check parent directory itself (supports hub-as-parent layout)
+  if (fs.existsSync(path.join(parent, "agentboot.config.json"))) {
+    results.push({ path: parent, type: "hub" });
+  }
+
+  // Check sibling directories
   try {
     for (const entry of fs.readdirSync(parent)) {
       const siblingPath = path.join(parent, entry);
@@ -206,11 +214,11 @@ function searchGitHubOrg(org: string): string | null {
 // Scaffold helpers
 // ---------------------------------------------------------------------------
 
-export function scaffoldHub(targetDir: string, orgName: string): void {
+export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?: string): void {
   // agentboot.config.json
   const configContent = JSON.stringify({
-    org: orgName,
-    orgDisplayName: orgName,
+    org: orgSlug,
+    orgDisplayName: orgDisplayName ?? orgSlug,
     groups: {},
     personas: {
       enabled: ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"],
@@ -246,6 +254,11 @@ export function scaffoldHub(targetDir: string, orgName: string): void {
 
 function runBuild(hubDir: string): boolean {
   console.log(chalk.cyan("\n  Compiling personas..."));
+  console.log(chalk.gray(
+    "  This reads your traits and personas from core/, composes them, and\n" +
+    "  writes compiled output to dist/. The dist/ folder is what gets\n" +
+    "  deployed to your repos.\n"
+  ));
   const result = spawnSync("agentboot", ["build"], {
     cwd: hubDir,
     encoding: "utf-8",
@@ -253,10 +266,10 @@ function runBuild(hubDir: string): boolean {
   });
 
   if (result.status === 0) {
-    console.log(chalk.green("  Compiled successfully."));
+    console.log(chalk.green("  Build complete."));
     return true;
   } else {
-    console.log(chalk.yellow("  Build skipped — run `agentboot build` from the personas repo."));
+    console.log(chalk.yellow("  Build did not complete — you can run `agentboot build` later."));
     return false;
   }
 }
@@ -268,6 +281,150 @@ function runSync(hubDir: string): boolean {
     stdio: "inherit",
   });
   return result.status === 0;
+}
+
+// ---------------------------------------------------------------------------
+// Hub target validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate and potentially adjust the hub target directory.
+ *
+ * If the target directory exists and looks like it already has content (a git
+ * repo, source files, etc.), we don't want to scaffold hub files into it —
+ * that would pollute an existing project. Instead, offer to create a `personas`
+ * subdirectory.
+ */
+async function validateHubTarget(initialDir: string): Promise<string> {
+  let hubDir = initialDir;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    // If the directory doesn't exist, it will be created fresh — no issue.
+    if (!fs.existsSync(hubDir)) {
+      fs.mkdirSync(hubDir, { recursive: true });
+      return hubDir;
+    }
+
+    // If it already has agentboot.config.json, it's already a hub — bail.
+    if (fs.existsSync(path.join(hubDir, "agentboot.config.json"))) {
+      console.log(chalk.yellow("\n  This directory already has agentboot.config.json."));
+      console.log(chalk.gray("  Run `agentboot doctor` to check your configuration.\n"));
+      throw new AgentBootError(0);
+    }
+
+    // Check if the directory has existing content that suggests it's not an
+    // empty directory intended for a new personas repo.
+    const entries = fs.readdirSync(hubDir).filter(e => !e.startsWith(".") || e === ".git");
+    const hasGit = fs.existsSync(path.join(hubDir, ".git"));
+    const hasPackageJson = fs.existsSync(path.join(hubDir, "package.json"));
+    const hasSrc = fs.existsSync(path.join(hubDir, "src"));
+
+    const hasExistingContent = entries.length > 0 && (hasGit || hasPackageJson || hasSrc);
+
+    if (!hasExistingContent) {
+      // Empty or near-empty directory — fine to use directly.
+      return hubDir;
+    }
+
+    // The directory has content. Warn and offer alternatives.
+    const dirName = path.basename(hubDir);
+    const personasPath = path.join(hubDir, "personas");
+
+    console.log(chalk.yellow(
+      `\n  "${dirName}" already has content (${entries.length} items).` +
+      `\n  Scaffolding here would mix persona source code with existing files.\n`
+    ));
+
+    const choice = await select({
+      message: "Where should the personas repo live?",
+      choices: [
+        { name: `Create ${personasPath} (recommended)`, value: "sub" },
+        { name: "Choose a different location", value: "custom" },
+        { name: `Use ${hubDir} anyway (not recommended)`, value: "here" },
+      ],
+    });
+
+    if (choice === "sub") {
+      if (!fs.existsSync(personasPath)) {
+        fs.mkdirSync(personasPath, { recursive: true });
+      }
+      return personasPath;
+    } else if (choice === "custom") {
+      const customPath = await input({
+        message: "Path for the personas repo:",
+        default: personasPath,
+      });
+      hubDir = path.resolve(customPath);
+      continue; // re-validate the new target
+    }
+
+    // "here" — user insists, proceed with original path
+    return hubDir;
+  }
+}
+
+/**
+ * Nudge toward the convention of naming the hub repo "personas".
+ *
+ * This is an educational moment, not a gate. The user can proceed with any
+ * name — but we explain why "personas" is the convention and what they gain
+ * by following it.
+ */
+async function nudgePersonasConvention(hubDir: string): Promise<string> {
+  const dirName = path.basename(hubDir);
+
+  // Already named "personas" — nothing to do.
+  if (dirName === "personas") return hubDir;
+
+  console.log(chalk.cyan(
+    `\n  Convention: name this repo "personas"\n\n`
+  ) + chalk.gray(
+    `  AgentBoot follows a convention-over-configuration philosophy. When every\n` +
+    `  org names their hub repo "personas", several things work automatically:\n\n` +
+    `    - \`agentboot install\` auto-discovers it by scanning for "personas" in\n` +
+    `      your GitHub org and sibling directories\n` +
+    `    - New team members know where to look without being told\n` +
+    `    - Docs, examples, and community answers all reference the same path\n` +
+    `    - \`gh repo clone <org>/personas\` works across every AgentBoot org\n\n` +
+    `  You chose "${dirName}" — that works fine. This is a recommendation,\n` +
+    `  not a requirement.\n`
+  ));
+
+  const choice = await select({
+    message: `Keep "${dirName}" or rename to "personas"?`,
+    choices: [
+      { name: `Rename to ${path.join(path.dirname(hubDir), "personas")} (recommended)`, value: "rename" },
+      { name: `Keep "${dirName}"`, value: "keep" },
+    ],
+  });
+
+  if (choice === "rename") {
+    const personasDir = path.join(path.dirname(hubDir), "personas");
+    if (fs.existsSync(personasDir)) {
+      console.log(chalk.yellow(`  ${personasDir} already exists. Keeping "${dirName}".`));
+      return hubDir;
+    }
+    // If the original dir was just created (empty), rename it.
+    // If it had content, we can't rename safely — keep it.
+    try {
+      const entries = fs.readdirSync(hubDir);
+      if (entries.length === 0) {
+        fs.rmdirSync(hubDir);
+        fs.mkdirSync(personasDir, { recursive: true });
+        return personasDir;
+      } else {
+        // Directory has content (from scaffold or prior step) — rename via fs.rename
+        fs.renameSync(hubDir, personasDir);
+        return personasDir;
+      }
+    } catch {
+      console.log(chalk.yellow(`  Could not rename. Keeping "${dirName}".`));
+      return hubDir;
+    }
+  }
+
+  return hubDir;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,15 +483,18 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     }
   }
 
-  // Create directory if needed
-  if (!fs.existsSync(hubDir)) {
-    fs.mkdirSync(hubDir, { recursive: true });
-  }
+  // Validate target directory — if it exists and has content, offer to create
+  // a personas subdirectory instead of scaffolding into an existing repo.
+  hubDir = await validateHubTarget(hubDir);
 
-  // Step 1.2: Org detection
-  let orgName = opts.org ?? detection.gitOrg ?? null;
+  // Nudge toward the "personas" naming convention if the user chose a
+  // different name. This is educational, not enforced.
+  hubDir = await nudgePersonasConvention(hubDir);
 
-  if (!orgName) {
+  // Step 1.2: Org detection — slug (machine identifier) and display name (human label)
+  let orgSlug = opts.org ?? detection.gitOrg ?? null;
+
+  if (!orgSlug) {
     // Try detecting from the hub dir's git remote
     try {
       const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
@@ -344,24 +504,38 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
       });
       if (gitResult.stdout) {
         const match = gitResult.stdout.trim().match(/[/:]([\w.-]+)\//);
-        if (match) orgName = match[1]!;
+        if (match) orgSlug = match[1]!;
       }
     } catch { /* no git */ }
   }
 
-  if (orgName) {
+  if (orgSlug) {
     const useDetected = await confirm({
-      message: `Use "${orgName}" as your org name?`,
+      message: `Use "${orgSlug}" as your org identifier?`,
       default: true,
     });
     if (!useDetected) {
-      orgName = await input({ message: "Org name:" });
+      orgSlug = await input({ message: "Org identifier (lowercase, used in package names and paths):" });
     }
   } else {
-    orgName = await input({
-      message: "Org name (GitHub org or username):",
+    orgSlug = await input({
+      message: "Org identifier (GitHub org, username, or slug — lowercase, no spaces):",
     });
   }
+
+  // Normalize slug: lowercase, replace spaces with hyphens
+  orgSlug = orgSlug.toLowerCase().replace(/\s+/g, "-");
+
+  // Derive a default display name from the slug
+  const defaultDisplayName = orgSlug
+    .split(/[-_]/)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+
+  const orgDisplayName = await input({
+    message: "Org display name (shown in compiled output):",
+    default: defaultDisplayName,
+  });
 
   // Step 1.3: Scan for existing content nearby (with permission)
   const shouldScan = await confirm({
@@ -370,7 +544,7 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   });
 
   if (shouldScan) {
-    const siblings = scanSiblings(hubDir !== cwd ? cwd : hubDir);
+    const siblings = scanNearby(hubDir !== cwd ? cwd : hubDir);
     const claudeSiblings = siblings.filter(s => s.type === "claude");
 
     if (claudeSiblings.length > 0) {
@@ -390,9 +564,9 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   }
 
   // Step 1.4: Scaffold
-  console.log(chalk.bold(`\n  Creating personas repo for ${orgName}...\n`));
+  console.log(chalk.bold(`\n  Creating personas repo for ${orgDisplayName}...\n`));
 
-  scaffoldHub(hubDir, orgName);
+  scaffoldHub(hubDir, orgSlug, orgDisplayName);
 
   console.log(chalk.green("  Source code:"));
   console.log(chalk.gray("    core/personas/          4 personas (code-reviewer, security-reviewer, ...)"));
@@ -400,29 +574,72 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   console.log(chalk.gray("    core/instructions/      2 always-on instruction sets"));
   console.log(chalk.gray("    core/gotchas/           (empty — add domain knowledge here)"));
   console.log(chalk.green("\n  Build configuration:"));
-  console.log(chalk.gray(`    agentboot.config.json   org: "${orgName}"`));
+  console.log(chalk.gray(`    agentboot.config.json   org: "${orgSlug}", displayName: "${orgDisplayName}"`));
   console.log(chalk.gray("    repos.json              (empty — register your repos here)"));
 
-  // Step 1.5: Auto-build
-  const hasNodeModules = fs.existsSync(path.join(hubDir, "node_modules"));
-  if (hasNodeModules) {
-    runBuild(hubDir);
+  // Step 1.5: Build
+  //
+  // AgentBoot is a build tool. The personas repo contains source code (traits,
+  // personas, instructions) that gets compiled into deployable output. This is
+  // like compiling TypeScript to JavaScript — the source is what you edit, the
+  // output is what gets deployed.
+  //
+  // If the user is running `agentboot install`, then agentboot is already
+  // available (globally or via npx). We can always attempt a build.
+
+  let buildSucceeded = false;
+  const shouldBuild = await confirm({
+    message: "Compile personas now? (builds the deployable output)",
+    default: true,
+  });
+
+  if (shouldBuild) {
+    buildSucceeded = runBuild(hubDir);
   } else {
-    console.log(chalk.gray("\n  Run `npm install && agentboot build` to compile personas."));
+    console.log(chalk.gray(
+      "\n  You can compile later by running:\n\n" +
+      `    cd ${hubDir}\n` +
+      "    agentboot build\n"
+    ));
   }
 
   // Step 1.6: Register first repo (optional)
+  //
+  // A "target repo" is any codebase where you want AI agent governance.
+  // Registering it adds it to repos.json — the list of repos that receive
+  // compiled personas when you run `agentboot sync`.
+  //
+  // The personas repo and target repos can be anywhere on your filesystem.
+  // They don't need to be siblings or in the same parent directory.
+
+  let registeredRepo = false;
+  let registeredRepoName = "";
+  let registeredRepoPath = "";
+
+  console.log(chalk.bold("\n  Register a target repo\n"));
+  console.log(chalk.gray(
+    "  A target repo is any codebase where you want AgentBoot personas deployed.\n" +
+    "  It can be anywhere on your filesystem — it does not need to be next to\n" +
+    "  this personas repo.\n"
+  ));
+
   const registerRepo = await confirm({
     message: "Register your first target repo now?",
     default: true,
   });
 
   if (registerRepo) {
-    const repoPathInput = await input(
-      detection.looksLikeCodeRepo
-        ? { message: "Path to a local repo:", default: cwd }
-        : { message: "Path to a local repo:" }
-    );
+    let promptOpts: { message: string; default?: string };
+    if (detection.looksLikeCodeRepo) {
+      promptOpts = {
+        message: `Path to target repo (absolute or relative):`,
+        default: cwd,
+      };
+    } else {
+      promptOpts = { message: "Path to target repo (absolute or relative):" };
+    }
+
+    const repoPathInput = await input(promptOpts);
     const repoPath = path.resolve(repoPathInput);
 
     if (!fs.existsSync(repoPath)) {
@@ -452,51 +669,76 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
       repos.push({ path: repoPath, label: repoName });
       fs.writeFileSync(reposJsonPath, JSON.stringify(repos, null, 2) + "\n", "utf-8");
       console.log(chalk.green(`\n  Added ${repoName} to repos.json.`));
+      registeredRepo = true;
+      registeredRepoName = repoName;
+      registeredRepoPath = repoPath;
 
       // Check for existing .claude/ content
       if (fs.existsSync(path.join(repoPath, ".claude"))) {
         console.log(chalk.gray(
-          `  This repo has existing .claude/ content. On first sync, it will be\n` +
-          `  archived to .claude/.agentboot-archive/. You can restore it with\n` +
-          `  agentboot uninstall.`
+          `\n  This repo has existing .claude/ content. On first sync, AgentBoot\n` +
+          `  will archive it to .claude/.agentboot-archive/ before deploying.\n` +
+          `  You can restore the original content anytime with: agentboot uninstall`
         ));
       }
 
-      // Offer to sync
-      if (!opts.noSync && hasNodeModules && fs.existsSync(path.join(hubDir, "dist"))) {
+      // Offer to sync — only if build succeeded (dist/ exists)
+      if (!opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+        console.log(chalk.gray(
+          `\n  Sync deploys the compiled personas to ${repoName}'s .claude/ directory.\n` +
+          `  This writes files locally — it does not commit or push. You review\n` +
+          `  the output before committing.`
+        ));
+
         const shouldSync = await confirm({
-          message: "Deploy personas to this repo now?",
+          message: `Deploy personas to ${repoName} now?`,
           default: true,
         });
 
         if (shouldSync) {
           console.log(chalk.cyan("\n  Syncing..."));
           if (runSync(hubDir)) {
-            console.log(chalk.green("\n  Personas deployed. Try: /review-code"));
+            console.log(chalk.green(`\n  Personas deployed to ${repoPath}/.claude/`));
+            console.log(chalk.gray(
+              `\n  To activate them, commit the .claude/ directory:\n\n` +
+              `    cd ${repoPath}\n` +
+              `    git add .claude/\n` +
+              `    git commit -m "chore: deploy AgentBoot personas"\n\n` +
+              `  Then open Claude Code in that repo and try: /review-code`
+            ));
           }
         }
+      } else if (!buildSucceeded) {
+        console.log(chalk.gray(
+          `\n  Repo registered. To deploy personas, build first:\n\n` +
+          `    cd ${hubDir}\n` +
+          `    agentboot build && agentboot sync`
+        ));
       }
     }
   }
 
-  // Step 1.7: Governance recommendations
-  console.log(chalk.bold("\n  Recommendations for your personas repo:\n"));
-  console.log(chalk.gray(
-    "    Branch protection:\n" +
-    "      Enable branch protection on 'main' with required PR reviews.\n" +
-    "      Persona changes should go through code review.\n"
-  ));
-  console.log(chalk.gray(
-    "    Contributing path:\n" +
-    "      Developers who use personas daily are your best contributors.\n" +
-    "      A low-friction PR workflow lets them improve the prompts they know best.\n"
-  ));
-  console.log(chalk.gray(
-    "    CI validation:\n" +
-    "      Add `agentboot validate --strict` to your CI pipeline.\n"
-  ));
+  // Step 1.7: Summary and next steps
+  //
+  // Context-aware: the summary reflects what actually happened during install,
+  // so the user knows exactly where they are and what to do next.
 
-  // Step 1.8: Detect whether hub has a remote
+  console.log(chalk.bold("\n  ─────────────────────────────────────────────"));
+  console.log(chalk.bold(`\n  ${chalk.green("✓")} AgentBoot setup complete\n`));
+
+  // What was created
+  console.log(chalk.cyan("  What was created:\n"));
+  console.log(chalk.gray(`    Personas repo:    ${hubDir}`));
+  console.log(chalk.gray(`    Config:           ${hubDir}/agentboot.config.json`));
+  console.log(chalk.gray(`    Org:              ${orgSlug} (${orgDisplayName})`));
+  if (buildSucceeded) {
+    console.log(chalk.gray(`    Compiled output:  ${hubDir}/dist/`));
+  }
+  if (registeredRepo) {
+    console.log(chalk.gray(`    Target repo:      ${registeredRepoPath} (${registeredRepoName})`));
+  }
+
+  // Remote status
   let hubHasRemote = false;
   try {
     const remoteResult = spawnSync("git", ["remote", "get-url", "origin"], {
@@ -507,22 +749,47 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     hubHasRemote = remoteResult.status === 0 && !!remoteResult.stdout?.trim();
   } catch { /* no git or no remote */ }
 
-  // Step 1.9: Next steps
-  console.log(chalk.bold(`${chalk.green("✓")} Persona source code lives at: ${hubDir}\n`));
-
   if (!hubHasRemote) {
-    console.log(chalk.cyan(
-      "  This repo has no remote — that's fine for evaluation.\n" +
-      "  Everything works locally. When your org is ready:\n\n" +
-      "    gh repo create <org>/personas --source . --private --push\n"
-    ));
+    console.log(chalk.gray("    Remote:           none (local only — fine for evaluation)"));
   }
 
-  console.log(chalk.gray("  Next steps:"));
-  console.log(chalk.gray("    1. Review personas:    Browse core/personas/ and customize"));
-  console.log(chalk.gray("    2. Add more repos:     Edit repos.json or run `agentboot install` from a repo"));
-  console.log(chalk.gray("    3. Import existing:    agentboot import --path ~/work/"));
-  console.log(chalk.gray("    4. Set up CI:          agentboot validate --strict in your pipeline\n"));
+  // Context-aware next steps
+  console.log(chalk.cyan("\n  What to do next:\n"));
+
+  let step = 1;
+
+  if (!buildSucceeded) {
+    console.log(chalk.gray(`    ${step}. Build personas:    cd ${hubDir} && agentboot build`));
+    step++;
+  }
+
+  if (!registeredRepo) {
+    console.log(chalk.gray(`    ${step}. Register a repo:   agentboot install (from your code repo)`));
+    console.log(chalk.gray(`       Or edit:            ${hubDir}/repos.json`));
+    step++;
+  } else if (buildSucceeded && !fs.existsSync(path.join(registeredRepoPath, ".claude", ".agentboot-manifest.json"))) {
+    console.log(chalk.gray(`    ${step}. Deploy personas:   cd ${hubDir} && agentboot sync`));
+    step++;
+  }
+
+  console.log(chalk.gray(`    ${step}. Try it out:        Open your repo in Claude Code and run /review-code`));
+  step++;
+  console.log(chalk.gray(`    ${step}. Customize:         Edit personas in ${hubDir}/core/personas/`));
+  step++;
+  console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
+  step++;
+
+  if (!hubHasRemote) {
+    console.log(chalk.gray(`    ${step}. Push when ready:   gh repo create ${orgSlug}/personas --source . --private --push`));
+    step++;
+  }
+
+  // Governance — brief, not a wall
+  console.log(chalk.cyan("\n  Governance tips:\n"));
+  console.log(chalk.gray("    - Enable branch protection on main (persona changes deserve review)"));
+  console.log(chalk.gray("    - Add `agentboot validate --strict` to CI"));
+  console.log(chalk.gray("    - Encourage developers to contribute — they know the prompts best"));
+  console.log("");
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +804,7 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
     console.log(chalk.gray("\n  Looking for your org's personas repo...\n"));
 
     // Check siblings
-    const siblings = scanSiblings(cwd);
+    const siblings = scanNearby(cwd);
     const hubSiblings = siblings.filter(s => s.type === "hub");
 
     if (hubSiblings.length === 1) {
