@@ -11,5 +11,6 @@ website/.docusaurus/
 .gemini/agentboot/
 .github/copilot-instructions.md
 
-# Internal temp files
+# Internal docs
+/docs/internal/
 /temp/
