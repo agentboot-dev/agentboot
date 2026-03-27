@@ -7,7 +7,7 @@ sidebar_position: 2
 
 ## Current Status
 
-**v0.2.0** is the current release. Phases 1 through 3 are complete. Phases 4 and 5 are planned.
+**v0.4.4** is the current release. Phases 1 through 3 are complete. Phase 4 is in progress.
 
 ---
 
@@ -70,13 +70,18 @@ What shipped:
 
 ---
 
-## Phase 4: "Migration & Adoption" -- PLANNED
+## Phase 4: "Migration & Adoption" -- IN PROGRESS
 
 Organizations can import existing agentic content, generate a migration plan, and onboard developers. Behavioral tests validate persona quality.
 
-Planned features:
+Shipped:
 - **Two-path install** -- `agentboot install` guides architects (create hub) and developers (connect to hub) through the right flow
 - **Import and migration** -- `agentboot import` scans repos for existing agentic content, classifies into personas/traits/gotchas (LLM-powered via `claude -p`)
+- **Doctor --fix** -- `agentboot doctor --fix` auto-remediates common issues (stale dist, missing config fields)
+- **Config writes** -- `agentboot config <key> <value>` sets string config values with JSONC comment protection
+- **Install UX improvements** -- org slug/display name separation, directory completion, context-aware post-scaffold summary, hub-as-parent layout support
+
+Planned:
 - **Hub migration** -- `agentboot migrate` takes over an existing agentic repo as the AgentBoot hub: tags the repo for posterity, extracts import candidates, clears and scaffolds, with `--revert` to restore pre-migration state via git
 - **Prompt ingestion** -- classify raw prompts into traits/personas, batch-decompose existing CLAUDE.md files
 - **Solo mode** -- solo developers use the same flow as orgs; GitHub username as org name
