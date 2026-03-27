@@ -9,7 +9,8 @@
 | `cli.test.ts` | 100 | Integration: CLI commands (AB-2/3 epics), compile features, uninstall safety, plugin, compliance, telemetry | ~9s |
 | `lib.test.ts` | 50 | Unit: config utilities, frontmatter edge cases, secret scanning, scope models | <300ms |
 | `config-security.test.ts` | 31 | Unit: path traversal rejection, targetDir validation, type safety, adversarial JSONC | <100ms |
-| **Total** | **234** | | ~12s |
+| `install.test.ts` | 43 | Unit: install.ts pure functions — AgentBootError, addToReposJson, detectCwd, getGitOrgAndRepo, hasPrompts, scaffoldHub, scanNearby edge cases | <200ms |
+| **Total** | **357** | | ~14s |
 
 ## Coverage by Feature
 

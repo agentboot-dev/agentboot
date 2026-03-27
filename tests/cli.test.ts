@@ -199,7 +199,7 @@ describe("AB-33.2: install command", () => {
 // AB-33.2: install unit tests (pure functions)
 // ===========================================================================
 
-import { detectCwd, scaffoldHub, scanNearby } from "../scripts/lib/install.js";
+import { detectCwd, scaffoldHub, scanNearby, hasPrompts, getGitOrgAndRepo, addToReposJson } from "../scripts/lib/install.js";
 
 describe("AB-33.2: detectCwd", () => {
   let tempDir: string;
@@ -355,28 +355,45 @@ describe("AB-33.2: scanNearby", () => {
     expect(hubs[0]!.path).toBe(parentDir);
   });
 
-  it("detects sibling repos with .claude/ content", () => {
+  it("detects sibling repos with agentic content", () => {
     const spoke = path.join(parentDir, "my-app");
     const other = path.join(parentDir, "other-app");
     fs.mkdirSync(spoke);
     fs.mkdirSync(path.join(other, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(other, ".claude", "CLAUDE.md"), "# test", "utf-8");
 
     const results = scanNearby(spoke);
-    const claudes = results.filter(r => r.type === "claude");
-    expect(claudes.length).toBe(1);
-    expect(claudes[0]!.path).toBe(other);
+    const prompts = results.filter(r => r.type === "prompts");
+    expect(prompts.length).toBe(1);
+    expect(prompts[0]!.path).toBe(other);
+    expect(prompts[0]!.files).toBeDefined();
+    expect(prompts[0]!.files!.length).toBeGreaterThan(0);
   });
 
-  it("does not include cwd in results", () => {
+  it("includes cwd agentic content in scan results", () => {
     const spoke = path.join(parentDir, "my-app");
     fs.mkdirSync(spoke);
     fs.mkdirSync(path.join(spoke, ".claude"));
+    fs.writeFileSync(path.join(spoke, ".claude", "CLAUDE.md"), "# test", "utf-8");
 
     const results = scanNearby(spoke);
-    expect(results.find(r => r.path === spoke)).toBeUndefined();
+    const cwdResult = results.find(r => r.path === spoke);
+    expect(cwdResult).toBeDefined();
+    expect(cwdResult!.type).toBe("prompts");
+    expect(cwdResult!.files).toBeDefined();
   });
 
-  it("returns empty for isolated directory", () => {
+  it("does not include cwd as a hub even with agentboot.config.json", () => {
+    const spoke = path.join(parentDir, "my-app");
+    fs.mkdirSync(spoke);
+    fs.writeFileSync(path.join(spoke, "agentboot.config.json"), "{}", "utf-8");
+
+    const results = scanNearby(spoke);
+    const cwdHub = results.find(r => r.path === spoke && r.type === "hub");
+    expect(cwdHub).toBeUndefined();
+  });
+
+  it("returns empty for isolated directory without .claude/", () => {
     const spoke = path.join(parentDir, "lonely");
     fs.mkdirSync(spoke);
 
@@ -398,6 +415,198 @@ describe("AB-33.2: scanNearby", () => {
     expect(hubs.length).toBe(2);
     // Parent and sibling are both detected
     expect(hubs.map(h => h.path).sort()).toEqual([parentDir, otherHub].sort());
+  });
+});
+
+// ===========================================================================
+// AB-99: hasPrompts
+// ===========================================================================
+
+describe("AB-99: hasPrompts", () => {
+  let testDir: string;
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), "hasPrompts-"));
+  });
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("returns found: false for empty directory", () => {
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(false);
+    expect(result.files).toEqual([]);
+  });
+
+  it("detects non-empty .claude/ directory", () => {
+    fs.mkdirSync(path.join(testDir, ".claude"));
+    fs.writeFileSync(path.join(testDir, ".claude", "CLAUDE.md"), "# test", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(true);
+    expect(result.files).toContain(".claude/CLAUDE.md");
+  });
+
+  it("returns found: false for .claude/ with only agentboot artifacts", () => {
+    fs.mkdirSync(path.join(testDir, ".claude"));
+    fs.writeFileSync(path.join(testDir, ".claude", ".agentboot-manifest.json"), "{}", "utf-8");
+    const result = hasPrompts(testDir);
+    // .agentboot-manifest.json is excluded
+    expect(result.found).toBe(false);
+    expect(result.files.filter(f => f.startsWith(".claude/"))).toEqual([]);
+  });
+
+  it("excludes .agentboot-archive from .claude/ check", () => {
+    fs.mkdirSync(path.join(testDir, ".claude", ".agentboot-archive"), { recursive: true });
+    const result = hasPrompts(testDir);
+    expect(result.files.filter(f => f.includes("agentboot-archive"))).toEqual([]);
+  });
+
+  it("detects root CLAUDE.md", () => {
+    fs.writeFileSync(path.join(testDir, "CLAUDE.md"), "# Instructions", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(true);
+    expect(result.files).toContain("CLAUDE.md");
+  });
+
+  it("detects .cursorrules", () => {
+    fs.writeFileSync(path.join(testDir, ".cursorrules"), "rules", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(true);
+    expect(result.files).toContain(".cursorrules");
+  });
+
+  it("detects .github/copilot-instructions.md", () => {
+    fs.mkdirSync(path.join(testDir, ".github"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, ".github", "copilot-instructions.md"), "# copilot", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(true);
+    expect(result.files).toContain(".github/copilot-instructions.md");
+  });
+
+  it("detects .github/prompts/*.prompt.md files", () => {
+    fs.mkdirSync(path.join(testDir, ".github", "prompts"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, ".github", "prompts", "review.prompt.md"), "# review", "utf-8");
+    fs.writeFileSync(path.join(testDir, ".github", "prompts", "test.prompt.md"), "# test", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(true);
+    expect(result.files).toContain(".github/prompts/review.prompt.md");
+    expect(result.files).toContain(".github/prompts/test.prompt.md");
+  });
+
+  it("ignores non-.prompt.md files in .github/prompts/", () => {
+    fs.mkdirSync(path.join(testDir, ".github", "prompts"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, ".github", "prompts", "README.md"), "# readme", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.files.filter(f => f.includes("README"))).toEqual([]);
+  });
+
+  it("returns all files for mixed content", () => {
+    fs.writeFileSync(path.join(testDir, "CLAUDE.md"), "# root", "utf-8");
+    fs.writeFileSync(path.join(testDir, ".cursorrules"), "rules", "utf-8");
+    fs.mkdirSync(path.join(testDir, ".claude"));
+    fs.writeFileSync(path.join(testDir, ".claude", "settings.json"), "{}", "utf-8");
+    const result = hasPrompts(testDir);
+    expect(result.found).toBe(true);
+    expect(result.files.length).toBe(3);
+    expect(result.files).toContain("CLAUDE.md");
+    expect(result.files).toContain(".cursorrules");
+    expect(result.files).toContain(".claude/settings.json");
+  });
+
+  it("files array contains relative paths", () => {
+    fs.writeFileSync(path.join(testDir, "CLAUDE.md"), "# test", "utf-8");
+    const result = hasPrompts(testDir);
+    for (const f of result.files) {
+      expect(path.isAbsolute(f)).toBe(false);
+    }
+  });
+});
+
+// ===========================================================================
+// AB-99: getGitOrgAndRepo
+// ===========================================================================
+
+describe("AB-99: getGitOrgAndRepo", () => {
+  let testDir: string;
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), "gitOrgRepo-"));
+  });
+  afterEach(() => {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("extracts org and repo from HTTPS remote", () => {
+    execSync("git init", { cwd: testDir, stdio: "pipe" });
+    execSync("git remote add origin https://github.com/acme-corp/my-api.git", { cwd: testDir, stdio: "pipe" });
+    const result = getGitOrgAndRepo(testDir);
+    expect(result).toEqual({ org: "acme-corp", repo: "my-api" });
+  });
+
+  it("extracts org and repo from SSH remote", () => {
+    execSync("git init", { cwd: testDir, stdio: "pipe" });
+    execSync("git remote add origin git@github.com:acme-corp/my-api.git", { cwd: testDir, stdio: "pipe" });
+    const result = getGitOrgAndRepo(testDir);
+    expect(result).toEqual({ org: "acme-corp", repo: "my-api" });
+  });
+
+  it("returns null for directory without .git", () => {
+    const result = getGitOrgAndRepo(testDir);
+    expect(result).toBeNull();
+  });
+
+  it("returns null for git repo without remote", () => {
+    execSync("git init", { cwd: testDir, stdio: "pipe" });
+    const result = getGitOrgAndRepo(testDir);
+    expect(result).toBeNull();
+  });
+});
+
+// ===========================================================================
+// AB-99: addToReposJson
+// ===========================================================================
+
+describe("AB-99: addToReposJson", () => {
+  let hubDir: string;
+  beforeEach(() => {
+    hubDir = fs.mkdtempSync(path.join(os.tmpdir(), "addRepos-"));
+    fs.writeFileSync(path.join(hubDir, "repos.json"), "[]", "utf-8");
+  });
+  afterEach(() => {
+    fs.rmSync(hubDir, { recursive: true, force: true });
+  });
+
+  it("adds entry to empty repos.json", () => {
+    const result = addToReposJson(hubDir, "/path/to/repo", "org/repo");
+    expect(result).toBe(true);
+    const repos = JSON.parse(fs.readFileSync(path.join(hubDir, "repos.json"), "utf-8"));
+    expect(repos).toHaveLength(1);
+    expect(repos[0].path).toBe("/path/to/repo");
+    expect(repos[0].label).toBe("org/repo");
+  });
+
+  it("adds entry to existing repos.json", () => {
+    fs.writeFileSync(path.join(hubDir, "repos.json"), JSON.stringify([{ path: "/existing", label: "org/existing" }]), "utf-8");
+    const result = addToReposJson(hubDir, "/new/repo", "org/new");
+    expect(result).toBe(true);
+    const repos = JSON.parse(fs.readFileSync(path.join(hubDir, "repos.json"), "utf-8"));
+    expect(repos).toHaveLength(2);
+  });
+
+  it("returns false if repo already registered by path", () => {
+    addToReposJson(hubDir, "/path/to/repo", "org/repo");
+    const result = addToReposJson(hubDir, "/path/to/repo", "org/other-label");
+    expect(result).toBe(false);
+  });
+
+  it("returns false if repo already registered by label", () => {
+    addToReposJson(hubDir, "/path/to/repo", "org/repo");
+    const result = addToReposJson(hubDir, "/different/path", "org/repo");
+    expect(result).toBe(false);
+  });
+
+  it("creates valid JSON output", () => {
+    addToReposJson(hubDir, "/path/to/repo", "org/repo");
+    const content = fs.readFileSync(path.join(hubDir, "repos.json"), "utf-8");
+    expect(() => JSON.parse(content)).not.toThrow();
   });
 });
 

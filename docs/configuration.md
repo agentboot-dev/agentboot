@@ -29,6 +29,10 @@ and `npm run validate` invocation. Validation errors block the build.
       "description": "Your organization identifier. Used as a namespace in generated files.",
       "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"
     },
+    "orgDisplayName": {
+      "type": "string",
+      "description": "Human-readable organization name. Used in generated file headers and welcome messages. Falls back to org if not set."
+    },
     "groups": {
       "type": "object",
       "description": "Group definitions. Keys are group names; values describe the group.",
@@ -201,6 +205,27 @@ but using the same value reduces confusion.
 ```json
 "org": "acme-corp"
 ```
+
+---
+
+### `orgDisplayName`
+
+**Type:** `string`
+**Required:** No
+**Default:** Falls back to `org`
+
+Human-readable organization name. Used in generated file headers (e.g.,
+`AgentBoot — Acme Corporation`) and in welcome messages during install. Unlike `org`,
+this value has no format restrictions — it can contain spaces, capitalization, and
+special characters.
+
+```json
+"orgDisplayName": "Acme Corporation"
+```
+
+**Migration:** If your hub was created before `orgDisplayName` was added, `agentboot doctor`
+will suggest setting it. Run `agentboot config orgDisplayName "Your Org Name"` or edit
+`agentboot.config.json` directly.
 
 ---
 
@@ -590,11 +615,72 @@ Claude Code session across your entire organization.
 
 ---
 
+### `telemetry`
+
+**Type:** `TelemetryConfig`
+**Required:** No
+
+Controls telemetry output. AgentBoot telemetry is local-only NDJSON — no data is sent
+to any external service.
+
+---
+
+### `telemetry.enabled`
+
+**Type:** `boolean`
+**Required:** No
+**Default:** `false`
+
+When `true`, hooks write telemetry events to the NDJSON log file.
+
+---
+
+### `telemetry.includeDevId`
+
+**Type:** `false | "hashed" | "email" | "email-raw"`
+**Required:** No
+**Default:** `false`
+
+Controls how developer identity appears in telemetry records:
+
+- `false` — no developer identifier is included
+- `"hashed"` — SHA-256 hash of the developer's git email
+- `"email"` — **hashed** email (same as `"hashed"`, for backward compatibility)
+- `"email-raw"` — raw email address (requires explicit opt-in)
+
+Note: `"email"` defaults to hashed output, not raw. If you need raw email addresses
+in telemetry, you must explicitly use `"email-raw"`.
+
+---
+
+### `telemetry.logPath`
+
+**Type:** `string`
+**Required:** No
+**Default:** `"~/.agentboot/telemetry.ndjson"`
+
+Path to the NDJSON telemetry log file. Subject to path traversal validation — the
+path must resolve to a location under the user's home directory or the hub directory.
+
+---
+
+### `telemetry.includeContent`
+
+**Type:** `false`
+**Required:** No
+**Default:** `false`
+
+Design invariant: raw prompt content is never included in telemetry. This field
+exists in the schema to make the invariant explicit — it cannot be set to `true`.
+
+---
+
 ## Complete example
 
 ```jsonc
 {
   "org": "acme-corp",
+  "orgDisplayName": "Acme Corporation",
   "groups": {
     "platform": {
       "teams": ["api", "infra", "data"],
