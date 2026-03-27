@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import chalk from "chalk";
-import { select, input, confirm } from "@inquirer/prompts";
+import { select, input, confirm, search } from "@inquirer/prompts";
 
 export class AgentBootError extends Error {
   constructor(public readonly exitCode: number) {
@@ -47,11 +47,138 @@ interface DetectionResult {
   gitRepoName: string | null;
   looksLikeCodeRepo: boolean;
   claudeArtifacts: string[];
+  promptFiles: string[];
+}
+
+export interface HasPromptsResult {
+  found: boolean;
+  files: string[];
 }
 
 // ---------------------------------------------------------------------------
 // Detection helpers
 // ---------------------------------------------------------------------------
+
+/** Escape a path for safe copy-paste into a shell. */
+export function shellQuote(p: string): string {
+  // If the path only contains safe characters, return as-is
+  if (/^[a-zA-Z0-9_./:~-]+$/.test(p)) return p;
+  // Otherwise wrap in single quotes, escaping any embedded single quotes
+  return "'" + p.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Check a directory for known agentic file locations.
+ * Shallow existence checks only — no file reading, no classification.
+ */
+export function hasPrompts(dirPath: string): HasPromptsResult {
+  const files: string[] = [];
+
+  // .claude/ non-empty (excluding agentboot artifacts)
+  try {
+    const claudeDir = path.join(dirPath, ".claude");
+    if (fs.existsSync(claudeDir) && fs.statSync(claudeDir).isDirectory()) {
+      const entries = fs.readdirSync(claudeDir);
+      const excluded = new Set([".agentboot-archive", ".agentboot-manifest.json"]);
+      const relevant = entries.filter(e => !excluded.has(e));
+      if (relevant.length > 0) {
+        for (const e of relevant) {
+          files.push(`.claude/${e}`);
+        }
+      }
+    }
+  } catch { /* permission errors */ }
+
+  // Root CLAUDE.md
+  try {
+    if (fs.existsSync(path.join(dirPath, "CLAUDE.md"))) {
+      files.push("CLAUDE.md");
+    }
+  } catch { /* permission errors */ }
+
+  // .cursorrules
+  try {
+    if (fs.existsSync(path.join(dirPath, ".cursorrules"))) {
+      files.push(".cursorrules");
+    }
+  } catch { /* permission errors */ }
+
+  // .github/copilot-instructions.md
+  try {
+    if (fs.existsSync(path.join(dirPath, ".github", "copilot-instructions.md"))) {
+      files.push(".github/copilot-instructions.md");
+    }
+  } catch { /* permission errors */ }
+
+  // .github/prompts/*.prompt.md
+  try {
+    const promptsDir = path.join(dirPath, ".github", "prompts");
+    if (fs.existsSync(promptsDir) && fs.statSync(promptsDir).isDirectory()) {
+      const entries = fs.readdirSync(promptsDir);
+      for (const e of entries) {
+        if (e.endsWith(".prompt.md")) {
+          files.push(`.github/prompts/${e}`);
+        }
+      }
+    }
+  } catch { /* permission errors */ }
+
+  return { found: files.length > 0, files };
+}
+
+/**
+ * Extract org and repo name from a directory's git remote origin.
+ * Returns null if the directory is not a git repo or has no remote.
+ */
+export function getGitOrgAndRepo(dirPath: string): { org: string; repo: string } | null {
+  try {
+    const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
+      cwd: dirPath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    if (gitResult.status !== 0 || !gitResult.stdout) return null;
+    const match = gitResult.stdout.trim().match(/[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
+    if (!match) return null;
+    return { org: match[1]!, repo: match[2]! };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add a repo entry to repos.json in the hub directory.
+ * Returns false if the repo is already registered (by path or label).
+ */
+export function addToReposJson(hubDir: string, repoPath: string, label: string): boolean {
+  const reposJsonPath = path.join(hubDir, "repos.json");
+  let repos: Array<{ path: string; label?: string }> = [];
+  try {
+    repos = JSON.parse(fs.readFileSync(reposJsonPath, "utf-8"));
+  } catch (err: unknown) {
+    // File not found (ENOENT) — start fresh silently.
+    // Parse errors (SyntaxError) or other — back up the corrupted file and start fresh.
+    const isFileNotFound = err && typeof err === "object" && "code" in err && err.code === "ENOENT";
+    if (!isFileNotFound) {
+      const backupPath = reposJsonPath + ".corrupt";
+      try {
+        fs.copyFileSync(reposJsonPath, backupPath);
+        console.warn(`  Warning: repos.json is not valid JSON. Backed up to ${path.basename(backupPath)}.`);
+      } catch {
+        console.warn(`  Warning: repos.json is not valid JSON. Could not create backup.`);
+      }
+    }
+  }
+
+  // Check for duplicates
+  if (repos.some(r => r.path === repoPath || r.label === label)) {
+    return false;
+  }
+
+  repos.push({ path: repoPath, label });
+  fs.writeFileSync(reposJsonPath, JSON.stringify(repos, null, 2) + "\n", "utf-8");
+  return true;
+}
 
 export function detectCwd(cwd: string): DetectionResult {
   const result: DetectionResult = {
@@ -65,25 +192,21 @@ export function detectCwd(cwd: string): DetectionResult {
     gitRepoName: null,
     looksLikeCodeRepo: false,
     claudeArtifacts: [],
+    promptFiles: [],
   };
 
   // Detect org from git remote
   if (result.isGitRepo) {
-    try {
-      const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
-        cwd,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      if (gitResult.stdout) {
-        const match = gitResult.stdout.trim().match(/[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/);
-        if (match) {
-          result.gitOrg = match[1]!;
-          result.gitRepoName = match[2]!;
-        }
-      }
-    } catch { /* no git */ }
+    const gitInfo = getGitOrgAndRepo(cwd);
+    if (gitInfo) {
+      result.gitOrg = gitInfo.org;
+      result.gitRepoName = gitInfo.repo;
+    }
   }
+
+  // Populate promptFiles via hasPrompts
+  const prompts = hasPrompts(cwd);
+  result.promptFiles = prompts.files;
 
   // Heuristic: does this look like a code repo (not a personas hub)?
   result.looksLikeCodeRepo =
@@ -117,6 +240,71 @@ export function detectCwd(cwd: string): DetectionResult {
   return result;
 }
 
+/**
+ * Prompt for a directory path with live directory completion.
+ * As the user types, matching directories are suggested.
+ */
+async function promptForPath(message: string, defaultPath?: string): Promise<string> {
+  const result = await search({
+    message,
+    source: (term) => {
+      const typed = term ?? defaultPath ?? "";
+      if (!typed) {
+        // Show common starting points
+        const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/";
+        return [
+          { name: `${home} (home directory)`, value: home },
+          { name: `. (current directory)`, value: process.cwd() },
+          { name: `.. (parent directory)`, value: path.dirname(process.cwd()) },
+        ];
+      }
+
+      // Resolve the typed path
+      const resolved = path.resolve(typed);
+      let dir: string;
+      let prefix: string;
+
+      try {
+        const stat = fs.statSync(resolved);
+        if (stat.isDirectory()) {
+          dir = resolved;
+          prefix = typed.endsWith("/") || typed.endsWith(path.sep) ? typed : typed + "/";
+        } else {
+          dir = path.dirname(resolved);
+          prefix = path.dirname(typed) + "/";
+        }
+      } catch {
+        // Path doesn't exist yet — complete from the parent
+        dir = path.dirname(resolved);
+        prefix = path.dirname(typed) === typed ? typed : path.dirname(typed) + "/";
+      }
+
+      // List directory entries
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const dirs = entries
+          .filter(e => e.isDirectory() && !e.name.startsWith("."))
+          .map(e => ({
+            name: prefix + e.name + "/",
+            value: path.join(dir, e.name),
+          }));
+
+        // Always include the typed path itself as an option
+        const resolvedTyped = path.resolve(typed);
+        const choices = [
+          { name: `${resolvedTyped} (create new)`, value: resolvedTyped },
+          ...dirs.slice(0, 15),
+        ];
+        return choices;
+      } catch {
+        return [{ name: `${path.resolve(typed)} (create new)`, value: path.resolve(typed) }];
+      }
+    },
+  });
+
+  return path.resolve(result);
+}
+
 function detectGhAvailable(): boolean {
   try {
     const result = spawnSync("gh", ["--version"], {
@@ -142,25 +330,32 @@ function detectGhAuthenticated(): boolean {
 }
 
 /**
- * Scan nearby directories for agentboot.config.json or .claude/.
- * Checks: the parent directory itself, then sibling directories.
+ * Scan nearby directories for agentboot.config.json or agentic content.
+ * Checks: the parent directory itself, cwd, then sibling directories.
  * This supports both sibling layouts (hub next to spokes) and parent layouts
  * (hub is the parent directory containing spoke repos).
  */
-export function scanNearby(cwd: string): Array<{ path: string; type: "hub" | "claude" }> {
+export function scanNearby(cwd: string): Array<{ path: string; type: "hub" | "prompts"; files?: string[] }> {
   const parent = path.dirname(cwd);
-  const results: Array<{ path: string; type: "hub" | "claude" }> = [];
+  const results: Array<{ path: string; type: "hub" | "prompts"; files?: string[] }> = [];
 
   // Check parent directory itself (supports hub-as-parent layout)
   if (fs.existsSync(path.join(parent, "agentboot.config.json"))) {
     results.push({ path: parent, type: "hub" });
   }
 
+  // Check cwd itself for agentic content (but not as a hub candidate —
+  // if cwd were a hub, the install flow would have caught it already)
+  const cwdPrompts = hasPrompts(cwd);
+  if (cwdPrompts.found) {
+    results.push({ path: cwd, type: "prompts", files: cwdPrompts.files });
+  }
+
   // Check sibling directories
   try {
     for (const entry of fs.readdirSync(parent)) {
       const siblingPath = path.join(parent, entry);
-      if (siblingPath === cwd) continue;
+      if (siblingPath === cwd) continue; // already checked above
 
       try {
         const stat = fs.statSync(siblingPath);
@@ -171,8 +366,11 @@ export function scanNearby(cwd: string): Array<{ path: string; type: "hub" | "cl
 
       if (fs.existsSync(path.join(siblingPath, "agentboot.config.json"))) {
         results.push({ path: siblingPath, type: "hub" });
-      } else if (fs.existsSync(path.join(siblingPath, ".claude"))) {
-        results.push({ path: siblingPath, type: "claude" });
+      } else {
+        const siblingPrompts = hasPrompts(siblingPath);
+        if (siblingPrompts.found) {
+          results.push({ path: siblingPath, type: "prompts", files: siblingPrompts.files });
+        }
       }
     }
   } catch { /* permission denied, etc. */ }
@@ -197,7 +395,15 @@ function searchGitHubOrg(org: string): string | null {
 
     if (result.status !== 0) return null;
 
-    const repos = JSON.parse(result.stdout) as Array<{ name: string; url: string }>;
+    let repos: Array<{ name: string; url: string }>;
+    try {
+      const parsed: unknown = JSON.parse(result.stdout);
+      if (!Array.isArray(parsed)) return null;
+      repos = parsed as Array<{ name: string; url: string }>;
+    } catch {
+      return null; // gh returned non-JSON output
+    }
+
     const match = repos.find(r =>
       r.name === "personas" ||
       r.name === "agent-personas" ||
@@ -432,54 +638,56 @@ async function nudgePersonasConvention(hubDir: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 async function path1CreateHub(cwd: string, opts: InstallOptions, detection: DetectionResult): Promise<void> {
-  // Step 1.1: Where to create it
+  // Step 1.1: Where to create the personas repo
+  //
+  // The personas repo is the single source of truth for agent behavior.
+  // Most users coming through this path don't have one yet — they expect
+  // us to create it. We ask first, then guide them to the right location.
+
   let hubDir: string;
 
   if (opts.path) {
     hubDir = path.resolve(opts.path);
-  } else if (detection.looksLikeCodeRepo) {
-    const parentDir = path.dirname(cwd);
-    const suggestedPath = path.join(parentDir, "personas");
-
-    console.log(chalk.yellow(
-      `\n  This looks like an application repo (${path.basename(cwd)}), not a good\n` +
-      `  home for your org's persona source code.\n\n` +
-      `  The personas repo should be its own project — like a design system\n` +
-      `  or infrastructure repo.`
+  } else {
+    console.log(chalk.gray(
+      "\n  The personas repo is where your agent definitions live — traits,\n" +
+      "  personas, instructions, and gotchas. It's a separate project from\n" +
+      "  your application code, like a design system or infra-as-code repo.\n"
     ));
 
-    const choice = await select({
-      message: "Where should the personas repo live?",
-      choices: [
-        { name: `Create ${suggestedPath} (recommended)`, value: "suggested" },
-        { name: "Create in a different location", value: "custom" },
-        { name: "Use this directory anyway (not recommended)", value: "here" },
-      ],
+    const hasExisting = await confirm({
+      message: "Do you already have a folder or repo for personas?",
+      default: false,
     });
 
-    if (choice === "suggested") {
-      hubDir = suggestedPath;
-    } else if (choice === "custom") {
-      const customPath = await input({
-        message: "Path:",
-        default: suggestedPath,
+    if (hasExisting) {
+      // They have an existing directory — let them navigate to it
+      hubDir = await promptForPath("Path to your existing personas folder:");
+    } else {
+      // They need us to create one — suggest a sensible default
+      const parentDir = detection.looksLikeCodeRepo ? path.dirname(cwd) : cwd;
+      const suggestedPath = path.join(parentDir, "personas");
+
+      console.log(chalk.gray(
+        `\n  We'll create a new folder for your personas repo.\n`
+      ));
+
+      const choice = await select({
+        message: "Where should we create it?",
+        choices: [
+          { name: `${suggestedPath} (recommended)`, value: "suggested" },
+          { name: "Choose a different location", value: "custom" },
+        ],
       });
-      hubDir = path.resolve(customPath);
-    } else {
-      hubDir = cwd;
-    }
-  } else {
-    // cwd looks like a good place (empty or non-code directory)
-    const useHere = await confirm({
-      message: `Use this directory (${cwd})?`,
-      default: true,
-    });
 
-    if (useHere) {
-      hubDir = cwd;
-    } else {
-      const customPath = await input({ message: "Path:" });
-      hubDir = path.resolve(customPath);
+      if (choice === "suggested") {
+        hubDir = suggestedPath;
+      } else {
+        hubDir = await promptForPath(
+          "Where should the personas repo live?",
+          path.dirname(suggestedPath) + "/",
+        );
+      }
     }
   }
 
@@ -496,17 +704,8 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
 
   if (!orgSlug) {
     // Try detecting from the hub dir's git remote
-    try {
-      const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
-        cwd: hubDir,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      if (gitResult.stdout) {
-        const match = gitResult.stdout.trim().match(/[/:]([\w.-]+)\//);
-        if (match) orgSlug = match[1]!;
-      }
-    } catch { /* no git */ }
+    const hubGitInfo = getGitOrgAndRepo(hubDir);
+    if (hubGitInfo) orgSlug = hubGitInfo.org;
   }
 
   if (orgSlug) {
@@ -537,7 +736,8 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     default: defaultDisplayName,
   });
 
-  // Step 1.3: Scan for existing content nearby (with permission)
+  // Step 1.3: Scan for existing content nearby — per-directory import offers
+  const importCommands: string[] = [];
   const shouldScan = await confirm({
     message: "Scan nearby directories for existing AI agent content?",
     default: true,
@@ -545,21 +745,62 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
 
   if (shouldScan) {
     const siblings = scanNearby(hubDir !== cwd ? cwd : hubDir);
-    const claudeSiblings = siblings.filter(s => s.type === "claude");
+    const promptSiblings = siblings.filter(s => s.type === "prompts");
 
-    if (claudeSiblings.length > 0) {
-      console.log(chalk.gray(`\n  Found agentic content in ${claudeSiblings.length} nearby repo(s):`));
-      for (const s of claudeSiblings.slice(0, 5)) {
-        console.log(chalk.gray(`    ${s.path}/.claude/`));
+    if (promptSiblings.length > 0) {
+      console.log(chalk.gray("\n  Found agentic content nearby:\n"));
+
+      for (const s of promptSiblings) {
+        const dirName = path.basename(s.path);
+        const fileCount = s.files?.length ?? 0;
+        const shouldImport = await confirm({
+          message: `Found agentic content in ${dirName} (${fileCount} file${fileCount !== 1 ? "s" : ""}). Note for import?`,
+          default: true,
+        });
+        if (shouldImport) {
+          const cmd = `agentboot import --path ${shellQuote(s.path)}`;
+          importCommands.push(cmd);
+          console.log(chalk.gray(`    Run: ${cmd}`));
+        }
       }
-      if (claudeSiblings.length > 5) {
-        console.log(chalk.gray(`    ... and ${claudeSiblings.length - 5} more`));
-      }
-      console.log(chalk.gray(
-        `\n  You can import this content later with: agentboot import --path <dir>`
-      ));
     } else {
       console.log(chalk.gray("\n  No existing agentic content found nearby."));
+    }
+
+    // Offer to check additional directories
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const checkMore = await confirm({
+        message: "Check another folder for content?",
+        default: false,
+      });
+      if (!checkMore) break;
+
+      const customPath = await promptForPath("Path to check:");
+      let resolved = path.resolve(customPath);
+      try { resolved = fs.realpathSync(resolved); } catch { /* doesn't exist yet */ }
+      const result = hasPrompts(resolved);
+      if (result.found) {
+        const dirName = path.basename(resolved);
+        console.log(chalk.gray(`  Found ${result.files.length} file(s) in ${dirName}:`));
+        for (const f of result.files.slice(0, 5)) {
+          console.log(chalk.gray(`    ${f}`));
+        }
+        if (result.files.length > 5) {
+          console.log(chalk.gray(`    ... and ${result.files.length - 5} more`));
+        }
+        const shouldImport = await confirm({
+          message: `Note ${dirName} for import?`,
+          default: true,
+        });
+        if (shouldImport) {
+          const cmd = `agentboot import --path ${shellQuote(resolved)}`;
+          importCommands.push(cmd);
+          console.log(chalk.gray(`    Run: ${cmd}`));
+        }
+      } else {
+        console.log(chalk.gray(`  No agentic content found in ${resolved}.`));
+      }
     }
   }
 
@@ -646,32 +887,17 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
       console.log(chalk.yellow(`  Path does not exist: ${repoPath}`));
     } else {
       // Detect repo name from git
-      let repoName = path.basename(repoPath);
-      try {
-        const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
-          cwd: repoPath,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        if (gitResult.stdout) {
-          const match = gitResult.stdout.trim().match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
-          if (match) repoName = match[1]!;
-        }
-      } catch { /* no git */ }
+      const gitInfo = getGitOrgAndRepo(repoPath);
+      const repoName = gitInfo ? `${gitInfo.org}/${gitInfo.repo}` : path.basename(repoPath);
 
-      // Add to repos.json
-      const reposJsonPath = path.join(hubDir, "repos.json");
-      let repos: Array<{ path: string; label?: string }> = [];
-      try {
-        repos = JSON.parse(fs.readFileSync(reposJsonPath, "utf-8"));
-      } catch { /* empty or invalid */ }
-
-      repos.push({ path: repoPath, label: repoName });
-      fs.writeFileSync(reposJsonPath, JSON.stringify(repos, null, 2) + "\n", "utf-8");
-      console.log(chalk.green(`\n  Added ${repoName} to repos.json.`));
-      registeredRepo = true;
-      registeredRepoName = repoName;
-      registeredRepoPath = repoPath;
+      if (addToReposJson(hubDir, repoPath, repoName)) {
+        console.log(chalk.green(`\n  Added ${repoName} to repos.json.`));
+        registeredRepo = true;
+        registeredRepoName = repoName;
+        registeredRepoPath = repoPath;
+      } else {
+        console.log(chalk.yellow(`  ${repoName} is already registered in repos.json.`));
+      }
 
       // Check for existing .claude/ content
       if (fs.existsSync(path.join(repoPath, ".claude"))) {
@@ -682,26 +908,95 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
         ));
       }
 
+      // Same-org repo registration: scan siblings for repos with matching org
+      if (registeredRepo && gitInfo) {
+        const parentDir = path.dirname(hubDir !== cwd ? cwd : hubDir);
+        try {
+          const siblingEntries = fs.readdirSync(parentDir);
+          const sameOrgRepos: Array<{ dirPath: string; label: string }> = [];
+
+          for (const entry of siblingEntries) {
+            const sibPath = path.join(parentDir, entry);
+            if (sibPath === hubDir || sibPath === repoPath) continue;
+            try {
+              if (!fs.statSync(sibPath).isDirectory()) continue;
+              if (!fs.existsSync(path.join(sibPath, ".git"))) continue;
+            } catch { continue; }
+
+            const sibGit = getGitOrgAndRepo(sibPath);
+            if (sibGit && sibGit.org === gitInfo.org) {
+              sameOrgRepos.push({
+                dirPath: sibPath,
+                label: `${sibGit.org}/${sibGit.repo}`,
+              });
+            }
+          }
+
+          if (sameOrgRepos.length > 0) {
+            console.log(chalk.gray(`\n  Found ${sameOrgRepos.length} other ${gitInfo.org} repo(s) nearby:\n`));
+            for (const r of sameOrgRepos) {
+              // addToReposJson handles dedup — skip silently if already registered
+              const shouldRegister = await confirm({
+                message: `Register ${r.label}?`,
+                default: true,
+              });
+              if (shouldRegister) {
+                if (addToReposJson(hubDir, r.dirPath, r.label)) {
+                  console.log(chalk.green(`    Added ${r.label} to repos.json.`));
+                } else {
+                  console.log(chalk.gray(`    ${r.label} is already registered.`));
+                }
+              }
+            }
+          }
+        } catch { /* permission errors scanning parent */ }
+
+        // Offer to register additional repos manually
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const registerMore = await confirm({
+            message: "Register another repo?",
+            default: false,
+          });
+          if (!registerMore) break;
+
+          const morePath = await promptForPath("Path to repo:");
+          let resolvedMore = path.resolve(morePath);
+          try { resolvedMore = fs.realpathSync(resolvedMore); } catch { /* doesn't exist */ }
+          if (!fs.existsSync(resolvedMore)) {
+            console.log(chalk.yellow(`  Path does not exist: ${resolvedMore}`));
+            continue;
+          }
+          const moreGit = getGitOrgAndRepo(resolvedMore);
+          const moreLabel = moreGit ? `${moreGit.org}/${moreGit.repo}` : path.basename(resolvedMore);
+          if (addToReposJson(hubDir, resolvedMore, moreLabel)) {
+            console.log(chalk.green(`    Added ${moreLabel} to repos.json.`));
+          } else {
+            console.log(chalk.yellow(`    ${moreLabel} is already registered.`));
+          }
+        }
+      }
+
       // Offer to sync — only if build succeeded (dist/ exists)
       if (!opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
         console.log(chalk.gray(
-          `\n  Sync deploys the compiled personas to ${repoName}'s .claude/ directory.\n` +
+          `\n  Sync deploys the compiled personas to registered repos' .claude/ directories.\n` +
           `  This writes files locally — it does not commit or push. You review\n` +
           `  the output before committing.`
         ));
 
         const shouldSync = await confirm({
-          message: `Deploy personas to ${repoName} now?`,
+          message: `Deploy personas now?`,
           default: true,
         });
 
         if (shouldSync) {
           console.log(chalk.cyan("\n  Syncing..."));
           if (runSync(hubDir)) {
-            console.log(chalk.green(`\n  Personas deployed to ${repoPath}/.claude/`));
+            console.log(chalk.green(`\n  Personas deployed.`));
             console.log(chalk.gray(
-              `\n  To activate them, commit the .claude/ directory:\n\n` +
-              `    cd ${repoPath}\n` +
+              `\n  To activate them, commit the .claude/ directory in each repo:\n\n` +
+              `    cd ${registeredRepoPath}\n` +
               `    git add .claude/\n` +
               `    git commit -m "chore: deploy AgentBoot personas"\n\n` +
               `  Then open Claude Code in that repo and try: /review-code`
@@ -739,15 +1034,7 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   }
 
   // Remote status
-  let hubHasRemote = false;
-  try {
-    const remoteResult = spawnSync("git", ["remote", "get-url", "origin"], {
-      cwd: hubDir,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    hubHasRemote = remoteResult.status === 0 && !!remoteResult.stdout?.trim();
-  } catch { /* no git or no remote */ }
+  const hubHasRemote = getGitOrgAndRepo(hubDir) !== null;
 
   if (!hubHasRemote) {
     console.log(chalk.gray("    Remote:           none (local only — fine for evaluation)"));
@@ -776,8 +1063,17 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   step++;
   console.log(chalk.gray(`    ${step}. Customize:         Edit personas in ${hubDir}/core/personas/`));
   step++;
-  console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
-  step++;
+
+  if (importCommands.length > 0) {
+    console.log(chalk.gray(`    ${step}. Import content:`));
+    for (const cmd of importCommands) {
+      console.log(chalk.gray(`       ${cmd}`));
+    }
+    step++;
+  } else {
+    console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
+    step++;
+  }
 
   if (!hubHasRemote) {
     console.log(chalk.gray(`    ${step}. Push when ready:   gh repo create ${orgSlug}/personas --source . --private --push`));
@@ -889,28 +1185,11 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
 
   // Step 2.2: Register via branch + PR
   const repoPath = cwd;
-  let repoName = path.basename(repoPath);
-  try {
-    const gitResult = spawnSync("git", ["remote", "get-url", "origin"], {
-      cwd: repoPath,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    if (gitResult.stdout) {
-      const match = gitResult.stdout.trim().match(/[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
-      if (match) repoName = match[1]!;
-    }
-  } catch { /* no git */ }
+  const repoGitInfo = getGitOrgAndRepo(repoPath);
+  const repoName = repoGitInfo ? `${repoGitInfo.org}/${repoGitInfo.repo}` : path.basename(repoPath);
 
-  // Add to repos.json
-  const reposJsonPath = path.join(hubDir, "repos.json");
-  let repos: Array<{ path: string; label?: string }> = [];
-  try {
-    repos = JSON.parse(fs.readFileSync(reposJsonPath, "utf-8"));
-  } catch { /* empty */ }
-
-  // Check if already registered
-  if (repos.some(r => r.path === repoPath || r.label === repoName)) {
+  // Add to repos.json (addToReposJson handles dedup, corrupt JSON backup, and writing)
+  if (!addToReposJson(hubDir, repoPath, repoName)) {
     console.log(chalk.yellow(`  ${repoName} is already registered in repos.json.`));
   } else {
     // Try branch + PR approach
@@ -937,18 +1216,14 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
           cwd: hubDir!, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
         });
         if (statusResult.stdout?.trim()) {
-          console.log(chalk.yellow("  Hub repo has uncommitted changes. Falling back to direct edit."));
-          repos.push({ path: repoPath, label: repoName });
-          fs.writeFileSync(reposJsonPath, JSON.stringify(repos, null, 2) + "\n", "utf-8");
-          console.log(chalk.green(`  Added ${repoName} to repos.json (direct edit).`));
-          // Skip PR flow — fall through to the rest of path 2
+          // addToReposJson already wrote the file — just report
+          console.log(chalk.green(`  Added ${repoName} to repos.json (direct edit — hub has uncommitted changes).`));
         } else {
           let branchCreated = false;
           try {
             gitRun(["checkout", "-b", branchName]);
             branchCreated = true;
-            repos.push({ path: repoPath, label: repoName });
-            fs.writeFileSync(reposJsonPath, JSON.stringify(repos, null, 2) + "\n", "utf-8");
+            // addToReposJson already wrote repos.json — just stage and commit
             gitRun(["add", "repos.json"]);
             gitRun(["commit", "-m", `chore: register ${repoName}`]);
             gitRun(["push", "-u", "origin", branchName]);
@@ -975,13 +1250,10 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
         }
       } catch (err) {
         console.log(chalk.yellow(`  Could not create PR: ${err}`));
-        console.log(chalk.gray("  Add this entry to repos.json manually:"));
-        console.log(chalk.gray(`    { "path": "${repoPath}", "label": "${repoName}" }`));
+        console.log(chalk.gray("  The repo was added to repos.json directly."));
       }
     } else {
-      // Direct edit (solo developers or manual preference)
-      repos.push({ path: repoPath, label: repoName });
-      fs.writeFileSync(reposJsonPath, JSON.stringify(repos, null, 2) + "\n", "utf-8");
+      // addToReposJson already wrote the file — just report
       console.log(chalk.green(`  Added ${repoName} to repos.json.`));
     }
   }
