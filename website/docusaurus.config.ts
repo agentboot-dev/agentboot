@@ -34,8 +34,8 @@ const config: Config = {
           path: '../docs',
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/agentboot-dev/agentboot/tree/main/',
-          // Exclude internal docs and planning files from the public site
-          exclude: ['internal/**', 'install/**'],
+          // Exclude internal docs from the public site
+          exclude: ['internal/**'],
         },
         blog: false, // Disable blog for now
         theme: {
