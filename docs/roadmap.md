@@ -7,7 +7,7 @@ sidebar_position: 2
 
 ## Current Status
 
-**v0.4.4** is the current release. Phases 1 through 3 are complete. Phase 4 is in progress.
+**v.0.4.5** is the current release. Phases 1 through 3 are complete. Phase 4 is in progress.
 
 ---
 
