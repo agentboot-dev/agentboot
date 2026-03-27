@@ -36,7 +36,7 @@ npm install -g agentboot
 brew tap agentboot-dev/agentboot && brew install agentboot
 
 # Set up a new personas repo
-agentboot setup
+agentboot install
 
 # Configure your org
 # Edit agentboot.config.json with your org name, groups, and teams
@@ -127,7 +127,7 @@ agentboot build          # Compile personas from traits
 agentboot validate       # Pre-build validation checks
 agentboot sync           # Distribute to target repos
 agentboot dev-build      # clean → validate → build → dev-sync pipeline
-agentboot setup          # Scaffold a new personas repo
+agentboot install        # Interactive onboarding wizard
 agentboot add <type>     # Create a new persona, trait, or gotcha
 agentboot doctor         # Diagnose configuration issues
 agentboot status         # Show deployment status

@@ -109,6 +109,19 @@ agentboot install --connect --hub-path ~/work/personas
 - **Path 2 (developer):** Finds the org's personas repo (scans siblings, checks GitHub
   org via `gh`), creates a branch with the `repos.json` change, and offers to open a PR.
 
+**Content detection:** During install, the wizard scans nearby directories for existing
+agentic content — `.claude/` directories, root `CLAUDE.md`, `.cursorrules`,
+`.github/copilot-instructions.md`, and `.github/prompts/*.prompt.md` files. For each
+directory with content, the wizard offers to note it for import and prints the
+`agentboot import --path <dir>` command to run after install. Import is not executed
+during install (it requires LLM access). You can also check additional directories
+interactively.
+
+**Same-org repo registration (Path 1):** After registering the first target repo, the
+wizard extracts the git org from that repo and scans sibling directories for other repos
+with matching org. Each match is offered for individual registration. You can also
+register additional repos by path interactively.
+
 If `agentboot.config.json` already exists in cwd, exits with a message to use `doctor`.
 
 `setup` is a hidden alias for `install` (deprecated).
@@ -174,14 +187,22 @@ and dist/ status.
 
 ```
 agentboot doctor
+agentboot doctor --fix
+agentboot doctor --fix --dry-run
 agentboot doctor --format json
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--fix` | Attempt to auto-fix issues (e.g., rebuild stale dist/, set missing config fields) |
+| `-d, --dry-run` | Preview what `--fix` would do without making changes |
 | `--format <fmt>` | Output format: `text` (default), `json` |
 
-Exit code `1` if any issues are found.
+When `--fix` is used, doctor reports `issuesFound`, `issuesFixed`, and `issuesRemaining`
+counts. Issues that cannot be auto-fixed (e.g., missing Node.js) are reported with
+manual remediation steps.
+
+Exit code `1` if any issues remain after fixing.
 
 ---
 
@@ -303,13 +324,23 @@ agentboot uninstall --dry-run
 
 ---
 
-## `agentboot config [key]`
+## `agentboot config [key] [value]`
 
-View configuration (read-only). Prints the full config or a specific dotted key path.
-Writing config values is not supported; edit `agentboot.config.json` directly.
+Read or write configuration values. Prints the full config, a specific dotted key path,
+or sets a string value.
 
 ```
 agentboot config                    # Print full config
 agentboot config org                # Print org name
 agentboot config personas.enabled   # Print enabled personas list
+agentboot config org my-new-org     # Set org to "my-new-org"
 ```
+
+**Writing:** When a value argument is provided, the command updates `agentboot.config.json`
+in place. JSONC comments in the config file are preserved — if the file contains comments,
+the write is rejected with a message to edit manually (to prevent comment destruction).
+Only string values can be written via the CLI; arrays and objects must be edited directly.
+
+**Type safety:** The CLI validates that the new value matches the expected type for the
+key. Writing a string to an array field (e.g., `agentboot config personas.enabled foo`)
+is rejected.

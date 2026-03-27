@@ -71,24 +71,43 @@ org behaves. Think of it like an infrastructure-as-code repo, but for prompts.
 
 ### Option A: Interactive install (recommended)
 
-Run `agentboot install` from any directory. The wizard will guide you through
-creating the personas repo in the right location.
+Run `agentboot install` from any directory. The wizard detects your situation and
+guides you through the right flow.
 
 ```bash
 agentboot install
 ```
 
-The install wizard will:
-1. Ask whether you're creating a new personas repo or connecting to an existing one
+The wizard offers two paths:
+
+**Path 1 — Architect (create a new personas hub):** You're the first person in your
+org setting up AgentBoot. The wizard will:
+1. Ask if you already have a folder or repo for personas, or create one
 2. Detect your org from your git remote
-3. Recommend a location for the personas repo (separate from your code repos)
-4. Scaffold the persona source code, traits, and instructions
-5. Automatically compile the personas (`agentboot build`)
-6. Optionally register and sync your first target repo
+3. Scaffold the persona source code, traits, and instructions
+4. Automatically compile the personas (`agentboot build`)
+5. Scan nearby directories for existing agentic content (CLAUDE.md, .cursorrules,
+   Copilot instructions) and suggest `agentboot import` commands
+6. Optionally register your first target repo — then auto-discover and offer to
+   register other repos from the same GitHub org
+7. Optionally sync compiled output to registered repos
+
+**Path 2 — Developer (connect to an existing hub):** Your org already has a personas
+repo and you want to add your code repo to it. The wizard will:
+1. Find the personas repo (scans siblings, checks your GitHub org via `gh`)
+2. Register your repo in the hub's `repos.json`
+3. Create a branch and offer to open a PR against the personas repo
+4. Optionally sync compiled output to your repo immediately
+
+You can also specify the path explicitly:
+```bash
+agentboot install --hub --org acme        # Architect path
+agentboot install --connect --hub-path ~/work/personas  # Developer path
+```
 
 If you already have `.claude/` content, skills, or rules in your repos, the
 wizard will detect them and recommend running `agentboot import` to bring that
-knowledge into your new personas repo.
+knowledge into the personas repo.
 
 ### Option B: GitHub template
 
