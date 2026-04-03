@@ -68,10 +68,10 @@ describe("compile script", () => {
     }
   });
 
-  it("compiles all 4 personas across 3 platforms", () => {
+  it("compiles all 4 personas across 4 platforms", () => {
     const output = run("scripts/compile.ts");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("3 platform(s)");
+    expect(output).toContain("4 platform(s)");
     expect(output).toContain("dist/skill/");
     expect(output).toContain("dist/claude/");
     expect(output).toContain("dist/copilot/");
@@ -619,6 +619,6 @@ describe("full pipeline (validate → compile)", () => {
 
     expect(output).toContain("All 4 checks passed");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("3 platform(s)");
+    expect(output).toContain("4 platform(s)");
   });
 });

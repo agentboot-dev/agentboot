@@ -155,22 +155,91 @@ function collectScopeFiles(
 }
 
 /**
- * Merge files from multiple scopes. Higher specificity scope wins on
- * filename conflict: team > group > core.
+ * Load a composition manifest from a scope directory.
+ * Returns a mapping of relative paths to composition types.
+ * If no manifest exists, returns empty (all default to preference = current behavior).
+ */
+function loadCompositionManifest(scopeDir: string): Record<string, string> {
+  const manifestPath = path.join(scopeDir, "composition-manifest.json");
+  try {
+    const raw = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    // Validate: only accept "rule" or "preference" values
+    const validated: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (value === "rule" || value === "preference") {
+        validated[key] = value as string;
+      }
+    }
+    return validated;
+  } catch {
+    return {};
+  }
+}
+
+interface MergeResult {
+  merged: Map<string, ScopedFile>;
+  warnings: string[];
+}
+
+/**
+ * Merge files from multiple scopes with composition-type awareness.
+ *
+ * - `rule` composition: higher scope (core) wins. Lower scope overrides are ignored with a warning.
+ * - `preference` composition: lower scope (team) wins. This is the default/backward-compatible behavior.
+ *
+ * Composition types are read from composition-manifest.json in each scope directory.
+ * If no manifest exists, all files default to `preference` (backward compatible).
  */
 function mergeScopes(
   coreFiles: ScopedFile[],
   groupFiles: ScopedFile[],
-  teamFiles: ScopedFile[]
-): Map<string, ScopedFile> {
+  teamFiles: ScopedFile[],
+  coreDir?: string,
+  groupDir?: string,
+): MergeResult {
   const merged = new Map<string, ScopedFile>();
+  const warnings: string[] = [];
 
-  // Apply in order of increasing specificity so higher specificity overwrites lower.
-  for (const file of [...coreFiles, ...groupFiles, ...teamFiles]) {
+  // Load composition manifests
+  const coreManifest = coreDir ? loadCompositionManifest(coreDir) : {};
+  const groupManifest = groupDir ? loadCompositionManifest(groupDir) : {};
+
+  // Apply core files first (baseline)
+  for (const file of coreFiles) {
     merged.set(file.relativePath, file);
   }
 
-  return merged;
+  // Apply group files with composition check
+  for (const file of groupFiles) {
+    if (merged.has(file.relativePath)) {
+      const compositionType = coreManifest[file.relativePath] ?? "preference";
+      if (compositionType === "rule") {
+        warnings.push(`${file.relativePath}: org-level rule — group override ignored`);
+        continue;
+      }
+    }
+    merged.set(file.relativePath, file);
+  }
+
+  // Apply team files with composition check
+  for (const file of teamFiles) {
+    if (merged.has(file.relativePath)) {
+      const existing = merged.get(file.relativePath)!;
+      // Always check core manifest first — core rules are authoritative regardless
+      // of which scope currently holds the file. Then check group manifest.
+      const compositionType =
+        coreManifest[file.relativePath] ??
+        groupManifest[file.relativePath] ??
+        "preference";
+      if (compositionType === "rule") {
+        warnings.push(`${file.relativePath}: ${existing.scope}-level rule — team override ignored`);
+        continue;
+      }
+    }
+    merged.set(file.relativePath, file);
+  }
+
+  return { merged, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +527,16 @@ function syncRepo(
     return result;
   }
 
-  const merged = mergeScopes(coreFiles, groupFiles, teamFiles);
+  const { merged, warnings } = mergeScopes(
+    coreFiles, groupFiles, teamFiles,
+    coreDir,
+    groupDir ?? undefined
+  );
+
+  // Print composition warnings
+  for (const w of warnings) {
+    console.log(chalk.yellow(`  ⚠ ${w}`));
+  }
 
   // Write all merged files to the target directory.
   // For copilot platform, only write the merged copilot-instructions.md to .github/

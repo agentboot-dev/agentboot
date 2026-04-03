@@ -313,6 +313,56 @@ describe("AB-33.2: scaffoldHub", () => {
     expect(config.org).toBe("solo-dev");
     expect(config.orgDisplayName).toBe("solo-dev");
   });
+
+  it("initializes a git repository", () => {
+    scaffoldHub(tempDir, "test-org");
+    expect(fs.existsSync(path.join(tempDir, ".git"))).toBe(true);
+  });
+
+  it("does not re-init if .git already exists", () => {
+    fs.mkdirSync(path.join(tempDir, ".git"));
+    const before = fs.statSync(path.join(tempDir, ".git")).mtimeMs;
+    scaffoldHub(tempDir, "test-org");
+    const after = fs.statSync(path.join(tempDir, ".git")).mtimeMs;
+    expect(after).toBe(before);
+  });
+
+  it("creates .gitignore with dist/ and node_modules/", () => {
+    scaffoldHub(tempDir, "test-org");
+    const gitignore = fs.readFileSync(path.join(tempDir, ".gitignore"), "utf-8");
+    expect(gitignore).toContain("node_modules/");
+    expect(gitignore).toContain("dist/");
+  });
+
+  it("does not overwrite existing .gitignore", () => {
+    fs.writeFileSync(path.join(tempDir, ".gitignore"), "custom\n");
+    scaffoldHub(tempDir, "test-org");
+    expect(fs.readFileSync(path.join(tempDir, ".gitignore"), "utf-8")).toBe("custom\n");
+  });
+
+  it("includes default agents section when no options provided", () => {
+    scaffoldHub(tempDir, "test-org");
+    const config = JSON.parse(fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8"));
+    expect(config.agents).toBeDefined();
+    expect(config.agents.tools).toEqual(["claude-code", "copilot"]);
+    expect(config.agents.primary).toBe("claude-code");
+    expect(config.agents.llmProvider).toBe("claude-code");
+  });
+
+  it("uses provided agent tools and derives output formats", () => {
+    scaffoldHub(tempDir, "test-org", "Test Org", {
+      agentTools: ["copilot", "cursor"],
+      primaryAgent: "copilot",
+    });
+    const config = JSON.parse(fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8"));
+    expect(config.agents.tools).toEqual(["copilot", "cursor"]);
+    expect(config.agents.primary).toBe("copilot");
+    expect(config.agents.llmProvider).toBe("anthropic-api");
+    // Output formats driven by tools: skill is always present, copilot from the tool, no claude
+    expect(config.personas.outputFormats).toContain("skill");
+    expect(config.personas.outputFormats).toContain("copilot");
+    expect(config.personas.outputFormats).not.toContain("claude");
+  });
 });
 
 // ===========================================================================
@@ -1256,11 +1306,12 @@ describe("AB-38: lint command", () => {
   it("--persona filters to specific persona", () => {
     const output = run("lint --format json --severity info --persona code-reviewer");
     const findings = JSON.parse(output);
-    // All findings should be for code-reviewer persona or general (traits)
+    // All findings should be for code-reviewer persona, general (traits), or compiled output
     for (const f of findings) {
       const isPersonaFile = f.file.includes("code-reviewer");
       const isTraitFile = f.file.startsWith("core/traits/");
-      expect(isPersonaFile || isTraitFile, `Unexpected file in filtered output: ${f.file}`).toBe(true);
+      const isCompiledFile = f.file.startsWith("dist/");
+      expect(isPersonaFile || isTraitFile || isCompiledFile, `Unexpected file in filtered output: ${f.file}`).toBe(true);
     }
   });
 
