@@ -1,0 +1,9 @@
+terms:
+  full-build:
+    definition: Complete validation pipeline that must pass before any PR.
+    includes: lint, typecheck, test, build
+  spoke:
+    definition: A target repo that receives compiled personas from the hub.
+    see: hub-and-spoke distribution
+  hub:
+    definition: The central personas repo containing the source of truth for all agent behavior.

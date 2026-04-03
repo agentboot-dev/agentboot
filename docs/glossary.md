@@ -13,6 +13,8 @@ Key terms used throughout AgentBoot documentation.
 
 **Agent-Agnostic** — Content that works across multiple AI agent platforms without modification. Traits, personas (SKILL.md), and gotchas are agent-agnostic. Hooks, managed settings, and agent frontmatter are platform-specific.
 
+**AGENTS.md** — The emerging universal standard for cross-tool agent configuration. Supported by Codex, Cursor, Copilot, Gemini CLI, and 60K+ projects. AgentBoot generates AGENTS.md as an output format alongside platform-native formats.
+
 **agentskills.io** — An open standard for AI agent skill definitions using SKILL.md format (Markdown with YAML frontmatter). Supported by 26+ agent platforms. AgentBoot uses agentskills.io as its cross-platform persona format.
 
 **Always-On Instructions** — Universal guardrails distributed to every repo regardless of persona configuration. These load at session start and remain active throughout, enforcing org-wide rules like security baselines and compliance requirements.
@@ -23,7 +25,9 @@ Key terms used throughout AgentBoot documentation.
 
 **CC-First Delivery** — The principle that Claude Code is the primary delivery target. Content is agent-agnostic and portable, but delivery leverages Claude Code's full feature surface (plugins, hooks, managed settings, MCP).
 
-**Compilation Target** — One of the output formats produced by `agentboot build`. The cross-platform target produces standalone SKILL.md files with traits inlined. The CC-native target produces the full `.claude/` directory structure with imports, frontmatter, hooks, and MCP configuration.
+**Compilation Target** — One of the output formats produced by `agentboot build`. Includes: cross-platform SKILL.md, CC-native `.claude/` directory, AGENTS.md universal standard, Copilot instructions, and Cursor rules.
+
+**Composition Type** — Determines precedence when the same artifact exists at multiple scope levels. `rule` = top-down (org wins, cannot be overridden by teams). `preference` = bottom-up (team wins, can customize org defaults). Defaults: gotcha=rule, persona=rule, persona-rule=rule, trait=preference, instruction=preference.
 
 **Convention Over Configuration** — The principle that AgentBoot ships with sensible defaults for everything. Organizations configure only what is different about their situation, not everything from scratch.
 
@@ -35,11 +39,17 @@ Key terms used throughout AgentBoot documentation.
 
 **GELF (Graylog Extended Log Format)** — A structured log format used alongside NDJSON for persona telemetry output. Provides standardized fields for log aggregation systems.
 
-**Gotcha (Gotchas Rule)** — A path-scoped instruction encoding hard-won operational knowledge. Activated only when a developer works on files matching the glob pattern, invisible otherwise. Technology-specific and highly shareable.
+**Gotcha (Gotchas Rule)** — A path-scoped instruction encoding hard-won operational knowledge. Activated only when a developer works on files matching the glob pattern, invisible otherwise. In Claude Code, gotchas compile to `.claude/rules/` files which are re-injected into the agent's context every time a matching file is accessed — making them the highest-impact artifact AgentBoot produces.
 
 **HARD Guardrail** — A non-overridable compliance rule deployed via MDM or marked `required: true` in the org config. Cannot be elevated, overridden, or disabled at any scope level. Used for rules where violation is a compliance incident.
 
+**Harness Engineering** — The discipline of designing the infrastructure that wraps around an AI model to make it reliable: system prompts, tool definitions, permission boundaries, feedback loops, validation gates, and context retrieval. AgentBoot is a harness engineering build tool. The term was formalized by Birgitta Bockeler (Thoughtworks) and operationalized by OpenAI in 2026.
+
+**Harness Template** — A topology-specific bundle of traits, gotchas, personas, and compliance hooks for a common service pattern (API service, event processor, data pipeline). Follows Ashby's Law: regulators must possess variety matching the systems they govern.
+
 **Hub-and-Spoke Distribution** — The distribution model where one central repository (the hub) contains the source of truth and target repositories (spokes) receive compiled artifacts via the sync pipeline. One-way flow: hub publishes, spokes receive.
+
+**Lexicon** — A ubiquitous language artifact: domain term definitions that establish shared vocabulary between humans and agents. Lexicon entries are context compression primitives — once defined, every trait, gotcha, and instruction can reference the term without re-explaining it. Stored in `core/lexicon/`, compiled first in the pipeline so all other artifacts benefit. Composition type: rule (org defines terms, teams extend but don't redefine). See also: Ubiquitous Language (DDD).
 
 **JSONC** — JSON with Comments. The format used by `agentboot.config.json`, allowing inline comments for documentation within configuration files.
 

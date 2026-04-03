@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "properties": {
+    "classifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "content_preview": { "type": "string" },
+          "classification": {
+            "type": "string",
+            "enum": ["lexicon", "trait", "gotcha", "persona", "persona-rule", "instruction", "skip"]
+          },
+          "suggested_name": { "type": "string" },
+          "suggested_path": { "type": "string" },
+          "overlaps_with": { "type": ["string", "null"] },
+          "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "action": {
+            "type": "string",
+            "enum": ["create", "skip", "merge"]
+          },
+          "composition_type": {
+            "type": "string",
+            "enum": ["rule", "preference"]
+          }
+        },
+        "required": [
+          "lines",
+          "content_preview",
+          "classification",
+          "suggested_name",
+          "suggested_path",
+          "overlaps_with",
+          "confidence",
+          "action"
+        ]
+      }
+    }
+  },
+  "required": ["classifications"]
+}

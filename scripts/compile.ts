@@ -41,6 +41,7 @@ import {
   flattenNodes,
   groupsToNodes,
 } from "./lib/config.js";
+import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -129,6 +130,117 @@ function loadTraits(
   }
 
   return traits;
+}
+
+// ---------------------------------------------------------------------------
+// Lexicon loading — ubiquitous language term definitions
+// ---------------------------------------------------------------------------
+
+interface LexiconEntry {
+  term: string;
+  definition: string;
+  extras?: Record<string, string> | undefined; // includes, format, usage, see, etc.
+}
+
+/**
+ * Load lexicon entries from core/lexicon/ directory.
+ * Supports both YAML (.yaml/.yml) and Markdown (.md) formats.
+ *
+ * YAML format:
+ *   terms:
+ *     full-build:
+ *       definition: Complete validation pipeline.
+ *       includes: lint, typecheck, test, build
+ *
+ * Markdown format:
+ *   **full-build**: Complete validation pipeline. Includes lint, typecheck, test, build.
+ */
+function loadLexicon(lexiconDir: string): LexiconEntry[] {
+  const entries: LexiconEntry[] = [];
+
+  if (!fs.existsSync(lexiconDir)) {
+    return entries;
+  }
+
+  for (const file of fs.readdirSync(lexiconDir).sort()) {
+    const filePath = path.join(lexiconDir, file);
+    const ext = path.extname(file).toLowerCase();
+
+    if (ext === ".yaml" || ext === ".yml") {
+      // Parse YAML-like term definitions (simple key: value parsing, no yaml dependency)
+      const content = fs.readFileSync(filePath, "utf-8");
+      const lines = content.split("\n");
+      let currentTerm: string | null = null;
+      let currentDef = "";
+      const currentExtras: Record<string, string> = {};
+
+      for (const line of lines) {
+        // Skip "terms:" header
+        if (line.trim() === "terms:" || line.trim() === "" || line.trim().startsWith("#")) continue;
+
+        // Top-level term (2-space indent, ends with colon)
+        const termMatch = line.match(/^  (\S+):$/);
+        if (termMatch) {
+          // Save previous term
+          if (currentTerm && currentDef) {
+            entries.push({ term: currentTerm, definition: currentDef, extras: Object.keys(currentExtras).length > 0 ? { ...currentExtras } : undefined });
+          }
+          currentTerm = termMatch[1]!;
+          currentDef = "";
+          for (const k of Object.keys(currentExtras)) delete currentExtras[k];
+          continue;
+        }
+
+        // Property of current term (4-space indent)
+        const propMatch = line.match(/^    (\w+):\s*(.+)$/);
+        if (propMatch && currentTerm) {
+          const [, key, value] = propMatch;
+          if (key === "definition") {
+            currentDef = value!;
+          } else {
+            currentExtras[key!] = value!;
+          }
+        }
+      }
+      // Save last term
+      if (currentTerm && currentDef) {
+        entries.push({ term: currentTerm, definition: currentDef, extras: Object.keys(currentExtras).length > 0 ? { ...currentExtras } : undefined });
+      }
+    } else if (ext === ".md") {
+      // Parse markdown term definitions: **term**: definition
+      const content = fs.readFileSync(filePath, "utf-8");
+      for (const line of content.split("\n")) {
+        const mdMatch = line.match(/^\*\*(.+?)\*\*:\s*(.+)$/);
+        if (mdMatch) {
+          entries.push({ term: mdMatch[1]!, definition: mdMatch[2]! });
+        }
+      }
+    }
+  }
+
+  return entries;
+}
+
+/**
+ * Compile lexicon entries into a compact glossary block for CLAUDE.md output.
+ * Optimized for token density — term + definition on one line, minimal markdown.
+ */
+function compileLexiconBlock(entries: LexiconEntry[]): string {
+  if (entries.length === 0) return "";
+
+  const lines = ["## Lexicon", ""];
+  for (const entry of entries) {
+    let line = `- **${entry.term}**: ${entry.definition}`;
+    if (entry.extras) {
+      const extraParts = Object.entries(entry.extras)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("; ");
+      line += ` (${extraParts})`;
+    }
+    lines.push(line);
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +488,9 @@ function compilePersona(
       .replace(/\\/g, "\\\\")   // backslashes first (before other escapes add more)
       .replace(/"/g, '\\"')     // double quotes
       .replace(/\n/g, " ")      // newlines → spaces
+      .replace(/\t/g, " ")      // tabs → spaces
+      .replace(/\0/g, "")       // null bytes → remove
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "") // other control chars → remove
       .replace(/---/g, "\\-\\-\\-"); // prevent YAML document markers
     const withoutFrontmatter = composed.replace(/^---\n[\s\S]*?\n---\n*/, "");
     const agentFrontmatter: string[] = [
@@ -385,6 +500,20 @@ function compilePersona(
     ];
     if (model) agentFrontmatter.push(`model: "${model}"`);
     if (permMode && permMode !== "default") agentFrontmatter.push(`permissionMode: "${permMode}"`);
+    if (personaConfig?.maxTurns) agentFrontmatter.push(`maxTurns: ${personaConfig.maxTurns}`);
+    // Tool restrictions — CC enforces these at runtime
+    if (personaConfig?.disallowedTools && personaConfig.disallowedTools.length > 0) {
+      agentFrontmatter.push(`disallowedTools:`);
+      for (const tool of personaConfig.disallowedTools) {
+        agentFrontmatter.push(`  - "${tool}"`);
+      }
+    }
+    if (personaConfig?.tools && personaConfig.tools.length > 0) {
+      agentFrontmatter.push(`tools:`);
+      for (const tool of personaConfig.tools) {
+        agentFrontmatter.push(`  - "${tool}"`);
+      }
+    }
     agentFrontmatter.push("---");
     const agentContent = [...agentFrontmatter, "", withoutFrontmatter].join("\n");
 
@@ -577,7 +706,8 @@ function generateClaudeMd(
   config: AgentBootConfig,
   distPath: string,
   scopePath: string,
-  personaConfigs?: Map<string, PersonaConfig>
+  personaConfigs?: Map<string, PersonaConfig>,
+  lexiconEntries?: LexiconEntry[]
 ): void {
   const org = config.orgDisplayName ?? config.org;
 
@@ -599,6 +729,11 @@ function generateClaudeMd(
     "<!-- Auto-generated. Do not edit manually. -->",
     "",
   ];
+
+  // Lexicon first — context compression primitives that all other sections reference
+  if (lexiconEntries && lexiconEntries.length > 0) {
+    lines.push(compileLexiconBlock(lexiconEntries));
+  }
 
   if (traitNames.length > 0) {
     lines.push("## Traits", "");
@@ -633,6 +768,129 @@ function generateClaudeMd(
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// AGENTS.md generation — universal cross-tool standard
+// ---------------------------------------------------------------------------
+
+function generateAgentsMd(
+  config: AgentBootConfig,
+  distPath: string,
+  personaConfigs: Map<string, PersonaConfig>,
+  instructionFileNames: string[],
+  lexiconEntries: LexiconEntry[],
+  instructionsDir: string
+): void {
+  const org = config.orgDisplayName ?? config.org;
+  const lines: string[] = [
+    `# ${org} — Agent Configuration`,
+    "",
+    `> Generated by [AgentBoot](https://agentboot.dev). Do not edit manually.`,
+    "",
+  ];
+
+  // Lexicon section
+  if (lexiconEntries.length > 0) {
+    lines.push("## Terminology", "");
+    for (const entry of lexiconEntries) {
+      let line = `- **${entry.term}**: ${entry.definition}`;
+      if (entry.extras) {
+        const extraParts = Object.entries(entry.extras).map(([k, v]) => `${k}: ${v}`).join("; ");
+        line += ` (${extraParts})`;
+      }
+      lines.push(line);
+    }
+    lines.push("");
+  }
+
+  // Coding conventions (from instructions)
+  if (instructionFileNames.length > 0) {
+    lines.push("## Coding Conventions", "");
+    for (const instrName of instructionFileNames) {
+      const instrPath = path.join(instructionsDir, `${instrName}.md`);
+      if (fs.existsSync(instrPath)) {
+        const content = fs.readFileSync(instrPath, "utf-8");
+        // Skip frontmatter block, then find first non-heading, non-empty line
+        const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "");
+        const summaryLines = contentWithoutFrontmatter.split("\n")
+          .filter(l => l.trim() && !l.startsWith("#"));
+        const summary = summaryLines[0]?.trim() ?? instrName;
+        lines.push(`- **${instrName}**: ${summary}`);
+      }
+    }
+    lines.push("");
+  }
+
+  // Agent definitions
+  if (personaConfigs.size > 0) {
+    lines.push("## Agents", "");
+    for (const [name, pc] of personaConfigs) {
+      const description = pc.description ?? name;
+      const invocation = pc.invocation ?? `/${name}`;
+      lines.push(`### ${name}`);
+      lines.push("");
+      lines.push(`- **Description**: ${description}`);
+      lines.push(`- **Invocation**: \`${invocation}\``);
+      if (pc.model) lines.push(`- **Model**: ${pc.model}`);
+      if (pc.traits && pc.traits.length > 0) {
+        lines.push(`- **Traits**: ${pc.traits.join(", ")}`);
+      }
+      lines.push("");
+    }
+  }
+
+  const agentsDir = path.join(distPath, "agents");
+  ensureDir(agentsDir);
+  fs.writeFileSync(path.join(agentsDir, "AGENTS.md"), lines.join("\n"), "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// Composition manifest generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate composition-manifest.json for a scope directory.
+ * Maps relative file paths to their resolved composition types.
+ * Used by sync.ts to enforce rule/preference merge semantics.
+ */
+function generateCompositionManifest(
+  distPath: string,
+  platform: string,
+  scopePath: string,
+  config: AgentBootConfig
+): void {
+  const scopeDir = path.join(distPath, platform, scopePath);
+  if (!fs.existsSync(scopeDir)) return;
+
+  const manifest: Record<string, string> = {};
+  const configOverrides = config.composition?.overrides;
+  const configDefaults = config.composition?.defaults;
+
+  function walkDir(dir: string, relBase: string): void {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir)) {
+      const absPath = path.join(dir, entry);
+      const relPath = relBase ? `${relBase}/${entry}` : entry;
+      if (fs.statSync(absPath).isDirectory()) {
+        walkDir(absPath, relPath);
+      } else if (entry.endsWith(".md")) {
+        const content = fs.readFileSync(absPath, "utf-8");
+        const fm = parseFrontmatter(content);
+        manifest[relPath] = resolveCompositionType(relPath, fm, configOverrides, configDefaults);
+      }
+    }
+  }
+
+  walkDir(scopeDir, "");
+
+  if (Object.keys(manifest).length > 0) {
+    fs.writeFileSync(
+      path.join(scopeDir, "composition-manifest.json"),
+      JSON.stringify(manifest, null, 2) + "\n",
+      "utf-8"
+    );
+  }
+}
+
 // AB-26: settings.json generation
 // ---------------------------------------------------------------------------
 
@@ -1346,11 +1604,12 @@ function main(): void {
   ensureDir(distPath);
 
   const coreDir = path.join(ROOT, "core");
+  const coreLexiconDir = path.join(coreDir, "lexicon");
   const corePersonasDir = path.join(coreDir, "personas");
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "plugin"];
+  const validFormats = ["skill", "claude", "copilot", "agents", "plugin"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -1368,6 +1627,15 @@ function main(): void {
     : config.groups
       ? groupsToNodes(config.groups)
       : undefined;
+
+  // Load lexicon (first — other artifacts reference lexicon terms).
+  const lexiconEntries = loadLexicon(coreLexiconDir);
+  if (lexiconEntries.length > 0) {
+    log(chalk.cyan(`Lexicon loaded: ${lexiconEntries.length} term(s)`));
+    for (const entry of lexiconEntries) {
+      log(chalk.gray(`  + ${entry.term}`));
+    }
+  }
 
   // Load traits.
   const enabledTraits = config.traits?.enabled;
@@ -1457,20 +1725,20 @@ function main(): void {
   const coreGotchasDir = path.join(coreDir, "gotchas");
   compileGotchas(coreGotchasDir, distPath, "core", config, outputFormats);
 
-  // AB-19/26/27: Claude-specific output (CLAUDE.md, settings.json, .mcp.json)
-  if (outputFormats.includes("claude")) {
-    // Collect instruction file names for @import directives
-    const instrFileNames: string[] = [];
-    if (fs.existsSync(coreInstructionsDir)) {
-      const instrFiles = fs.readdirSync(coreInstructionsDir).filter((f) => f.endsWith(".md"));
-      for (const file of instrFiles) {
-        const name = path.basename(file, ".md");
-        if (!config.instructions?.enabled || config.instructions.enabled.includes(name)) {
-          instrFileNames.push(name);
-        }
+  // Collect instruction file names (shared by Claude and AGENTS.md output)
+  const instrFileNames: string[] = [];
+  if (fs.existsSync(coreInstructionsDir)) {
+    const instrFiles = fs.readdirSync(coreInstructionsDir).filter((f) => f.endsWith(".md"));
+    for (const file of instrFiles) {
+      const name = path.basename(file, ".md");
+      if (!config.instructions?.enabled || config.instructions.enabled.includes(name)) {
+        instrFileNames.push(name);
       }
     }
+  }
 
+  // AB-19/26/27: Claude-specific output (CLAUDE.md, settings.json, .mcp.json)
+  if (outputFormats.includes("claude")) {
     // Collect persona configs for welcome fragment (AB-77)
     const personaConfigs = new Map<string, PersonaConfig>();
     for (const [personaName, personaDir] of personaDirs) {
@@ -1486,11 +1754,31 @@ function main(): void {
       config,
       distPath,
       "core",
-      personaConfigs
+      personaConfigs,
+      lexiconEntries
     );
 
     generateSettingsJson(config, distPath, "core");
     generateMcpJson(config, distPath, "core");
+  }
+
+  // AGENTS.md — universal cross-tool output (always generated if format enabled)
+  if (outputFormats.includes("agents")) {
+    log(chalk.cyan("\nGenerating AGENTS.md..."));
+    const personaConfigs = new Map<string, PersonaConfig>();
+    for (const [personaName, personaDir] of personaDirs) {
+      if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+      const pc = loadPersonaConfig(personaDir);
+      if (pc) personaConfigs.set(personaName, pc);
+    }
+    generateAgentsMd(config, distPath, personaConfigs, instrFileNames, lexiconEntries, coreInstructionsDir);
+    log(chalk.green("  AGENTS.md generated"));
+  }
+
+  // Generate composition manifests for core scope (all platforms)
+  for (const fmt of outputFormats) {
+    if (fmt === "agents" || fmt === "plugin") continue; // No scope merging for these
+    generateCompositionManifest(distPath, fmt, "core", config);
   }
 
   // ---------------------------------------------------------------------------
