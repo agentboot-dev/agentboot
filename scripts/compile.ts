@@ -400,6 +400,42 @@ function buildCopilotOutput(
 }
 
 // ---------------------------------------------------------------------------
+// Cursor output: .cursor/rules/*/RULE.md
+// ---------------------------------------------------------------------------
+
+function buildCursorRule(
+  name: string,
+  content: string,
+  globs?: string[]
+): string {
+  const lines: string[] = ["---"];
+  lines.push(`description: "${name}"`);
+  if (globs && globs.length > 0) {
+    lines.push(`globs: "${globs.join(", ")}"`);
+  }
+  lines.push("---", "");
+  // Strip HTML comments and trait markers for clean Cursor output
+  const stripped = content.replace(/<!--[\s\S]*?-->/g, "").trim();
+  lines.push(stripped);
+  return lines.join("\n") + "\n";
+}
+
+// ---------------------------------------------------------------------------
+// Copilot agents: .github/agents/*.agent.md
+// ---------------------------------------------------------------------------
+
+function buildCopilotAgent(
+  personaName: string,
+  personaConfig: PersonaConfig | null,
+  composedContent: string,
+  _config: AgentBootConfig
+): string {
+  const description = personaConfig?.description ?? personaName;
+  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+  return `---\ndescription: "${description}"\n---\n\n${stripped}\n`;
+}
+
+// ---------------------------------------------------------------------------
 // Persona compilation — writes to each platform's dist folder
 // ---------------------------------------------------------------------------
 
@@ -533,6 +569,24 @@ function compilePersona(
       );
     }
     platforms.push("copilot");
+
+    // AB-110: Copilot agent definitions (.github/agents/*.agent.md)
+    const copilotAgentDir = path.join(distPath, "copilot", scopePath, "agents");
+    ensureDir(copilotAgentDir);
+    const agentContent = buildCopilotAgent(personaName, personaConfig, composed, config);
+    fs.writeFileSync(path.join(copilotAgentDir, `${personaName}.agent.md`), agentContent, "utf-8");
+  }
+
+  if (outputFormats.includes("cursor")) {
+    // AB-109: Cursor persona as a project-level rule
+    const cursorRuleDir = path.join(distPath, "cursor", scopePath, "rules", personaName);
+    ensureDir(cursorRuleDir);
+    const cursorContent = buildCursorRule(
+      personaConfig?.description ?? personaName,
+      composed
+    );
+    fs.writeFileSync(path.join(cursorRuleDir, "RULE.md"), cursorContent, "utf-8");
+    platforms.push("cursor");
   }
 
   return { persona: personaName, platforms, traitsInjected: injected, scope };
@@ -558,8 +612,9 @@ function compileInstructions(
   const provenanceEnabled = config.output?.provenanceHeaders !== false;
 
   for (const platform of outputFormats) {
-    // CC uses "rules/" for always-on instructions; other platforms use "instructions/"
-    const dirName = platform === "claude" ? "rules" : "instructions";
+    if (platform === "agents" || platform === "plugin") continue; // handled separately
+    // CC and Cursor use "rules/" for always-on instructions; other platforms use "instructions/"
+    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : "instructions";
     const outDir = path.join(distPath, platform, scopePath, dirName);
     ensureDir(outDir);
 
@@ -571,8 +626,8 @@ function compileInstructions(
       const srcPath = path.join(instructionsDir, file);
       let content = fs.readFileSync(srcPath, "utf-8");
 
-      // Strip HTML comments for copilot output
-      if (platform === "copilot") {
+      // Strip HTML comments for copilot/cursor output
+      if (platform === "copilot" || platform === "cursor") {
         content = content.replace(/<!--[\s\S]*?-->/g, "").trim() + "\n";
       }
 
@@ -639,6 +694,22 @@ function compileGotchas(
       const gotchaOutDir = path.join(distPath, "skill", scopePath, "gotchas");
       ensureDir(gotchaOutDir);
       fs.writeFileSync(path.join(gotchaOutDir, file), `${header}${content}`, "utf-8");
+    }
+
+    // AB-109: Cursor output — gotchas become glob-scoped rules
+    if (outputFormats.includes("cursor")) {
+      const fm = parseFrontmatter(content);
+      const pathsStr = fm?.get("paths");
+      const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+      const name = path.basename(file, ".md");
+      const cursorRuleDir = path.join(distPath, "cursor", scopePath, "rules", name);
+      ensureDir(cursorRuleDir);
+      const cursorContent = buildCursorRule(
+        fm?.get("description") ?? name,
+        content.replace(/^---\n[\s\S]*?\n---\n*/, ""), // strip frontmatter
+        globs
+      );
+      fs.writeFileSync(path.join(cursorRuleDir, "RULE.md"), cursorContent, "utf-8");
     }
   }
 }
@@ -1609,7 +1680,7 @@ function main(): void {
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "agents", "plugin"];
+  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -1760,6 +1831,28 @@ function main(): void {
 
     generateSettingsJson(config, distPath, "core");
     generateMcpJson(config, distPath, "core");
+
+    // AB-111: Generate managed-settings.d/ scope fragments
+    // Alphabetical naming for scope precedence: 00-org wins over 10-group wins over 20-team
+    if (config.managed || config.claude?.permissions || config.claude?.hooks) {
+      const managedDir = path.join(distPath, "claude", "core", "managed-settings.d");
+      ensureDir(managedDir);
+      const fragment: Record<string, unknown> = {};
+      if (config.claude?.permissions) fragment["permissions"] = config.claude.permissions;
+      if (config.claude?.hooks) fragment["hooks"] = config.claude.hooks;
+      if (config.managed) {
+        if (config.managed.guardrails?.disableBypassPermissions) {
+          fragment["disableBypassPermissionsMode"] = "disable";
+        }
+      }
+      if (Object.keys(fragment).length > 0) {
+        fs.writeFileSync(
+          path.join(managedDir, "00-org.json"),
+          JSON.stringify(fragment, null, 2) + "\n",
+          "utf-8"
+        );
+      }
+    }
   }
 
   // AGENTS.md — universal cross-tool output (always generated if format enabled)
@@ -1846,6 +1939,14 @@ function main(): void {
 
     if (!nodePersonasFound) {
       log(chalk.gray("  (no node-level overrides found)"));
+    }
+
+    // Generate composition manifests for scope nodes
+    for (const { path: nodePath } of flatNodes) {
+      for (const fmt of outputFormats) {
+        if (fmt === "agents" || fmt === "plugin") continue;
+        generateCompositionManifest(distPath, fmt, `nodes/${nodePath}`, config);
+      }
     }
   }
 

@@ -352,10 +352,11 @@ program
   .command("import")
   .description("Scan and classify existing AI agent content (LLM-powered)")
   .option("--path <dir>", "directory or repo to scan (default: cwd)")
+  .option("--parent <dir>", "scan all subdirs of a parent directory (like install does)")
   .option("--hub-path <dir>", "path to personas repo")
   .option("--overlap", "run heuristic overlap analysis")
   .option("--apply", "apply an existing import plan")
-  .option("--isolated", "test prompts without user Claude settings (backs up and restores)")
+  .option("--isolated", "test prompts without user Claude settings (uses temp config)")
   .action(async (opts) => {
     const { runImport, AgentBootError } = await import("./lib/import.js");
     const run = async () => {

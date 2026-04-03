@@ -602,6 +602,20 @@ function syncRepo(
     }
   }
 
+  // Sync AGENTS.md to repo root (universal cross-tool standard).
+  const agentsMdSrc = path.join(distPath, "agents", "AGENTS.md");
+  if (fs.existsSync(agentsMdSrc)) {
+    const destPath = path.join(repoPath, "AGENTS.md");
+    const content = fs.readFileSync(agentsMdSrc, "utf-8");
+    const status = writeFile(destPath, content, dryRun);
+    const relDest = path.relative(repoPath, destPath);
+    if (status === "written") {
+      result.filesWritten.push(relDest);
+    } else {
+      result.filesSkipped.push(relDest);
+    }
+  }
+
   // Optionally write PERSONAS.md to the target directory.
   if (writePersonasIndex) {
     const personasIndexSrc = path.join(coreDir, "PERSONAS.md");

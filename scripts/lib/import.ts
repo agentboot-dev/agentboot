@@ -49,7 +49,7 @@ interface ScannedFile {
   path: string;
   relativePath: string;
   lines: number;
-  type: "claude-md" | "skill" | "agent" | "rule" | "settings" | "mcp" |
+  type: "claude-md" | "skill" | "agent" | "trait" | "rule" | "settings" | "mcp" |
         "cursorrules" | "copilot-instructions" | "copilot-prompt" | "other";
 }
 
@@ -126,6 +126,7 @@ function scanPath(targetPath: string): ScanResult {
     if (basename === "CLAUDE.md") type = "claude-md";
     else if (basename === "SKILL.md") type = "skill";
     else if (dir.includes("agents")) type = "agent";
+    else if (dir.includes("traits")) type = "trait";
     else if (dir.includes("rules")) type = "rule";
     else if (basename === "settings.json") type = "settings";
     else if (basename === ".mcp.json") type = "mcp";
@@ -267,6 +268,86 @@ export function scanParentForContent(parentDir: string, excludeDirs: string[] = 
   }
 
   return manifest;
+}
+
+/**
+ * Check if a file was compiled by AgentBoot (provenance detection).
+ * Checks for the provenance header comment in the first 500 bytes.
+ */
+export function isAgentBootCompiled(filePath: string): boolean {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(500);
+    fs.readSync(fd, buf, 0, 500, 0);
+    fs.closeSync(fd);
+    return buf.toString("utf-8").includes("AgentBoot compiled output");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Categorize scanned files by import strategy.
+ */
+export interface CategorizedScan {
+  wholeFile: ScanManifest["files"];   // agents, traits, rules with paths: — deterministic, no LLM
+  llmClassify: ScanManifest["files"]; // CLAUDE.md, .cursorrules, copilot-instructions — need LLM
+  configMerge: ScanManifest["files"]; // settings.json, .mcp.json — JSON merge
+  skipped: ScanManifest["files"];     // AgentBoot-compiled, unsupported types
+}
+
+export function categorizeByStrategy(manifest: ScanManifest): CategorizedScan {
+  const result: CategorizedScan = { wholeFile: [], llmClassify: [], configMerge: [], skipped: [] };
+
+  for (const file of manifest.files) {
+    // Skip AgentBoot-compiled content
+    if (isAgentBootCompiled(file.absolutePath)) {
+      result.skipped.push(file);
+      continue;
+    }
+
+    // Skip manifests and archives
+    if (file.relativePath.includes(".agentboot-")) {
+      result.skipped.push(file);
+      continue;
+    }
+
+    switch (file.type) {
+      case "agent":
+      case "trait":
+        result.wholeFile.push(file);
+        break;
+      case "rule": {
+        // Rules with paths: frontmatter are gotchas (whole-file), others need LLM
+        try {
+          const content = fs.readFileSync(file.absolutePath, "utf-8");
+          if (content.startsWith("---") && content.includes("paths:")) {
+            result.wholeFile.push(file);
+          } else {
+            result.llmClassify.push(file);
+          }
+        } catch {
+          result.llmClassify.push(file);
+        }
+        break;
+      }
+      case "settings":
+      case "mcp":
+        result.configMerge.push(file);
+        break;
+      case "claude-md":
+      case "skill":
+      case "cursorrules":
+      case "copilot-instructions":
+      case "copilot-prompt":
+        result.llmClassify.push(file);
+        break;
+      default:
+        result.skipped.push(file);
+    }
+  }
+
+  return result;
 }
 
 /**
