@@ -15,9 +15,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 import { input } from "@inquirer/prompts";
+import { loadPrompt, loadSchema } from "../prompts/index.js";
+import { type LLMProvider, ClaudeCodeProvider, resolveProvider } from "./llm-provider.js";
+import { loadConfig, resolveConfigPath } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Error type for early exit (replaces process.exit in library code)
@@ -57,16 +59,30 @@ interface ScanResult {
   files: ScannedFile[];
 }
 
+export type CompositionType = "rule" | "preference";
+
+/** Default composition type per classification — convention over configuration. */
+export const DEFAULT_COMPOSITION: Record<string, CompositionType> = {
+  lexicon: "rule",
+  trait: "preference",
+  gotcha: "rule",
+  persona: "rule",
+  "persona-rule": "rule",
+  instruction: "preference",
+  skip: "preference",
+};
+
 export interface Classification {
   source_file: string;
   lines: [number, number];
   content_preview: string;
-  classification: "trait" | "gotcha" | "persona-rule" | "instruction" | "skip";
+  classification: "trait" | "lexicon" | "gotcha" | "persona" | "persona-rule" | "instruction" | "skip";
   suggested_name: string;
   suggested_path: string;
   overlaps_with: string | null;
   confidence: "high" | "medium" | "low";
   action: "create" | "skip" | "merge";
+  composition_type: CompositionType;
 }
 
 interface ImportPlan {
@@ -184,6 +200,126 @@ function scanPath(targetPath: string): ScanResult {
 }
 
 // ---------------------------------------------------------------------------
+// Step 1: Scan — discover importable files across multiple directories
+// ---------------------------------------------------------------------------
+
+export interface ScanManifest {
+  parentDir: string;
+  scannedAt: string;
+  files: Array<{
+    absolutePath: string;
+    relativePath: string; // relative to the file's repo root
+    repoDir: string;      // which repo this file belongs to
+    repoName: string;     // basename of the repo
+    lines: number;
+    type: ScannedFile["type"];
+  }>;
+}
+
+/**
+ * Scan all subdirectories of a parent directory for importable AI agent content.
+ * Skips the hub directory and non-directory entries. Returns a flat manifest
+ * of all discovered files across all repos.
+ *
+ * This is the shared entry point for both the install wizard and `agentboot import`.
+ */
+export function scanParentForContent(parentDir: string, excludeDirs: string[] = []): ScanManifest {
+  const resolved = path.resolve(parentDir);
+  const excludeSet = new Set(excludeDirs.map(d => path.resolve(d)));
+  const manifest: ScanManifest = {
+    parentDir: resolved,
+    scannedAt: new Date().toISOString(),
+    files: [],
+  };
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(resolved);
+  } catch {
+    return manifest;
+  }
+
+  for (const entry of entries) {
+    const dirPath = path.join(resolved, entry);
+
+    // Skip non-directories, hidden dirs, and excluded dirs
+    try {
+      if (!fs.statSync(dirPath).isDirectory()) continue;
+    } catch { continue; }
+    if (entry.startsWith(".")) continue;
+    if (excludeSet.has(dirPath)) continue;
+
+    // Skip dirs that are AgentBoot hubs
+    if (fs.existsSync(path.join(dirPath, "agentboot.config.json"))) continue;
+
+    // Use the existing scanPath to scan this repo
+    const scan = scanPath(dirPath);
+    for (const file of scan.files) {
+      manifest.files.push({
+        absolutePath: file.path,
+        relativePath: file.relativePath,
+        repoDir: dirPath,
+        repoName: entry,
+        lines: file.lines,
+        type: file.type,
+      });
+    }
+  }
+
+  return manifest;
+}
+
+/**
+ * Print a scan manifest for the user to review.
+ */
+export function printScanManifest(manifest: ScanManifest): void {
+  if (manifest.files.length === 0) {
+    console.log(chalk.gray("  No AI agent content found.\n"));
+    return;
+  }
+
+  // Group by repo for display
+  const byRepo = new Map<string, typeof manifest.files>();
+  for (const f of manifest.files) {
+    const list = byRepo.get(f.repoName) ?? [];
+    list.push(f);
+    byRepo.set(f.repoName, list);
+  }
+
+  console.log(chalk.green(`  Found ${manifest.files.length} file(s) across ${byRepo.size} repo(s):\n`));
+  for (const [repoName, files] of byRepo) {
+    console.log(chalk.white(`    ${repoName}/`));
+    for (const f of files) {
+      console.log(chalk.gray(`      ${f.relativePath} (${f.lines} lines, ${f.type})`));
+    }
+  }
+  console.log();
+}
+
+/**
+ * Print a classification summary as a short table.
+ */
+export function printClassificationResults(classifications: Classification[]): void {
+  const counts: Record<string, number> = { lexicon: 0, trait: 0, gotcha: 0, persona: 0, "persona-rule": 0, instruction: 0, skip: 0 };
+  for (const c of classifications) {
+    counts[c.classification]++;
+  }
+
+  console.log(chalk.bold("\n  Classification summary:\n"));
+  for (const c of classifications) {
+    if (c.action === "skip" || c.classification === "skip") continue;
+    const comp = c.composition_type ?? DEFAULT_COMPOSITION[c.classification] ?? "preference";
+    console.log(chalk.gray(
+      `    ${c.classification.padEnd(14)} ${comp.padEnd(12)} ${c.suggested_name} → ${c.suggested_path}`
+    ));
+  }
+
+  const actionable = classifications.filter(c => c.action !== "skip" && c.classification !== "skip");
+  const skipped = classifications.length - actionable.length;
+  console.log(chalk.gray(`\n    ${actionable.length} to import, ${skipped} skipped\n`));
+}
+
+// ---------------------------------------------------------------------------
 // Hub inventory (read existing content for classification context)
 // ---------------------------------------------------------------------------
 
@@ -295,125 +431,235 @@ function buildClassificationPrompt(
     ...(inventory.instructions.length === 0 ? ["(none)"] : []),
   ].join("\n");
 
-  return [
-    "You are classifying AI agent prompt content for an organization that uses AgentBoot.",
-    "AgentBoot organizes prompt content into these categories:",
-    "",
-    "- **trait**: A reusable behavioral building block (e.g., critical-thinking, structured-output).",
-    "  Traits modulate HOW an agent behaves — they are not domain rules or checklists.",
-    "- **gotcha**: Path-scoped operational knowledge (e.g., 'Always use RLS on Postgres tables').",
-    "  Gotchas are battle-tested rules tied to specific technologies or file paths.",
-    "- **persona-rule**: Rules specific to a reviewer or generator persona (e.g., severity levels,",
-    "  output format, what to check). These belong inside a persona's SKILL.md.",
-    "- **instruction**: Always-on organizational directives that apply to every session",
-    "  (e.g., 'Never commit .env files', 'Use TypeScript strict mode').",
-    "- **skip**: Boilerplate, auto-generated content, or content not worth extracting.",
-    "",
-    hubContext,
-    "",
-    `## File to classify: ${filePath}`,
-    "",
-    "```",
-    fileContent,
-    "```",
-    "",
-    "Classify each distinct section of this file. A section is a coherent block of",
-    "content separated by headings, horizontal rules, or topic changes.",
-    "",
-    "For each section, provide:",
-    "- lines: [startLine, endLine] (1-indexed)",
-    "- content_preview: first 100 chars of the section",
-    "- classification: one of trait, gotcha, persona-rule, instruction, skip",
-    "- suggested_name: kebab-case name for the extracted file",
-    "- suggested_path: where it should go in the hub (e.g., core/traits/name.md)",
-    "- overlaps_with: name of existing hub content this overlaps with, or null",
-    "- confidence: high, medium, or low",
-    "- action: 'create' (default for all non-skip), 'skip' (for skip classification)",
-  ].join("\n");
+  return loadPrompt("classify-content", {
+    HUB_CONTEXT: hubContext,
+    FILE_PATH: filePath,
+    FILE_CONTENT: fileContent,
+  });
 }
 
-const CLASSIFICATION_SCHEMA = JSON.stringify({
-  type: "object",
-  properties: {
-    classifications: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          lines: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 },
-          content_preview: { type: "string" },
-          classification: { type: "string", enum: ["trait", "gotcha", "persona-rule", "instruction", "skip"] },
-          suggested_name: { type: "string" },
-          suggested_path: { type: "string" },
-          overlaps_with: { type: ["string", "null"] },
-          confidence: { type: "string", enum: ["high", "medium", "low"] },
-          action: { type: "string", enum: ["create", "skip", "merge"] },
-        },
-        required: ["lines", "content_preview", "classification", "suggested_name", "suggested_path", "overlaps_with", "confidence", "action"],
-      },
-    },
-  },
-  required: ["classifications"],
-});
+const CLASSIFICATION_SCHEMA = loadSchema("classify-content");
+
+/** Resolve the LLM provider — use config if hub is available, otherwise default to ClaudeCode. */
+function getProvider(hubPath?: string): LLMProvider {
+  if (hubPath) {
+    try {
+      const configPath = resolveConfigPath([], hubPath);
+      const config = loadConfig(configPath);
+      return resolveProvider(config);
+    } catch { /* fall through */ }
+  }
+  return new ClaudeCodeProvider();
+}
+
+const MAX_FILE_CONTENT_CHARS = 200_000; // ~50K tokens — safety limit for LLM prompt
 
 function classifyViaLLM(
   fileContent: string,
   filePath: string,
-  inventory: HubInventory
+  inventory: HubInventory,
+  provider?: LLMProvider
 ): Classification[] | null {
-  const prompt = buildClassificationPrompt(fileContent, filePath, inventory);
-
-  const result = spawnSync("claude", [
-    "-p", prompt,
-    "--bare",
-    "--output-format", "json",
-    "--json-schema", CLASSIFICATION_SCHEMA,
-    "--max-turns", "1",
-  ], {
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: 120_000,
-  });
-
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim() ?? "";
-    if (stderr.includes("not logged in") || stderr.includes("auth")) {
-      console.log(chalk.red(
-        "\n  This command requires Claude Code authentication.\n" +
-        "  Run: claude auth login\n"
-      ));
-    } else {
-      // Avoid leaking file paths from stderr — show only first line
-      const firstLine = stderr.split("\n")[0] ?? "unknown error";
-      console.log(chalk.red(`\n  Classification failed: ${firstLine}\n`));
-    }
-    return null;
+  let content = fileContent;
+  if (content.length > MAX_FILE_CONTENT_CHARS) {
+    console.log(chalk.yellow(`    File truncated from ${content.length} to ${MAX_FILE_CONTENT_CHARS} chars for classification.`));
+    content = content.slice(0, MAX_FILE_CONTENT_CHARS) + "\n\n<!-- truncated -->";
   }
+  const prompt = buildClassificationPrompt(content, filePath, inventory);
+  const llm = provider ?? new ClaudeCodeProvider();
 
-  try {
-    const output = JSON.parse(result.stdout);
-    // claude -p --output-format json wraps in { result, structured_output }
-    const data = output.structured_output ?? output.result ?? output;
-    const parsed = typeof data === "string" ? JSON.parse(data) : data;
-    const raw = parsed.classifications ?? [];
+  // Show the prompt being sent — transparency into the LLM call
+  console.log(chalk.cyan("\n  ── LLM prompt ──────────────────────────────────────────"));
+  const promptLines = prompt.split("\n");
+  const fileStartIdx = promptLines.findIndex(l => l.startsWith("## File to classify:"));
+  if (fileStartIdx > 0) {
+    console.log(chalk.gray(`  Provider: ${llm.name}`));
+    console.log(chalk.gray(`  Categories: lexicon, trait, gotcha, persona, persona-rule, instruction, skip`));
+    console.log(chalk.gray(`  File: ${filePath} (${fileContent.split("\n").length} lines)`));
+  } else {
+    console.log(chalk.gray(`  ${promptLines.slice(0, 3).join("\n  ")}`));
+  }
+  console.log(chalk.cyan("  ──────────────────────────────────────────────────────\n"));
+
+  // Use provider to classify
+  const classifyResult = llm.classify(prompt, CLASSIFICATION_SCHEMA);
+  if (!classifyResult) return null;
+
+  const parsed = typeof classifyResult.data === "string"
+    ? JSON.parse(classifyResult.data as string)
+    : classifyResult.data as Record<string, unknown>;
+  const raw = (parsed.classifications ?? []) as Array<Record<string, unknown>>;
+
+    if (raw.length === 0) {
+      console.log(chalk.yellow(`    LLM returned no classifications for this file.`));
+      if (process.env["DEBUG"]) {
+        // Redact file content — show only classification metadata
+        const keys = Object.keys(parsed);
+        console.log(chalk.gray(`    LLM response keys: ${keys.join(", ")}`));
+      }
+      return [];
+    }
 
     // Runtime validation — reject malformed items
-    const VALID_TYPES = ["trait", "gotcha", "persona-rule", "instruction", "skip"];
+    const VALID_TYPES = ["lexicon", "trait", "gotcha", "persona", "persona-rule", "instruction", "skip"];
     const VALID_ACTIONS = ["create", "skip", "merge"];
     const validated: Classification[] = [];
+    let skippedCount = 0;
+    let invalidCount = 0;
     for (const item of raw) {
-      if (!Array.isArray(item.lines) || item.lines.length !== 2) continue;
-      if (typeof item.lines[0] !== "number" || typeof item.lines[1] !== "number") continue;
-      if (!VALID_TYPES.includes(item.classification)) continue;
-      if (typeof item.suggested_path !== "string") continue;
+      if (!Array.isArray(item.lines) || item.lines.length !== 2) { invalidCount++; continue; }
+      if (typeof item.lines[0] !== "number" || typeof item.lines[1] !== "number") { invalidCount++; continue; }
+      if (!VALID_TYPES.includes(item.classification)) { invalidCount++; continue; }
+      if (typeof item.suggested_path !== "string") { invalidCount++; continue; }
       if (!VALID_ACTIONS.includes(item.action ?? "create")) item.action = "create";
+      // Fill in composition_type: use LLM suggestion if valid, otherwise default for the classification
+      const VALID_COMPOSITIONS = ["rule", "preference"];
+      if (!VALID_COMPOSITIONS.includes(item.composition_type)) {
+        item.composition_type = DEFAULT_COMPOSITION[item.classification] ?? "preference";
+      }
+      if (item.classification === "skip" || item.action === "skip") {
+        skippedCount++;
+        console.log(chalk.gray(`    Skipped: lines ${item.lines[0]}-${item.lines[1]} (${item.content_preview?.slice(0, 60) ?? "no preview"})`));
+        continue;
+      }
       validated.push(item as Classification);
     }
+
+    if (invalidCount > 0) {
+      console.log(chalk.yellow(`    ${invalidCount} section(s) had invalid format and were dropped.`));
+      if (process.env["DEBUG"]) {
+        // Show metadata only — redact content_preview which may contain sensitive file content
+        const itemSummaries = raw.map((r: Record<string, unknown>) =>
+          `${String(r["classification"] ?? "?")}:L${String(r["lines"] ?? "?")}`
+        ).join(", ");
+        console.log(chalk.gray(`    Invalid items: ${itemSummaries}`));
+      }
+    }
+    if (skippedCount > 0 && validated.length > 0) {
+      console.log(chalk.gray(`    ${skippedCount} section(s) skipped by LLM (not importable content).`));
+    }
+    if (validated.length === 0 && skippedCount > 0) {
+      console.log(chalk.yellow(`    All ${skippedCount} section(s) were classified as "skip" by the LLM.`));
+      console.log(chalk.gray(`    This usually means the content is org-specific configuration rather\n` +
+        `    than reusable traits, gotchas, or instructions.`));
+    }
+
     return validated;
-  } catch (err) {
-    console.log(chalk.red(`\n  Failed to parse classification output: ${err}\n`));
-    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: Classify — batch LLM classification of scanned files
+// ---------------------------------------------------------------------------
+
+export interface ClassifyResult {
+  classifications: Classification[];
+  trustedSources: Set<string>;
+}
+
+/**
+ * Classify a set of scanned files via LLM. Batches files from the same repo
+ * together for better context. Reads the hub inventory to avoid duplicates.
+ *
+ * Shared by both the install wizard and `agentboot import`.
+ */
+export function classifyScannedFiles(
+  manifest: ScanManifest,
+  hubPath: string,
+): ClassifyResult {
+  const provider = getProvider(hubPath);
+  const inventory = readHubInventory(hubPath);
+  console.log(chalk.gray(
+    `    Hub inventory: ${inventory.traits.length} traits, ${inventory.personas.length} personas, ` +
+    `${inventory.gotchas.length} gotchas, ${inventory.instructions.length} instructions\n`
+  ));
+
+  const allClassifications: Classification[] = [];
+  const trustedSources = new Set<string>();
+
+  // Filter to classifiable file types
+  const classifiable = manifest.files.filter(f =>
+    ["claude-md", "skill", "agent", "rule", "cursorrules", "copilot-instructions", "copilot-prompt"].includes(f.type)
+  );
+
+  if (classifiable.length === 0) {
+    console.log(chalk.yellow("  No classifiable content found.\n"));
+    return { classifications: [], trustedSources };
   }
+
+  for (const file of classifiable) {
+    console.log(chalk.cyan(`  Classifying: ${file.repoName}/${file.relativePath}...`));
+    const content = fs.readFileSync(file.absolutePath, "utf-8");
+    const rawClassifications = classifyViaLLM(content, file.relativePath, inventory, provider);
+
+    if (!rawClassifications) {
+      console.log(chalk.yellow(`    Skipped (classification failed)`));
+      continue;
+    }
+
+    trustedSources.add(file.absolutePath);
+    for (const c of rawClassifications) {
+      allClassifications.push({ ...c, source_file: file.absolutePath });
+    }
+
+    console.log(chalk.green(`    ${rawClassifications.length} section(s) classified`));
+  }
+
+  return { classifications: allClassifications, trustedSources };
+}
+
+// ---------------------------------------------------------------------------
+// Step 3: Apply — write classified content to hub (shared)
+// ---------------------------------------------------------------------------
+
+export interface ImportResult {
+  created: number;
+  skipped: number;
+  errors: string[];
+  planPath: string | null; // path to saved plan if user declined
+}
+
+/**
+ * Finalize an import: apply classifications to the hub or save the plan.
+ *
+ * If `apply` is true, writes files to the hub immediately.
+ * If `apply` is false, writes the plan to .agentboot-import-plan.json.
+ *
+ * Shared by both the install wizard and `agentboot import`.
+ */
+export function finalizeImport(
+  classifications: Classification[],
+  trustedSources: Set<string>,
+  hubPath: string,
+  apply: boolean,
+): ImportResult {
+  const plan: ImportPlan = {
+    hub: hubPath,
+    scanned_at: new Date().toISOString(),
+    classifications,
+  };
+
+  if (!apply) {
+    const stagingPath = writeStagingFile(plan, hubPath, trustedSources);
+    console.log(chalk.cyan(`\n  Import plan saved to: ${stagingPath}`));
+    console.log(chalk.gray(
+      "  Review the file and run `agentboot import --apply` when ready.\n"
+    ));
+    return { created: 0, skipped: 0, errors: [], planPath: stagingPath };
+  }
+
+  console.log(chalk.cyan("\n  Applying import...\n"));
+  const result = applyPlan(plan, hubPath, trustedSources);
+
+  console.log(chalk.bold(
+    `\n  ${chalk.green("✓")} Created: ${result.created}, Skipped: ${result.skipped}` +
+    (result.errors.length > 0 ? `, Errors: ${result.errors.length}` : "") + "\n"
+  ));
+  for (const err of result.errors) {
+    console.log(chalk.red(`    ${err}`));
+  }
+  console.log(chalk.gray("  Original files were not modified.\n"));
+
+  return { ...result, planPath: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +694,7 @@ function readStagingFile(stagingPath: string): ImportPlan | null {
 // ---------------------------------------------------------------------------
 
 /** Allowed target directories for classified content (defense in depth). */
-const ALLOWED_CLASSIFICATION_DIRS = ["core/traits/", "core/gotchas/", "core/instructions/", "core/personas/"];
+const ALLOWED_CLASSIFICATION_DIRS = ["core/lexicon/", "core/traits/", "core/gotchas/", "core/instructions/", "core/personas/"];
 
 function applyPlan(
   plan: ImportPlan,
@@ -510,15 +756,29 @@ function applyPlan(
         continue;
       }
 
+      // Add composition frontmatter if the composition type differs from the default
+      const defaultComp = DEFAULT_COMPOSITION[item.classification] ?? "preference";
+      const comp = item.composition_type ?? defaultComp;
+      let contentToWrite = sectionContent;
+      if (comp !== defaultComp && item.action === "create") {
+        // Inject composition into existing frontmatter or prepend new frontmatter
+        if (contentToWrite.startsWith("---\n")) {
+          // Has frontmatter — inject composition field after the opening ---
+          contentToWrite = contentToWrite.replace("---\n", `---\ncomposition: ${comp}\n`);
+        } else {
+          contentToWrite = `---\ncomposition: ${comp}\n---\n\n${contentToWrite}`;
+        }
+      }
+
       // Write the file
       try {
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
         if (item.action === "merge" && fs.existsSync(destPath)) {
           const existing = fs.readFileSync(destPath, "utf-8");
-          fs.writeFileSync(destPath, existing.trimEnd() + "\n\n" + sectionContent + "\n", "utf-8");
+          fs.writeFileSync(destPath, existing.trimEnd() + "\n\n" + contentToWrite + "\n", "utf-8");
         } else {
-          fs.writeFileSync(destPath, sectionContent + "\n", "utf-8");
+          fs.writeFileSync(destPath, contentToWrite + "\n", "utf-8");
         }
 
         result.created++;
@@ -659,15 +919,15 @@ export async function runImport(opts: ImportOptions): Promise<void> {
     `${inventory.gotchas.length} gotchas, ${inventory.instructions.length} instructions`
   ));
 
-  // Step 3: Classify each file via claude -p
+  // Step 3: Classify each file via LLM provider
   const allClassifications: Classification[] = [];
-  // Track trusted source files for apply-time validation
   const trustedSources = new Set<string>();
+  const provider = getProvider(hubPath);
 
   for (const file of classifiable) {
     console.log(chalk.cyan(`\n  Classifying: ${file.relativePath}...`));
     const content = fs.readFileSync(file.path, "utf-8");
-    const rawClassifications = classifyViaLLM(content, file.relativePath, inventory);
+    const rawClassifications = classifyViaLLM(content, file.relativePath, inventory, provider);
 
     if (!rawClassifications) {
       console.log(chalk.yellow(`    Skipped (classification failed)`));
@@ -707,7 +967,11 @@ export async function runImport(opts: ImportOptions): Promise<void> {
   // Step 5: Wait for user to review
   await input({ message: "Press enter when ready to apply (or Ctrl+C to cancel)..." });
 
-  // Re-read the staging file (user may have edited actions)
+  // Re-read the staging file (user may have edited actions and line ranges).
+  // SECURITY NOTE: The user can modify line ranges to extract different content
+  // than what the LLM classified. This is intentional — it allows users to adjust
+  // extraction boundaries. Source files and destination paths are validated against
+  // the trusted sources file and ALLOWED_CLASSIFICATION_DIRS respectively.
   const updatedPlan = readStagingFile(stagingPath);
   if (!updatedPlan) {
     console.log(chalk.red("  Import plan file was removed or is invalid.\n"));
@@ -743,24 +1007,25 @@ function printClassificationSummary(
   classifications: Classification[],
   stagingPath: string
 ): void {
-  const counts = { trait: 0, gotcha: 0, "persona-rule": 0, instruction: 0, skip: 0 };
+  const counts: Record<string, number> = { lexicon: 0, trait: 0, gotcha: 0, persona: 0, "persona-rule": 0, instruction: 0, skip: 0 };
   for (const c of classifications) {
     counts[c.classification]++;
   }
 
   console.log(chalk.bold("\n  Classification summary:\n"));
-  if (counts.trait > 0) console.log(chalk.gray(`    Traits:       ${counts.trait}`));
-  if (counts.gotcha > 0) console.log(chalk.gray(`    Gotchas:      ${counts.gotcha}`));
+  if (counts.lexicon > 0) console.log(chalk.gray(`    Lexicon:       ${counts.lexicon}`));
+  if (counts.trait > 0) console.log(chalk.gray(`    Traits:        ${counts.trait}`));
+  if (counts.gotcha > 0) console.log(chalk.gray(`    Gotchas:       ${counts.gotcha}`));
+  if (counts.persona > 0) console.log(chalk.gray(`    Personas:      ${counts.persona}`));
   if (counts["persona-rule"] > 0) console.log(chalk.gray(`    Persona rules: ${counts["persona-rule"]}`));
-  if (counts.instruction > 0) console.log(chalk.gray(`    Instructions: ${counts.instruction}`));
-  if (counts.skip > 0) console.log(chalk.gray(`    Skipped:      ${counts.skip}`));
+  if (counts.instruction > 0) console.log(chalk.gray(`    Instructions:  ${counts.instruction}`));
+  if (counts.skip > 0) console.log(chalk.gray(`    Skipped:       ${counts.skip}`));
 
   console.log(chalk.cyan(`\n  Import plan written to: ${stagingPath}`));
   console.log(chalk.gray(
-    "  Review the file and edit the \"action\" field for each item:\n" +
-    "    \"create\" — extract to hub as a new file\n" +
-    "    \"merge\"  — append to existing hub content\n" +
-    "    \"skip\"   — do not import\n"
+    "  Review the file and edit these fields for each item:\n" +
+    "    \"action\"           — \"create\", \"merge\", or \"skip\"\n" +
+    "    \"composition_type\" — \"rule\" (org wins) or \"preference\" (team wins)\n"
   ));
 }
 

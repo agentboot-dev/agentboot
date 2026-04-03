@@ -5,9 +5,13 @@ sidebar_position: 2
 
 # AgentBoot Concepts
 
-This document explains the conceptual foundation of AgentBoot. Read this before reading
-the configuration reference or the getting-started guide. The concepts here inform every
-design decision in the system.
+AgentBoot is a harness engineering build tool. It compiles agentic personas — the
+behavioral definitions that make AI agents reliable — into platform-native formats for
+every major coding agent (Claude Code, Copilot, Cursor, Codex) and the universal AGENTS.md
+standard.
+
+This document explains the conceptual foundation. Read this before the configuration
+reference or getting-started guide. The concepts here inform every design decision.
 
 ---
 
@@ -38,6 +42,55 @@ A trait is not:
 The trait files in `core/traits/` are the authoritative definitions. Each one defines
 the behavior, the anti-patterns to avoid, and the interaction effects with other traits.
 (A planned trait weight system will add HIGH / MEDIUM / LOW calibration — see below.)
+
+---
+
+## What is a lexicon
+
+A lexicon is a set of domain term definitions — ubiquitous language that establishes
+shared vocabulary between humans and agents. Inspired by Domain-Driven Design, a lexicon
+ensures that when you say "full-build" or "spoke" or "NIQ," the agent resolves these to
+the exact same meaning you intend.
+
+Lexicons are **context compression primitives**. Once defined, every trait, gotcha,
+instruction, and persona can reference lexicon terms without re-explaining them. This
+saves tokens on every turn — and since CLAUDE.md content costs money per turn (it's
+injected as a system-reminder, not in the cached system prompt), compression compounds
+across every session.
+
+Lexicons compile **first** in the pipeline. They appear at the top of compiled output
+so the LLM has term definitions resolved before encountering traits and rules that
+reference them. The compilation order is:
+
+```
+lexicon → traits → instructions → gotchas → personas
+```
+
+Lexicon entries can reference other lexicon entries, enabling hierarchical compression.
+A `deployment` entry references `canary`, `blue-green`, `rollback` — each defined once,
+the full semantic tree unpacked from minimal tokens.
+
+The lexicon files in `core/lexicon/` use a structured format:
+
+```yaml
+# core/lexicon/project-terms.yaml
+terms:
+  full-build:
+    definition: Complete validation pipeline. Must pass before any PR.
+    includes: lint, typecheck, test, build
+  NIQ:
+    definition: Project tracking prefix.
+    format: "NIQ-{N}"
+    usage: commit messages, branch names
+  spoke:
+    definition: A target repo that receives compiled personas from the hub.
+    see: hub-and-spoke distribution
+```
+
+Composition type: `rule` by default. Org-level term definitions cannot be silently
+redefined by teams. Teams can **add** terms at their scope level, but cannot replace
+org definitions. (A future abstract/binding mode will allow orgs to define term
+contracts with team-specific implementations — see roadmap.)
 
 ---
 
@@ -111,12 +164,13 @@ activate only when specific file types or directories are touched. A Lambda func
 directory might activate additional serverless-specific review guidance. A database
 migrations directory might activate schema review guardrails.
 
-**Precedence:** More specific scopes win on optional behaviors; more general scopes win
-on mandatory behaviors. Rules (always-on instructions) are mandatory by nature — they
-cannot be disabled at lower scopes. Personas and traits are optional — lower scopes
-can add personas or disable traits at their scope. (In a future release, lower scopes
-will be able to adjust trait weights.) To make a specific
-behavior mandatory, encode it as a rule rather than marking a persona as required.
+**Precedence and composition types:** Each artifact has a composition type that determines
+how scope conflicts are resolved. **Rule** composition (top-down): the highest scope wins
+— an org-level gotcha cannot be overridden by a team. **Preference** composition
+(bottom-up): the lowest scope wins — a team can customize an org default. Defaults:
+gotchas and persona-rules are `rule` (enforced top-down); traits and instructions are
+`preference` (customizable by teams). Individual artifacts can override their default
+composition type via frontmatter (`composition: rule`).
 
 This hierarchy matters for two reasons. First, it ensures that governance propagates
 downward automatically — a new team that registers with the org immediately gets all
@@ -125,12 +179,29 @@ team autonomy on things that are genuinely team-specific.
 
 ---
 
-## Claude Code-native output
+## Multi-platform output
 
-AgentBoot's cross-platform output (SKILL.md + CLAUDE.md + copilot-instructions.md) works
-everywhere but leaves significant Claude Code capabilities on the table. When the target
-is Claude Code, AgentBoot should generate a **Claude Code-native output** that uses the
-platform's full feature surface.
+AgentBoot generates platform-native output for every major coding agent. The same
+personas, traits, gotchas, and instructions compile into the right format for each
+platform — developers use whichever tool they prefer without losing governance.
+
+Output formats (see [Output Structure](../CLAUDE.md#output-structure)):
+- **AGENTS.md** — universal cross-tool standard (Codex, Cursor, Copilot, Gemini CLI)
+- **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
+- **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions
+- **Cursor** — `.cursor/rules/*/RULE.md` with glob-scoped rules
+- **SKILL.md** — agentskills.io cross-platform format
+
+### Claude Code-native output
+
+Claude Code is the most feature-rich platform. Its native output uses the full
+feature surface — agents with tool restrictions, path-scoped rules that re-inject
+on every matching file access, lifecycle hooks, managed settings, and MCP servers.
+
+Key architectural insight: CLAUDE.md content is injected as `<system-reminder>` tags
+(not in the cached system prompt). Rules in `.claude/rules/` are re-injected every
+time a matching file is touched. This makes gotchas (path-scoped rules) the
+highest-impact artifact AgentBoot produces.
 
 ### What Claude Code reads natively (no build step required)
 

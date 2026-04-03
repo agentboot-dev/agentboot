@@ -5,8 +5,10 @@ sidebar_position: 1
 
 # AgentBoot Delivery Methods — Analysis & Recommendations
 
-How organizations install, configure, and use AgentBoot. Evaluated through the lens
-of the real adoption challenge: an org with power users, skeptics, and non-engineers.
+How organizations install, configure, and use AgentBoot. AgentBoot compiles personas
+into platform-native formats (Claude Code, Copilot, Cursor, AGENTS.md) and distributes
+them across an org's repo fleet. This document evaluates delivery through the lens of
+the real adoption challenge: an org with power users, skeptics, and non-engineers.
 
 ---
 

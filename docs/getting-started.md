@@ -5,8 +5,10 @@ sidebar_position: 1
 
 # Getting Started with AgentBoot
 
-AgentBoot manages your AI agent behavior as source code — versioned, reviewed,
-tested, and deployed from a central personas repo to every project in your org.
+AgentBoot is a harness engineering build tool that manages your AI agent behavior
+as source code — versioned, reviewed, tested, and deployed from a central personas
+repo to every project in your org. It compiles personas into platform-native formats
+for Claude Code, Copilot, Cursor, and the universal AGENTS.md standard.
 
 This guide takes you from zero to a working deployment in one sitting. By the
 end you will have: an org personas repo, a working sync to one target repo, and a

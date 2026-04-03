@@ -56,6 +56,28 @@ export interface AgentBootConfig {
     mcpServers?: Record<string, unknown>;
   };
 
+  // Agent tools and LLM provider preferences
+  agents?: {
+    /** Which agent tools the org uses. Drives output format selection. */
+    tools?: Array<"claude-code" | "copilot" | "cursor" | "gemini" | string>;
+    /** Primary agent tool — used as default when a choice is needed. */
+    primary?: string;
+    /** LLM provider for AgentBoot's own operations (import classification, etc.). */
+    llmProvider?: "claude-code" | "anthropic-api" | "manual" | string;
+    /** Model override for API providers. */
+    llmModel?: string | null;
+    /** Whether the user has acknowledged LLM-powered commands cost money. */
+    billingAcknowledged?: boolean;
+  };
+
+  // Composition type system (rule/preference scope merging)
+  composition?: {
+    /** Override default composition type per classification. */
+    defaults?: Record<string, "rule" | "preference">;
+    /** Override composition type for specific artifact paths. */
+    overrides?: Record<string, "rule" | "preference">;
+  };
+
   // AB-62: Three-tier privacy model
   privacy?: PrivacyConfig;
 
@@ -397,6 +419,7 @@ export function loadConfig(configPath: string): AgentBootConfig {
     ["output.distPath", parsed.output?.distPath],
     ["personas.customDir", parsed.personas?.customDir],
     ["telemetry.logPath", parsed.telemetry?.logPath],
+    ["managed.outputPath", parsed.managed?.outputPath],
   ];
   for (const [fieldName, value] of pathFields) {
     if (typeof value === "string") {

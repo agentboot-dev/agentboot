@@ -27,7 +27,17 @@ import path from "node:path";
 import fs from "node:fs";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
+import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+
+// Gracefully handle Ctrl-C during interactive prompts
+process.on("uncaughtException", (err) => {
+  if (err instanceof ExitPromptError) {
+    console.log("\n  Cancelled.");
+    process.exit(0);
+  }
+  throw err;
+});
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -130,7 +140,13 @@ program
   .version(getVersion(), "-v, --version")
   .option("-c, --config <path>", "path to agentboot.config.json")
   .option("--verbose", "show detailed output")
-  .option("--quiet", "suppress non-error output");
+  .option("--quiet", "suppress non-error output")
+  .option("--debug", "show debug output (LLM responses, raw data)")
+  .hook("preAction", (thisCommand) => {
+    if (thisCommand.opts()["debug"]) {
+      process.env["DEBUG"] = "1";
+    }
+  });
 
 // ---- build ----------------------------------------------------------------
 
@@ -339,15 +355,25 @@ program
   .option("--hub-path <dir>", "path to personas repo")
   .option("--overlap", "run heuristic overlap analysis")
   .option("--apply", "apply an existing import plan")
+  .option("--isolated", "test prompts without user Claude settings (backs up and restores)")
   .action(async (opts) => {
     const { runImport, AgentBootError } = await import("./lib/import.js");
-    try {
+    const run = async () => {
       await runImport({
         path: opts["path"] as string | undefined,
         hubPath: opts["hubPath"] as string | undefined,
         overlap: opts["overlap"] as boolean | undefined,
         apply: opts["apply"] as boolean | undefined,
       });
+    };
+    try {
+      if (opts["isolated"]) {
+        const { withIsolatedClaude } = await import("./prompts/index.js");
+        console.log(chalk.yellow("  Running in isolated mode — using temporary Claude config (your settings are untouched).\n"));
+        await withIsolatedClaude(run);
+      } else {
+        await run();
+      }
     } catch (err) {
       if (err instanceof AgentBootError) {
         process.exit(err.exitCode);
@@ -1169,6 +1195,42 @@ program
         if (enabledTraits.length > 0 && !enabledTraits.includes(traitName)) {
           findings.push({ rule: "unused-trait", severity: "info", file: `core/traits/${file}`, message: `Trait not in traits.enabled list` });
         }
+      }
+    }
+
+    // Compiled output token check — CLAUDE.md content costs money on every turn
+    // because it's injected as system-reminder, not in the cached system prompt.
+    const distClaudeMd = path.join(cwd, "dist", "claude", "core", "CLAUDE.md");
+    if (fs.existsSync(distClaudeMd)) {
+      const compiled = fs.readFileSync(distClaudeMd, "utf-8");
+      // Expand @import directives to count total tokens
+      let totalContent = compiled;
+      const importPattern = /^@(.+)$/gm;
+      let importMatch;
+      while ((importMatch = importPattern.exec(compiled)) !== null) {
+        const importPath = path.join(cwd, importMatch[1]!);
+        if (fs.existsSync(importPath)) {
+          totalContent += "\n" + fs.readFileSync(importPath, "utf-8");
+        }
+      }
+      const compiledTokens = Math.ceil(totalContent.length / 4);
+      if (compiledTokens > tokenBudget) {
+        findings.push({
+          rule: "compiled-too-large",
+          severity: "warn",
+          file: "dist/claude/core/CLAUDE.md (compiled + @imports)",
+          message: `Compiled output ~${compiledTokens} tokens exceeds budget of ${tokenBudget}. Every token costs money on every turn.`,
+        });
+      } else if (compiledTokens > tokenBudget * 0.8) {
+        findings.push({
+          rule: "compiled-too-large",
+          severity: "warn",
+          file: "dist/claude/core/CLAUDE.md (compiled + @imports)",
+          message: `Compiled output ~${compiledTokens} tokens — approaching budget of ${tokenBudget}.`,
+        });
+      }
+      if (!isJson) {
+        console.log(chalk.gray(`  Compiled CLAUDE.md: ~${compiledTokens} tokens (budget: ${tokenBudget})`));
       }
     }
 

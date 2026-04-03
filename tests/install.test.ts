@@ -466,12 +466,12 @@ describe("scaffoldHub: additional edge cases", () => {
     expect(config.traits.enabled).toHaveLength(6);
   });
 
-  it("config includes all 3 output formats", () => {
+  it("config includes all 4 output formats", () => {
     scaffoldHub(tempDir, "test-org");
     const config = JSON.parse(
       fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8"),
     );
-    expect(config.personas.outputFormats).toEqual(["skill", "claude", "copilot"]);
+    expect(config.personas.outputFormats).toEqual(["skill", "agents", "claude", "copilot"]);
   });
 
   it("config includes both instruction sets", () => {
@@ -596,5 +596,170 @@ describe("shellQuote", () => {
 
   it("handles empty string", () => {
     expect(shellQuote("")).toBe("''");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-destructive install safety — data loss prevention
+// ---------------------------------------------------------------------------
+
+describe("scaffoldHub: non-destructive safety guarantees", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-safety-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("does not delete any pre-existing files in the target directory", () => {
+    // Simulate a directory with user files already present
+    fs.writeFileSync(path.join(tempDir, "README.md"), "# My Project\n");
+    fs.writeFileSync(path.join(tempDir, "notes.txt"), "important notes\n");
+    fs.mkdirSync(path.join(tempDir, "docs"));
+    fs.writeFileSync(path.join(tempDir, "docs", "design.md"), "architecture\n");
+
+    scaffoldHub(tempDir, "test-org");
+
+    // All pre-existing files must still be intact
+    expect(fs.readFileSync(path.join(tempDir, "README.md"), "utf-8")).toBe("# My Project\n");
+    expect(fs.readFileSync(path.join(tempDir, "notes.txt"), "utf-8")).toBe("important notes\n");
+    expect(fs.readFileSync(path.join(tempDir, "docs", "design.md"), "utf-8")).toBe("architecture\n");
+  });
+
+  it("does not modify pre-existing files outside its known file set", () => {
+    // User has their own config files — scaffold must not touch them
+    fs.writeFileSync(path.join(tempDir, "package.json"), '{"name": "my-app"}\n');
+    fs.writeFileSync(path.join(tempDir, "tsconfig.json"), '{"strict": true}\n');
+
+    scaffoldHub(tempDir, "test-org");
+
+    expect(fs.readFileSync(path.join(tempDir, "package.json"), "utf-8")).toBe('{"name": "my-app"}\n');
+    expect(fs.readFileSync(path.join(tempDir, "tsconfig.json"), "utf-8")).toBe('{"strict": true}\n');
+  });
+
+  it("does not overwrite pre-existing core/ directories with user content", () => {
+    // User already has a core/personas/ with custom content
+    fs.mkdirSync(path.join(tempDir, "core", "personas"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, "core", "personas", "my-custom-persona.md"),
+      "# Custom Persona\n",
+    );
+
+    scaffoldHub(tempDir, "test-org");
+
+    // Custom persona file must survive
+    expect(
+      fs.readFileSync(path.join(tempDir, "core", "personas", "my-custom-persona.md"), "utf-8"),
+    ).toBe("# Custom Persona\n");
+  });
+
+  it("creates target directory if it does not exist without affecting siblings", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-parent-"));
+    const siblingDir = path.join(parent, "existing-repo");
+    const hubDir = path.join(parent, "personas");
+
+    fs.mkdirSync(siblingDir);
+    fs.writeFileSync(path.join(siblingDir, "important.txt"), "do not touch\n");
+
+    scaffoldHub(hubDir, "test-org");
+
+    // Sibling directory must be untouched
+    expect(fs.readFileSync(path.join(siblingDir, "important.txt"), "utf-8")).toBe("do not touch\n");
+    // Hub was created
+    expect(fs.existsSync(path.join(hubDir, "agentboot.config.json"))).toBe(true);
+
+    fs.rmSync(parent, { recursive: true, force: true });
+  });
+
+  it("preserves file permissions of pre-existing repos.json", () => {
+    const reposPath = path.join(tempDir, "repos.json");
+    fs.writeFileSync(reposPath, "[]\n");
+    fs.chmodSync(reposPath, 0o644);
+    const beforeMode = fs.statSync(reposPath).mode;
+
+    scaffoldHub(tempDir, "test-org");
+
+    const afterMode = fs.statSync(reposPath).mode;
+    expect(afterMode).toBe(beforeMode);
+  });
+
+  it("does not remove or replace .git directory on re-scaffold", () => {
+    // First scaffold creates .git
+    scaffoldHub(tempDir, "test-org");
+    expect(fs.existsSync(path.join(tempDir, ".git"))).toBe(true);
+
+    // Add a commit so .git has real content
+    execSync("git add -A && git commit -m init --allow-empty", {
+      cwd: tempDir,
+      stdio: "pipe",
+    });
+    const logBefore = execSync("git log --oneline", { cwd: tempDir, encoding: "utf-8" });
+
+    // Re-scaffold must not destroy git history
+    scaffoldHub(tempDir, "second-org");
+    const logAfter = execSync("git log --oneline", { cwd: tempDir, encoding: "utf-8" });
+    expect(logAfter).toBe(logBefore);
+  });
+});
+
+describe("addToReposJson: non-destructive safety guarantees", () => {
+  let hubDir: string;
+
+  beforeEach(() => {
+    hubDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-repos-safety-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(hubDir, { recursive: true, force: true });
+  });
+
+  it("never removes existing entries when adding a new one", () => {
+    const reposPath = path.join(hubDir, "repos.json");
+    const existing = [
+      { path: "/first/repo", label: "org/first" },
+      { path: "/second/repo", label: "org/second" },
+    ];
+    fs.writeFileSync(reposPath, JSON.stringify(existing), "utf-8");
+
+    addToReposJson(hubDir, "/third/repo", "org/third");
+
+    const result = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+    expect(result).toHaveLength(3);
+    expect(result[0]).toEqual({ path: "/first/repo", label: "org/first" });
+    expect(result[1]).toEqual({ path: "/second/repo", label: "org/second" });
+    expect(result[2]).toEqual({ path: "/third/repo", label: "org/third" });
+  });
+
+  it("does not modify entries when adding a duplicate", () => {
+    const reposPath = path.join(hubDir, "repos.json");
+    const existing = [{ path: "/existing/repo", label: "org/repo" }];
+    fs.writeFileSync(reposPath, JSON.stringify(existing), "utf-8");
+
+    const added = addToReposJson(hubDir, "/existing/repo", "org/repo");
+
+    expect(added).toBe(false);
+    const result = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ path: "/existing/repo", label: "org/repo" });
+  });
+
+  it("preserves corrupted file as .corrupt backup before recovering", () => {
+    const reposPath = path.join(hubDir, "repos.json");
+    const corruptContent = "this is not json {{{";
+    fs.writeFileSync(reposPath, corruptContent, "utf-8");
+
+    addToReposJson(hubDir, "/new/repo", "org/new");
+
+    // Corrupt content backed up
+    const backupPath = path.join(hubDir, "repos.json.corrupt");
+    expect(fs.existsSync(backupPath)).toBe(true);
+    expect(fs.readFileSync(backupPath, "utf-8")).toBe(corruptContent);
+
+    // New file is valid
+    const result = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+    expect(result).toHaveLength(1);
   });
 });

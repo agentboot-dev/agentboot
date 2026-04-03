@@ -72,8 +72,9 @@
     // "skill"   — SKILL.md (agentskills.io-compatible)
     // "claude"  — CLAUDE.md fragment (Claude Code slash command)
     // "copilot" — .github/copilot-instructions.md fragment
-    // Default: all three.
-    "outputFormats": ["skill", "claude", "copilot"]
+    // "agents" — AGENTS.md universal cross-tool standard
+    // Default: all four.
+    "outputFormats": ["skill", "claude", "copilot", "agents"]
   },
 
   // ---------------------------------------------------------------------------
