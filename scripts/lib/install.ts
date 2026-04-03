@@ -10,9 +10,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 import chalk from "chalk";
-import { select, input, confirm, search } from "@inquirer/prompts";
+import { select, input, confirm, checkbox } from "@inquirer/prompts";
 
 export class AgentBootError extends Error {
   constructor(public readonly exitCode: number) {
@@ -244,65 +245,143 @@ export function detectCwd(cwd: string): DetectionResult {
  * Prompt for a directory path with live directory completion.
  * As the user types, matching directories are suggested.
  */
-async function promptForPath(message: string, defaultPath?: string): Promise<string> {
-  const result = await search({
-    message,
-    source: (term) => {
-      const typed = term ?? defaultPath ?? "";
-      if (!typed) {
-        // Show common starting points
-        const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/";
-        return [
-          { name: `${home} (home directory)`, value: home },
-          { name: `. (current directory)`, value: process.cwd() },
-          { name: `.. (parent directory)`, value: path.dirname(process.cwd()) },
-        ];
+/** Pause until the user presses any key. */
+function pressAnyKey(message: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    process.stdout.write(chalk.green("?") + ` ${message}`);
+    if (!process.stdin.isTTY) {
+      process.stdout.write("\n");
+      resolve();
+      return;
+    }
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.once("data", (data) => {
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdout.write("\n");
+      // Ctrl-C
+      if (data[0] === 3) {
+        import("@inquirer/core").then(({ ExitPromptError }) => {
+          reject(new ExitPromptError("User force closed the prompt with SIGINT"));
+        });
+        return;
       }
+      resolve();
+    });
+  });
+}
 
-      // Resolve the typed path
-      const resolved = path.resolve(typed);
-      let dir: string;
-      let prefix: string;
+/** Expand shell-style `~` and `$VAR` / `${VAR}` in a path string. */
+function expandPath(p: string): string {
+  const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/";
+  let result = p;
+  // ~/… or ~
+  if (result === "~" || result.startsWith("~/")) {
+    result = home + result.slice(1);
+  }
+  // $VAR or ${VAR}
+  result = result.replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, braced, plain) => {
+    return process.env[braced ?? plain] ?? "";
+  });
+  return result;
+}
 
+async function promptForPath(message: string, defaultPath?: string): Promise<string> {
+  // Use Node's readline with a completer for shell-like Tab completion.
+  const effectiveDefault = defaultPath ?? process.cwd();
+
+  const completer = (line: string): [string[], string] => {
+    const typed = line || effectiveDefault;
+    const expanded = expandPath(typed);
+    const resolved = path.isAbsolute(expanded)
+      ? path.resolve(expanded)
+      : path.resolve(effectiveDefault, expanded);
+
+    // Determine which directory to list and what prefix the user typed
+    let dir: string;
+    let partial: string;
+    try {
+      if (fs.statSync(resolved).isDirectory()) {
+        // User typed a complete directory — list its children
+        dir = resolved;
+        partial = "";
+      } else {
+        dir = path.dirname(resolved);
+        partial = path.basename(resolved);
+      }
+    } catch {
+      // Doesn't exist — complete from parent using the trailing segment as filter
+      dir = path.dirname(resolved);
+      partial = path.basename(resolved);
+    }
+
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const matches = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith("."))
+        .filter(e => !partial || e.name.startsWith(partial))
+        .map(e => {
+          // Reconstruct the completion using the user's typed prefix style
+          const typedDir = typed.endsWith("/") || !partial
+            ? typed
+            : typed.slice(0, typed.length - partial.length);
+          return typedDir + e.name + "/";
+        });
+
+      return [matches, line];
+    } catch {
+      return [[], line];
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      completer,
+      terminal: true,
+    });
+
+    // Show the prompt with the default in gray
+    const prompt = chalk.green("?") + ` ${message} ` + chalk.gray(`(${effectiveDefault}) `);
+    rl.question(prompt, (answer) => {
+      rl.close();
+      const typed = answer.trim() || effectiveDefault;
+      const expanded = expandPath(typed);
+      // Resolve relative paths against the displayed default, not cwd —
+      // the user sees the default as their context, so "fortael/" should
+      // mean a child of the default, not a child of the current working dir.
+      const resolved = path.isAbsolute(expanded)
+        ? path.resolve(expanded)
+        : path.resolve(effectiveDefault, expanded);
+
+      // If the path is a file, use the parent directory
       try {
-        const stat = fs.statSync(resolved);
-        if (stat.isDirectory()) {
-          dir = resolved;
-          prefix = typed.endsWith("/") || typed.endsWith(path.sep) ? typed : typed + "/";
-        } else {
-          dir = path.dirname(resolved);
-          prefix = path.dirname(typed) + "/";
+        if (fs.statSync(resolved).isFile()) {
+          console.log(chalk.yellow(`  "${resolved}" is a file. Using parent directory.`));
+          resolve(path.dirname(resolved));
+          return;
         }
       } catch {
-        // Path doesn't exist yet — complete from the parent
-        dir = path.dirname(resolved);
-        prefix = path.dirname(typed) === typed ? typed : path.dirname(typed) + "/";
+        // Doesn't exist yet — that's fine, we'll create it later.
       }
 
-      // List directory entries
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        const dirs = entries
-          .filter(e => e.isDirectory() && !e.name.startsWith("."))
-          .map(e => ({
-            name: prefix + e.name + "/",
-            value: path.join(dir, e.name),
-          }));
+      resolve(resolved);
+    });
 
-        // Always include the typed path itself as an option
-        const resolvedTyped = path.resolve(typed);
-        const choices = [
-          { name: `${resolvedTyped} (create new)`, value: resolvedTyped },
-          ...dirs.slice(0, 15),
-        ];
-        return choices;
-      } catch {
-        return [{ name: `${path.resolve(typed)} (create new)`, value: path.resolve(typed) }];
-      }
-    },
+    // Handle Ctrl-C gracefully — import dynamically to avoid circular dep
+    rl.on("close", () => {
+      // readline emits 'close' on Ctrl-C after SIGINT
+    });
+    rl.on("SIGINT", () => {
+      rl.close();
+      // Re-raise as ExitPromptError so the global handler catches it
+      import("@inquirer/core").then(({ ExitPromptError }) => {
+        reject(new ExitPromptError("User force closed the prompt with SIGINT"));
+      });
+    });
   });
-
-  return path.resolve(result);
 }
 
 function detectGhAvailable(): boolean {
@@ -420,15 +499,40 @@ function searchGitHubOrg(org: string): string | null {
 // Scaffold helpers
 // ---------------------------------------------------------------------------
 
-export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?: string): void {
+export interface ScaffoldOptions {
+  agentTools?: string[];
+  primaryAgent?: string;
+}
+
+export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?: string, opts?: ScaffoldOptions): void {
+  // Ensure the target directory exists — it may not have been created yet
+  // if the user chose a new path. We create it here rather than earlier so
+  // that a Ctrl-C before this point doesn't leave empty directories behind.
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  // Derive output formats from agent tools — only compile what they use.
+  // "skill" and "agents" are always included (cross-platform).
+  const outputFormats = ["skill", "agents"];
+  const tools = opts?.agentTools ?? ["claude-code", "copilot"];
+  if (tools.includes("claude-code")) outputFormats.push("claude");
+  if (tools.includes("copilot")) outputFormats.push("copilot");
+  // cursor and gemini are planned but not yet supported as output formats
+
   // agentboot.config.json
   const configContent = JSON.stringify({
     org: orgSlug,
     orgDisplayName: orgDisplayName ?? orgSlug,
+    agents: {
+      tools,
+      primary: opts?.primaryAgent ?? tools[0],
+      llmProvider: tools.includes("claude-code") ? "claude-code" : "anthropic-api",
+    },
     groups: {},
     personas: {
       enabled: ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"],
-      outputFormats: ["skill", "claude", "copilot"],
+      outputFormats,
     },
     traits: {
       enabled: [
@@ -448,8 +552,31 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
     fs.writeFileSync(path.join(targetDir, "repos.json"), "[]\n", "utf-8");
   }
 
+  // .gitignore
+  const gitignorePath = path.join(targetDir, ".gitignore");
+  if (!fs.existsSync(gitignorePath)) {
+    fs.writeFileSync(gitignorePath, [
+      "node_modules/",
+      "dist/",
+      ".DS_Store",
+      "",
+    ].join("\n"), "utf-8");
+  }
+
+  // Initialize git repo if not already one
+  if (!fs.existsSync(path.join(targetDir, ".git"))) {
+    const gitInit = spawnSync("git", ["init"], {
+      cwd: targetDir,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    if (gitInit.status === 0) {
+      console.log(chalk.gray("  Initialized git repository."));
+    }
+  }
+
   // Core directories
-  const dirs = ["core/personas", "core/traits", "core/instructions", "core/gotchas"];
+  const dirs = ["core/lexicon", "core/personas", "core/traits", "core/instructions", "core/gotchas"];
   for (const dir of dirs) {
     const fullPath = path.join(targetDir, dir);
     if (!fs.existsSync(fullPath)) {
@@ -506,9 +633,8 @@ async function validateHubTarget(initialDir: string): Promise<string> {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    // If the directory doesn't exist, it will be created fresh — no issue.
+    // If the directory doesn't exist, it will be created later by scaffoldHub.
     if (!fs.existsSync(hubDir)) {
-      fs.mkdirSync(hubDir, { recursive: true });
       return hubDir;
     }
 
@@ -539,24 +665,28 @@ async function validateHubTarget(initialDir: string): Promise<string> {
 
     console.log(chalk.yellow(
       `\n  "${dirName}" already has content (${entries.length} items).` +
-      `\n  Scaffolding here would mix persona source code with existing files.\n`
+      `\n  That looks like an existing project — the personas repo should be` +
+      `\n  a separate sibling repo, not nested inside another project.\n`
     ));
+
+    const useSibling = await confirm({
+      message: `Create the personas repo at ${personasPath} instead?`,
+      default: true,
+    });
+
+    if (useSibling) {
+      return personasPath;
+    }
 
     const choice = await select({
       message: "Where should the personas repo live?",
       choices: [
-        { name: `Create ${personasPath} (recommended)`, value: "sub" },
         { name: "Choose a different location", value: "custom" },
         { name: `Use ${hubDir} anyway (not recommended)`, value: "here" },
       ],
     });
 
-    if (choice === "sub") {
-      if (!fs.existsSync(personasPath)) {
-        fs.mkdirSync(personasPath, { recursive: true });
-      }
-      return personasPath;
-    } else if (choice === "custom") {
+    if (choice === "custom") {
       const customPath = await input({
         message: "Path for the personas repo:",
         default: personasPath,
@@ -573,18 +703,20 @@ async function validateHubTarget(initialDir: string): Promise<string> {
 /**
  * Nudge toward the convention of naming the hub repo "personas".
  *
- * This is an educational moment, not a gate. The user can proceed with any
- * name — but we explain why "personas" is the convention and what they gain
- * by following it.
+ * If the chosen name doesn't contain "personas" at all, we treat it as an
+ * educational moment — explain the convention, offer to rename, and if they
+ * still want the non-standard name, require explicit confirmation (default No).
+ *
+ * If the name contains "personas" (e.g. "acme-personas"), that's close enough.
  */
 async function nudgePersonasConvention(hubDir: string): Promise<string> {
   const dirName = path.basename(hubDir);
 
-  // Already named "personas" — nothing to do.
-  if (dirName === "personas") return hubDir;
+  // Already follows the convention — nothing to do.
+  if (dirName.includes("personas")) return hubDir;
 
   console.log(chalk.cyan(
-    `\n  Convention: name this repo "personas"\n\n`
+    `\n  Naming convention: "personas"\n\n`
   ) + chalk.gray(
     `  AgentBoot follows a convention-over-configuration philosophy. When every\n` +
     `  org names their hub repo "personas", several things work automatically:\n\n` +
@@ -592,45 +724,66 @@ async function nudgePersonasConvention(hubDir: string): Promise<string> {
     `      your GitHub org and sibling directories\n` +
     `    - New team members know where to look without being told\n` +
     `    - Docs, examples, and community answers all reference the same path\n` +
-    `    - \`gh repo clone <org>/personas\` works across every AgentBoot org\n\n` +
-    `  You chose "${dirName}" — that works fine. This is a recommendation,\n` +
-    `  not a requirement.\n`
+    `    - \`gh repo clone <org>/personas\` works across every AgentBoot org\n`
   ));
 
+  const personasDir = path.join(path.dirname(hubDir), "personas");
   const choice = await select({
-    message: `Keep "${dirName}" or rename to "personas"?`,
+    message: `Your path ends in "${dirName}". What would you like to do?`,
     choices: [
-      { name: `Rename to ${path.join(path.dirname(hubDir), "personas")} (recommended)`, value: "rename" },
-      { name: `Keep "${dirName}"`, value: "keep" },
+      { name: `Rename to ${personasDir} (recommended)`, value: "rename" },
+      { name: `Use "${dirName}-personas" instead`, value: "suffix" },
+      { name: `Use "personas-${dirName}" instead`, value: "prefix" },
+      { name: `Keep "${dirName}" as-is`, value: "keep" },
     ],
   });
 
-  if (choice === "rename") {
-    const personasDir = path.join(path.dirname(hubDir), "personas");
-    if (fs.existsSync(personasDir)) {
-      console.log(chalk.yellow(`  ${personasDir} already exists. Keeping "${dirName}".`));
-      return hubDir;
+  if (choice === "keep") {
+    const reallyKeep = await confirm({
+      message: `Are you sure you want to create the personas repo at ${hubDir}?`,
+      default: false,
+    });
+    if (!reallyKeep) {
+      // Recurse — let them pick again
+      const newPath = await input({
+        message: "Path for the personas repo:",
+        default: personasDir,
+      });
+      return nudgePersonasConvention(path.resolve(newPath));
     }
-    // If the original dir was just created (empty), rename it.
-    // If it had content, we can't rename safely — keep it.
-    try {
-      const entries = fs.readdirSync(hubDir);
-      if (entries.length === 0) {
-        fs.rmdirSync(hubDir);
-        fs.mkdirSync(personasDir, { recursive: true });
-        return personasDir;
-      } else {
-        // Directory has content (from scaffold or prior step) — rename via fs.rename
-        fs.renameSync(hubDir, personasDir);
-        return personasDir;
-      }
-    } catch {
-      console.log(chalk.yellow(`  Could not rename. Keeping "${dirName}".`));
-      return hubDir;
-    }
+    return hubDir;
   }
 
-  return hubDir;
+  // Determine the target directory based on choice
+  let targetDir: string;
+  if (choice === "rename") {
+    targetDir = personasDir;
+  } else if (choice === "suffix") {
+    targetDir = path.join(path.dirname(hubDir), `${dirName}-personas`);
+  } else {
+    targetDir = path.join(path.dirname(hubDir), `personas-${dirName}`);
+  }
+
+  if (fs.existsSync(targetDir)) {
+    console.log(chalk.yellow(`  ${targetDir} already exists. Keeping "${dirName}".`));
+    return hubDir;
+  }
+
+  try {
+    const entries = fs.existsSync(hubDir) ? fs.readdirSync(hubDir) : [];
+    if (entries.length === 0) {
+      // Empty or doesn't exist — just create the new one
+      if (fs.existsSync(hubDir)) fs.rmdirSync(hubDir);
+      fs.mkdirSync(targetDir, { recursive: true });
+    } else {
+      // Has content (from scaffold or prior step) — rename
+      fs.renameSync(hubDir, targetDir);
+    }
+    return targetDir;
+  } catch {
+    console.log(chalk.yellow(`  Could not rename. Keeping "${dirName}".`));
+    return hubDir;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -664,28 +817,57 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
       // They have an existing directory — let them navigate to it
       hubDir = await promptForPath("Path to your existing personas folder:");
     } else {
-      // They need us to create one — suggest a sensible default
-      const parentDir = detection.looksLikeCodeRepo ? path.dirname(cwd) : cwd;
-      const suggestedPath = path.join(parentDir, "personas");
+      // They need us to create one. Start by finding the parent directory
+      // where their repos live — the personas repo will be a sibling.
+      const detectedParent = detection.looksLikeCodeRepo ? path.dirname(cwd) : cwd;
 
       console.log(chalk.gray(
-        `\n  We'll create a new folder for your personas repo.\n`
+        `\n  AgentBoot expects the personas repo to live alongside your other\n` +
+        `  repos as a sibling — like a design system or infra-as-code repo.\n` +
+        `  We'll create a "personas" folder inside whatever parent directory\n` +
+        `  you choose.\n`
       ));
 
-      const choice = await select({
-        message: "Where should we create it?",
-        choices: [
-          { name: `${suggestedPath} (recommended)`, value: "suggested" },
-          { name: "Choose a different location", value: "custom" },
-        ],
+      const parentDir = await promptForPath(
+        "Where is the parent directory for your repos?",
+        detectedParent,
+      );
+      const resolvedParent = path.resolve(parentDir);
+
+      // Check if a hub or personas directory already exists as a child
+      try {
+        const children = fs.readdirSync(resolvedParent, { withFileTypes: true });
+        for (const child of children) {
+          if (!child.isDirectory()) continue;
+          const childPath = path.join(resolvedParent, child.name);
+          if (fs.existsSync(path.join(childPath, "agentboot.config.json"))) {
+            console.log(chalk.yellow(`\n  Found an existing personas repo at ${childPath}`));
+            console.log(chalk.gray("  Run `agentboot doctor` to check your configuration.\n"));
+            throw new AgentBootError(0);
+          }
+        }
+      } catch (err) {
+        if (err instanceof AgentBootError) throw err;
+        // Permission errors, etc. — continue normally
+      }
+
+      const suggestedPath = path.join(resolvedParent, "personas");
+      const personasDirExists = fs.existsSync(suggestedPath)
+        && fs.statSync(suggestedPath).isDirectory();
+
+      const useSuggested = await confirm({
+        message: personasDirExists
+          ? `Found ${suggestedPath} — use it as the personas repo?`
+          : `Create the personas repo at ${suggestedPath}?`,
+        default: true,
       });
 
-      if (choice === "suggested") {
+      if (useSuggested) {
         hubDir = suggestedPath;
       } else {
         hubDir = await promptForPath(
           "Where should the personas repo live?",
-          path.dirname(suggestedPath) + "/",
+          path.resolve(parentDir) + "/",
         );
       }
     }
@@ -699,115 +881,88 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   // different name. This is educational, not enforced.
   hubDir = await nudgePersonasConvention(hubDir);
 
-  // Step 1.2: Org detection — slug (machine identifier) and display name (human label)
+  // Step 1.2: Org detection — best-effort, confirmed later on first repo registration
+  //
+  // We gather the best guess now and write it to config. When the user
+  // registers their first target repo (Step 1.6), we'll have a git remote —
+  // the real GitHub org — and can confirm or update the slug at that point.
+  //
+  // Signals in priority order:
+  //   1. Explicit --org flag (trusted)
+  //   2. Git remote of the current working directory (strong)
+  //   3. Git remote of the hub directory (strong, if already a repo)
+  //   4. Parent directory name of the personas repo (weak guess)
   let orgSlug = opts.org ?? detection.gitOrg ?? null;
 
   if (!orgSlug) {
-    // Try detecting from the hub dir's git remote
     const hubGitInfo = getGitOrgAndRepo(hubDir);
     if (hubGitInfo) orgSlug = hubGitInfo.org;
   }
 
-  if (orgSlug) {
-    const useDetected = await confirm({
-      message: `Use "${orgSlug}" as your org identifier?`,
-      default: true,
-    });
-    if (!useDetected) {
-      orgSlug = await input({ message: "Org identifier (lowercase, used in package names and paths):" });
-    }
-  } else {
-    orgSlug = await input({
-      message: "Org identifier (GitHub org, username, or slug — lowercase, no spaces):",
-    });
+  if (!orgSlug) {
+    const parentName = path.basename(path.dirname(hubDir));
+    const looksLikeOrg = /^[a-z][a-z0-9_-]*$/.test(parentName)
+      && parentName !== "Users" && parentName !== "home" && parentName !== "tmp";
+    if (looksLikeOrg) orgSlug = parentName;
+  }
+
+  // If we still have nothing, we have to ask — but keep it brief.
+  if (!orgSlug) {
+    console.log(chalk.gray(
+      `\n  We need a short identifier for your org (e.g. your GitHub org name\n` +
+      `  or username). This goes in agentboot.config.json and can be changed later.\n`
+    ));
+    orgSlug = await input({ message: "Org identifier:" });
   }
 
   // Normalize slug: lowercase, replace spaces with hyphens
   orgSlug = orgSlug.toLowerCase().replace(/\s+/g, "-");
 
-  // Derive a default display name from the slug
-  const defaultDisplayName = orgSlug
+  // Derive display name from slug — editable later in agentboot.config.json
+  const orgDisplayName = orgSlug
     .split(/[-_]/)
     .map(w => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 
-  const orgDisplayName = await input({
-    message: "Org display name (shown in compiled output):",
-    default: defaultDisplayName,
+  // Step 1.3: Agent tool discovery
+  //
+  // Learn which agent tools the org uses. This drives output format selection
+  // (no point compiling Claude output if they only use Copilot) and determines
+  // whether LLM-powered features like import classification are available.
+
+  console.log(chalk.gray(
+    `\n  AgentBoot compiles personas into platform-specific formats. Knowing\n` +
+    `  which tools your team uses lets us generate only what you need.\n`
+  ));
+
+  const agentTools = await checkbox({
+    message: "Which AI agent tools does your org use? (space to select, enter to confirm)",
+    choices: [
+      { name: "Claude Code", value: "claude-code", checked: true },
+      { name: "GitHub Copilot", value: "copilot" },
+      { name: "Cursor", value: "cursor" },
+      { name: "Gemini CLI", value: "gemini" },
+    ],
   });
 
-  // Step 1.3: Scan for existing content nearby — per-directory import offers
-  const importCommands: string[] = [];
-  const shouldScan = await confirm({
-    message: "Scan nearby directories for existing AI agent content?",
-    default: true,
-  });
+  // Ensure at least one tool is selected
+  if (agentTools.length === 0) {
+    console.log(chalk.yellow("  No tools selected — defaulting to Claude Code."));
+    agentTools.push("claude-code");
+  }
 
-  if (shouldScan) {
-    const siblings = scanNearby(hubDir !== cwd ? cwd : hubDir);
-    const promptSiblings = siblings.filter(s => s.type === "prompts");
-
-    if (promptSiblings.length > 0) {
-      console.log(chalk.gray("\n  Found agentic content nearby:\n"));
-
-      for (const s of promptSiblings) {
-        const dirName = path.basename(s.path);
-        const fileCount = s.files?.length ?? 0;
-        const shouldImport = await confirm({
-          message: `Found agentic content in ${dirName} (${fileCount} file${fileCount !== 1 ? "s" : ""}). Note for import?`,
-          default: true,
-        });
-        if (shouldImport) {
-          const cmd = `agentboot import --path ${shellQuote(s.path)}`;
-          importCommands.push(cmd);
-          console.log(chalk.gray(`    Run: ${cmd}`));
-        }
-      }
-    } else {
-      console.log(chalk.gray("\n  No existing agentic content found nearby."));
-    }
-
-    // Offer to check additional directories
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const checkMore = await confirm({
-        message: "Check another folder for content?",
-        default: false,
-      });
-      if (!checkMore) break;
-
-      const customPath = await promptForPath("Path to check:");
-      let resolved = path.resolve(customPath);
-      try { resolved = fs.realpathSync(resolved); } catch { /* doesn't exist yet */ }
-      const result = hasPrompts(resolved);
-      if (result.found) {
-        const dirName = path.basename(resolved);
-        console.log(chalk.gray(`  Found ${result.files.length} file(s) in ${dirName}:`));
-        for (const f of result.files.slice(0, 5)) {
-          console.log(chalk.gray(`    ${f}`));
-        }
-        if (result.files.length > 5) {
-          console.log(chalk.gray(`    ... and ${result.files.length - 5} more`));
-        }
-        const shouldImport = await confirm({
-          message: `Note ${dirName} for import?`,
-          default: true,
-        });
-        if (shouldImport) {
-          const cmd = `agentboot import --path ${shellQuote(resolved)}`;
-          importCommands.push(cmd);
-          console.log(chalk.gray(`    Run: ${cmd}`));
-        }
-      } else {
-        console.log(chalk.gray(`  No agentic content found in ${resolved}.`));
-      }
-    }
+  let primaryAgent = agentTools[0]!;
+  if (agentTools.length > 1) {
+    primaryAgent = await select({
+      message: "Which is the primary agent tool?",
+      choices: agentTools.map(t => ({ name: t, value: t })),
+    });
   }
 
   // Step 1.4: Scaffold
   console.log(chalk.bold(`\n  Creating personas repo for ${orgDisplayName}...\n`));
 
-  scaffoldHub(hubDir, orgSlug, orgDisplayName);
+  scaffoldHub(hubDir, orgSlug, orgDisplayName, { agentTools, primaryAgent });
 
   console.log(chalk.green("  Source code:"));
   console.log(chalk.gray("    core/personas/          4 personas (code-reviewer, security-reviewer, ...)"));
@@ -816,32 +971,130 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   console.log(chalk.gray("    core/gotchas/           (empty — add domain knowledge here)"));
   console.log(chalk.green("\n  Build configuration:"));
   console.log(chalk.gray(`    agentboot.config.json   org: "${orgSlug}", displayName: "${orgDisplayName}"`));
-  console.log(chalk.gray("    repos.json              (empty — register your repos here)"));
+  console.log(chalk.gray("    repos.json              (empty — register your repos here)\n"));
 
-  // Step 1.5: Build
-  //
-  // AgentBoot is a build tool. The personas repo contains source code (traits,
-  // personas, instructions) that gets compiled into deployable output. This is
-  // like compiling TypeScript to JavaScript — the source is what you edit, the
-  // output is what gets deployed.
-  //
-  // If the user is running `agentboot install`, then agentboot is already
-  // available (globally or via npx). We can always attempt a build.
+  // Pause — let the user absorb what was just created before moving on
+  await pressAnyKey(`Created personas repo for ${orgDisplayName}. Press any key to start first build...`);
 
-  let buildSucceeded = false;
-  const shouldBuild = await confirm({
-    message: "Compile personas now? (builds the deployable output)",
+  // Step 1.4: Base build — automatic, no prompt
+  //
+  // Build the base personas before scanning for imports. This establishes a
+  // working baseline. If imports are found, we'll rebuild with them included.
+  let buildSucceeded = runBuild(hubDir);
+
+  // Step 1.6: Scan and import existing AI agent content
+  //
+  // Scan all subdirectories of the parent folder at once for AI agent content.
+  // This uses the shared import API from import.ts so the install wizard and
+  // the `agentboot import` CLI use the same code path.
+
+  const parentOfHub = path.dirname(hubDir);
+  let importedAny = false;
+
+  // Check if Claude is available and authenticated for LLM classification
+  const claudeReady = (() => {
+    try {
+      const versionCheck = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      if (versionCheck.status !== 0) return false;
+      const authCheck = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      return authCheck.status === 0;
+    } catch { return false; }
+  })();
+
+  if (!claudeReady) {
+    // Try to log in
+    console.log(chalk.gray(
+      "\n  Import scans nearby repos for AI agent content and uses Claude to\n" +
+      "  classify it into the right categories. You'll need to be logged in.\n"
+    ));
+    const shouldLogin = await confirm({
+      message: "Log in to Claude now?",
+      default: true,
+    });
+    if (shouldLogin) {
+      spawnSync("claude", ["auth", "login"], { stdio: "inherit" });
+    }
+  }
+
+  // Re-check after possible login
+  const canClassify = (() => {
+    try {
+      const r = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      return r.status === 0;
+    } catch { return false; }
+  })();
+
+  // Step 1 of import: Scan — always do this, it's free and fast
+  const shouldScan = await confirm({
+    message: `Scan subdirectories of ${parentOfHub} for existing AI agent content to import?`,
     default: true,
   });
 
-  if (shouldBuild) {
+  if (shouldScan) {
+    const { scanParentForContent, printScanManifest, classifyScannedFiles, printClassificationResults, finalizeImport } =
+      await import("./import.js");
+
+    const manifest = scanParentForContent(parentOfHub, [hubDir]);
+    printScanManifest(manifest);
+
+    if (manifest.files.length > 0) {
+      if (!canClassify) {
+        console.log(chalk.gray(
+          "  Classification requires Claude. Run `agentboot import` later to\n" +
+          "  classify and import this content.\n"
+        ));
+      } else {
+        // Educate the user on what happens next
+        console.log(chalk.gray(
+          "  AgentBoot will use your Claude account to classify each file into\n" +
+          "  the right category (trait, gotcha, instruction, etc.). This uses\n" +
+          "  one LLM call per file — typically a few cents total.\n\n" +
+          "  No existing files will be modified. New files will be created in\n" +
+          "  your personas repo at " + hubDir + ".\n"
+        ));
+
+        const continueImport = await confirm({
+          message: "Classify and import now?",
+          default: true,
+        });
+
+        if (continueImport) {
+          // Step 2: Classify via LLM
+          const { classifications, trustedSources } = classifyScannedFiles(manifest, hubDir);
+
+          if (classifications.length > 0) {
+            // Show summary and ask Y/n
+            printClassificationResults(classifications);
+
+            const applyNow = await confirm({
+              message: "Import these artifacts into your personas repo?",
+              default: true,
+            });
+
+            // Step 3: Apply or save plan
+            const result = finalizeImport(classifications, trustedSources, hubDir, applyNow);
+
+            if (applyNow && result.created > 0) {
+              importedAny = true;
+            }
+          } else {
+            console.log(chalk.gray("  No content classified.\n"));
+          }
+        } else {
+          console.log(chalk.gray(
+            "  You can import later by running:\n\n" +
+            `    cd ${hubDir}\n` +
+            `    agentboot import --path ${parentOfHub}\n`
+          ));
+        }
+      }
+    }
+  }
+
+  // Rebuild if imports added new content
+  if (importedAny) {
+    console.log(chalk.cyan("\n  Rebuilding with imported content..."));
     buildSucceeded = runBuild(hubDir);
-  } else {
-    console.log(chalk.gray(
-      "\n  You can compile later by running:\n\n" +
-      `    cd ${hubDir}\n` +
-      "    agentboot build\n"
-    ));
   }
 
   // Step 1.6: Register first repo (optional)
@@ -889,6 +1142,33 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
       // Detect repo name from git
       const gitInfo = getGitOrgAndRepo(repoPath);
       const repoName = gitInfo ? `${gitInfo.org}/${gitInfo.repo}` : path.basename(repoPath);
+
+      // Confirm org slug — the git remote is the authoritative signal.
+      // If it differs from our earlier guess, offer to update.
+      if (gitInfo && gitInfo.org !== orgSlug) {
+        const useGitOrg = await confirm({
+          message: `Your repo's GitHub org is "${gitInfo.org}" but config has "${orgSlug}". Update to "${gitInfo.org}"?`,
+          default: true,
+        });
+        if (useGitOrg) {
+          orgSlug = gitInfo.org;
+          const updatedDisplayName = orgSlug
+            .split(/[-_]/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(" ");
+          // Update the config file in place
+          const configPath = path.join(hubDir, "agentboot.config.json");
+          try {
+            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+            config.org = orgSlug;
+            config.orgDisplayName = updatedDisplayName;
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+            console.log(chalk.green(`  Updated agentboot.config.json: org → "${orgSlug}"`));
+          } catch {
+            console.log(chalk.yellow(`  Could not update agentboot.config.json — edit it manually.`));
+          }
+        }
+      }
 
       if (addToReposJson(hubDir, repoPath, repoName)) {
         console.log(chalk.green(`\n  Added ${repoName} to repos.json.`));
@@ -1064,16 +1344,8 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   console.log(chalk.gray(`    ${step}. Customize:         Edit personas in ${hubDir}/core/personas/`));
   step++;
 
-  if (importCommands.length > 0) {
-    console.log(chalk.gray(`    ${step}. Import content:`));
-    for (const cmd of importCommands) {
-      console.log(chalk.gray(`       ${cmd}`));
-    }
-    step++;
-  } else {
-    console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
-    step++;
-  }
+  console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
+  step++;
 
   if (!hubHasRemote) {
     console.log(chalk.gray(`    ${step}. Push when ready:   gh repo create ${orgSlug}/personas --source . --private --push`));

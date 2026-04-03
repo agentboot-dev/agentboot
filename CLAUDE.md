@@ -32,9 +32,11 @@ Run a single test file: `npx vitest run <path-to-test-file>`
 
 ## Architecture
 
-AgentBoot is a **build tool** (not a runtime framework) that compiles agentic personas for distribution to target repos. The pipeline is: validate → compile → sync.
+AgentBoot is a **harness engineering build tool** that compiles agentic personas for multi-platform distribution to target repos. The pipeline is: validate → compile → sync. It generates platform-native output for Claude Code, Copilot, Cursor, and the universal AGENTS.md standard.
 
 ### Core Concepts
+
+**Lexicon** (`core/lexicon/`) contains domain term definitions — ubiquitous language entries that establish shared vocabulary. Lexicons are context compression primitives: defined once, referenced everywhere, saving tokens on every turn. Compiled first in the pipeline so all other artifacts benefit. Composition type: `rule`.
 
 **Traits** (`core/traits/`) are reusable behavioral building blocks (e.g., `critical-thinking.md`, `source-citation.md`). They are composed at build time — never at runtime. (Trait weight configurations are a Phase 2 feature.)
 
@@ -53,6 +55,8 @@ AgentBoot is a **build tool** (not a runtime framework) that compiles agentic pe
    - **`dist/skill/`** — cross-platform SKILL.md (agentskills.io format, traits inlined) + PERSONAS.md
    - **`dist/claude/`** — CC-native: agents, skills, rules, traits, CLAUDE.md (`@imports`), settings.json, .mcp.json
    - **`dist/copilot/`** — per-persona copilot-instructions.md fragments + instructions
+   - **`dist/agents/`** — AGENTS.md universal standard (planned, Phase 4)
+   - **`dist/cursor/`** — `.cursor/rules/*/RULE.md` glob-scoped rules (planned, Phase 4)
 3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
@@ -68,8 +72,10 @@ Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/skill/` — cross-platform SKILL.md (agentskills.io format, traits inlined) + persona.config.json + PERSONAS.md
 - `dist/claude/` — CC-native: agents, skills, rules, traits, CLAUDE.md (@imports), settings.json, .mcp.json, PERSONAS.md
 - `dist/copilot/` — per-persona copilot-instructions.md fragments + instructions + PERSONAS.md
+- `dist/agents/` — AGENTS.md universal standard (planned, Phase 4)
+- `dist/cursor/` — `.cursor/rules/*/RULE.md` glob-scoped rules (planned, Phase 4)
 
-Cursor and Gemini output are planned for Phase 5.
+Gemini and JetBrains output are planned for Phase 5.
 
 Within each platform folder, scope hierarchy is preserved:
 - `dist/{platform}/core/` — org-level personas
@@ -198,9 +204,14 @@ Three-stage progression from flat files to RAG:
 
 ## Known Gaps
 
-- No cursor or gemini output formats (Phase 2)
-- Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not (Phase 2)
-- No runtime config schema validation (zod planned but not wired in) (Phase 2)
-- Extension path `./personas` in config warns but doesn't block
+- AGENTS.md output format not yet implemented (Phase 4, highest priority)
+- Cursor output format (`.cursor/rules/*/RULE.md`) not yet implemented (Phase 4)
+- Composition-aware sync not yet implemented — `mergeScopes()` uses team-wins-all, not rule/preference (Phase 4)
+- `managed-settings.d/` scope fragment generation not yet implemented (Phase 4)
+- PreToolUse compliance hook compilation not yet implemented (Phase 4)
+- Token budget enforcement in `agentboot lint` not yet implemented (Phase 4)
+- Gemini and JetBrains output formats not yet implemented (Phase 5)
+- Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not
+- No runtime config schema validation (zod planned but not wired in)
 - `repos.json` is empty — production sync path untested in real workflow (uses dev-sync for dogfooding)
 - This repo is the build tool, not a personas hub — orgs create a separate `personas` repo that uses AgentBoot as the build tool
