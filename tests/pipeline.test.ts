@@ -27,7 +27,7 @@ function run(script: string, cwd = ROOT): string {
 // ---------------------------------------------------------------------------
 
 describe("validate script", () => {
-  it("passes all 4 checks", () => {
+  it("passes all 6 checks", () => {
     const output = run("scripts/validate.ts");
     expect(output).toContain("All 6 checks passed");
   });

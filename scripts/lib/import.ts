@@ -18,7 +18,7 @@ import path from "node:path";
 import chalk from "chalk";
 import { input } from "@inquirer/prompts";
 import { loadPrompt, loadSchema } from "../prompts/index.js";
-import { type LLMProvider, ClaudeCodeProvider, resolveProvider } from "./llm-provider.js";
+import { type LLMProvider, ClaudeCodeProvider, resolveProviderWithFallback } from "./llm-provider.js";
 import { loadConfig, resolveConfigPath, stripJsoncComments } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -524,13 +524,13 @@ function buildClassificationPrompt(
 
 const CLASSIFICATION_SCHEMA = loadSchema("classify-content");
 
-/** Resolve the LLM provider — use config if hub is available, otherwise default to ClaudeCode. */
+/** Resolve the LLM provider — use config if hub is available, with automatic fallback. */
 function getProvider(hubPath?: string): LLMProvider {
   if (hubPath) {
     try {
       const configPath = resolveConfigPath([], hubPath);
       const config = loadConfig(configPath);
-      return resolveProvider(config);
+      return resolveProviderWithFallback(config);
     } catch { /* fall through */ }
   }
   return new ClaudeCodeProvider();

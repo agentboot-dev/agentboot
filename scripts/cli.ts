@@ -1096,11 +1096,11 @@ program
   .option("--regression", "compare current dist/ against saved snapshot")
   .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
-  .action((opts) => {
+  .action(async (opts) => {
     const {
       runBehavioralTests, createSnapshot, compareSnapshots,
       saveSnapshot, loadSnapshot, printSnapshotDiff,
-    } = require("./lib/test-runner.js") as typeof import("./lib/test-runner.js");
+    } = await import("./lib/test-runner.js");
 
     const cwd = process.cwd();
     const configPath = path.join(cwd, "agentboot.config.json");
