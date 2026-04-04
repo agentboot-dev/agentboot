@@ -7,7 +7,7 @@ sidebar_position: 2
 
 ## Current Status
 
-**v0.4.6** is the current release. Phases 1 through 4 are complete. Phase 5 is next.
+**v0.7.0** is the current release. Phases 1 through 6 are complete. Phase 7 is in progress.
 
 ---
 
@@ -132,11 +132,29 @@ Delivered:
 
 ---
 
-## Phase 7: "Ecosystem" -- PLANNED
+## Phase 7: "Production Ready" -- IN PROGRESS
 
-Marketplace, harness templates, multi-agent coordination, knowledge layer, and advanced platform integrations.
+Platform completeness, trait calibration, developer velocity, and harness intelligence.
 
-Planned:
+**Delivered (v0.7.0):**
+- **Cursor .mdc output** — flat `.cursor/rules/*.mdc` files with `alwaysApply`/`globs` frontmatter (AB-129)
+- **Copilot scoped instructions** — `.github/instructions/*.instructions.md` with `applyTo` (AB-130)
+- **CC Plugin validation** — manifest validation on export (AB-131)
+- **`--non-interactive` mode** — CI-safe install/import with env var defaults (AB-132)
+- **Real YAML parser** — js-yaml in test-runner with backward compat (AB-133)
+- **Trait weight system** ��� HIGH/MEDIUM/LOW/MAX/OFF calibration per persona (AB-134)
+- **Harness SME personas** — 5 internal domain experts (AB-135)
+- **Nightly intelligence pipeline** — GitHub Actions workflow + scripts (AB-136)
+- **`/learn` skill** — contextual help for AgentBoot users (AB-137)
+- **Production sync testing** — multi-platform integration tests (AB-138)
+
+**Deferred to Phase 8:**
+- `agentboot cost-estimate` (AB-139)
+- MCP server (AB-140)
+- Strategic analysis layer (AB-141)
+- Monorepo support (AB-142)
+
+**Remaining planned:
 - **Harness template library** -- topology-specific bundles (API service, event processor, data pipeline) packaging traits, gotchas, personas, and hooks
 - **Public marketplace** -- core layer (bundled), verified layer (reviewed), web catalog
 - **agentskills.io listing** -- publish compiled skills to the Agent Skills marketplace

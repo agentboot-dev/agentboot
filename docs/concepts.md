@@ -41,7 +41,7 @@ A trait is not:
 
 The trait files in `core/traits/` are the authoritative definitions. Each one defines
 the behavior, the anti-patterns to avoid, and the interaction effects with other traits.
-(A planned trait weight system will add HIGH / MEDIUM / LOW calibration — see below.)
+(The trait weight system supports HIGH / MEDIUM / LOW / MAX / OFF calibration — see below.)
 
 ---
 
@@ -189,7 +189,7 @@ Output formats (see [Output Structure](../CLAUDE.md#output-structure)):
 - **AGENTS.md** — universal cross-tool standard (Codex, Cursor, Copilot, Gemini CLI)
 - **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
 - **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions
-- **Cursor** — `.cursor/rules/*/RULE.md` with glob-scoped rules
+- **Cursor** — `.cursor/rules/*.mdc` with `alwaysApply`/`globs` frontmatter
 - **SKILL.md** — agentskills.io cross-platform format
 
 ### Claude Code-native output
@@ -250,7 +250,8 @@ This has three advantages over inlined output:
 
 The build system generates **one self-contained folder per platform** under `dist/`.
 Each platform folder (e.g., `dist/claude/`, `dist/copilot/`, `dist/cursor/`, `dist/skill/`,
-`dist/gemini/`) contains everything needed for that platform and nothing it doesn't.
+`dist/agents/`) contains everything needed for that platform and nothing it doesn't.
+Gemini and JetBrains output folders are planned for a future phase.
 The Claude Code folder uses @import-based files; the skill folder uses inlined SKILL.md
 for cross-platform distribution.
 
@@ -436,20 +437,14 @@ dist/
 │
 ├── cursor/                      # Self-contained Cursor distribution
 │   ├── core/
-│   │   └── .cursor/rules/*.md
+│   │   └── .cursor/rules/*.mdc
 │   ├── groups/...
 │   └── teams/...
 │
-├── skill/                       # Cross-platform SKILL.md (agentskills.io)
-│   ├── core/
-│   │   ├── code-reviewer/SKILL.md (traits inlined)
-│   │   └── PERSONAS.md
-│   ├── groups/...
-│   └── teams/...
-│
-└── gemini/                      # Self-contained Gemini CLI distribution
+└── skill/                       # Cross-platform SKILL.md (agentskills.io)
     ├── core/
-    │   └── GEMINI.md
+    │   ├── code-reviewer/SKILL.md (traits inlined)
+    │   └── PERSONAS.md
     ├── groups/...
     └── teams/...
 ```
@@ -638,9 +633,10 @@ always opt-in and clearly labeled.
 
 ## The trait weight system
 
-> **Planned (Phase 2).** Trait weights are designed but not yet implemented. Today,
-> traits are included or excluded (boolean). The weight system described below is the
-> target design for a future release.
+> **Implemented (Phase 7, AB-134).** `persona.config.json` supports both array format
+> (backward compatible, all traits at MEDIUM) and object format with named weights.
+> Compile-time calibration preambles are implemented for `critical-thinking`. Other
+> traits will gain calibration text incrementally.
 
 Several core traits — `critical-thinking` is the primary example — expose a weight axis:
 `HIGH`, `MEDIUM`, and `LOW`. This is not a priority system; it is a calibration system.
@@ -777,7 +773,8 @@ governance system needs both.
 
 ## Numeric trait weights
 
-> **Planned (Phase 2).** Numeric weights are part of the same future weight system.
+> **Implemented (Phase 7, AB-134).** Numeric weights (0.0–1.0) are supported alongside
+> named weights. `resolveWeight()` in config.ts handles both forms.
 
 The HIGH / MEDIUM / LOW weight system described earlier is the simplified interface.
 Under the hood, traits that support calibration use a numeric 0.0–1.0 scale that maps

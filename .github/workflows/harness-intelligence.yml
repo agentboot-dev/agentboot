@@ -1,0 +1,169 @@
+name: Harness Intelligence Pipeline
+
+on:
+  schedule:
+    # Run nightly at 03:00 UTC
+    - cron: "0 3 * * *"
+    # Run weekly synthesis on Sundays at 03:00 UTC
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: "Specific harness to analyze (blank = all)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - cc
+          - copilot
+          - cursor
+          - gemini
+          - jetbrains
+      cycle:
+        description: "Report cycle type"
+        required: false
+        default: "nightly"
+        type: choice
+        options:
+          - nightly
+          - weekly
+          - ad-hoc
+
+env:
+  MAX_TOKENS_PER_RUN: "4096"
+  NODE_VERSION: "22"
+
+jobs:
+  analyze:
+    name: Analyze ${{ matrix.harness }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          - cc
+          - copilot
+          - cursor
+          - gemini
+          - jetbrains
+        exclude:
+          # When a specific harness is selected via workflow_dispatch, exclude others
+          - harness: ${{ inputs.harness != '' && inputs.harness != 'cc' && 'cc' || 'NONE' }}
+          - harness: ${{ inputs.harness != '' && inputs.harness != 'copilot' && 'copilot' || 'NONE' }}
+          - harness: ${{ inputs.harness != '' && inputs.harness != 'cursor' && 'cursor' || 'NONE' }}
+          - harness: ${{ inputs.harness != '' && inputs.harness != 'gemini' && 'gemini' || 'NONE' }}
+          - harness: ${{ inputs.harness != '' && inputs.harness != 'jetbrains' && 'jetbrains' || 'NONE' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set report date
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Set cycle type
+        id: cycle
+        env:
+          INPUT_CYCLE: ${{ inputs.cycle }}
+        run: |
+          if [ -n "$INPUT_CYCLE" ]; then
+            echo "cycle=$INPUT_CYCLE" >> "$GITHUB_OUTPUT"
+          else
+            echo "cycle=nightly" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HARNESS: ${{ matrix.harness }}
+        run: |
+          npx tsx scripts/intelligence/fetch-sources.ts \
+            --harness "$HARNESS" \
+            --output "/tmp/sources-${HARNESS}.json"
+
+      - name: Run SME analysis
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HARNESS: ${{ matrix.harness }}
+          CYCLE: ${{ steps.cycle.outputs.cycle }}
+        run: |
+          npx tsx scripts/intelligence/run-sme.ts \
+            --harness "$HARNESS" \
+            --sources "/tmp/sources-${HARNESS}.json" \
+            --output "/tmp/report-${HARNESS}.json" \
+            --max-tokens "$MAX_TOKENS_PER_RUN" \
+            --cycle "$CYCLE"
+
+      - name: Save report
+        env:
+          HARNESS: ${{ matrix.harness }}
+          REPORT_DATE: ${{ steps.date.outputs.date }}
+        run: |
+          mkdir -p "intelligence/reports/${REPORT_DATE}"
+          cp "/tmp/report-${HARNESS}.json" \
+            "intelligence/reports/${REPORT_DATE}/${HARNESS}.json"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.harness }}-${{ steps.date.outputs.date }}
+          path: intelligence/reports/${{ steps.date.outputs.date }}/${{ matrix.harness }}.json
+          retention-days: 30
+
+  synthesize:
+    name: Synthesize weekly digest
+    needs: analyze
+    runs-on: ubuntu-latest
+    # Only run synthesis on Sundays (weekly cron) or manual trigger
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 * * 0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set report date
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Download all report artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/reports
+          pattern: report-*
+          merge-multiple: true
+
+      - name: Run synthesis
+        env:
+          REPORT_DATE: ${{ steps.date.outputs.date }}
+        run: |
+          npx tsx scripts/intelligence/synthesize.ts \
+            --reports /tmp/reports \
+            --output "intelligence/reports/${REPORT_DATE}/weekly-digest.md"
+
+      - name: Commit reports
+        env:
+          REPORT_DATE: ${{ steps.date.outputs.date }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add intelligence/reports/ intelligence/costs-*.json intelligence/PENDING-REVIEW.md
+          git diff --cached --quiet || git commit -m "chore: harness intelligence report ${REPORT_DATE}"
+          git push

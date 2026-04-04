@@ -479,9 +479,9 @@ Also repo sync only:
 ```
 .cursor/
 └── rules/
-    ├── org-standards.md          # Always-on
-    ├── gotchas-database.md       # Path-scoped (with globs)
-    └── gotchas-lambda.md
+    ├── org-standards.mdc          # Always-on (alwaysApply: true)
+    ├── gotchas-database.mdc       # Path-scoped (globs frontmatter)
+    └── gotchas-lambda.mdc
 .cursorrules                       # Legacy single-file (flattened org instructions)
 skills/
 ├── code-reviewer/SKILL.md

@@ -461,7 +461,9 @@ function syncRepo(
   force: boolean
 ): SyncResult {
   const repoPath = path.resolve(entry.path);
-  const targetDir = config.sync?.targetDir ?? ".claude";
+  const platform = entry.platform ?? "claude";
+  // AB-129: Cursor uses .cursor/ as its target directory
+  const targetDir = platform === "cursor" ? ".cursor" : (config.sync?.targetDir ?? ".claude");
   const writePersonasIndex = config.sync?.writePersonasIndex !== false;
   const org = config.orgDisplayName ?? config.org;
 
@@ -506,7 +508,6 @@ function syncRepo(
   }
 
   // Collect files from applicable scopes within the platform distribution.
-  const platform = entry.platform ?? "claude";
   const platformDir = path.join(distPath, platform);
   const coreDir = path.join(platformDir, "core");
   const groupDir = entry.group
@@ -539,11 +540,32 @@ function syncRepo(
   }
 
   // Write all merged files to the target directory.
-  // For copilot platform, only write the merged copilot-instructions.md to .github/
-  // (individual fragments and non-copilot files are not useful in a copilot-only repo).
+  // Platform-specific routing:
+  //   - copilot: merged copilot-instructions.md → .github/, scoped instructions → .github/instructions/
+  //   - cursor: rules/*.mdc → .cursor/rules/
+  //   - claude/skill: everything → {targetDir}/
   const targetBase = path.join(repoPath, targetDir);
 
-  if (platform !== "copilot") {
+  if (platform === "cursor") {
+    // AB-129: Cursor platform — write rules/*.mdc to .cursor/rules/
+    const cursorBase = path.join(repoPath, ".cursor");
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md") continue;
+
+      // Map rules/*.mdc to .cursor/rules/*.mdc
+      const destPath = path.join(cursorBase, relPath);
+      const content = fs.readFileSync(file.absolutePath, "utf-8");
+      ensureDir(path.dirname(destPath), dryRun);
+      const status = writeFile(destPath, content, dryRun);
+
+      const relDest = path.relative(repoPath, destPath);
+      if (status === "written") {
+        result.filesWritten.push(relDest);
+      } else {
+        result.filesSkipped.push(relDest);
+      }
+    }
+  } else if (platform !== "copilot") {
     ensureDir(targetBase, dryRun);
 
     for (const [relPath, file] of merged) {
@@ -583,8 +605,27 @@ function syncRepo(
     }
   }
 
+  // AB-130: Write copilot scoped instructions to .github/instructions/
+  if (platform === "copilot") {
+    for (const [relPath, file] of merged) {
+      if (relPath.startsWith("instructions/") && relPath.endsWith(".instructions.md")) {
+        const fileName = path.basename(relPath);
+        const destPath = path.join(repoPath, ".github", "instructions", fileName);
+        const content = fs.readFileSync(file.absolutePath, "utf-8");
+        ensureDir(path.dirname(destPath), dryRun);
+        const status = writeFile(destPath, content, dryRun);
+        const relDest = path.relative(repoPath, destPath);
+        if (status === "written") {
+          result.filesWritten.push(relDest);
+        } else {
+          result.filesSkipped.push(relDest);
+        }
+      }
+    }
+  }
+
   // Write root-level files (CC reads .mcp.json and CLAUDE.md from project root, not .claude/).
-  if (platform !== "copilot") {
+  if (platform !== "copilot" && platform !== "cursor") {
     const rootFiles = [".mcp.json", "CLAUDE.md"];
     for (const rootFile of rootFiles) {
       const file = merged.get(rootFile);
@@ -679,7 +720,7 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
   }
 
   // Validate platform
-  const validPlatforms = ["skill", "claude", "copilot"];
+  const validPlatforms = ["skill", "claude", "copilot", "cursor"];
   const platform = entry.platform ?? "claude";
   if (!validPlatforms.includes(platform)) {
     errors.push(

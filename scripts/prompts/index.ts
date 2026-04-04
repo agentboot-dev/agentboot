@@ -30,7 +30,10 @@ const PROMPTS_DIR = path.dirname(__filename);
  * @returns The interpolated prompt string
  */
 export function loadPrompt(name: string, vars: Record<string, string> = {}): string {
-  const filePath = path.join(PROMPTS_DIR, `${name}.md`);
+  const filePath = path.resolve(PROMPTS_DIR, `${name}.md`);
+  if (!filePath.startsWith(path.resolve(PROMPTS_DIR))) {
+    throw new Error(`Prompt name "${name}" resolves outside prompts directory`);
+  }
   const template = fs.readFileSync(filePath, "utf-8");
   // Single-pass replacement to prevent double-substitution (e.g., file content
   // containing {{HUB_CONTEXT}} being re-processed as a placeholder).

@@ -1,0 +1,238 @@
+#!/usr/bin/env node
+
+/**
+ * Harness Intelligence Pipeline — Report Synthesizer (Stub)
+ *
+ * Reads per-harness report JSONs from a directory, merges them into a combined
+ * report, and writes a PENDING-REVIEW.md file. The actual LLM-powered strategic
+ * synthesis will be added in Phase 8 (AB-141).
+ *
+ * Usage:
+ *   npx tsx scripts/intelligence/synthesize.ts --reports dir --output weekly-digest.md
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface Finding {
+  title: string;
+  category: string;
+  source: string;
+  summary: string;
+  technical_impact: string;
+  roadmap_signal: string;
+  action_required: string;
+  detail: string;
+}
+
+interface SmeReport {
+  harness: string;
+  report_date: string;
+  cycle: string;
+  findings: Finding[];
+  summary: string;
+  top_action_items: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT = path.resolve(__dirname, "../..");
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
+interface CliArgs {
+  reports: string;
+  output: string;
+}
+
+function parseArgs(argv: string[]): CliArgs {
+  let reports: string | undefined;
+  let output: string | undefined;
+
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--reports" && i + 1 < argv.length) {
+      reports = argv[++i];
+    } else if (arg === "--output" && i + 1 < argv.length) {
+      output = argv[++i];
+    } else if (arg === "--help" || arg === "-h") {
+      printUsage();
+      process.exit(0);
+    }
+  }
+
+  if (!reports || !output) {
+    printUsage();
+    process.exit(1);
+  }
+
+  // Validate output path stays within project root
+  const resolvedOutput = path.resolve(output);
+  const resolvedRoot = path.resolve(ROOT);
+  if (!resolvedOutput.startsWith(resolvedRoot)) {
+    console.error(`Error: output path must be within the project root`);
+    process.exit(1);
+  }
+
+  return { reports, output };
+}
+
+function printUsage(): void {
+  console.log(`
+Usage: synthesize --reports <dir> --output <weekly-digest.md>
+
+Options:
+  --reports   Directory containing per-harness report JSON files
+  --output    Path to write the synthesized digest
+  --help      Show this help message
+
+Note: This is a stub implementation. LLM-powered strategic synthesis
+will be added in Phase 8 (AB-141).
+`);
+}
+
+// ---------------------------------------------------------------------------
+// Synthesis (stub — merges reports into markdown)
+// ---------------------------------------------------------------------------
+
+function synthesizeReports(reports: SmeReport[]): string {
+  const today = new Date().toISOString().split("T")[0];
+
+  let md = `# Harness Intelligence Digest — ${today}\n\n`;
+  md += `> **Status**: PENDING HUMAN REVIEW\n`;
+  md += `> **Note**: This is an auto-generated merge of per-harness reports. `;
+  md += `LLM-powered strategic synthesis will be added in Phase 8 (AB-141).\n\n`;
+
+  // Aggregate stats
+  const totalFindings = reports.reduce((sum, r) => sum + r.findings.length, 0);
+  const allActionItems = reports.flatMap((r) => r.top_action_items);
+  const criticalFindings = reports.flatMap((r) =>
+    r.findings.filter((f) => f.technical_impact === "critical" || f.technical_impact === "high"),
+  );
+
+  md += `## Summary\n\n`;
+  md += `- **Harnesses analyzed**: ${reports.length}\n`;
+  md += `- **Total findings**: ${totalFindings}\n`;
+  md += `- **High/Critical findings**: ${criticalFindings.length}\n`;
+  md += `- **Action items**: ${allActionItems.length}\n\n`;
+
+  // High-priority items first
+  if (criticalFindings.length > 0) {
+    md += `## High-Priority Findings\n\n`;
+    for (const finding of criticalFindings) {
+      md += `### ${finding.title}\n\n`;
+      md += `- **Impact**: ${finding.technical_impact}\n`;
+      md += `- **Category**: ${finding.category}\n`;
+      md += `- **Roadmap signal**: ${finding.roadmap_signal}\n`;
+      md += `- **Action**: ${finding.action_required}\n`;
+      md += `- **Source**: ${finding.source}\n\n`;
+      md += `${finding.summary}\n\n`;
+    }
+  }
+
+  // All action items
+  if (allActionItems.length > 0) {
+    md += `## Action Items\n\n`;
+    for (const item of allActionItems) {
+      md += `- ${item}\n`;
+    }
+    md += "\n";
+  }
+
+  // Per-harness summaries
+  md += `## Per-Harness Summaries\n\n`;
+  for (const report of reports) {
+    md += `### ${report.harness} (${report.report_date})\n\n`;
+    md += `${report.summary}\n\n`;
+    if (report.findings.length > 0) {
+      md += `**Findings (${report.findings.length}):**\n\n`;
+      for (const finding of report.findings) {
+        md += `- **${finding.title}** [${finding.technical_impact}] — ${finding.summary}\n`;
+      }
+      md += "\n";
+    }
+  }
+
+  md += `---\n\n`;
+  md += `*Generated by AgentBoot Intelligence Pipeline on ${new Date().toISOString()}*\n`;
+
+  return md;
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+function main(): void {
+  const args = parseArgs(process.argv);
+
+  if (!fs.existsSync(args.reports)) {
+    console.error(`Error: reports directory not found: ${args.reports}`);
+    process.exit(1);
+  }
+
+  const reportFiles = fs.readdirSync(args.reports).filter((f) => f.endsWith(".json"));
+
+  if (reportFiles.length === 0) {
+    console.error(`Error: no JSON report files found in ${args.reports}`);
+    process.exit(1);
+  }
+
+  console.log(`Synthesizing ${reportFiles.length} reports from ${args.reports}...`);
+
+  const reports: SmeReport[] = [];
+  for (const file of reportFiles) {
+    const filePath = path.join(args.reports, file);
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as SmeReport;
+      reports.push(data);
+      console.log(`  Loaded: ${file} (${data.harness}, ${data.findings.length} findings)`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`  Warning: could not parse ${file}: ${message}`);
+    }
+  }
+
+  if (reports.length === 0) {
+    console.error("Error: no valid reports could be loaded");
+    process.exit(1);
+  }
+
+  const digest = synthesizeReports(reports);
+
+  // Write digest
+  const outputDir = path.dirname(args.output);
+  if (outputDir && !fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  fs.writeFileSync(args.output, digest, "utf-8");
+  console.log(`\nWrote digest to ${args.output}`);
+
+  // Also write to intelligence/PENDING-REVIEW.md
+  const pendingPath = path.join(ROOT, "intelligence", "PENDING-REVIEW.md");
+  fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
+  fs.writeFileSync(pendingPath, digest, "utf-8");
+  console.log(`Wrote copy to ${pendingPath}`);
+}
+
+export { synthesizeReports };
+export type { SmeReport as SynthSmeReport, Finding as SynthFinding };
+
+// Only run main when invoked directly (not when imported for testing)
+const isDirectRun = process.argv[1]?.replace(/\.ts$/, "").replace(/\.js$/, "")
+  === fileURLToPath(import.meta.url).replace(/\.ts$/, "").replace(/\.js$/, "");
+if (isDirectRun) {
+  main();
+}

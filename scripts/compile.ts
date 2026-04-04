@@ -35,11 +35,14 @@ import {
   type PersonaConfig,
   type DomainManifest,
   type PluginManifest,
+  type ResolvedTrait,
   resolveConfigPath,
   loadConfig,
   stripJsoncComments,
   flattenNodes,
   groupsToNodes,
+  normalizeTraitRefs,
+  DEFAULT_WEIGHT,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 
@@ -268,9 +271,57 @@ function loadPersonaConfig(personaDir: string): PersonaConfig | null {
 const TRAITS_START_MARKER = "<!-- traits:start -->";
 const TRAITS_END_MARKER = "<!-- traits:end -->";
 
+// ---------------------------------------------------------------------------
+// AB-134: Trait calibration preambles
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-trait calibration text keyed by weight threshold.
+ * Only traits that opt into calibration are listed here.
+ * The key is the numeric weight as a string (e.g., "0.3").
+ */
+const TRAIT_CALIBRATIONS: Record<string, Record<string, string>> = {
+  "critical-thinking": {
+    "0.3": "Apply light scrutiny: surface only CRITICAL findings. Trust the author's intent; flag only clear defects with high confidence. Suppress WARN/NOTE/INFO.",
+    "0.5": "Apply standard scrutiny: surface CRITICAL and ERROR findings reliably. Flag WARN items that represent real risk. Omit nitpicks and style preferences.",
+    "0.7": "Apply thorough scrutiny: actively seek hidden issues. Surface all CRITICAL/ERROR/WARN. Flag MEDIUM-confidence concerns. Question non-obvious design choices.",
+    "1.0": "Apply adversarial scrutiny: assume hostile or incorrect input. Verify every assumption. Surface all findings at all severity levels. Treat absence of proof as a concern.",
+  },
+};
+
+/**
+ * Build a calibration preamble for a trait at a given weight.
+ * Returns empty string if the trait has no calibration or weight is DEFAULT.
+ */
+export function buildWeightPreamble(traitName: string, weight: number): string {
+  const calibrations = TRAIT_CALIBRATIONS[traitName];
+  if (!calibrations) return "";
+
+  // Only inject preamble when weight differs from default
+  if (weight === DEFAULT_WEIGHT) return "";
+
+  // Find the closest calibration text for this weight.
+  // Use toFixed(1) to match keys like "1.0" (String(1.0) produces "1", not "1.0").
+  const key = weight.toFixed(1);
+  if (calibrations[key]) return calibrations[key]!;
+
+  // Find the nearest defined key
+  const keys = Object.keys(calibrations).map(Number).sort((a, b) => a - b);
+  let closest = keys[0]!;
+  let closestDist = Math.abs(weight - closest);
+  for (const k of keys) {
+    const dist = Math.abs(weight - k);
+    if (dist < closestDist) {
+      closest = k;
+      closestDist = dist;
+    }
+  }
+  return calibrations[closest.toFixed(1)] ?? "";
+}
+
 function injectTraits(
   skillContent: string,
-  traitNames: string[],
+  resolvedTraits: ResolvedTrait[],
   traits: Map<string, TraitContent>,
   personaName: string
 ): { result: string; injected: string[] } {
@@ -278,15 +329,26 @@ function injectTraits(
   const missing: string[] = [];
 
   const blocks: string[] = [];
-  for (const traitName of traitNames) {
+  for (const { name: traitName, weight } of resolvedTraits) {
+    // Skip traits with weight 0.0 (OFF)
+    if (weight === 0.0) continue;
+
     const trait = traits.get(traitName);
     if (!trait) {
       missing.push(traitName);
       continue;
     }
     injected.push(traitName);
+
+    // Build weight annotation and optional calibration preamble
+    const weightLabel = weight !== DEFAULT_WEIGHT
+      ? ` (weight: ${weight})`
+      : "";
+    const preamble = buildWeightPreamble(traitName, weight);
+    const preambleBlock = preamble ? `${preamble}\n\n` : "";
+
     blocks.push(
-      `<!-- trait: ${traitName} -->\n${trait.content}\n<!-- /trait: ${traitName} -->`
+      `<!-- trait: ${traitName}${weightLabel} -->\n${preambleBlock}${trait.content}\n<!-- /trait: ${traitName} -->`
     );
   }
 
@@ -406,20 +468,21 @@ function buildCopilotOutput(
 function buildCursorRule(
   name: string,
   content: string,
-  globs?: string[]
+  options?: { globs?: string[] | undefined; alwaysApply?: boolean }
 ): string {
   const lines: string[] = ["---"];
   lines.push(`description: "${name}"`);
-  if (globs && globs.length > 0) {
-    if (globs.length === 1) {
-      lines.push(`globs: "${globs[0]}"`);
+  if (options?.globs && options.globs.length > 0) {
+    if (options.globs.length === 1) {
+      lines.push(`globs: "${options.globs[0]}"`);
     } else {
       lines.push("globs:");
-      for (const glob of globs) {
+      for (const glob of options.globs) {
         lines.push(`  - "${glob}"`);
       }
     }
   }
+  lines.push(`alwaysApply: ${options?.alwaysApply ?? false}`);
   lines.push("---", "");
   // Strip HTML comments and trait markers for clean Cursor output
   const stripped = content.replace(/<!--[\s\S]*?-->/g, "").trim();
@@ -467,22 +530,31 @@ function compilePersona(
   const personaConfig = loadPersonaConfig(personaDir);
   const skillContent = fs.readFileSync(skillPath, "utf-8");
 
-  // Determine which traits to inject.
-  let traitNames: string[] = personaConfig?.traits ?? [];
+  // Determine which traits to inject (supports both array and weight-object formats).
+  let resolvedTraits: ResolvedTrait[] = personaConfig?.traits
+    ? normalizeTraitRefs(personaConfig.traits)
+    : [];
 
   if (groupName && personaConfig?.groups?.[groupName]?.traits) {
-    traitNames = [...traitNames, ...(personaConfig.groups[groupName]!.traits ?? [])];
+    const groupTraits = normalizeTraitRefs(personaConfig.groups[groupName]!.traits!);
+    resolvedTraits = [...resolvedTraits, ...groupTraits];
   }
 
   if (teamName && personaConfig?.teams?.[teamName]?.traits) {
-    traitNames = [...traitNames, ...(personaConfig.teams[teamName]!.traits ?? [])];
+    const teamTraits = normalizeTraitRefs(personaConfig.teams[teamName]!.traits!);
+    resolvedTraits = [...resolvedTraits, ...teamTraits];
   }
 
-  traitNames = [...new Set(traitNames)];
+  // Deduplicate by name — last occurrence wins (team > group > core)
+  const seen = new Map<string, ResolvedTrait>();
+  for (const rt of resolvedTraits) {
+    seen.set(rt.name, rt);
+  }
+  resolvedTraits = [...seen.values()];
 
   const { result: composed, injected } = injectTraits(
     skillContent,
-    traitNames,
+    resolvedTraits,
     traits,
     personaName
   );
@@ -585,14 +657,15 @@ function compilePersona(
   }
 
   if (outputFormats.includes("cursor")) {
-    // AB-109: Cursor persona as a project-level rule
-    const cursorRuleDir = path.join(distPath, "cursor", scopePath, "rules", personaName);
-    ensureDir(cursorRuleDir);
+    // AB-129: Cursor persona as a flat .mdc file with alwaysApply: true
+    const cursorRulesDir = path.join(distPath, "cursor", scopePath, "rules");
+    ensureDir(cursorRulesDir);
     const cursorContent = buildCursorRule(
       personaConfig?.description ?? personaName,
-      composed
+      composed,
+      { alwaysApply: true }
     );
-    fs.writeFileSync(path.join(cursorRuleDir, "RULE.md"), cursorContent, "utf-8");
+    fs.writeFileSync(path.join(cursorRulesDir, `${personaName}.mdc`), cursorContent, "utf-8");
     platforms.push("cursor");
   }
 
@@ -703,20 +776,48 @@ function compileGotchas(
       fs.writeFileSync(path.join(gotchaOutDir, file), `${header}${content}`, "utf-8");
     }
 
-    // AB-109: Cursor output — gotchas become glob-scoped rules
+    // AB-129: Cursor output — gotchas become glob-scoped .mdc rules
     if (outputFormats.includes("cursor")) {
       const fm = parseFrontmatter(content);
-      const pathsStr = fm?.get("paths");
+      const rawPaths = fm?.get("paths");
+      // Strip surrounding quotes from YAML values (parseFrontmatter preserves them)
+      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
       const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
       const name = path.basename(file, ".md");
-      const cursorRuleDir = path.join(distPath, "cursor", scopePath, "rules", name);
-      ensureDir(cursorRuleDir);
+      const cursorRulesDir = path.join(distPath, "cursor", scopePath, "rules");
+      ensureDir(cursorRulesDir);
+      const cursorDesc = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
       const cursorContent = buildCursorRule(
-        fm?.get("description") ?? name,
+        cursorDesc,
         content.replace(/^---\n[\s\S]*?\n---\n*/, ""), // strip frontmatter
-        globs
+        { globs, alwaysApply: false }
       );
-      fs.writeFileSync(path.join(cursorRuleDir, "RULE.md"), cursorContent, "utf-8");
+      fs.writeFileSync(path.join(cursorRulesDir, `${name}.mdc`), cursorContent, "utf-8");
+    }
+
+    // AB-130: Copilot scoped instructions — gotchas with paths: become .instructions.md
+    if (outputFormats.includes("copilot")) {
+      const fm = parseFrontmatter(content);
+      const rawPaths = fm?.get("paths");
+      // Strip surrounding quotes from YAML values (parseFrontmatter preserves them)
+      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      if (pathsStr) {
+        const name = path.basename(file, ".md");
+        const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
+        const copilotInstrDir = path.join(distPath, "copilot", scopePath, "instructions");
+        ensureDir(copilotInstrDir);
+        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const copilotInstrContent = [
+          "---",
+          `description: "${description}"`,
+          `applyTo: "${pathsStr}"`,
+          "---",
+          "",
+          strippedContent,
+          "",
+        ].join("\n");
+        fs.writeFileSync(path.join(copilotInstrDir, `${name}.instructions.md`), copilotInstrContent, "utf-8");
+      }
     }
   }
 }
@@ -909,8 +1010,11 @@ function generateAgentsMd(
       lines.push(`- **Description**: ${description}`);
       lines.push(`- **Invocation**: \`${invocation}\``);
       if (pc.model) lines.push(`- **Model**: ${pc.model}`);
-      if (pc.traits && pc.traits.length > 0) {
-        lines.push(`- **Traits**: ${pc.traits.join(", ")}`);
+      if (pc.traits) {
+        const traitNames = Array.isArray(pc.traits) ? pc.traits : Object.keys(pc.traits);
+        if (traitNames.length > 0) {
+          lines.push(`- **Traits**: ${traitNames.join(", ")}`);
+        }
       }
       lines.push("");
     }

@@ -763,3 +763,109 @@ describe("addToReposJson: non-destructive safety guarantees", () => {
     expect(result).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// AB-132: --non-interactive mode
+// ---------------------------------------------------------------------------
+
+describe("AB-132: non-interactive install via CLI", () => {
+  const ROOT = path.resolve(__dirname, "..");
+  const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+  const CLI = path.join(ROOT, "scripts", "cli.ts");
+
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-ni-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates hub with default org slug when no env vars set", () => {
+    const hubDir = path.join(tmpDir, "personas");
+    const output = execSync(
+      `${TSX} ${CLI} install --non-interactive --path ${hubDir}`,
+      {
+        cwd: tmpDir,
+        env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" },
+        timeout: 30_000,
+      }
+    ).toString();
+
+    expect(output).toContain("Non-interactive");
+    expect(fs.existsSync(path.join(hubDir, "agentboot.config.json"))).toBe(true);
+    const config = JSON.parse(fs.readFileSync(path.join(hubDir, "agentboot.config.json"), "utf-8"));
+    expect(config.org).toBe("my-org");
+  });
+
+  it("uses AGENTBOOT_ORG env var for org slug", () => {
+    const hubDir = path.join(tmpDir, "personas");
+    execSync(
+      `${TSX} ${CLI} install --non-interactive --path ${hubDir}`,
+      {
+        cwd: tmpDir,
+        env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0", AGENTBOOT_ORG: "acme-corp" },
+        timeout: 30_000,
+      }
+    );
+
+    const config = JSON.parse(fs.readFileSync(path.join(hubDir, "agentboot.config.json"), "utf-8"));
+    expect(config.org).toBe("acme-corp");
+  });
+
+  it("uses AGENTBOOT_ORG_DISPLAY env var for display name", () => {
+    const hubDir = path.join(tmpDir, "personas");
+    execSync(
+      `${TSX} ${CLI} install --non-interactive --path ${hubDir}`,
+      {
+        cwd: tmpDir,
+        env: {
+          ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0",
+          AGENTBOOT_ORG: "acme", AGENTBOOT_ORG_DISPLAY: "Acme Industries",
+        },
+        timeout: 30_000,
+      }
+    );
+
+    const config = JSON.parse(fs.readFileSync(path.join(hubDir, "agentboot.config.json"), "utf-8"));
+    expect(config.orgDisplayName).toBe("Acme Industries");
+  });
+
+  it("--connect without --hub-path exits with code 1", () => {
+    try {
+      execSync(
+        `${TSX} ${CLI} install --non-interactive --connect`,
+        {
+          cwd: tmpDir,
+          env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" },
+          timeout: 30_000,
+        }
+      );
+      throw new Error("Expected command to fail");
+    } catch (err: any) {
+      if (err.message === "Expected command to fail") throw err;
+      const output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      expect(output).toContain("--hub-path");
+    }
+  });
+
+  it("--connect with invalid --hub-path exits with code 1", () => {
+    try {
+      execSync(
+        `${TSX} ${CLI} install --non-interactive --connect --hub-path /nonexistent/path`,
+        {
+          cwd: tmpDir,
+          env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" },
+          timeout: 30_000,
+        }
+      );
+      throw new Error("Expected command to fail");
+    } catch (err: any) {
+      if (err.message === "Expected command to fail") throw err;
+      const output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      expect(output).toContain("agentboot.config.json");
+    }
+  });
+});

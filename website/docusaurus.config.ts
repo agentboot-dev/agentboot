@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'AgentBoot',
   tagline: 'Convention over configuration for agentic development teams',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/favicon.png',
 
   future: {
     v4: true,
@@ -52,6 +52,10 @@ const config: Config = {
     },
     navbar: {
       title: 'AgentBoot',
+      logo: {
+        alt: 'AgentBoot Logo',
+        src: 'img/logo.png',
+      },
       items: [
         {
           type: 'docSidebar',
