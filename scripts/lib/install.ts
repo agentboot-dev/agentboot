@@ -272,7 +272,10 @@ function pressAnyKey(message: string): Promise<void> {
   });
 }
 
-/** Expand shell-style `~` and `$VAR` / `${VAR}` in a path string. */
+/** Expand shell-style `~` and `$VAR` / `${VAR}` in a path string.
+ *  Only known safe env vars are expanded to prevent exfiltration of arbitrary env values. */
+const SAFE_ENV_VARS = new Set(["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]);
+
 function expandPath(p: string): string {
   const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/";
   let result = p;
@@ -280,9 +283,11 @@ function expandPath(p: string): string {
   if (result === "~" || result.startsWith("~/")) {
     result = home + result.slice(1);
   }
-  // $VAR or ${VAR}
-  result = result.replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, braced, plain) => {
-    return process.env[braced ?? plain] ?? "";
+  // $VAR or ${VAR} — only expand known safe variables
+  result = result.replace(/\$\{(\w+)\}|\$(\w+)/g, (match, braced, plain) => {
+    const varName: string = braced ?? plain;
+    if (!SAFE_ENV_VARS.has(varName)) return match;
+    return process.env[varName] ?? "";
   });
   return result;
 }
@@ -1585,11 +1590,84 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
     "  in your org.\n"
   ));
 
-  // Handle --non-interactive
+  // Handle --non-interactive — use sensible defaults, env var overrides
   if (opts.nonInteractive) {
-    console.log(chalk.red("  --non-interactive is not yet implemented."));
-    console.log(chalk.gray("  This feature is planned for a future release.\n"));
-    throw new AgentBootError(1);
+    const orgSlug = process.env["AGENTBOOT_ORG"] ?? opts.org ?? "my-org";
+    const orgDisplayName = process.env["AGENTBOOT_ORG_DISPLAY"]
+      ?? orgSlug.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+    const enableHooks = process.env["AGENTBOOT_HOOKS"] === "true";
+    const enableSync = process.env["AGENTBOOT_SYNC"] === "true";
+
+    // Parse personas from env or use defaults
+    const personasEnv = process.env["AGENTBOOT_PERSONAS"];
+    const personas = personasEnv
+      ? personasEnv.split(",").map(p => p.trim()).filter(Boolean)
+      : ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"];
+
+    // Validate persona names from env
+    const VALID_NAME = /^[a-z][a-z0-9-]*$/;
+    for (const p of personas) {
+      if (!VALID_NAME.test(p)) {
+        console.error(`Invalid persona name: "${p}" — must match [a-z][a-z0-9-]*`);
+        process.exit(1);
+      }
+    }
+
+    const hubDir = opts.path ? path.resolve(opts.path) : path.resolve(cwd, "personas");
+
+    if (opts.connect) {
+      // Connect mode: must have --hub-path
+      if (!opts.hubPath) {
+        console.error(chalk.red("  --non-interactive --connect requires --hub-path to be specified."));
+        throw new AgentBootError(1);
+      }
+      const resolvedHub = path.resolve(opts.hubPath);
+      if (!fs.existsSync(path.join(resolvedHub, "agentboot.config.json"))) {
+        console.error(chalk.red(`  No agentboot.config.json found at: ${resolvedHub}`));
+        throw new AgentBootError(1);
+      }
+
+      // Register current repo with the hub
+      const repoPath = cwd;
+      const repoGitInfo = getGitOrgAndRepo(repoPath);
+      const repoName = repoGitInfo ? `${repoGitInfo.org}/${repoGitInfo.repo}` : path.basename(repoPath);
+      if (addToReposJson(resolvedHub, repoPath, repoName)) {
+        console.log(chalk.green(`  Added ${repoName} to repos.json.`));
+      } else {
+        console.log(chalk.yellow(`  ${repoName} is already registered.`));
+      }
+
+      // Optional sync
+      if (enableSync && fs.existsSync(path.join(resolvedHub, "dist"))) {
+        console.log(chalk.cyan("  Syncing..."));
+        runSync(resolvedHub);
+      }
+
+      console.log(chalk.green("  Non-interactive connect complete.\n"));
+      return;
+    }
+
+    // Hub mode (default in non-interactive)
+    // Note: AGENTBOOT_PERSONAS is parsed and validated above but not yet passed
+    // to scaffoldHub (which uses its own defaults). This is advisory only.
+    console.log(chalk.cyan(`  Non-interactive mode: creating hub at ${hubDir}\n`));
+    console.log(chalk.gray(`    org: ${orgSlug}`));
+    console.log(chalk.gray(`    displayName: ${orgDisplayName}`));
+    console.log(chalk.gray(`    hooks: ${enableHooks ? "enabled" : "skipped"}`));
+    console.log(chalk.gray(`    sync: ${enableSync ? "enabled" : "skipped"}\n`));
+
+    scaffoldHub(hubDir, orgSlug, orgDisplayName);
+
+    // Build
+    const buildSucceeded = runBuild(hubDir);
+
+    if (enableSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+      runSync(hubDir);
+    }
+
+    console.log(chalk.green("  Non-interactive install complete.\n"));
+    return;
   }
 
   const detection = detectCwd(cwd);

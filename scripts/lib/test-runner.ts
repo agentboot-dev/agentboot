@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
+import yaml from "js-yaml";
 import { type LLMProvider, ClaudeCodeProvider } from "./llm-provider.js";
 
 // ---------------------------------------------------------------------------
@@ -37,8 +38,67 @@ export interface BehavioralTestResult {
 }
 
 /**
- * Parse a YAML-like test case file (simplified YAML subset).
- * Supports the fields: name, persona, prompt, assertions[].
+ * Parse assertion lines from raw text using the legacy line-by-line format.
+ * Handles: "- contains: text", "- not-contains: text", "- regex: pattern"
+ */
+function parseLegacyAssertions(block: string): BehavioralTestCase["assertions"] {
+  const assertions: BehavioralTestCase["assertions"] = [];
+  for (const line of block.split("\n")) {
+    const trimmed = line.trim();
+    const assertMatch = trimmed.match(/^-\s*(contains|not-contains|regex):\s*(.+)/);
+    if (assertMatch) {
+      assertions.push({
+        type: assertMatch[1] as "contains" | "not-contains" | "regex",
+        value: assertMatch[2]!,
+      });
+    }
+  }
+  return assertions;
+}
+
+/**
+ * Extract assertions from a parsed YAML object.
+ * Supports assertions under an `assertions:` key as a list of objects
+ * with `type` and `value` fields, or shorthand `{ contains: X }` / `{ not-contains: X }` / `{ regex: X }`.
+ */
+function extractYamlAssertions(parsed: Record<string, unknown>): BehavioralTestCase["assertions"] {
+  const assertions: BehavioralTestCase["assertions"] = [];
+  const raw = parsed["assertions"];
+  if (!Array.isArray(raw)) return assertions;
+
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const obj = item as Record<string, unknown>;
+
+    // Full form: { type: "contains", value: "text" }
+    if (typeof obj["type"] === "string" && typeof obj["value"] === "string") {
+      const t = obj["type"] as string;
+      if (t === "contains" || t === "not-contains" || t === "regex") {
+        assertions.push({ type: t, value: obj["value"] as string });
+      }
+      continue;
+    }
+
+    // Shorthand form: { contains: "text" } or { not-contains: "text" } or { regex: "pattern" }
+    for (const key of ["contains", "not-contains", "regex"] as const) {
+      if (typeof obj[key] === "string") {
+        assertions.push({ type: key, value: obj[key] as string });
+        break;
+      }
+    }
+  }
+
+  return assertions;
+}
+
+/**
+ * Parse a YAML test case file.
+ *
+ * Supports two formats:
+ * 1. Proper YAML with `assertions:` key (parsed via js-yaml)
+ * 2. Legacy format with root-level `- contains: X` lines (backward compatible)
+ *
+ * Blocks are separated by `---`.
  */
 export function parseTestCases(content: string): BehavioralTestCase[] {
   const cases: BehavioralTestCase[] = [];
@@ -47,31 +107,52 @@ export function parseTestCases(content: string): BehavioralTestCase[] {
   const blocks = content.split(/^---$/m).filter(b => b.trim());
 
   for (const block of blocks) {
-    const tc: Partial<BehavioralTestCase> = { assertions: [] };
+    let tc: Partial<BehavioralTestCase> = { assertions: [] };
 
-    for (const line of block.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
+    // Try proper YAML parsing first
+    let yamlParsed = false;
+    try {
+      const parsed = yaml.load(block);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const obj = parsed as Record<string, unknown>;
+        if (typeof obj["name"] === "string") tc.name = obj["name"];
+        if (typeof obj["persona"] === "string") tc.persona = obj["persona"];
+        if (typeof obj["prompt"] === "string") tc.prompt = obj["prompt"];
+        if (typeof obj["retries"] === "number") tc.retries = obj["retries"];
 
-      const match = trimmed.match(/^(\w+):\s*(.+)/);
-      if (match) {
-        const [, key, value] = match;
-        switch (key) {
-          case "name": tc.name = value!; break;
-          case "persona": tc.persona = value!; break;
-          case "prompt": tc.prompt = value!; break;
-          case "retries": tc.retries = parseInt(value!, 10); break;
+        // Extract assertions from YAML structure
+        const yamlAssertions = extractYamlAssertions(obj);
+        if (yamlAssertions.length > 0) {
+          tc.assertions = yamlAssertions;
+          yamlParsed = true;
+        }
+      }
+    } catch {
+      // YAML parsing failed — fall through to legacy parser
+    }
+
+    // If YAML didn't produce assertions, fall back to legacy line-by-line parser
+    if (!yamlParsed) {
+      // Extract fields from lines if YAML parsing didn't get them
+      if (!tc.name || !tc.persona || !tc.prompt) {
+        for (const line of block.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+
+          const match = trimmed.match(/^(\w+):\s*(.+)/);
+          if (match) {
+            const [, key, value] = match;
+            switch (key) {
+              case "name": tc.name = tc.name ?? value!; break;
+              case "persona": tc.persona = tc.persona ?? value!; break;
+              case "prompt": tc.prompt = tc.prompt ?? value!; break;
+              case "retries": tc.retries = tc.retries ?? parseInt(value!, 10); break;
+            }
+          }
         }
       }
 
-      // Assertion lines: "- contains: text" or "- not-contains: text" or "- regex: pattern"
-      const assertMatch = trimmed.match(/^-\s*(contains|not-contains|regex):\s*(.+)/);
-      if (assertMatch) {
-        tc.assertions!.push({
-          type: assertMatch[1] as "contains" | "not-contains" | "regex",
-          value: assertMatch[2]!,
-        });
-      }
+      tc.assertions = parseLegacyAssertions(block);
     }
 
     if (tc.name && tc.persona && tc.prompt && tc.assertions!.length > 0) {

@@ -1,12 +1,12 @@
 name: Release
 
 on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release (e.g. 0.4.1)'
-        required: true
-        type: string
       dry-run:
         description: 'Dry run — validate without publishing'
         required: false
@@ -15,38 +15,72 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
   id-token: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      # Security: assign inputs to env vars to prevent script injection.
-      # Never use ${{ inputs.version }} directly in run: blocks.
-      VERSION: ${{ inputs.version }}
-    steps:
-      - name: Validate version format
-        run: |
-          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Invalid version format: $VERSION. Use semver (e.g. 0.4.1)"
-            exit 1
-          fi
+    # Only run when a PR is actually merged (not just closed), or on manual dispatch.
+    # Also skip release commits to prevent infinite loops.
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.pull_request.merged == true &&
+       !startsWith(github.event.pull_request.title, 'chore: release v'))
 
+    steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: main
           fetch-depth: 0
+          # RELEASE_PAT allows the version bump commit to trigger CI workflows.
+          # GITHUB_TOKEN commits don't trigger workflows (prevents loops).
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Determine release version
+        id: version
+        run: |
+          # Get the latest git tag (sorted by semver)
+          LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          LATEST_TAG_VERSION="${LATEST_TAG#v}"
+          echo "latest_tag=${LATEST_TAG_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Get the version from package.json
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$LATEST_TAG_VERSION" ]; then
+            # No tags exist yet — use package.json version as-is
+            echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "No existing tags. Will release v${PKG_VERSION}"
+          elif [ "$PKG_VERSION" != "$LATEST_TAG_VERSION" ]; then
+            # package.json was manually bumped (major/minor) — use it as-is
+            echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "Manual version bump detected: ${LATEST_TAG_VERSION} → ${PKG_VERSION}"
+          else
+            # package.json matches latest tag — auto-bump patch
+            MAJOR=$(echo "$PKG_VERSION" | cut -d. -f1)
+            MINOR=$(echo "$PKG_VERSION" | cut -d. -f2)
+            PATCH=$(echo "$PKG_VERSION" | cut -d. -f3)
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+            echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+            echo "Auto-bump patch: ${PKG_VERSION} → ${NEW_VERSION}"
+          fi
 
       - name: Check tag does not already exist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "::error::Tag v${VERSION} already exists"
-            exit 1
+            echo "Tag v${VERSION} already exists — skipping release."
+            echo "SKIP=true" >> "$GITHUB_ENV"
           fi
 
       - name: Set up Node.js
+        if: env.SKIP != 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -54,98 +88,68 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
+        if: env.SKIP != 'true'
         run: npm install
 
-      - name: Configure git identity
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Build and test
+        if: env.SKIP != 'true'
+        run: npm run validate && npm run build && npm test
 
-      - name: Build
-        run: npm run validate && npm run build
-
-      - name: Run tests
-        run: npm test
-
-      - name: Bump version in package.json
-        run: npm version "$VERSION" --no-git-tag-version
-
-      # Branch protection requires PRs for all changes to main.
-      # RELEASE_PAT is used to push the branch and create the PR so that
-      # CI workflows trigger (GITHUB_TOKEN events don't trigger workflows).
-      # Tags bypass the PR rule since they're not branch refs.
-      - name: Version bump via PR
-        if: ${{ !inputs.dry-run }}
+      - name: Bump version in package.json (patch auto-bump only)
+        if: env.SKIP != 'true' && steps.version.outputs.bump == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          BRANCH="release/v${VERSION}"
-          git checkout -b "$BRANCH"
-          git add package.json package-lock.json
-          git commit -m "chore: release v${VERSION}"
+          npm version "$VERSION" --no-git-tag-version
 
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git push origin "$BRANCH"
-
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore: release v${VERSION}" \
-            --body "Automated version bump. Created by release workflow."
-
-          # Wait for the required "Validate and build" check to pass.
-          # Only this check is required by the branch ruleset — others (CLA, etc.) are optional.
-          echo "Waiting for 'Validate and build' check..."
-          for i in $(seq 1 90); do
-            RESULT=$(gh pr checks "$BRANCH" --json name,state --jq '.[] | select(.name == "Validate and build") | .state' 2>/dev/null || echo "")
-            if [ "$RESULT" = "SUCCESS" ]; then
-              echo "Validate and build passed. Merging..."
-              break
-            elif [ "$RESULT" = "FAILURE" ]; then
-              echo "::error::Validate and build failed on version bump PR"
-              exit 1
-            fi
-            echo "  Check $i/90: ${RESULT:-waiting} — 10s..."
-            sleep 10
-          done
-
-          gh pr merge "$BRANCH" --merge --delete-branch
-
-          # Reset remote back to GITHUB_TOKEN for npm OIDC
-          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-
-          # Sync local to the merge commit on main
-          git fetch origin main
-          git checkout main
-          git reset --hard origin/main
-
-      - name: Tag and push
-        if: ${{ !inputs.dry-run }}
+      - name: Commit version bump and tag
+        if: env.SKIP != 'true' && !inputs.dry-run
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Only commit if there are changes (patch bump modifies package.json)
+          if ! git diff --quiet package.json; then
+            git add package.json package-lock.json
+            git commit -m "chore: release v${VERSION}"
+            git push origin main
+          fi
+
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         id: drafter
-        if: ${{ !inputs.dry-run }}
+        if: env.SKIP != 'true' && !inputs.dry-run
         uses: release-drafter/release-drafter@v6
         with:
-          tag: "v${{ inputs.version }}"
-          version: "${{ inputs.version }}"
+          tag: "v${{ steps.version.outputs.version }}"
+          version: "${{ steps.version.outputs.version }}"
           publish: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to npm
-        if: ${{ !inputs.dry-run }}
-        run: npm publish --provenance
+        if: env.SKIP != 'true' && !inputs.dry-run
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Ensure package.json has the correct version for publishing
+          CURRENT=$(node -p "require('./package.json').version")
+          if [ "$CURRENT" != "$VERSION" ]; then
+            npm version "$VERSION" --no-git-tag-version
+          fi
+          npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Update Homebrew formula
-        if: ${{ !inputs.dry-run }}
+        if: env.SKIP != 'true' && !inputs.dry-run
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           TARBALL_URL="https://registry.npmjs.org/agentboot/-/agentboot-${VERSION}.tgz"
 
@@ -177,13 +181,16 @@ jobs:
           git push
 
       - name: Summary
+        if: env.SKIP != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           if [ "${{ inputs.dry-run }}" = "true" ]; then
-            echo "### Dry Run Complete" >> $GITHUB_STEP_SUMMARY
-            echo "Would have released **v${VERSION}**" >> $GITHUB_STEP_SUMMARY
+            echo "### Dry Run Complete" >> "$GITHUB_STEP_SUMMARY"
+            echo "Would have released **v${VERSION}**" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### Released v${VERSION}" >> $GITHUB_STEP_SUMMARY
-            echo "- [GitHub Release](${{ steps.drafter.outputs.html_url }})" >> $GITHUB_STEP_SUMMARY
-            echo "- [npm](https://www.npmjs.com/package/agentboot/v/${VERSION})" >> $GITHUB_STEP_SUMMARY
-            echo "- Homebrew formula updated" >> $GITHUB_STEP_SUMMARY
+            echo "### Released v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [GitHub Release](${{ steps.drafter.outputs.html_url }})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [npm](https://www.npmjs.com/package/agentboot/v/${VERSION})" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Homebrew formula updated" >> "$GITHUB_STEP_SUMMARY"
           fi

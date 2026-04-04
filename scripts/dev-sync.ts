@@ -90,7 +90,7 @@ const platforms: Array<{
   {
     name: "cursor",
     distSubdir: "cursor/core",
-    repoTarget: ".cursor/agentboot",
+    repoTarget: ".cursor",
     available: false,
   },
   {

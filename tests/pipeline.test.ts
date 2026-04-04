@@ -113,7 +113,8 @@ describe("compile script", () => {
     expect(content).toContain("AgentBoot compiled output");
     expect(content).toContain("<!-- trait: critical-thinking -->");
     expect(content).toContain("<!-- trait: structured-output -->");
-    expect(content).toContain("<!-- trait: source-citation -->");
+    // AB-134: source-citation is now LOW weight, so it has weight annotation
+    expect(content).toContain("<!-- trait: source-citation (weight: 0.3) -->");
     expect(content).toContain("<!-- trait: confidence-signaling -->");
   });
 
@@ -206,6 +207,40 @@ describe("compile script", () => {
     expect(content).toContain("Code Reviewer");
   });
 
+  // --- AB-129: cursor platform ---
+
+  it("cursor: generates flat .mdc files for personas with alwaysApply: true", () => {
+    const personas = ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"];
+    for (const persona of personas) {
+      const mdcPath = path.join(ROOT, "dist", "cursor", "core", "rules", `${persona}.mdc`);
+      expect(fs.existsSync(mdcPath), `cursor rules/${persona}.mdc should exist`).toBe(true);
+      const content = fs.readFileSync(mdcPath, "utf-8");
+      expect(content).toMatch(/^---\n/);
+      expect(content).toContain("alwaysApply: true");
+      expect(content).toContain("description:");
+    }
+  });
+
+  it("cursor: does NOT generate subdirectory RULE.md files", () => {
+    const rulesDir = path.join(ROOT, "dist", "cursor", "core", "rules");
+    expect(fs.existsSync(rulesDir), "cursor rules/ should exist").toBe(true);
+    const entries = fs.readdirSync(rulesDir);
+    for (const entry of entries) {
+      const fullPath = path.join(rulesDir, entry);
+      expect(
+        fs.statSync(fullPath).isDirectory(),
+        `cursor rules/ should contain flat .mdc files, not directories (found: ${entry})`
+      ).toBe(false);
+    }
+  });
+
+  it("cursor: .mdc files strip HTML comments", () => {
+    const mdcPath = path.join(ROOT, "dist", "cursor", "core", "rules", "code-reviewer.mdc");
+    const content = fs.readFileSync(mdcPath, "utf-8");
+    expect(content).not.toContain("<!-- trait:");
+    expect(content).not.toContain("<!-- traits:start -->");
+  });
+
   // --- cross-platform checks ---
 
   it("copies persona.config.json to skill and copilot platforms", () => {
@@ -219,7 +254,7 @@ describe("compile script", () => {
     }
   });
 
-  it("compiles instructions to every platform (rules/ for claude)", () => {
+  it("compiles instructions to every platform (rules/ for claude and cursor)", () => {
     // skill and copilot use instructions/
     for (const platform of ["skill", "copilot"]) {
       const instrDir = path.join(ROOT, "dist", platform, "core", "instructions");
@@ -232,6 +267,9 @@ describe("compile script", () => {
     expect(fs.existsSync(rulesDir), "claude should have rules/").toBe(true);
     expect(fs.existsSync(path.join(rulesDir, "baseline.instructions.md"))).toBe(true);
     expect(fs.existsSync(path.join(rulesDir, "security.instructions.md"))).toBe(true);
+    // cursor uses rules/ as well
+    const cursorRulesDir = path.join(ROOT, "dist", "cursor", "core", "rules");
+    expect(fs.existsSync(cursorRulesDir), "cursor should have rules/").toBe(true);
   });
 
   it("generates PERSONAS.md in every platform", () => {
@@ -245,13 +283,13 @@ describe("compile script", () => {
   });
 
   it("injects correct traits per persona across platforms", () => {
-    // security-reviewer: audit-trail yes, confidence-signaling no
+    // security-reviewer: audit-trail yes, confidence-signaling yes (AB-134: now included at HIGH)
     const secSkill = fs.readFileSync(
       path.join(ROOT, "dist", "skill", "core", "security-reviewer", "SKILL.md"),
       "utf-8"
     );
     expect(secSkill).toContain("<!-- trait: audit-trail -->");
-    expect(secSkill).not.toContain("<!-- trait: confidence-signaling -->");
+    expect(secSkill).toContain("confidence-signaling");
 
     // test-data-expert: schema-awareness yes, critical-thinking no
     const tdSkill = fs.readFileSync(
@@ -471,6 +509,47 @@ describe("sync script", () => {
     }
   });
 
+  // --- AB-129: cursor sync ---
+
+  it("syncs cursor platform to .cursor/rules/ with .mdc files", () => {
+    const cursorTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-cursor-"));
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([{ path: cursorTarget, label: "cursor-repo", platform: "cursor" }])
+    );
+
+    try {
+      const output = run("scripts/sync.ts");
+      expect(output).toContain("Synced 1 repo");
+
+      // Cursor rules should be written to .cursor/rules/
+      const cursorRulesDir = path.join(cursorTarget, ".cursor", "rules");
+      expect(fs.existsSync(cursorRulesDir), ".cursor/rules/ should exist").toBe(true);
+
+      // Should have .mdc files, not subdirectories
+      const files = fs.readdirSync(cursorRulesDir);
+      expect(files.some(f => f.endsWith(".mdc")), "should have .mdc files").toBe(true);
+
+      // Verify a persona .mdc file has correct format
+      const mdcFile = files.find(f => f === "code-reviewer.mdc");
+      expect(mdcFile, "code-reviewer.mdc should be synced").toBeDefined();
+      const content = fs.readFileSync(path.join(cursorRulesDir, mdcFile!), "utf-8");
+      expect(content).toContain("alwaysApply: true");
+
+      // Cursor repos should NOT have .claude/ directory
+      expect(
+        fs.existsSync(path.join(cursorTarget, ".claude")),
+        "cursor repos should not have .claude/"
+      ).toBe(false);
+    } finally {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{ path: syncTarget, label: "test-repo", platform: "claude" }])
+      );
+      fs.rmSync(cursorTarget, { recursive: true, force: true });
+    }
+  });
+
   // --- AB-28: PR mode ---
 
   it("PR mode handles missing remote gracefully", () => {
@@ -620,5 +699,180 @@ describe("full pipeline (validate → compile)", () => {
     expect(output).toContain("All 6 checks passed");
     expect(output).toContain("Compiled 4 persona(s)");
     expect(output).toContain("5 platform(s)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AB-138: Production sync testing — multi-platform end-to-end
+// ---------------------------------------------------------------------------
+
+describe("AB-138: multi-platform production sync", () => {
+  let claudeTarget: string;
+  let copilotTarget: string;
+  let cursorTarget: string;
+  let originalRepos: string;
+
+  const restoreRepos = () => {
+    if (originalRepos) {
+      try { fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos); } catch { /* best effort */ }
+    }
+  };
+
+  beforeAll(() => {
+    originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    process.on("exit", restoreRepos);
+
+    // Ensure dist/ is built
+    run("scripts/compile.ts");
+
+    // Create temp targets for each platform
+    claudeTarget = fs.mkdtempSync(path.join(os.tmpdir(), "ab-sync-claude-"));
+    copilotTarget = fs.mkdtempSync(path.join(os.tmpdir(), "ab-sync-copilot-"));
+    cursorTarget = fs.mkdtempSync(path.join(os.tmpdir(), "ab-sync-cursor-"));
+
+    // Configure repos.json with all 3 platforms
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([
+        { path: claudeTarget, label: "claude-test", platform: "claude" },
+        { path: copilotTarget, label: "copilot-test", platform: "copilot" },
+        { path: cursorTarget, label: "cursor-test", platform: "cursor" },
+      ])
+    );
+
+    // Run sync
+    run("scripts/sync.ts");
+  });
+
+  afterAll(() => {
+    process.removeListener("exit", restoreRepos);
+    fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+    for (const dir of [claudeTarget, copilotTarget, cursorTarget]) {
+      if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // --- Claude platform ---
+
+  it("claude: creates .claude/ with skills, rules, and agents", () => {
+    expect(fs.existsSync(path.join(claudeTarget, ".claude"))).toBe(true);
+    expect(fs.existsSync(path.join(claudeTarget, ".claude", "skills"))).toBe(true);
+    expect(fs.existsSync(path.join(claudeTarget, ".claude", "rules"))).toBe(true);
+  });
+
+  it("claude: syncs all 4 persona SKILL.md files", () => {
+    const personas = ["review-code", "review-security", "gen-tests", "gen-testdata"];
+    for (const p of personas) {
+      const skillPath = path.join(claudeTarget, ".claude", "skills", p, "SKILL.md");
+      expect(fs.existsSync(skillPath), `${p}/SKILL.md should exist`).toBe(true);
+      const content = fs.readFileSync(skillPath, "utf-8");
+      expect(content.length).toBeGreaterThan(100);
+    }
+  });
+
+  it("claude: writes CLAUDE.md at repo root", () => {
+    expect(fs.existsSync(path.join(claudeTarget, "CLAUDE.md"))).toBe(true);
+  });
+
+  it("claude: writes PERSONAS.md", () => {
+    expect(fs.existsSync(path.join(claudeTarget, ".claude", "PERSONAS.md"))).toBe(true);
+  });
+
+  it("claude: writes .agentboot-manifest.json with file hashes", () => {
+    const manifestPath = path.join(claudeTarget, ".claude", ".agentboot-manifest.json");
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    expect(manifest.managed_by).toBe("agentboot");
+    expect(manifest.files.length).toBeGreaterThan(0);
+    for (const f of manifest.files) {
+      expect(f.hash).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  // --- Copilot platform ---
+
+  it("copilot: writes copilot-instructions.md to .github/", () => {
+    const instrPath = path.join(copilotTarget, ".github", "copilot-instructions.md");
+    expect(fs.existsSync(instrPath), "copilot-instructions.md should exist").toBe(true);
+    const content = fs.readFileSync(instrPath, "utf-8");
+    expect(content.length).toBeGreaterThan(100);
+  });
+
+  it("copilot: writes scoped instructions to .github/instructions/ if gotchas have paths", () => {
+    const instrDir = path.join(copilotTarget, ".github", "instructions");
+    // May or may not exist depending on whether any gotchas have paths: frontmatter
+    if (fs.existsSync(instrDir)) {
+      const files = fs.readdirSync(instrDir).filter(f => f.endsWith(".instructions.md"));
+      for (const f of files) {
+        const content = fs.readFileSync(path.join(instrDir, f), "utf-8");
+        expect(content).toContain("applyTo");
+      }
+    }
+    // Test passes either way — the key assertion is that IF instructions exist, they have applyTo
+  });
+
+  it("copilot: writes PERSONAS.md to target directory", () => {
+    // Copilot PERSONAS.md goes to the default targetDir (.claude), not .github
+    const inClaude = fs.existsSync(path.join(copilotTarget, ".claude", "PERSONAS.md"));
+    const inGithub = fs.existsSync(path.join(copilotTarget, ".github", "PERSONAS.md"));
+    expect(inClaude || inGithub).toBe(true);
+  });
+
+  // --- Cursor platform ---
+
+  it("cursor: creates .cursor/rules/ directory", () => {
+    expect(fs.existsSync(path.join(cursorTarget, ".cursor", "rules"))).toBe(true);
+  });
+
+  it("cursor: writes .mdc files (not RULE.md subdirs)", () => {
+    const rulesDir = path.join(cursorTarget, ".cursor", "rules");
+    const files = fs.readdirSync(rulesDir);
+    const mdcFiles = files.filter(f => f.endsWith(".mdc"));
+    expect(mdcFiles.length).toBeGreaterThan(0);
+
+    // No RULE.md files should exist
+    const ruleMdFiles = files.filter(f => f === "RULE.md");
+    expect(ruleMdFiles.length).toBe(0);
+  });
+
+  it("cursor: .mdc files have correct frontmatter", () => {
+    const rulesDir = path.join(cursorTarget, ".cursor", "rules");
+    const mdcFiles = fs.readdirSync(rulesDir).filter(f => f.endsWith(".mdc"));
+    for (const f of mdcFiles) {
+      const content = fs.readFileSync(path.join(rulesDir, f), "utf-8");
+      expect(content).toContain("---");
+      expect(content).toContain("description:");
+      expect(content).toMatch(/alwaysApply:\s*(true|false)/);
+    }
+  });
+
+  it("cursor: writes PERSONAS.md", () => {
+    expect(fs.existsSync(path.join(cursorTarget, ".cursor", "PERSONAS.md"))).toBe(true);
+  });
+
+  it("cursor: does NOT create .claude/ directory", () => {
+    expect(fs.existsSync(path.join(cursorTarget, ".claude"))).toBe(false);
+  });
+
+  // --- Cross-platform ---
+
+  it("all platforms: manifest includes managed_by and synced_at", () => {
+    for (const [target, dir] of [
+      [claudeTarget, ".claude"],
+      [copilotTarget, ".github"],
+      [cursorTarget, ".cursor"],
+    ] as const) {
+      const manifestPath = path.join(target, dir, ".agentboot-manifest.json");
+      if (fs.existsSync(manifestPath)) {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+        expect(manifest.managed_by).toBe("agentboot");
+        expect(manifest.synced_at).toBeDefined();
+      }
+    }
+  });
+
+  it("re-sync reports unchanged files", () => {
+    const output = run("scripts/sync.ts");
+    expect(output).toContain("unchanged");
   });
 });

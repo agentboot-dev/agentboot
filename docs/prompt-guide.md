@@ -286,7 +286,7 @@ A security review that costs $5 on Opus costs $1 on Sonnet. If Sonnet's quality 
 sufficient for the task, that's $4 saved per invocation. Across 50 developers running
 10 reviews/day, that's $2,000/day.
 
-### `agentboot cost-estimate`
+### `agentboot cost-estimate` (deferred to Phase 8)
 
 ```bash
 $ agentboot cost-estimate
@@ -524,70 +524,51 @@ actually produce the expected output when given known input?
 - Given PHI in input, does the guardrail block it?
 - Given a FHIR resource, does the domain expert recognize it?
 
-**Regression tests** (LLM call, compare against baseline):
-- "This persona produced these findings last week. After the prompt change,
-  does it still find the same issues?" (snapshot testing)
+**Regression tests** (no LLM, fast, free — compare against baseline):
+- SHA-256 snapshot of dist/ files. After a prompt change, does the compiled
+  output differ from the saved baseline? Reports added, removed, and changed files.
 
 ### Test File Format
 
+YAML test cases use `assertions` with `contains`, `not-contains`, and `regex` checks.
+The test runner uses js-yaml for parsing with backward compatibility for simple
+key-value formats. Each test case gets 2-of-3 flake tolerance for LLM non-determinism.
+
 ```yaml
-# tests/security-reviewer.test.yaml
+# tests/behavioral/security-reviewer.test.yaml
 persona: security-reviewer
-model: sonnet  # Use cheaper model for tests
-max_budget_usd: 0.50
-
-cases:
-  - name: "Catches SQL injection"
-    input: |
-      Review this code:
-      ```python
-      def get_user(user_id):
-          query = f"SELECT * FROM users WHERE id = {user_id}"
-          return db.execute(query)
-      ```
-    expect:
-      findings_min: 1
-      severity_includes: ["CRITICAL", "ERROR"]
-      text_includes: ["SQL injection", "parameterized"]
-
-  - name: "No false positives on safe code"
-    input: |
-      Review this code:
-      ```python
-      def get_user(user_id: int):
-          return db.execute("SELECT * FROM users WHERE id = %s", (user_id,))
-      ```
-    expect:
-      findings_max: 0
-      severity_excludes: ["CRITICAL", "ERROR"]
-
-  - name: "Structured output format"
-    input: "Review the file src/auth/login.ts"
-    expect:
-      json_schema: "./schemas/review-output.json"
+prompt: |
+  Review this code:
+  ```python
+  def get_user(user_id):
+      query = f"SELECT * FROM users WHERE id = {user_id}"
+      return db.execute(query)
+  ```
+assertions:
+  - contains: "SQL injection"
+  - contains: "parameterized"
+  - not-contains: "no issues found"
+  - regex: "CRITICAL|ERROR"
 ```
 
 ### Running Tests
 
 ```bash
 # LOCAL (private — iterate until tests pass)
-agentboot test                             # Run all tests
-agentboot test --persona security-reviewer # One persona
-agentboot test --type deterministic        # Free tests only
-agentboot test --type behavioral           # LLM tests only
-agentboot test --update-snapshots          # Update regression baselines
-agentboot test --max-budget 5.00           # Cost cap for test suite
-
-# CI (visible — runs on PR, reports pass/fail)
-agentboot test --ci                        # Exit codes + summary only
-# CI posts: "Tests: 12 passed, 0 failed" — not the test details
+agentboot test --behavioral                # Run YAML behavioral tests (LLM-powered)
+agentboot test --snapshot                  # Create/update snapshot baseline from dist/
+agentboot test --regression                # Compare current dist/ against saved snapshot
+agentboot test --behavioral --test-dir tests/behavioral  # Custom test directory
+agentboot test --regression --snapshot-file .agentboot-snapshot.json  # Custom snapshot path
 ```
 
-**Local vs. CI behavior:** Locally, you see full output — which test cases passed,
-which failed, what the persona produced vs. what was expected. In CI, the PR gets
-a pass/fail summary. If a test fails, the developer checks the CI log privately.
-The team sees "test failed" not "your persona prompt produced garbage output for
-the SQL injection test case."
+**Behavioral tests** use a real YAML parser (js-yaml) with backward compatibility
+for simple key-value formats. Test assertions support `contains`, `not-contains`,
+and `regex` matching, with 2-of-3 flake tolerance for LLM non-determinism.
+
+**Snapshot and regression tests** use SHA-256 hashing of dist/ files. The
+`--snapshot` flag creates a baseline; `--regression` diffs against it and reports
+added, removed, and changed files.
 
 ---
 

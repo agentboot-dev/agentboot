@@ -43,6 +43,7 @@ export interface ImportOptions {
   overlap?: boolean | undefined;
   apply?: boolean | undefined;
   hubPath?: string | undefined;
+  nonInteractive?: boolean | undefined;
 }
 
 interface ScannedFile {
@@ -1055,8 +1056,29 @@ export async function runImport(opts: ImportOptions): Promise<void> {
   const stagingPath = writeStagingFile(plan, hubPath, trustedSources);
   printClassificationSummary(allClassifications, stagingPath);
 
-  // Step 5: Wait for user to review
-  await input({ message: "Press enter when ready to apply (or Ctrl+C to cancel)..." });
+  // Step 5: Wait for user to review (skip in non-interactive mode)
+  if (opts.nonInteractive) {
+    // In non-interactive mode, auto-apply high-confidence classifications,
+    // skip borderline ones (confidence !== "high")
+    console.log(chalk.cyan("  Non-interactive mode: auto-applying high-confidence matches...\n"));
+
+    // Filter to only high-confidence classifications
+    for (const c of allClassifications) {
+      if (c.confidence !== "high") {
+        c.action = "skip";
+      }
+    }
+
+    // Re-write the staging file with updated actions
+    const updatedStaging: ImportPlan = {
+      hub: hubPath,
+      scanned_at: plan.scanned_at,
+      classifications: allClassifications,
+    };
+    fs.writeFileSync(stagingPath, JSON.stringify(updatedStaging, null, 2) + "\n", "utf-8");
+  } else {
+    await input({ message: "Press enter when ready to apply (or Ctrl+C to cancel)..." });
+  }
 
   // Re-read the staging file (user may have edited actions and line ranges).
   // SECURITY NOTE: The user can modify line ranges to extract different content

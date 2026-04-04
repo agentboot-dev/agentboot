@@ -30,6 +30,8 @@ import {
   resolveConfigPath,
   loadConfig,
   stripJsoncComments,
+  traitRefsToNames,
+  VALID_WEIGHT_NAMES,
 } from "./lib/config.js";
 import {
   parseFrontmatter,
@@ -209,14 +211,58 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
         continue;
       }
 
-      // Collect all trait references in this persona config.
+      // Collect all trait references in this persona config (supports both array and object formats).
       const traitRefs = new Set<string>();
-      for (const t of personaConfig.traits ?? []) traitRefs.add(t);
+      if (personaConfig.traits) {
+        for (const t of traitRefsToNames(personaConfig.traits)) traitRefs.add(t);
+      }
       for (const g of Object.values(personaConfig.groups ?? {})) {
-        for (const t of g.traits ?? []) traitRefs.add(t);
+        if (g.traits) {
+          for (const t of traitRefsToNames(g.traits)) traitRefs.add(t);
+        }
       }
       for (const tm of Object.values(personaConfig.teams ?? {})) {
-        for (const t of tm.traits ?? []) traitRefs.add(t);
+        if (tm.traits) {
+          for (const t of traitRefsToNames(tm.traits)) traitRefs.add(t);
+        }
+      }
+
+      // AB-134: Validate weight values when traits are specified as an object.
+      const allTraitSources: Array<{ label: string; refs: PersonaConfig["traits"] }> = [
+        { label: "traits", refs: personaConfig.traits },
+      ];
+      for (const [gName, g] of Object.entries(personaConfig.groups ?? {})) {
+        allTraitSources.push({ label: `groups.${gName}.traits`, refs: g.traits });
+      }
+      for (const [tName, tm] of Object.entries(personaConfig.teams ?? {})) {
+        allTraitSources.push({ label: `teams.${tName}.traits`, refs: tm.traits });
+      }
+
+      for (const { label, refs } of allTraitSources) {
+        if (!refs || Array.isArray(refs)) continue;
+        for (const [traitName, weightVal] of Object.entries(refs)) {
+          if (typeof weightVal === "string") {
+            if (!VALID_WEIGHT_NAMES.has(weightVal.toUpperCase())) {
+              fail(
+                result,
+                `[${personaName}] ${label}["${traitName}"] has invalid weight "${weightVal}". ` +
+                  `Valid values: ${[...VALID_WEIGHT_NAMES].join(", ")} or a number 0.0–1.0`
+              );
+            }
+          } else if (typeof weightVal === "number") {
+            if (weightVal < 0.0 || weightVal > 1.0) {
+              fail(
+                result,
+                `[${personaName}] ${label}["${traitName}"] has out-of-range weight ${weightVal}. Must be 0.0–1.0`
+              );
+            }
+          } else if (typeof weightVal !== "boolean") {
+            fail(
+              result,
+              `[${personaName}] ${label}["${traitName}"] has unsupported weight type: ${typeof weightVal}`
+            );
+          }
+        }
       }
 
       for (const traitRef of traitRefs) {

@@ -145,6 +145,9 @@ not between the developer and the universe.
 
 ## Privileged Analysis: The `/insights` Model
 
+> **Status:** The `/insights` skill is designed but not yet implemented. This section
+> describes the target architecture for how private data analysis will work.
+
 The challenge: how do you extract optimization value from private data without
 exposing it?
 
