@@ -135,6 +135,7 @@ jobs:
         if: env.SKIP != 'true' && !inputs.dry-run
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           # Ensure package.json has the correct version for publishing
           CURRENT=$(node -p "require('./package.json').version")
@@ -142,8 +143,6 @@ jobs:
             npm version "$VERSION" --no-git-tag-version
           fi
           npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Update Homebrew formula
         if: env.SKIP != 'true' && !inputs.dry-run
