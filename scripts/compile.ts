@@ -411,7 +411,14 @@ function buildCursorRule(
   const lines: string[] = ["---"];
   lines.push(`description: "${name}"`);
   if (globs && globs.length > 0) {
-    lines.push(`globs: "${globs.join(", ")}"`);
+    if (globs.length === 1) {
+      lines.push(`globs: "${globs[0]}"`);
+    } else {
+      lines.push("globs:");
+      for (const glob of globs) {
+        lines.push(`  - "${glob}"`);
+      }
+    }
   }
   lines.push("---", "");
   // Strip HTML comments and trait markers for clean Cursor output

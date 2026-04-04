@@ -467,10 +467,10 @@ function syncRepo(
 
   const result: SyncResult = {
     repo: repoPath,
-    label: entry.label,
-    platform: entry.platform ?? "claude",
-    group: entry.group,
-    team: entry.team,
+    ...(entry.label != null ? { label: entry.label } : {}),
+    ...(entry.platform != null ? { platform: entry.platform } : { platform: "claude" }),
+    ...(entry.group != null ? { group: entry.group } : {}),
+    ...(entry.team != null ? { team: entry.team } : {}),
     filesWritten: [],
     filesSkipped: [],
     errors: [],
