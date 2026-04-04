@@ -224,6 +224,12 @@ export interface ManagedConfig {
   };
 }
 
+/** A trait weight value: named string, numeric 0.0–1.0, or boolean. */
+export type TraitWeightValue = string | number | boolean;
+
+/** Trait refs: array (all MEDIUM) or object with per-trait weights. */
+export type TraitRefs = string[] | Record<string, TraitWeightValue>;
+
 export interface PersonaConfig {
   name: string;
   description: string;
@@ -240,13 +246,78 @@ export interface PersonaConfig {
   background?: boolean;
   isolation?: "none" | "worktree";
   tokenBudget?: number;
-  traits?: string[];
-  groups?: Record<string, { traits?: string[] }>;
-  teams?: Record<string, { traits?: string[] }>;
+  traits?: TraitRefs;
+  groups?: Record<string, { traits?: TraitRefs }>;
+  teams?: Record<string, { traits?: TraitRefs }>;
   /** Per-persona hook configuration */
   hooks?: Record<string, unknown>;
   /** Per-persona MCP servers */
   mcpServers?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// AB-134: Trait weight system
+// ---------------------------------------------------------------------------
+
+/** Named weight constants. */
+export const WEIGHT_MAP: Record<string, number> = {
+  "OFF": 0.0,
+  "LOW": 0.3,
+  "MEDIUM": 0.5,
+  "HIGH": 0.7,
+  "MAX": 1.0,
+};
+
+/** Default weight when none is specified. */
+export const DEFAULT_WEIGHT = 0.5;
+
+/** Valid named weight strings (case-insensitive). */
+export const VALID_WEIGHT_NAMES = new Set(Object.keys(WEIGHT_MAP));
+
+/** A resolved trait with name and numeric weight. */
+export interface ResolvedTrait {
+  name: string;
+  weight: number;
+}
+
+/**
+ * Resolve a weight value to a number in [0.0, 1.0].
+ *
+ * - `false` / `0` / `"OFF"` → 0.0
+ * - `true` / `undefined` → DEFAULT_WEIGHT (0.5)
+ * - number → clamped to [0.0, 1.0]
+ * - named string (case-insensitive) → looked up in WEIGHT_MAP
+ * - unknown string → DEFAULT_WEIGHT
+ */
+export function resolveWeight(val: TraitWeightValue | undefined): number {
+  if (val === false || val === 0 || val === "OFF") return 0.0;
+  if (val === true || val === undefined) return DEFAULT_WEIGHT;
+  if (typeof val === "number") return Math.min(1.0, Math.max(0.0, val));
+  return WEIGHT_MAP[val.toUpperCase()] ?? DEFAULT_WEIGHT;
+}
+
+/**
+ * Normalize trait refs (array or object) into resolved trait list.
+ * Array form: all traits get DEFAULT_WEIGHT.
+ * Object form: each trait gets its specified weight.
+ */
+export function normalizeTraitRefs(refs: TraitRefs): ResolvedTrait[] {
+  if (Array.isArray(refs)) {
+    return refs.map(name => ({ name, weight: DEFAULT_WEIGHT }));
+  }
+  return Object.entries(refs).map(([name, val]) => ({
+    name,
+    weight: resolveWeight(val),
+  }));
+}
+
+/**
+ * Extract trait names from refs (array or object), for use in contexts
+ * that only need the name list.
+ */
+export function traitRefsToNames(refs: TraitRefs): string[] {
+  if (Array.isArray(refs)) return refs;
+  return Object.keys(refs);
 }
 
 // ---------------------------------------------------------------------------
@@ -441,4 +512,55 @@ export function loadConfig(configPath: string): AgentBootConfig {
   }
 
   return parsed as AgentBootConfig;
+}
+
+// ---------------------------------------------------------------------------
+// AB-131: CC Plugin Manifest Validation
+// ---------------------------------------------------------------------------
+
+export interface PluginValidationWarning {
+  field: string;
+  message: string;
+  level: "error" | "warn";
+}
+
+/**
+ * Validate a plugin.json manifest against the CC plugin spec.
+ * Returns an array of warnings/errors. Non-blocking — callers decide whether to proceed.
+ */
+export function validatePluginManifest(manifest: Record<string, unknown>): PluginValidationWarning[] {
+  const warnings: PluginValidationWarning[] = [];
+
+  // name: required, must be string, must follow @scope/package-name format
+  if (manifest["name"] === undefined || manifest["name"] === null) {
+    warnings.push({ field: "name", message: "name is required", level: "error" });
+  } else if (typeof manifest["name"] !== "string") {
+    warnings.push({ field: "name", message: "name must be a string", level: "error" });
+  } else if (!/^@[a-z0-9-]+\/[a-z0-9._-]+$/.test(manifest["name"])) {
+    warnings.push({ field: "name", message: `name must follow @scope/package-name format, got "${manifest["name"]}"`, level: "error" });
+  }
+
+  // version: required
+  if (manifest["version"] === undefined || manifest["version"] === null) {
+    warnings.push({ field: "version", message: "version is required", level: "error" });
+  } else if (typeof manifest["version"] !== "string") {
+    warnings.push({ field: "version", message: "version must be a string", level: "error" });
+  }
+
+  // description: required
+  if (manifest["description"] === undefined || manifest["description"] === null) {
+    warnings.push({ field: "description", message: "description is required", level: "error" });
+  } else if (typeof manifest["description"] !== "string") {
+    warnings.push({ field: "description", message: "description must be a string", level: "error" });
+  }
+
+  // Warn if agents, skills, or rules arrays are empty
+  for (const arrayField of ["agents", "skills", "rules"] as const) {
+    const val = manifest[arrayField];
+    if (Array.isArray(val) && val.length === 0) {
+      warnings.push({ field: arrayField, message: `${arrayField} array is empty`, level: "warn" });
+    }
+  }
+
+  return warnings;
 }

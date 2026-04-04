@@ -58,7 +58,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("AB-123: parseTestCases", () => {
-  it("parses a valid test case", () => {
+  it("parses a valid test case (legacy format)", () => {
     const yaml = [
       "name: Test SQL injection review",
       "persona: security-reviewer",
@@ -132,6 +132,110 @@ describe("AB-123: parseTestCases", () => {
     const cases = parseTestCases(yaml);
     expect(cases).toHaveLength(1);
     expect(cases[0]!.retries).toBe(5);
+  });
+
+  // AB-133: New YAML parser tests
+
+  it("parses multiline prompt using YAML block scalar (|)", () => {
+    const yaml = [
+      "name: Multiline test",
+      "persona: code-reviewer",
+      "prompt: |",
+      "  Review this code:",
+      "  function foo() { return bar; }",
+      "  Check for bugs.",
+      "assertions:",
+      "  - contains: bug",
+      "  - not-contains: LGTM",
+    ].join("\n");
+
+    const cases = parseTestCases(yaml);
+    expect(cases).toHaveLength(1);
+    expect(cases[0]!.prompt).toContain("Review this code:");
+    expect(cases[0]!.prompt).toContain("function foo()");
+    expect(cases[0]!.prompt).toContain("Check for bugs.");
+    expect(cases[0]!.assertions).toHaveLength(2);
+  });
+
+  it("parses assertions under assertions: key (proper YAML format)", () => {
+    const yaml = [
+      "name: YAML assertions",
+      "persona: security-reviewer",
+      "prompt: Check for XSS",
+      "assertions:",
+      "  - contains: XSS",
+      "  - not-contains: safe",
+      "  - regex: (vuln|injection)",
+    ].join("\n");
+
+    const cases = parseTestCases(yaml);
+    expect(cases).toHaveLength(1);
+    expect(cases[0]!.assertions).toHaveLength(3);
+    expect(cases[0]!.assertions[0]!.type).toBe("contains");
+    expect(cases[0]!.assertions[0]!.value).toBe("XSS");
+    expect(cases[0]!.assertions[1]!.type).toBe("not-contains");
+    expect(cases[0]!.assertions[1]!.value).toBe("safe");
+    expect(cases[0]!.assertions[2]!.type).toBe("regex");
+    expect(cases[0]!.assertions[2]!.value).toBe("(vuln|injection)");
+  });
+
+  it("parses quoted strings correctly in YAML format", () => {
+    const yaml = [
+      'name: "Quoted name test"',
+      'persona: "code-reviewer"',
+      'prompt: "Review this: function test() { return true; }"',
+      "assertions:",
+      '  - contains: "function test"',
+    ].join("\n");
+
+    const cases = parseTestCases(yaml);
+    expect(cases).toHaveLength(1);
+    expect(cases[0]!.name).toBe("Quoted name test");
+    expect(cases[0]!.prompt).toBe("Review this: function test() { return true; }");
+    expect(cases[0]!.assertions[0]!.value).toBe("function test");
+  });
+
+  it("parses assertions with full type/value form", () => {
+    const yaml = [
+      "name: Full form test",
+      "persona: code-reviewer",
+      "prompt: Review code",
+      "assertions:",
+      "  - type: contains",
+      "    value: bug",
+      "  - type: not-contains",
+      "    value: perfect",
+    ].join("\n");
+
+    const cases = parseTestCases(yaml);
+    expect(cases).toHaveLength(1);
+    expect(cases[0]!.assertions).toHaveLength(2);
+    expect(cases[0]!.assertions[0]!.type).toBe("contains");
+    expect(cases[0]!.assertions[0]!.value).toBe("bug");
+    expect(cases[0]!.assertions[1]!.type).toBe("not-contains");
+    expect(cases[0]!.assertions[1]!.value).toBe("perfect");
+  });
+
+  it("handles mix of YAML and legacy test cases in same file", () => {
+    const yaml = [
+      "name: Legacy test",
+      "persona: code-reviewer",
+      "prompt: Review this",
+      "- contains: review",
+      "---",
+      "name: YAML test",
+      "persona: security-reviewer",
+      "prompt: Check this",
+      "assertions:",
+      "  - contains: check",
+    ].join("\n");
+
+    const cases = parseTestCases(yaml);
+    expect(cases).toHaveLength(2);
+    expect(cases[0]!.name).toBe("Legacy test");
+    expect(cases[0]!.assertions[0]!.value).toBe("review");
+    expect(cases[1]!.name).toBe("YAML test");
+    expect(cases[1]!.assertions[0]!.value).toBe("check");
   });
 });
 
