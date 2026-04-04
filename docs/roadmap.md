@@ -97,21 +97,21 @@ Planned:
 
 ---
 
-## Phase 5: "Cross-Platform & Import" -- PLANNED
+## Phase 5: "Cross-Platform & Import" -- DONE (v0.5.0, 2026-04-04)
 
-Reach every major agent platform. Import everything, not just markdown.
+Reach every major agent platform. Import everything, not just markdown. 497 tests, 0 TS errors.
 
-Planned:
-- **Cursor output** -- `.cursor/rules/*/RULE.md` with glob-scoped rules from gotchas
-- **Copilot agents output** -- `.github/agents/*.agent.md` + scoped instruction files
-- **Managed settings fragments** -- `managed-settings.d/` drop-in files with alphabetical scope precedence
-- **Expanded import: whole-file strategy** -- deterministic import for agents, traits, rules with `paths:` frontmatter (no LLM, instant, free)
-- **Expanded import: config merge** -- settings.json permissions extraction, MCP config import with secret detection, hook import with per-hook security confirmation
-- **Import pipeline restructure** -- categorize by strategy, provenance detection (skip AgentBoot-compiled content), process whole-file before LLM
-- **Skill import with agent linking** -- skills merged into corresponding personas
-- **Cross-platform deduplication** -- Jaccard similarity across `.claude/`, `.cursorrules`, `copilot-instructions.md`
-- **Staging file v2** -- expanded format supporting whole-file imports, config merges, dedup results
-- **`--parent` flag on import** -- scan all subdirs like the installer does
+Delivered:
+- **Cursor output** (AB-109) -- `.cursor/rules/*/RULE.md` with YAML list globs from gotchas `paths:` frontmatter
+- **Copilot agents output** (AB-110) -- `.github/agents/*.agent.md` custom agent definitions
+- **Managed settings fragments** (AB-111) -- `managed-settings.d/00-org.json` drop-in files
+- **AGENTS.md sync** (AB-116) -- synced to repo root during sync, regardless of platform
+- **Expanded import: whole-file strategy** (AB-112) -- deterministic import for agents→personas, traits→core/traits/, rules-with-paths→gotchas (no LLM, instant, free)
+- **Expanded import: config merge** (AB-113) -- settings.json permissions extraction (union merge), MCP config import with entropy-based secret detection, hook import with per-hook security confirmation (default NO)
+- **Skill import with agent linking** (AB-114) -- skills linked to imported agents or standalone personas; staging file v2 with `whole_file_imports[]`, `config_merges[]`, `deduplication{}`
+- **Cross-platform deduplication** (AB-115) -- Jaccard similarity, claude > cursor > copilot priority, `--parent` flag wired to 3-strategy expanded pipeline
+- **Security hardening** -- path traversal validation on generates[], trusted-source checks, ALLOWED_CLASSIFICATION_DIRS enforcement, symlink detection, word-boundary secret detection, JSONC-safe comment stripping
+- **TS error cleanup** -- fixed all 45 pre-existing TypeScript errors across 5 files
 
 ---
 
