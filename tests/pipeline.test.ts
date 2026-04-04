@@ -68,10 +68,10 @@ describe("compile script", () => {
     }
   });
 
-  it("compiles all 4 personas across 4 platforms", () => {
+  it("compiles all 4 personas across 5 platforms", () => {
     const output = run("scripts/compile.ts");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("4 platform(s)");
+    expect(output).toContain("5 platform(s)");
     expect(output).toContain("dist/skill/");
     expect(output).toContain("dist/claude/");
     expect(output).toContain("dist/copilot/");
@@ -264,11 +264,11 @@ describe("compile script", () => {
 
   it("platforms are self-contained and each has all personas", () => {
     // skill and copilot use persona directories
-    const nonPersonaDirs = new Set(["instructions", "gotchas"]);
+    const nonPersonaDirs = new Set(["instructions", "gotchas", "agents", "rules"]);
     const skillPersonas = fs.readdirSync(path.join(ROOT, "dist", "skill", "core"))
-      .filter(f => !f.endsWith(".md") && !nonPersonaDirs.has(f)).sort();
+      .filter(f => !f.endsWith(".md") && !f.endsWith(".json") && !nonPersonaDirs.has(f)).sort();
     const copilotPersonas = fs.readdirSync(path.join(ROOT, "dist", "copilot", "core"))
-      .filter(f => !f.endsWith(".md") && !nonPersonaDirs.has(f)).sort();
+      .filter(f => !f.endsWith(".md") && !f.endsWith(".json") && !nonPersonaDirs.has(f)).sort();
     expect(skillPersonas).toEqual(copilotPersonas);
 
     // claude uses skills/ directory with subdirectories
@@ -619,6 +619,6 @@ describe("full pipeline (validate → compile)", () => {
 
     expect(output).toContain("All 4 checks passed");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("4 platform(s)");
+    expect(output).toContain("5 platform(s)");
   });
 });
