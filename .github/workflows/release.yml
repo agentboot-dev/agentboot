@@ -91,6 +91,12 @@ jobs:
         if: env.SKIP != 'true'
         run: npm install
 
+      - name: Configure git identity
+        if: env.SKIP != 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Build and test
         if: env.SKIP != 'true'
         run: npm run validate && npm run build && npm test
