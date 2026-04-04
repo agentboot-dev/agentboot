@@ -74,7 +74,7 @@
     // "copilot" — .github/copilot-instructions.md fragment
     // "agents" — AGENTS.md universal cross-tool standard
     // Default: all four.
-    "outputFormats": ["skill", "claude", "copilot", "agents"]
+    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents"]
   },
 
   // ---------------------------------------------------------------------------

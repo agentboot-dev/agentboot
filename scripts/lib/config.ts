@@ -219,6 +219,8 @@ export interface ManagedConfig {
     denyTools?: string[];
     /** Require audit logging */
     requireAuditLog?: boolean;
+    /** Disable the ability to bypass permissions */
+    disableBypassPermissions?: boolean;
   };
 }
 

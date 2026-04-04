@@ -518,7 +518,8 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
   const tools = opts?.agentTools ?? ["claude-code", "copilot"];
   if (tools.includes("claude-code")) outputFormats.push("claude");
   if (tools.includes("copilot")) outputFormats.push("copilot");
-  // cursor and gemini are planned but not yet supported as output formats
+  if (tools.includes("cursor")) outputFormats.push("cursor");
+  // gemini output format planned for Phase 7
 
   // agentboot.config.json
   const configContent = JSON.stringify({

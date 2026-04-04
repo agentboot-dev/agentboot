@@ -467,10 +467,10 @@ function syncRepo(
 
   const result: SyncResult = {
     repo: repoPath,
-    label: entry.label,
-    platform: entry.platform ?? "claude",
-    group: entry.group,
-    team: entry.team,
+    ...(entry.label != null ? { label: entry.label } : {}),
+    ...(entry.platform != null ? { platform: entry.platform } : { platform: "claude" }),
+    ...(entry.group != null ? { group: entry.group } : {}),
+    ...(entry.team != null ? { team: entry.team } : {}),
     filesWritten: [],
     filesSkipped: [],
     errors: [],
@@ -599,6 +599,20 @@ function syncRepo(
           result.filesSkipped.push(relDest);
         }
       }
+    }
+  }
+
+  // Sync AGENTS.md to repo root (universal cross-tool standard).
+  const agentsMdSrc = path.join(distPath, "agents", "AGENTS.md");
+  if (fs.existsSync(agentsMdSrc)) {
+    const destPath = path.join(repoPath, "AGENTS.md");
+    const content = fs.readFileSync(agentsMdSrc, "utf-8");
+    const status = writeFile(destPath, content, dryRun);
+    const relDest = path.relative(repoPath, destPath);
+    if (status === "written") {
+      result.filesWritten.push(relDest);
+    } else {
+      result.filesSkipped.push(relDest);
     }
   }
 
