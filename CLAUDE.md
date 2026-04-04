@@ -206,14 +206,14 @@ Three-stage progression from flat files to RAG:
 
 ## Known Gaps
 
-- AGENTS.md output format not yet implemented (Phase 4, highest priority)
-- Cursor output format (`.cursor/rules/*/RULE.md`) not yet implemented (Phase 4)
-- Composition-aware sync not yet implemented — `mergeScopes()` uses team-wins-all, not rule/preference (Phase 4)
-- `managed-settings.d/` scope fragment generation not yet implemented (Phase 4)
-- PreToolUse compliance hook compilation not yet implemented (Phase 4)
-- Token budget enforcement in `agentboot lint` not yet implemented (Phase 4)
-- Gemini and JetBrains output formats not yet implemented (Phase 5)
+- Gemini and JetBrains output formats not yet implemented (Phase 7)
+- Cursor sync path mapping — compile generates `dist/cursor/` but sync doesn't map to `.cursor/` in spoke repos
+- Managed settings group/team fragments — only `00-org.json` generated, no `10-group.json` or `20-team.json`
+- Copilot scoped instructions (`.github/instructions/*.instructions.md` with `applyTo`) not implemented
 - Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not
 - No runtime config schema validation (zod planned but not wired in)
 - `repos.json` is empty — production sync path untested in real workflow (uses dev-sync for dogfooding)
+- `--non-interactive` mode defined but not yet implemented (prints stub message)
 - This repo is the build tool, not a personas hub — orgs create a separate `personas` repo that uses AgentBoot as the build tool
+
+See `docs/internal/plans/remaining-work.md` for full inventory of planned features and research needs.
