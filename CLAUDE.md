@@ -77,7 +77,7 @@ Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/agents/` — AGENTS.md universal standard
 - `dist/cursor/` — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
 
-Gemini and JetBrains output are planned for Phase 7+.
+Gemini and JetBrains output are planned for a future phase.
 
 Within each platform folder, scope hierarchy is preserved:
 - `dist/{platform}/core/` — org-level personas
@@ -142,7 +142,7 @@ See `docs/concepts.md` for full design rationale.
 
 `docs/cli-reference.md` — all implemented CLI commands with full syntax, flags, and examples.
 
-### Knowledge Layer (Phase 5 design)
+### Knowledge Layer (future design)
 
 Three-stage progression from flat files to RAG:
 - **Stage 1 (Flat files):** Current default. Markdown gotchas/traits with path scoping. Works for 5-50 items.

@@ -41,7 +41,7 @@ A trait is not:
 
 The trait files in `core/traits/` are the authoritative definitions. Each one defines
 the behavior, the anti-patterns to avoid, and the interaction effects with other traits.
-(A planned trait weight system will add HIGH / MEDIUM / LOW calibration — see below.)
+(The trait weight system supports HIGH / MEDIUM / LOW / MAX / OFF calibration — see below.)
 
 ---
 
@@ -189,7 +189,7 @@ Output formats (see [Output Structure](../CLAUDE.md#output-structure)):
 - **AGENTS.md** — universal cross-tool standard (Codex, Cursor, Copilot, Gemini CLI)
 - **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
 - **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions
-- **Cursor** — `.cursor/rules/*/RULE.md` with glob-scoped rules
+- **Cursor** — `.cursor/rules/*.mdc` with `alwaysApply`/`globs` frontmatter
 - **SKILL.md** — agentskills.io cross-platform format
 
 ### Claude Code-native output
@@ -251,7 +251,7 @@ This has three advantages over inlined output:
 The build system generates **one self-contained folder per platform** under `dist/`.
 Each platform folder (e.g., `dist/claude/`, `dist/copilot/`, `dist/cursor/`, `dist/skill/`,
 `dist/agents/`) contains everything needed for that platform and nothing it doesn't.
-Gemini and JetBrains output folders are planned but not yet implemented.
+Gemini and JetBrains output folders are planned for a future phase.
 The Claude Code folder uses @import-based files; the skill folder uses inlined SKILL.md
 for cross-platform distribution.
 
@@ -437,20 +437,14 @@ dist/
 │
 ├── cursor/                      # Self-contained Cursor distribution
 │   ├── core/
-│   │   └── .cursor/rules/*.md
+│   │   └── .cursor/rules/*.mdc
 │   ├── groups/...
 │   └── teams/...
 │
-├── skill/                       # Cross-platform SKILL.md (agentskills.io)
-│   ├── core/
-│   │   ├── code-reviewer/SKILL.md (traits inlined)
-│   │   └── PERSONAS.md
-│   ├── groups/...
-│   └── teams/...
-│
-└── gemini/                      # Self-contained Gemini CLI distribution
+└── skill/                       # Cross-platform SKILL.md (agentskills.io)
     ├── core/
-    │   └── GEMINI.md
+    │   ├── code-reviewer/SKILL.md (traits inlined)
+    │   └── PERSONAS.md
     ├── groups/...
     └── teams/...
 ```

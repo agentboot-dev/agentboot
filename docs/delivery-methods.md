@@ -292,11 +292,11 @@ without opting in.
 
 ---
 
-### 5. MCP Server (`agentboot-mcp`)
+### 5. MCP Server (`agentboot-mcp`) — Deferred to Phase 8
 
 **What it is:** AgentBoot exposed as an MCP server that any MCP-compatible agent can
 consume. Provides persona invocation, trait lookup, governance status, and knowledge
-base access as MCP tools and resources.
+base access as MCP tools and resources. **Not yet implemented** — deferred to Phase 8.
 
 **How it works:**
 ```json
@@ -603,28 +603,32 @@ through different channels.
    `.github/copilot-instructions.md` which Copilot reads as always-on instructions.
    This is the equivalent of CLAUDE.md. Synced to repos via `agentboot sync`.
 
-2. **Path-scoped `.instructions.md`** — Copilot supports per-directory instruction
-   files (`.github/instructions/*.instructions.md` with glob-scoped frontmatter).
+2. **Copilot agents (`.github/agents/*.agent.md`)** — Custom agent definitions for
+   Copilot. AgentBoot generates these from personas with traits inlined.
+
+3. **Path-scoped `.instructions.md`** — Copilot supports per-directory instruction
+   files (`.github/instructions/*.instructions.md` with `applyTo` frontmatter).
    AgentBoot generates these from gotchas rules and domain layers.
 
-3. **Prompt files (`.github/prompts/*.prompt.md`)** — Copilot's slash command
+4. **Prompt files (`.github/prompts/*.prompt.md`)** — Copilot's slash command
    equivalent. AgentBoot generates these as the IDE invocation surface for personas.
    Developers type `/review-code` in VS Code Copilot Chat.
 
-4. **Agent Skills (`skills/{name}/SKILL.md`)** — The agentskills.io format is
+5. **Agent Skills (`skills/{name}/SKILL.md`)** — The agentskills.io format is
    supported in Copilot CLI agent mode. AgentBoot's cross-platform SKILL.md output
    works here directly.
 
-5. **Repository rules** — Copilot can auto-review every PR via native repository
+6. **Repository rules** — Copilot can auto-review every PR via native repository
    rules. No Claude Code involved. The PR review persona is configured once in
    GitHub repo settings.
 
-6. **Custom instructions (org-level)** — Copilot Enterprise supports org-level
+7. **Custom instructions (org-level)** — Copilot Enterprise supports org-level
    custom instructions that apply to all repos. AgentBoot generates these from
    the org-scope always-on instructions.
 
-7. **MCP servers** — Copilot supports MCP in VS Code (GA) and CLI. AgentBoot's
-   MCP server works here for live persona serving and knowledge base access.
+8. **MCP servers** — Copilot supports MCP in VS Code (GA) and CLI. AgentBoot's
+   MCP server (deferred to Phase 8) would work here for live persona serving and
+   knowledge base access.
 
 **What Copilot lacks vs. CC:**
 - No hooks (except CLI pre-prompt hook) — compliance enforcement is advisory only
@@ -643,9 +647,9 @@ no marketplace. It's the "repo already has it" model.
 
 **Delivery mechanisms:**
 
-1. **`.cursor/rules/`** — Cursor reads rule files from this directory. AgentBoot
-   generates these from always-on instructions and gotchas rules. Format is similar
-   to CC rules but in Cursor's directory.
+1. **`.cursor/rules/*.mdc`** — Cursor reads `.mdc` rule files from this directory. AgentBoot
+   generates flat `.mdc` files with `alwaysApply`/`globs` frontmatter from always-on
+   instructions and gotchas rules.
 
 2. **`.cursorrules`** — Legacy single-file instructions. AgentBoot can generate
    this as a flattened version of org + group + team instructions.
@@ -653,8 +657,8 @@ no marketplace. It's the "repo already has it" model.
 3. **Agent Skills (`skills/{name}/SKILL.md`)** — Cursor supports the agentskills.io
    format. AgentBoot's cross-platform SKILL.md output works here.
 
-4. **MCP servers** — Cursor supports MCP. AgentBoot's MCP server provides live
-   persona access.
+4. **MCP servers** — Cursor supports MCP. AgentBoot's MCP server (deferred to
+   Phase 8) would provide live persona access.
 
 **What Cursor lacks vs. CC:**
 - No hooks — zero enforcement capability

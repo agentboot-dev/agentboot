@@ -17,6 +17,7 @@ or `agentboot <command> --help` for command-specific help.
 | `-c, --config <path>` | Path to `agentboot.config.json` |
 | `--verbose` | Show detailed output |
 | `--quiet` | Suppress non-error output |
+| `--debug` | Show debug output (LLM responses, raw data) |
 | `-v, --version` | Print version |
 
 ---
@@ -115,6 +116,7 @@ agentboot sync --dry-run
 |------|-------------|
 | `--repos-file <path>` | Path to repos.json (default: `./repos.json`) |
 | `-d, --dry-run` | Preview changes without writing |
+| `--force` | Override drift detection (overwrite modified files) |
 
 ---
 
@@ -209,10 +211,12 @@ agentboot import --apply
 | Flag | Description |
 |------|-------------|
 | `--path <dir>` | Directory or repo to scan (default: cwd) |
+| `--parent <dir>` | Scan all subdirs of a parent directory (expanded import pipeline) |
 | `--hub-path <dir>` | Path to personas repo (auto-detected from siblings if omitted) |
 | `--overlap` | Run heuristic overlap analysis against hub and cross-import content |
 | `--apply` | Apply a previously generated import plan (`.agentboot-import-plan.json`) |
 | `--non-interactive` | Auto-apply high-confidence (>0.8) classifications without prompting |
+| `--isolated` | Test prompts without user Claude settings (uses temp config) |
 
 This is an **LLM-powered command** — it uses `claude -p` to classify content.
 Requires an active Claude Code login. See [concepts](./concepts.md#llm-and-deterministic-commands)
@@ -223,7 +227,8 @@ for the command classification model.
 ## `agentboot add <type> <name>`
 
 Scaffold a new component. The `name` argument must be 1-64 lowercase alphanumeric
-characters with hyphens (e.g., `my-new-persona`).
+characters with hyphens (e.g., `my-new-persona`). For the `prompt` type, `name` is
+the content or file path to classify.
 
 ```
 agentboot add persona my-reviewer
@@ -231,6 +236,7 @@ agentboot add trait my-trait
 agentboot add gotcha database-rls
 agentboot add domain healthcare
 agentboot add hook compliance-gate
+agentboot add prompt ./path/to/file.md
 ```
 
 ### Supported types
@@ -242,6 +248,7 @@ agentboot add hook compliance-gate
 | `gotcha` | `core/gotchas/<name>.md` (with `paths:` frontmatter) |
 | `domain` | `domains/<name>/` directory with manifest, README, and subdirectories |
 | `hook` | `hooks/<name>.sh` (executable shell script with hook template) |
+| `prompt` | Classify a raw prompt or file using `import` (LLM-powered) |
 
 ---
 
