@@ -1098,6 +1098,44 @@ describe("AB-43: import — applyPlan", () => {
     expect(ALLOWED_CLASSIFICATION_DIRS).toContain("core/instructions/");
     expect(ALLOWED_CLASSIFICATION_DIRS).toContain("core/personas/");
   });
+
+  // Gap 3: Additional path traversal guard tests
+
+  it("rejects relative path traversal with ../escape/file.md", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ suggested_path: "../escape/file.md" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(0);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/escapes hub boundary|not in allowed directory/);
+  });
+
+  it("rejects absolute path /etc/passwd", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ suggested_path: "/etc/passwd" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(0);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toMatch(/escapes hub boundary|not in allowed directory/);
+  });
+
+  it("accepts valid path core/traits/valid.md", () => {
+    const plan = {
+      hub: hubDir,
+      scanned_at: new Date().toISOString(),
+      classifications: [makeClassification({ suggested_path: "core/traits/valid.md" })],
+    };
+    const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
+    expect(result.created).toBe(1);
+    expect(result.errors.length).toBe(0);
+    expect(fs.existsSync(path.join(hubDir, "core/traits/valid.md"))).toBe(true);
+  });
 });
 
 // ===========================================================================

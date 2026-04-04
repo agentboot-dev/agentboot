@@ -300,8 +300,9 @@ export function buildWeightPreamble(traitName: string, weight: number): string {
   // Only inject preamble when weight differs from default
   if (weight === DEFAULT_WEIGHT) return "";
 
-  // Find the closest calibration text for this weight
-  const key = String(weight);
+  // Find the closest calibration text for this weight.
+  // Use toFixed(1) to match keys like "1.0" (String(1.0) produces "1", not "1.0").
+  const key = weight.toFixed(1);
   if (calibrations[key]) return calibrations[key]!;
 
   // Find the nearest defined key
@@ -315,7 +316,7 @@ export function buildWeightPreamble(traitName: string, weight: number): string {
       closestDist = dist;
     }
   }
-  return calibrations[String(closest)] ?? "";
+  return calibrations[closest.toFixed(1)] ?? "";
 }
 
 function injectTraits(

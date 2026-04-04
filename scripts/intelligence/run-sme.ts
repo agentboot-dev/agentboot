@@ -17,7 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -135,6 +135,14 @@ function parseArgs(argv: string[]): CliArgs {
   const validHarnesses: HarnessId[] = ["cc", "copilot", "cursor", "gemini", "jetbrains"];
   if (!validHarnesses.includes(harness as HarnessId)) {
     console.error(`Error: invalid harness "${harness}". Must be one of: ${validHarnesses.join(", ")}`);
+    process.exit(1);
+  }
+
+  // Validate output path stays within project root
+  const resolvedOutput = path.resolve(output);
+  const resolvedRoot = path.resolve(ROOT);
+  if (!resolvedOutput.startsWith(resolvedRoot)) {
+    console.error(`Error: output path must be within the project root`);
     process.exit(1);
   }
 
@@ -276,19 +284,22 @@ function main(): void {
   // Invoke claude -p --print
   let rawOutput: string;
   try {
-    rawOutput = execSync(
-      `claude -p --print --max-turns 1`,
-      {
-        input: prompt,
-        encoding: "utf-8",
-        timeout: 120_000, // 2 minute timeout
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-        env: {
-          ...process.env,
-          MAX_TOKENS: String(args.maxTokens),
-        },
-      },
-    ).trim();
+    const result = spawnSync("claude", [
+      "-p", "--print",
+      "--max-turns", "1",
+      "--max-tokens", String(args.maxTokens),
+    ], {
+      input: prompt,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 120_000, // 2 minute timeout
+      maxBuffer: 10 * 1024 * 1024, // 10MB
+    });
+    if (result.status !== 0) {
+      const stderr = result.stderr?.trim() ?? "";
+      throw new Error(stderr || `claude exited with code ${result.status}`);
+    }
+    rawOutput = (result.stdout ?? "").trim();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Error invoking claude: ${message}`);
@@ -334,8 +345,8 @@ function main(): void {
   const totalTokens = estimatedInputTokens + estimatedOutputTokens;
   console.log(`  Estimated total tokens: ~${totalTokens}`);
 
-  // Append to costs.json
-  const costsPath = path.join(ROOT, "intelligence", "costs.json");
+  // Append to per-harness costs file (avoids concurrency issues in parallel CI)
+  const costsPath = path.join(ROOT, "intelligence", `costs-${args.harness}.json`);
   try {
     const costsData = fs.existsSync(costsPath)
       ? JSON.parse(fs.readFileSync(costsPath, "utf-8")) as { runs: unknown[] }
@@ -357,4 +368,12 @@ function main(): void {
   }
 }
 
-main();
+export { buildPrompt, validateReport };
+export type { FetchedSource as RunSmeFetchedSource, SmeReport, Finding, HarnessId as RunSmeHarnessId };
+
+// Only run main when invoked directly (not when imported for testing)
+const isDirectRun = process.argv[1]?.replace(/\.ts$/, "").replace(/\.js$/, "")
+  === fileURLToPath(import.meta.url).replace(/\.ts$/, "").replace(/\.js$/, "");
+if (isDirectRun) {
+  main();
+}

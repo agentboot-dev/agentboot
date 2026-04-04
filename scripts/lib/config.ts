@@ -409,47 +409,66 @@ export interface MarketplaceEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * Strip single-line // comments from a JSONC string, respecting string literals.
- * Tracks whether we are inside a quoted string (handling escaped quotes) before
- * deciding to truncate a line at a // comment.
+ * Strip single-line // comments and block comments from a JSONC string,
+ * respecting string literals. Tracks whether we are inside a quoted string
+ * (handling escaped quotes) before deciding to strip comments.
+ * Comment content is replaced with spaces to preserve character positions
+ * for error messages.
  */
 export function stripJsoncComments(raw: string): string {
-  const lines = raw.split("\n");
-  const result: string[] = [];
+  let inString = false;
+  let inBlockComment = false;
+  let i = 0;
+  let out = "";
 
-  for (const line of lines) {
-    let inString = false;
-    let i = 0;
-    let out = "";
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    const next = i + 1 < raw.length ? raw[i + 1] : "";
 
-    while (i < line.length) {
-      const ch = line[i]!;
-
-      if (inString) {
-        out += ch;
-        if (ch === "\\" && i + 1 < line.length) {
-          i++;
-          out += line[i]!;
-        } else if (ch === '"') {
-          inString = false;
-        }
+    if (inBlockComment) {
+      // Look for end of block comment
+      if (ch === "*" && next === "/") {
+        out += "  "; // replace */ with spaces
+        i += 2;
+        inBlockComment = false;
       } else {
-        if (ch === '"') {
-          inString = true;
-          out += ch;
-        } else if (ch === "/" && line[i + 1] === "/") {
-          break;
-        } else {
-          out += ch;
-        }
+        // Preserve newlines, replace other chars with space
+        out += ch === "\n" ? "\n" : " ";
+        i++;
+      }
+    } else if (inString) {
+      out += ch;
+      if (ch === "\\" && i + 1 < raw.length) {
+        i++;
+        out += raw[i]!;
+      } else if (ch === '"') {
+        inString = false;
       }
       i++;
+    } else {
+      if (ch === '"') {
+        inString = true;
+        out += ch;
+        i++;
+      } else if (ch === "/" && next === "/") {
+        // Single-line comment: replace rest of line with spaces
+        i += 2;
+        while (i < raw.length && raw[i] !== "\n") {
+          i++;
+        }
+      } else if (ch === "/" && next === "*") {
+        out += "  "; // replace /* with spaces
+        i += 2;
+        inBlockComment = true;
+      } else {
+        out += ch;
+        i++;
+      }
     }
-
-    result.push(out.trimEnd());
   }
 
-  return result.join("\n");
+  // Trim trailing whitespace from each line to match previous behavior
+  return out.split("\n").map(line => line.trimEnd()).join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +543,12 @@ export interface PluginValidationWarning {
   level: "error" | "warn";
 }
 
+/** Check if a value contains path traversal (..) segments. */
+function hasPathTraversal(val: unknown): boolean {
+  if (typeof val !== "string") return false;
+  return val.split("/").includes("..");
+}
+
 /**
  * Validate a plugin.json manifest against the CC plugin spec.
  * Returns an array of warnings/errors. Non-blocking — callers decide whether to proceed.
@@ -559,6 +584,27 @@ export function validatePluginManifest(manifest: Record<string, unknown>): Plugi
     const val = manifest[arrayField];
     if (Array.isArray(val) && val.length === 0) {
       warnings.push({ field: arrayField, message: `${arrayField} array is empty`, level: "warn" });
+    }
+  }
+
+  // Check for path traversal in array entries with path-like fields
+  for (const arrayField of ["agents", "skills", "rules", "hooks"] as const) {
+    const val = manifest[arrayField];
+    if (Array.isArray(val)) {
+      for (let idx = 0; idx < val.length; idx++) {
+        const entry = val[idx];
+        if (typeof entry === "object" && entry !== null) {
+          for (const [key, v] of Object.entries(entry as Record<string, unknown>)) {
+            if (hasPathTraversal(v)) {
+              warnings.push({
+                field: `${arrayField}[${idx}].${key}`,
+                message: `path contains ".." traversal segment`,
+                level: "error",
+              });
+            }
+          }
+        }
+      }
     }
   }
 

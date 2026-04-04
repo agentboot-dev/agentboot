@@ -687,12 +687,13 @@ agentboot build
 agentboot export --format all
 
 dist/
-├── claude-code/           # Full native output (.claude/ directory)
-├── copilot/               # .github/copilot-instructions.md + prompts + skills
-├── cursor/                # .cursor/rules/ + .cursorrules + skills
-├── gemini/                # GEMINI.md + skills
-├── cross-platform/        # agentskills.io SKILL.md (works everywhere)
-└── mcp/                   # MCP server config (works everywhere)
+├── claude/                # Full native output (.claude/ directory)
+├── copilot/               # .github/copilot-instructions.md + scoped instructions
+├── cursor/                # .cursor/rules/*.mdc flat rules
+├── skill/                 # agentskills.io SKILL.md (cross-platform)
+├── agents/                # AGENTS.md universal standard
+├── gemini/                # GEMINI.md + skills (planned)
+└── jetbrains/             # JetBrains AI config (planned)
 ```
 
 The sync script reads each repo's `platform` field from `repos.json` and writes
