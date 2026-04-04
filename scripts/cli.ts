@@ -15,6 +15,8 @@
  *   agentboot doctor [--fix] [--dry-run] [--format text|json]
  *   agentboot status [--format text|json]
  *   agentboot lint [--persona name] [--severity level] [--format text|json]
+ *   agentboot test [--behavioral] [--snapshot] [--regression]
+ *   agentboot migrate [--path dir] [--revert] [--dry-run] [--org name]
  *   agentboot uninstall [--repo path] [--dry-run]
  *   agentboot config [key] [value]
  *   agentboot <command> --help
@@ -939,6 +941,116 @@ program
           warn(`dist/ not found — run \`agentboot build\``, true);
         }
 
+        // AB-120: Composition diagnostics
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Composition")); }
+
+        // 120a: Missing composition manifests
+        const distPath2 = path.resolve(cwd, config.output?.distPath ?? "./dist");
+        if (fs.existsSync(distPath2)) {
+          const manifestPath = path.join(distPath2, "claude", "core", "composition-manifest.json");
+          if (fs.existsSync(manifestPath)) {
+            ok("Composition manifest found in dist/");
+          } else {
+            warn("dist/ exists but no composition-manifest.json — rebuild with `agentboot build`");
+          }
+        }
+
+        // 120b: Orphaned composition overrides
+        const overrides = (config.composition as Record<string, unknown> | undefined)?.["overrides"] as Record<string, string> | undefined;
+        if (overrides && typeof overrides === "object") {
+          for (const [filePath] of Object.entries(overrides)) {
+            const fullOverridePath = path.join(cwd, filePath);
+            if (!fs.existsSync(fullOverridePath)) {
+              warn(`Orphaned composition override: "${filePath}" does not exist`);
+            }
+          }
+          if (Object.keys(overrides).length > 0) {
+            const orphanCount = Object.keys(overrides).filter(
+              fp => !fs.existsSync(path.join(cwd, fp))
+            ).length;
+            if (orphanCount === 0) ok(`All ${Object.keys(overrides).length} composition overrides reference existing files`);
+          }
+        }
+
+        // 120c: Shadow detection (filename collisions across scopes)
+        const coreDir = path.join(cwd, "core");
+        const groupsDir = path.join(cwd, "groups");
+        const teamsDir = path.join(cwd, "teams");
+        const coreFiles = new Set<string>();
+        if (fs.existsSync(coreDir)) {
+          function walkCore(dir: string): void {
+            for (const entry of fs.readdirSync(dir)) {
+              const full = path.join(dir, entry);
+              if (fs.statSync(full).isDirectory()) walkCore(full);
+              else if (full.endsWith(".md")) coreFiles.add(path.relative(coreDir, full).replace(/\\/g, "/"));
+            }
+          }
+          walkCore(coreDir);
+        }
+        let shadowCount = 0;
+        function checkShadows(scopeDir: string, _scopeLabel: string): void {
+          if (!fs.existsSync(scopeDir)) return;
+          function walkScope(dir: string): void {
+            for (const entry of fs.readdirSync(dir)) {
+              const full = path.join(dir, entry);
+              if (fs.statSync(full).isDirectory()) walkScope(full);
+              else if (full.endsWith(".md")) {
+                const rel = path.relative(scopeDir, full).replace(/\\/g, "/");
+                if (coreFiles.has(rel)) { shadowCount++; }
+              }
+            }
+          }
+          walkScope(scopeDir);
+        }
+        if (fs.existsSync(groupsDir)) {
+          for (const g of fs.readdirSync(groupsDir)) {
+            const gp = path.join(groupsDir, g);
+            if (fs.statSync(gp).isDirectory()) checkShadows(gp, `groups/${g}`);
+          }
+        }
+        if (fs.existsSync(teamsDir)) {
+          for (const g of fs.readdirSync(teamsDir)) {
+            const gp = path.join(teamsDir, g);
+            if (!fs.statSync(gp).isDirectory()) continue;
+            for (const t of fs.readdirSync(gp)) {
+              const tp = path.join(gp, t);
+              if (fs.statSync(tp).isDirectory()) checkShadows(tp, `teams/${g}/${t}`);
+            }
+          }
+        }
+        if (shadowCount > 0) {
+          warn(`${shadowCount} scope shadow(s) found — run \`agentboot validate\` for details`);
+        } else if (coreFiles.size > 0) {
+          ok("No scope shadows detected");
+        }
+
+        // AB-121: Tool/format consistency check
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Consistency")); }
+        const tools = (config.agents as Record<string, unknown> | undefined)?.["tools"] as string[] | undefined;
+        const formats = config.personas?.outputFormats as string[] | undefined;
+        if (tools && formats) {
+          const TOOL_FORMAT_MAP: Record<string, string> = {
+            "copilot": "copilot", "cursor": "cursor", "claude-code": "claude",
+            "claude": "claude", "agents": "agents",
+          };
+          for (const tool of tools) {
+            const expectedFormat = TOOL_FORMAT_MAP[tool];
+            if (expectedFormat && !formats.includes(expectedFormat)) {
+              warn(
+                `agents.tools includes "${tool}" but personas.outputFormats is missing "${expectedFormat}" — ` +
+                `add "${expectedFormat}" to outputFormats to generate output for this platform`
+              );
+            }
+          }
+          const noMismatch = tools.every(t => {
+            const ef = TOOL_FORMAT_MAP[t];
+            return !ef || formats.includes(ef);
+          });
+          if (noMismatch) ok("Tool and output format configuration is consistent");
+        } else {
+          ok("Tool/format consistency (no agents.tools configured)");
+        }
+
       } catch (e: unknown) {
         fail(`Config parse error: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -972,6 +1084,104 @@ program
         console.log(chalk.bold(chalk.green("✓ All checks passed\n")));
       }
     }
+  });
+
+// ---- test (AB-123/124) — behavioral and snapshot testing ------------------
+
+program
+  .command("test")
+  .description("Run behavioral and snapshot tests for personas")
+  .option("--behavioral", "run behavioral tests (requires LLM, costs money)")
+  .option("--snapshot", "create or update snapshot baseline from current dist/")
+  .option("--regression", "compare current dist/ against saved snapshot")
+  .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
+  .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
+  .action(async (opts) => {
+    const {
+      runBehavioralTests, createSnapshot, compareSnapshots,
+      saveSnapshot, loadSnapshot, printSnapshotDiff,
+    } = await import("./lib/test-runner.js");
+
+    const cwd = process.cwd();
+    const configPath = path.join(cwd, "agentboot.config.json");
+    const config = fs.existsSync(configPath) ? loadConfig(configPath) : null;
+    const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
+
+    console.log(chalk.bold("\nAgentBoot — test\n"));
+
+    let exitCode = 0;
+
+    // Snapshot create/update
+    if (opts["snapshot"]) {
+      console.log(chalk.cyan("  Creating snapshot baseline..."));
+      if (!fs.existsSync(distPath)) {
+        console.log(chalk.red("  dist/ not found — run `agentboot build` first.\n"));
+        process.exit(1);
+      }
+      const baseline = createSnapshot(distPath);
+      const snapshotPath = path.resolve(cwd, opts["snapshotFile"] as string);
+      saveSnapshot(baseline, snapshotPath);
+      console.log(chalk.green(`  ✓ Snapshot saved (${baseline.entries.length} files) → ${path.relative(cwd, snapshotPath)}\n`));
+    }
+
+    // Regression test
+    if (opts["regression"]) {
+      console.log(chalk.cyan("  Running regression test..."));
+      const snapshotPath = path.resolve(cwd, opts["snapshotFile"] as string);
+      const baseline = loadSnapshot(snapshotPath);
+      if (!baseline) {
+        console.log(chalk.red(`  Snapshot not found: ${snapshotPath}`));
+        console.log(chalk.gray("  Create one with: agentboot test --snapshot\n"));
+        process.exit(1);
+      }
+      if (!fs.existsSync(distPath)) {
+        console.log(chalk.red("  dist/ not found — run `agentboot build` first.\n"));
+        process.exit(1);
+      }
+      const current = createSnapshot(distPath);
+      const diff = compareSnapshots(baseline, current);
+      printSnapshotDiff(diff);
+      const totalChanges = diff.added.length + diff.removed.length + diff.changed.length;
+      if (totalChanges > 0) {
+        console.log(chalk.yellow(`\n  ${totalChanges} difference(s) from baseline.`));
+        console.log(chalk.gray("  Update baseline with: agentboot test --snapshot\n"));
+        exitCode = 1;
+      } else {
+        console.log(chalk.green("  ✓ No regression detected.\n"));
+      }
+    }
+
+    // Behavioral tests
+    if (opts["behavioral"]) {
+      console.log(chalk.cyan("  Running behavioral tests...\n"));
+      const testDir = path.resolve(cwd, opts["testDir"] as string);
+      const results = runBehavioralTests(testDir, distPath);
+
+      if (results.length === 0) {
+        console.log(chalk.yellow("  No behavioral test cases found.\n"));
+        console.log(chalk.gray(`  Create YAML test files in: ${path.relative(cwd, testDir)}/\n`));
+      } else {
+        const passed = results.filter(r => r.passed).length;
+        const failed = results.length - passed;
+        console.log("");
+        if (failed > 0) {
+          console.log(chalk.red(`  ✗ ${failed}/${results.length} behavioral test(s) failed.\n`));
+          exitCode = 1;
+        } else {
+          console.log(chalk.green(`  ✓ All ${passed} behavioral test(s) passed.\n`));
+        }
+      }
+    }
+
+    // If no flags specified, show help
+    if (!opts["behavioral"] && !opts["snapshot"] && !opts["regression"]) {
+      console.log(chalk.gray("  Specify a test type:\n"));
+      console.log(chalk.gray("    --behavioral   Run behavioral tests (LLM-powered, costs money)"));
+      console.log(chalk.gray("    --snapshot     Create/update snapshot baseline from dist/"));
+      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot\n"));
+    }
+
+    process.exit(exitCode);
   });
 
 // ---- status (AB-37) -------------------------------------------------------
@@ -1317,6 +1527,25 @@ program
 
     console.log(`  ${parts.join(", ")}\n`);
     process.exit(errorCount > 0 ? 1 : 0);
+  });
+
+// ---- migrate (AB-126) — convert repo into AgentBoot hub -------------------
+
+program
+  .command("migrate")
+  .description("Convert an existing repo into an AgentBoot hub")
+  .option("--path <dir>", "repo directory to migrate (default: cwd)")
+  .option("--revert", "undo a previous migration using saved backup")
+  .option("--dry-run", "preview what would change without modifying files")
+  .option("--org <name>", "org slug for the new hub (default: directory name)")
+  .action(async (opts) => {
+    const { runMigrate } = await import("./lib/migrate.js");
+    runMigrate({
+      path: opts["path"] as string | undefined,
+      revert: opts["revert"] as boolean | undefined,
+      dryRun: opts["dryRun"] as boolean | undefined,
+      org: opts["org"] as string | undefined,
+    });
   });
 
 // ---- uninstall (AB-45) ----------------------------------------------------

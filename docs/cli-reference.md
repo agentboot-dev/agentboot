@@ -35,8 +35,13 @@ agentboot build -c path/to/config.json
 
 ## `agentboot validate`
 
-Run pre-build validation checks: persona existence, trait references, SKILL.md
-frontmatter, and secret scanning.
+Run pre-build validation checks (6 checks):
+1. Persona existence — all enabled personas found in `core/personas/`
+2. Trait references — all traits in persona configs exist in `core/traits/`
+3. SKILL.md frontmatter — required fields present
+4. Secret scanning — no credentials in definitions
+5. Composition consistency — no scope conflicts between rule/preference types
+6. Rule override detection — lower scopes shadowing rule-type core artifacts
 
 ```
 agentboot validate
@@ -48,6 +53,51 @@ agentboot validate --strict
 | `-s, --strict` | Treat warnings as errors |
 
 Exit codes: `0` = pass, `1` = errors, `2` = warnings (with `--strict`).
+
+---
+
+## `agentboot test`
+
+Run behavioral and snapshot tests for personas.
+
+```
+agentboot test --behavioral              # Run YAML behavioral tests (LLM-powered)
+agentboot test --snapshot                 # Create/update snapshot baseline from dist/
+agentboot test --regression               # Compare dist/ against saved snapshot
+agentboot test --behavioral --test-dir tests/behavioral
+agentboot test --regression --snapshot-file .agentboot-snapshot.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--behavioral` | Run behavioral tests (requires LLM, costs money) |
+| `--snapshot` | Create or update snapshot baseline from current `dist/` |
+| `--regression` | Compare current `dist/` against saved snapshot |
+| `--test-dir <dir>` | Directory with behavioral test YAML files (default: `tests/behavioral`) |
+| `--snapshot-file <path>` | Path to snapshot baseline file (default: `.agentboot-snapshot.json`) |
+
+---
+
+## `agentboot migrate`
+
+Convert an existing repo with agentic content into an AgentBoot hub. Scans for `.claude/`, `.cursorrules`, `copilot-instructions.md`, classifies content, scaffolds the hub structure, and imports whole-file content deterministically.
+
+```
+agentboot migrate                         # Migrate current directory
+agentboot migrate --path /path/to/repo    # Migrate specific repo
+agentboot migrate --dry-run               # Preview changes
+agentboot migrate --revert                # Undo migration from backup
+agentboot migrate --org my-org            # Specify org slug
+```
+
+| Flag | Description |
+|------|-------------|
+| `--path <dir>` | Repo directory to migrate (default: cwd) |
+| `--revert` | Undo a previous migration using saved backup |
+| `--dry-run` | Preview what would change without modifying files |
+| `--org <name>` | Org slug for the new hub (default: directory name) |
+
+LLM classification is NOT run during migration. Run `agentboot import` after migration for files needing LLM classification.
 
 ---
 

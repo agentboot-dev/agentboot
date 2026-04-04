@@ -10,6 +10,8 @@
  *   2. All traits referenced in persona configs exist in core/traits/
  *   3. All SKILL.md files have required frontmatter (name, description)
  *   4. No obvious secrets or credentials in trait/persona definitions
+ *   5. Composition type consistency across scopes (AB-118)
+ *   6. Rule override detection — lower scopes shadowing core rules (AB-119)
  *
  * Usage:
  *   npm run validate
@@ -33,6 +35,8 @@ import {
   parseFrontmatter,
   DEFAULT_SECRET_PATTERNS,
   scanForSecrets,
+  resolveCompositionType,
+  type CompositionType,
 } from "./lib/frontmatter.js";
 
 // ---------------------------------------------------------------------------
@@ -360,6 +364,171 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Check 5: Composition type consistency across scopes (AB-118)
+// ---------------------------------------------------------------------------
+
+function checkCompositionConsistency(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("Composition consistency — no scope conflicts between rule/preference");
+  const coreDir = path.join(configDir, "core");
+  const groupsDir = path.join(configDir, "groups");
+  const teamsDir = path.join(configDir, "teams");
+
+  // Build map: relativePath → { scope, compositionType }[]
+  const artifacts = new Map<string, Array<{ scope: string; comp: CompositionType; fullPath: string }>>();
+
+  function scanScope(dir: string, scopeLabel: string): void {
+    if (!fs.existsSync(dir)) return;
+    for (const file of walkDir(dir, [".md", ".yaml", ".yml"])) {
+      const relativePath = path.relative(dir, file).replace(/\\/g, "/");
+      const content = fs.readFileSync(file, "utf-8");
+      const fm = parseFrontmatter(content);
+      const comp = resolveCompositionType(
+        relativePath,
+        fm,
+        config.composition?.overrides as Record<string, CompositionType> | undefined,
+        config.composition?.defaults as Record<string, CompositionType> | undefined,
+      );
+      const list = artifacts.get(relativePath) ?? [];
+      list.push({ scope: scopeLabel, comp, fullPath: file });
+      artifacts.set(relativePath, list);
+    }
+  }
+
+  scanScope(coreDir, "core");
+
+  // Scan groups
+  if (fs.existsSync(groupsDir)) {
+    for (const group of fs.readdirSync(groupsDir)) {
+      const groupPath = path.join(groupsDir, group);
+      if (fs.statSync(groupPath).isDirectory()) {
+        scanScope(groupPath, `groups/${group}`);
+      }
+    }
+  }
+
+  // Scan teams
+  if (fs.existsSync(teamsDir)) {
+    for (const group of fs.readdirSync(teamsDir)) {
+      const groupPath = path.join(teamsDir, group);
+      if (!fs.statSync(groupPath).isDirectory()) continue;
+      for (const team of fs.readdirSync(groupPath)) {
+        const teamPath = path.join(groupPath, team);
+        if (fs.statSync(teamPath).isDirectory()) {
+          scanScope(teamPath, `teams/${group}/${team}`);
+        }
+      }
+    }
+  }
+
+  // Check for conflicts: lower scope declares "preference" when higher scope declares "rule"
+  const SCOPE_ORDER: Record<string, number> = {};
+  // core = 0, groups/* = 1, teams/*/* = 2
+  for (const [relativePath, entries] of artifacts) {
+    if (entries.length < 2) continue; // single scope, no conflict
+
+    for (const entry of entries) {
+      if (entry.scope === "core") SCOPE_ORDER[entry.scope] = 0;
+      else if (entry.scope.startsWith("groups/")) SCOPE_ORDER[entry.scope] = 1;
+      else if (entry.scope.startsWith("teams/")) SCOPE_ORDER[entry.scope] = 2;
+    }
+
+    // Find rule declarations at higher (lower number) scopes
+    const ruleScopes = entries.filter(e => e.comp === "rule");
+    const prefScopes = entries.filter(e => e.comp === "preference");
+
+    for (const rule of ruleScopes) {
+      const ruleLevel = SCOPE_ORDER[rule.scope] ?? 99;
+      for (const pref of prefScopes) {
+        const prefLevel = SCOPE_ORDER[pref.scope] ?? 99;
+        if (prefLevel > ruleLevel) {
+          warn(
+            result,
+            `${relativePath}: ${pref.scope} declares "preference" but ${rule.scope} declares "rule" — ` +
+            `the rule-type (${rule.scope}) will take precedence during sync`
+          );
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Check 6: Rule override detection (AB-119)
+// ---------------------------------------------------------------------------
+
+function checkRuleOverrides(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("Rule overrides — no lower-scope shadows of rule-type artifacts");
+  const coreDir = path.join(configDir, "core");
+  const groupsDir = path.join(configDir, "groups");
+  const teamsDir = path.join(configDir, "teams");
+
+  // Find all rule-type artifacts at core scope
+  const coreRules = new Map<string, string>(); // relativePath → fullPath
+  if (fs.existsSync(coreDir)) {
+    for (const file of walkDir(coreDir, [".md", ".yaml", ".yml"])) {
+      const relativePath = path.relative(coreDir, file).replace(/\\/g, "/");
+      const content = fs.readFileSync(file, "utf-8");
+      const fm = parseFrontmatter(content);
+      const comp = resolveCompositionType(
+        relativePath,
+        fm,
+        config.composition?.overrides as Record<string, CompositionType> | undefined,
+        config.composition?.defaults as Record<string, CompositionType> | undefined,
+      );
+      if (comp === "rule") {
+        coreRules.set(relativePath, file);
+      }
+    }
+  }
+
+  if (coreRules.size === 0) return result;
+
+  // Check groups for shadows
+  if (fs.existsSync(groupsDir)) {
+    for (const group of fs.readdirSync(groupsDir)) {
+      const groupPath = path.join(groupsDir, group);
+      if (!fs.statSync(groupPath).isDirectory()) continue;
+      for (const file of walkDir(groupPath, [".md", ".yaml", ".yml"])) {
+        const relativePath = path.relative(groupPath, file).replace(/\\/g, "/");
+        if (coreRules.has(relativePath)) {
+          warn(
+            result,
+            `groups/${group}/${relativePath} shadows a rule-type artifact in core/ — ` +
+            `the core version will take precedence during sync`
+          );
+        }
+      }
+    }
+  }
+
+  // Check teams for shadows
+  if (fs.existsSync(teamsDir)) {
+    for (const group of fs.readdirSync(teamsDir)) {
+      const groupPath = path.join(teamsDir, group);
+      if (!fs.statSync(groupPath).isDirectory()) continue;
+      for (const team of fs.readdirSync(groupPath)) {
+        const teamPath = path.join(groupPath, team);
+        if (!fs.statSync(teamPath).isDirectory()) continue;
+        for (const file of walkDir(teamPath, [".md", ".yaml", ".yml"])) {
+          const relativePath = path.relative(teamPath, file).replace(/\\/g, "/");
+          if (coreRules.has(relativePath)) {
+            warn(
+              result,
+              `teams/${group}/${team}/${relativePath} shadows a rule-type artifact in core/ — ` +
+              `the core version will take precedence during sync`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
 function walkDir(dir: string, extensions: string[]): string[] {
   const results: string[] = [];
   if (!fs.existsSync(dir)) return results;
@@ -403,6 +572,8 @@ async function main(): Promise<void> {
     checkTraitReferences(config, configDir),
     checkSkillFrontmatter(config, configDir),
     checkNoSecrets(config, configDir),
+    checkCompositionConsistency(config, configDir),
+    checkRuleOverrides(config, configDir),
   ];
 
   // Print results.
