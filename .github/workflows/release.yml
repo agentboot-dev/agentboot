@@ -1,7 +1,8 @@
 name: Release
 
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches:
       - main
   workflow_dispatch:
@@ -19,8 +20,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Skip release commits to prevent infinite loops
-    if: "!startsWith(github.event.head_commit.message, 'chore: release v')"
+    # Only run when a PR is actually merged (not just closed), or on manual dispatch.
+    # Also skip release commits to prevent infinite loops.
+    if: >-
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event.pull_request.merged == true &&
+       !startsWith(github.event.pull_request.title, 'chore: release v'))
 
     steps:
       - name: Checkout
