@@ -352,19 +352,56 @@ program
   .command("import")
   .description("Scan and classify existing AI agent content (LLM-powered)")
   .option("--path <dir>", "directory or repo to scan (default: cwd)")
+  .option("--parent <dir>", "scan all subdirs of a parent directory (like install does)")
   .option("--hub-path <dir>", "path to personas repo")
   .option("--overlap", "run heuristic overlap analysis")
   .option("--apply", "apply an existing import plan")
-  .option("--isolated", "test prompts without user Claude settings (backs up and restores)")
+  .option("--isolated", "test prompts without user Claude settings (uses temp config)")
   .action(async (opts) => {
-    const { runImport, AgentBootError } = await import("./lib/import.js");
+    const parentDir = opts["parent"] as string | undefined;
     const run = async () => {
-      await runImport({
-        path: opts["path"] as string | undefined,
-        hubPath: opts["hubPath"] as string | undefined,
-        overlap: opts["overlap"] as boolean | undefined,
-        apply: opts["apply"] as boolean | undefined,
-      });
+      if (parentDir) {
+        // Expanded import: scan all subdirs, categorize by strategy, 3-strategy pipeline
+        const {
+          scanParentForContent, categorizeByStrategy, runExpandedImport,
+          applyImportPlanV2, writeStagingFileV2, printScanManifest, AgentBootError,
+        } = await import("./lib/import.js");
+        const hubPath = opts["hubPath"] as string | undefined;
+        if (!hubPath) {
+          console.log(chalk.red("  --parent requires --hub-path to specify the personas repo.\n"));
+          throw new AgentBootError(1);
+        }
+        const resolvedHub = path.resolve(hubPath);
+        const manifest = scanParentForContent(parentDir, [resolvedHub]);
+        if (manifest.files.length === 0) {
+          console.log(chalk.yellow("  No AI agent content found in subdirectories.\n"));
+          throw new AgentBootError(0);
+        }
+        printScanManifest(manifest);
+        const categorized = categorizeByStrategy(manifest);
+        const trustedSources = new Set(manifest.files.map(f => f.absolutePath));
+        const plan = runExpandedImport(categorized, manifest, resolvedHub, trustedSources);
+
+        if (opts["apply"]) {
+          const result = applyImportPlanV2(plan, resolvedHub, trustedSources);
+          console.log(chalk.bold(
+            `\n  ✓ Created: ${result.created}, Applied: ${result.applied}, Skipped: ${result.skipped}` +
+            (result.errors.length > 0 ? `, Errors: ${result.errors.length}` : "") + "\n"
+          ));
+          for (const err of result.errors) console.log(chalk.red(`    ${err}`));
+        } else {
+          writeStagingFileV2(plan, resolvedHub, trustedSources);
+          console.log(chalk.cyan(`\n  Import plan saved. Run with --apply to execute.\n`));
+        }
+      } else {
+        const { runImport } = await import("./lib/import.js");
+        await runImport({
+          path: opts["path"] as string | undefined,
+          hubPath: opts["hubPath"] as string | undefined,
+          overlap: opts["overlap"] as boolean | undefined,
+          apply: opts["apply"] as boolean | undefined,
+        });
+      }
     };
     try {
       if (opts["isolated"]) {
@@ -375,6 +412,7 @@ program
         await run();
       }
     } catch (err) {
+      const { AgentBootError } = await import("./lib/import.js");
       if (err instanceof AgentBootError) {
         process.exit(err.exitCode);
       }

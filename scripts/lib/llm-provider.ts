@@ -158,14 +158,19 @@ export class ClaudeCodeProvider implements LLMProvider {
       }
       console.log(chalk.cyan("  ──────────────────────────────────────────────────────\n"));
 
-      return {
+      const classResult: ClassificationResult = {
         data: parsed,
-        usage: output.usage ? {
+      };
+      if (output.usage) {
+        classResult.usage = {
           inputTokens: output.usage.input_tokens ?? 0,
           outputTokens: output.usage.output_tokens ?? 0,
-        } : undefined,
-        costUsd: output.total_cost_usd,
-      };
+        };
+      }
+      if (output.total_cost_usd != null) {
+        classResult.costUsd = output.total_cost_usd;
+      }
+      return classResult;
     } catch (err) {
       console.log(chalk.gray("  (could not parse response)"));
       console.log(chalk.cyan("  ──────────────────────────────────────────────────────\n"));
