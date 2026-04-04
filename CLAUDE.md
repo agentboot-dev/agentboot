@@ -40,7 +40,7 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
 
 **Lexicon** (`core/lexicon/`) contains domain term definitions — ubiquitous language entries that establish shared vocabulary. Lexicons are context compression primitives: defined once, referenced everywhere, saving tokens on every turn. Compiled first in the pipeline so all other artifacts benefit. Composition type: `rule`.
 
-**Traits** (`core/traits/`) are reusable behavioral building blocks (e.g., `critical-thinking.md`, `source-citation.md`). They are composed at build time — never at runtime. (Trait weight configurations are a Phase 2 feature.)
+**Traits** (`core/traits/`) are reusable behavioral building blocks (e.g., `critical-thinking.md`, `source-citation.md`). They are composed at build time — never at runtime. Trait weights (HIGH/MEDIUM/LOW/MAX/OFF) control intensity per persona via `persona.config.json`.
 
 **Personas** (`core/personas/{name}/`) each contain:
 - `SKILL.md` — the agent definition with `<!-- traits:start -->` / `<!-- traits:end -->` injection markers
@@ -57,8 +57,8 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
    - **`dist/skill/`** — cross-platform SKILL.md (agentskills.io format, traits inlined) + PERSONAS.md
    - **`dist/claude/`** — CC-native: agents, skills, rules, traits, CLAUDE.md (`@imports`), settings.json, .mcp.json
    - **`dist/copilot/`** — per-persona copilot-instructions.md fragments + instructions
-   - **`dist/agents/`** — AGENTS.md universal standard (planned, Phase 4)
-   - **`dist/cursor/`** — `.cursor/rules/*/RULE.md` glob-scoped rules (planned, Phase 4)
+   - **`dist/agents/`** — AGENTS.md universal standard
+   - **`dist/cursor/`** — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
 3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
@@ -74,10 +74,10 @@ Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/skill/` — cross-platform SKILL.md (agentskills.io format, traits inlined) + persona.config.json + PERSONAS.md
 - `dist/claude/` — CC-native: agents, skills, rules, traits, CLAUDE.md (@imports), settings.json, .mcp.json, PERSONAS.md
 - `dist/copilot/` — per-persona copilot-instructions.md fragments + instructions + PERSONAS.md
-- `dist/agents/` — AGENTS.md universal standard (planned, Phase 4)
-- `dist/cursor/` — `.cursor/rules/*/RULE.md` glob-scoped rules (planned, Phase 4)
+- `dist/agents/` — AGENTS.md universal standard
+- `dist/cursor/` — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
 
-Gemini and JetBrains output are planned for Phase 5.
+Gemini and JetBrains output are planned for Phase 7+.
 
 Within each platform folder, scope hierarchy is preserved:
 - `dist/{platform}/core/` — org-level personas
@@ -96,7 +96,7 @@ Everything is driven by `agentboot.config.json` (JSONC format). Key sections: `o
 
 All design ideas are documented in `docs/concepts.md`:
 
-**Core (Tier 1):** agentskills.io format, build-time trait composition, scope hierarchy, hub-and-spoke distribution, multi-format output. (Trait weight system — HIGH/MEDIUM/LOW — is designed but not yet implemented.)
+**Core (Tier 1):** agentskills.io format, build-time trait composition, scope hierarchy, hub-and-spoke distribution, multi-format output, trait weight system (HIGH/MEDIUM/LOW with compile-time calibration preambles).
 
 **High Value (Tier 2):** per-persona extensions, gotchas rules (path-scoped battle-tested knowledge), compliance hooks (3-layer defense-in-depth), ADR governance (permanent exception lifecycle), behavioral tests, self-improvement reflections (A→B→C), reviewer selection config.
 
@@ -210,14 +210,11 @@ Three-stage progression from flat files to RAG:
 
 ## Known Gaps
 
-- Gemini and JetBrains output formats not yet implemented (Phase 7)
-- Cursor sync path mapping — compile generates `dist/cursor/` but sync doesn't map to `.cursor/` in spoke repos
+- Gemini and JetBrains output formats not yet implemented
 - Managed settings group/team fragments — only `00-org.json` generated, no `10-group.json` or `20-team.json`
-- Copilot scoped instructions (`.github/instructions/*.instructions.md` with `applyTo`) not implemented
-- Trait weight system (HIGH/MEDIUM/LOW) not yet implemented — traits are included or not
 - No runtime config schema validation (zod planned but not wired in)
-- `repos.json` is empty — production sync path untested in real workflow (uses dev-sync for dogfooding)
-- `--non-interactive` mode defined but not yet implemented (prints stub message)
+- `repos.json` is empty — production sync path untested with real external repos (integration tests use temp dirs)
+- Trait weight calibration text only implemented for `critical-thinking` — other traits use default weight without calibration preamble
 - This repo is the build tool, not a personas hub — orgs create a separate `personas` repo that uses AgentBoot as the build tool
 
 See `docs/internal/plans/remaining-work.md` for full inventory of planned features and research needs.

@@ -272,7 +272,10 @@ function pressAnyKey(message: string): Promise<void> {
   });
 }
 
-/** Expand shell-style `~` and `$VAR` / `${VAR}` in a path string. */
+/** Expand shell-style `~` and `$VAR` / `${VAR}` in a path string.
+ *  Only known safe env vars are expanded to prevent exfiltration of arbitrary env values. */
+const SAFE_ENV_VARS = new Set(["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]);
+
 function expandPath(p: string): string {
   const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? "/";
   let result = p;
@@ -280,9 +283,11 @@ function expandPath(p: string): string {
   if (result === "~" || result.startsWith("~/")) {
     result = home + result.slice(1);
   }
-  // $VAR or ${VAR}
-  result = result.replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, braced, plain) => {
-    return process.env[braced ?? plain] ?? "";
+  // $VAR or ${VAR} — only expand known safe variables
+  result = result.replace(/\$\{(\w+)\}|\$(\w+)/g, (match, braced, plain) => {
+    const varName: string = braced ?? plain;
+    if (!SAFE_ENV_VARS.has(varName)) return match;
+    return process.env[varName] ?? "";
   });
   return result;
 }
@@ -1600,6 +1605,15 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
       ? personasEnv.split(",").map(p => p.trim()).filter(Boolean)
       : ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"];
 
+    // Validate persona names from env
+    const VALID_NAME = /^[a-z][a-z0-9-]*$/;
+    for (const p of personas) {
+      if (!VALID_NAME.test(p)) {
+        console.error(`Invalid persona name: "${p}" — must match [a-z][a-z0-9-]*`);
+        process.exit(1);
+      }
+    }
+
     const hubDir = opts.path ? path.resolve(opts.path) : path.resolve(cwd, "personas");
 
     if (opts.connect) {
@@ -1635,10 +1649,11 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
     }
 
     // Hub mode (default in non-interactive)
+    // Note: AGENTBOOT_PERSONAS is parsed and validated above but not yet passed
+    // to scaffoldHub (which uses its own defaults). This is advisory only.
     console.log(chalk.cyan(`  Non-interactive mode: creating hub at ${hubDir}\n`));
     console.log(chalk.gray(`    org: ${orgSlug}`));
     console.log(chalk.gray(`    displayName: ${orgDisplayName}`));
-    console.log(chalk.gray(`    personas: ${personas.join(", ")}`));
     console.log(chalk.gray(`    hooks: ${enableHooks ? "enabled" : "skipped"}`));
     console.log(chalk.gray(`    sync: ${enableSync ? "enabled" : "skipped"}\n`));
 

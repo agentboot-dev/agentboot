@@ -95,6 +95,14 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(1);
   }
 
+  // Validate output path stays within project root
+  const resolvedOutput = path.resolve(output);
+  const resolvedRoot = path.resolve(ROOT);
+  if (!resolvedOutput.startsWith(resolvedRoot)) {
+    console.error(`Error: output path must be within the project root`);
+    process.exit(1);
+  }
+
   return { harness: harness as HarnessId, output };
 }
 
@@ -160,12 +168,12 @@ function parseSourcesMd(content: string): ParsedSource[] {
 async function fetchSourceContent(source: ParsedSource): Promise<FetchedSource> {
   const fetchedAt = new Date().toISOString();
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
   try {
     // For GitHub API URLs, use the API endpoint for releases
     const url = toFetchableUrl(source.url);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
     const response = await fetch(url, {
       signal: controller.signal,
@@ -211,6 +219,7 @@ async function fetchSourceContent(source: ParsedSource): Promise<FetchedSource> 
       fetchedAt,
     };
   } catch (err) {
+    clearTimeout(timeoutId);
     const message = err instanceof Error ? err.message : String(err);
     return {
       url: source.url,
@@ -307,7 +316,15 @@ async function main(): Promise<void> {
   console.log(`Results: ${successCount} succeeded, ${failCount} failed`);
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+export { parseSourcesMd, toFetchableUrl };
+export type { ParsedSource, FetchedSource, FetchResult };
+
+// Only run main when invoked directly (not when imported for testing)
+const isDirectRun = process.argv[1]?.replace(/\.ts$/, "").replace(/\.js$/, "")
+  === fileURLToPath(import.meta.url).replace(/\.ts$/, "").replace(/\.js$/, "");
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}

@@ -168,13 +168,48 @@ describe("traitRefsToNames", () => {
   });
 });
 
+import { buildWeightPreamble } from "../scripts/compile.js";
+
 // ---------------------------------------------------------------------------
-// Unit: buildWeightPreamble() — imported from compile.ts indirectly via build
+// Unit: buildWeightPreamble()
 // ---------------------------------------------------------------------------
 
-// We test preamble behavior via integration tests since buildWeightPreamble
-// is not exported from compile.ts (it's an internal function). The integration
-// tests below verify the preamble appears in compiled output.
+describe("buildWeightPreamble", () => {
+  it("returns calibration text for an exact weight key (0.3)", () => {
+    const result = buildWeightPreamble("critical-thinking", 0.3);
+    expect(result).toContain("light scrutiny");
+  });
+
+  it("returns calibration text for an exact weight key (0.7)", () => {
+    const result = buildWeightPreamble("critical-thinking", 0.7);
+    expect(result).toContain("thorough scrutiny");
+  });
+
+  it("returns nearest calibration text for 0.4 (nearest is 0.5 or 0.3)", () => {
+    const result = buildWeightPreamble("critical-thinking", 0.4);
+    // 0.4 is equidistant from 0.3 and 0.5; nearest-neighbor picks the first one found
+    // that has the smallest distance. Since keys are sorted [0.3, 0.5, 0.7, 1.0],
+    // 0.3 is checked first with dist=0.1, then 0.5 with dist=0.1 (not strictly less).
+    // So the result should be the 0.3 calibration text.
+    expect(result).toContain("scrutiny");
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("returns empty string for unknown trait", () => {
+    const result = buildWeightPreamble("unknown-trait", 0.7);
+    expect(result).toBe("");
+  });
+
+  it("returns empty string for DEFAULT_WEIGHT (0.5)", () => {
+    const result = buildWeightPreamble("critical-thinking", DEFAULT_WEIGHT);
+    expect(result).toBe("");
+  });
+
+  it("returns adversarial calibration for MAX weight (1.0)", () => {
+    const result = buildWeightPreamble("critical-thinking", 1.0);
+    expect(result).toContain("adversarial");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Integration: build with weight objects

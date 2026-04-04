@@ -77,6 +77,14 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(1);
   }
 
+  // Validate output path stays within project root
+  const resolvedOutput = path.resolve(output);
+  const resolvedRoot = path.resolve(ROOT);
+  if (!resolvedOutput.startsWith(resolvedRoot)) {
+    console.error(`Error: output path must be within the project root`);
+    process.exit(1);
+  }
+
   return { reports, output };
 }
 
@@ -214,8 +222,17 @@ function main(): void {
 
   // Also write to intelligence/PENDING-REVIEW.md
   const pendingPath = path.join(ROOT, "intelligence", "PENDING-REVIEW.md");
+  fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
   fs.writeFileSync(pendingPath, digest, "utf-8");
   console.log(`Wrote copy to ${pendingPath}`);
 }
 
-main();
+export { synthesizeReports };
+export type { SmeReport as SynthSmeReport, Finding as SynthFinding };
+
+// Only run main when invoked directly (not when imported for testing)
+const isDirectRun = process.argv[1]?.replace(/\.ts$/, "").replace(/\.js$/, "")
+  === fileURLToPath(import.meta.url).replace(/\.ts$/, "").replace(/\.js$/, "");
+if (isDirectRun) {
+  main();
+}
