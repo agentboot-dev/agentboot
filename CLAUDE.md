@@ -204,6 +204,10 @@ Three-stage progression from flat files to RAG:
 
 `docs/internal/action-items.md` — centralized tracker of all open questions, audit doubts, and TODOs (88 items across 5 priority tiers).
 
+## Git Safety Rules
+
+**NEVER use `git add -f` on `docs/internal/`.** This directory is gitignored intentionally — it contains internal planning docs that must not be committed to the public repo. Using `git add -f` to bypass `.gitignore` here has caused accidental history contamination requiring `git filter-repo` cleanup and force-pushes to all branches. If you need to track changes to internal docs, use a separate private repo or local-only tooling.
+
 ## Known Gaps
 
 - Gemini and JetBrains output formats not yet implemented (Phase 7)
