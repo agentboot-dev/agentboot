@@ -209,6 +209,203 @@ export class ManualProvider implements LLMProvider {
 }
 
 // ---------------------------------------------------------------------------
+// AB-127: API Providers — direct API calls via fetch
+// ---------------------------------------------------------------------------
+
+/**
+ * Base class for fetch-based API providers.
+ * Handles common JSON schema wrapping and error handling.
+ */
+abstract class APIProviderBase implements LLMProvider {
+  abstract readonly name: string;
+  protected abstract readonly envVar: string;
+  protected abstract readonly apiUrl: string;
+  protected abstract readonly defaultModel: string;
+
+  protected get apiKey(): string | undefined {
+    return process.env[this.envVar];
+  }
+
+  isAvailable(): boolean {
+    return !!this.apiKey;
+  }
+
+  unavailableReason(): string {
+    return `Set ${this.envVar} environment variable to use ${this.name}.`;
+  }
+
+  abstract classify(prompt: string, jsonSchema: string): ClassificationResult | null;
+}
+
+export class AnthropicAPIProvider extends APIProviderBase {
+  readonly name = "Anthropic API";
+  protected readonly envVar = "ANTHROPIC_API_KEY";
+  protected readonly apiUrl = "https://api.anthropic.com/v1/messages";
+  protected readonly defaultModel = "claude-sonnet-4-20250514";
+
+  classify(prompt: string, _jsonSchema: string): ClassificationResult | null {
+    console.log(chalk.gray(`  Provider: ${this.name} (${this.defaultModel})`));
+    try {
+      // Use synchronous HTTP via spawnSync + node fetch script
+      const script = `
+        const r = await fetch("${this.apiUrl}", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": process.env.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "${this.defaultModel}",
+            max_tokens: 8192,
+            messages: [{ role: "user", content: ${JSON.stringify(prompt)} }],
+          }),
+        });
+        const j = await r.json();
+        process.stdout.write(JSON.stringify(j));
+      `;
+      const result = spawnSync("node", ["--input-type=module", "-e", script], {
+        encoding: "utf-8",
+        timeout: 120_000,
+        env: process.env,
+      });
+      if (result.status !== 0) {
+        console.log(chalk.red(`  Anthropic API call failed: ${result.stderr?.slice(0, 200)}`));
+        return null;
+      }
+      const response = JSON.parse(result.stdout) as Record<string, unknown>;
+      const content = (response["content"] as Array<Record<string, unknown>>)?.[0];
+      const text = content?.["text"] as string ?? "";
+      const parsed = JSON.parse(text);
+      const usage = response["usage"] as Record<string, number> | undefined;
+      const classResult: ClassificationResult = { data: parsed };
+      if (usage) {
+        classResult.usage = {
+          inputTokens: usage["input_tokens"] ?? 0,
+          outputTokens: usage["output_tokens"] ?? 0,
+        };
+      }
+      return classResult;
+    } catch (err) {
+      console.log(chalk.red(`  Anthropic API error: ${err instanceof Error ? err.message : String(err)}`));
+      return null;
+    }
+  }
+}
+
+export class OpenAIAPIProvider extends APIProviderBase {
+  readonly name = "OpenAI API";
+  protected readonly envVar = "OPENAI_API_KEY";
+  protected readonly apiUrl = "https://api.openai.com/v1/chat/completions";
+  protected readonly defaultModel = "gpt-4o";
+
+  classify(prompt: string, _jsonSchema: string): ClassificationResult | null {
+    console.log(chalk.gray(`  Provider: ${this.name} (${this.defaultModel})`));
+    try {
+      const script = `
+        const r = await fetch("${this.apiUrl}", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + process.env.OPENAI_API_KEY,
+          },
+          body: JSON.stringify({
+            model: "${this.defaultModel}",
+            max_tokens: 8192,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: "Respond with valid JSON only." },
+              { role: "user", content: ${JSON.stringify(prompt)} },
+            ],
+          }),
+        });
+        const j = await r.json();
+        process.stdout.write(JSON.stringify(j));
+      `;
+      const result = spawnSync("node", ["--input-type=module", "-e", script], {
+        encoding: "utf-8",
+        timeout: 120_000,
+        env: process.env,
+      });
+      if (result.status !== 0) {
+        console.log(chalk.red(`  OpenAI API call failed: ${result.stderr?.slice(0, 200)}`));
+        return null;
+      }
+      const response = JSON.parse(result.stdout) as Record<string, unknown>;
+      const choices = response["choices"] as Array<Record<string, unknown>> | undefined;
+      const message = choices?.[0]?.["message"] as Record<string, unknown> | undefined;
+      const text = message?.["content"] as string ?? "";
+      const parsed = JSON.parse(text);
+      const usage = response["usage"] as Record<string, number> | undefined;
+      const classResult: ClassificationResult = { data: parsed };
+      if (usage) {
+        classResult.usage = {
+          inputTokens: usage["prompt_tokens"] ?? 0,
+          outputTokens: usage["completion_tokens"] ?? 0,
+        };
+      }
+      return classResult;
+    } catch (err) {
+      console.log(chalk.red(`  OpenAI API error: ${err instanceof Error ? err.message : String(err)}`));
+      return null;
+    }
+  }
+}
+
+export class GoogleAPIProvider extends APIProviderBase {
+  readonly name = "Google Gemini API";
+  protected readonly envVar = "GOOGLE_API_KEY";
+  protected readonly apiUrl = "https://generativelanguage.googleapis.com/v1beta/models";
+  protected readonly defaultModel = "gemini-2.5-pro";
+
+  classify(prompt: string, _jsonSchema: string): ClassificationResult | null {
+    console.log(chalk.gray(`  Provider: ${this.name} (${this.defaultModel})`));
+    try {
+      const url = `${this.apiUrl}/${this.defaultModel}:generateContent?key=` + process.env["GOOGLE_API_KEY"];
+      const script = `
+        const r = await fetch(${JSON.stringify(url)}, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: ${JSON.stringify(prompt)} }] }],
+            generationConfig: { responseMimeType: "application/json", maxOutputTokens: 8192 },
+          }),
+        });
+        const j = await r.json();
+        process.stdout.write(JSON.stringify(j));
+      `;
+      const result = spawnSync("node", ["--input-type=module", "-e", script], {
+        encoding: "utf-8",
+        timeout: 120_000,
+        env: process.env,
+      });
+      if (result.status !== 0) {
+        console.log(chalk.red(`  Google API call failed: ${result.stderr?.slice(0, 200)}`));
+        return null;
+      }
+      const response = JSON.parse(result.stdout) as Record<string, unknown>;
+      const candidates = response["candidates"] as Array<Record<string, unknown>> | undefined;
+      const content = candidates?.[0]?.["content"] as Record<string, unknown> | undefined;
+      const parts = content?.["parts"] as Array<Record<string, unknown>> | undefined;
+      const text = parts?.[0]?.["text"] as string ?? "";
+      const parsed = JSON.parse(text);
+      const usageMeta = response["usageMetadata"] as Record<string, number> | undefined;
+      const classResult: ClassificationResult = { data: parsed };
+      if (usageMeta) {
+        classResult.usage = {
+          inputTokens: usageMeta["promptTokenCount"] ?? 0,
+          outputTokens: usageMeta["candidatesTokenCount"] ?? 0,
+        };
+      }
+      return classResult;
+    } catch (err) {
+      console.log(chalk.red(`  Google API error: ${err instanceof Error ? err.message : String(err)}`));
+      return null;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Provider resolution
 // ---------------------------------------------------------------------------
 
@@ -222,10 +419,45 @@ export function resolveProvider(config: AgentBootConfig): LLMProvider {
   switch (preference) {
     case "claude-code":
       return new ClaudeCodeProvider();
+    case "anthropic-api":
+      return new AnthropicAPIProvider();
+    case "openai-api":
+      return new OpenAIAPIProvider();
+    case "google-api":
+      return new GoogleAPIProvider();
     case "manual":
       return new ManualProvider();
     default:
       console.warn(chalk.yellow(`  Unknown LLM provider "${preference}", falling back to manual.`));
       return new ManualProvider();
   }
+}
+
+/**
+ * Interactive provider fallback: when configured provider is unavailable,
+ * offer the user a choice from available providers.
+ */
+export function resolveProviderWithFallback(config: AgentBootConfig): LLMProvider {
+  const primary = resolveProvider(config);
+  if (primary.isAvailable()) return primary;
+
+  console.log(chalk.yellow(`  Configured provider (${primary.name}) is unavailable: ${primary.unavailableReason()}`));
+
+  // Try fallbacks in priority order
+  const fallbacks: LLMProvider[] = [
+    new ClaudeCodeProvider(),
+    new AnthropicAPIProvider(),
+    new OpenAIAPIProvider(),
+    new GoogleAPIProvider(),
+  ];
+
+  for (const provider of fallbacks) {
+    if (provider.isAvailable() && provider.name !== primary.name) {
+      console.log(chalk.cyan(`  Falling back to: ${provider.name}`));
+      return provider;
+    }
+  }
+
+  console.log(chalk.yellow("  No LLM providers available. Using manual mode."));
+  return new ManualProvider();
 }

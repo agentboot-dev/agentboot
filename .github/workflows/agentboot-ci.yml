@@ -1,0 +1,80 @@
+# Reusable CI workflow for AgentBoot personas repos.
+#
+# Usage in your personas repo:
+#
+#   name: AgentBoot CI
+#   on: [push, pull_request]
+#   jobs:
+#     agentboot:
+#       uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@main
+#       with:
+#         snapshot: true
+#
+# AB-125: CI Integration
+
+name: AgentBoot CI (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        required: false
+        default: "20"
+        type: string
+      config-path:
+        description: "Path to agentboot.config.json"
+        required: false
+        default: "agentboot.config.json"
+        type: string
+      snapshot:
+        description: "Run snapshot regression test"
+        required: false
+        default: false
+        type: boolean
+      behavioral:
+        description: "Run behavioral tests (costs money, requires ANTHROPIC_API_KEY)"
+        required: false
+        default: false
+        type: boolean
+      strict:
+        description: "Treat validation warnings as errors"
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: "API key for behavioral tests (only needed if behavioral=true)"
+        required: false
+
+jobs:
+  validate-and-build:
+    name: Validate, Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install AgentBoot
+        run: npm install agentboot@latest
+
+      - name: Validate
+        run: npx agentboot validate ${{ inputs.strict && '--strict' || '' }} -c ${{ inputs.config-path }}
+
+      - name: Build
+        run: npx agentboot build -c ${{ inputs.config-path }}
+
+      - name: Snapshot Regression
+        if: inputs.snapshot
+        run: npx agentboot test --regression
+
+      - name: Behavioral Tests
+        if: inputs.behavioral
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx agentboot test --behavioral
