@@ -104,9 +104,19 @@ export function evaluateAssertions(
         }
         break;
       case "regex": {
-        const re = new RegExp(assertion.value, "i");
-        if (!re.test(output)) {
-          failures.push(`Expected output to match regex /${assertion.value}/i`);
+        // Guard against catastrophic backtracking (ReDoS)
+        const UNSAFE_REGEX = /(\([^)]*[+*][^)]*\))[+*{]|\(\?[^)]+\)\{.*,/;
+        if (UNSAFE_REGEX.test(assertion.value)) {
+          failures.push(`Unsafe regex pattern rejected (potential ReDoS): ${assertion.value}`);
+          break;
+        }
+        try {
+          const re = new RegExp(assertion.value, "i");
+          if (!re.test(output)) {
+            failures.push(`Expected output to match regex /${assertion.value}/i`);
+          }
+        } catch (e) {
+          failures.push(`Invalid regex: ${assertion.value} (${e instanceof Error ? e.message : String(e)})`);
         }
         break;
       }
@@ -126,7 +136,7 @@ export function runBehavioralTest(
   distPath: string,
 ): BehavioralTestResult {
   const maxAttempts = testCase.retries ?? 3;
-  const requiredPasses = Math.ceil(maxAttempts / 2) + (maxAttempts % 2 === 0 ? 1 : 0); // majority
+  const requiredPasses = Math.floor(maxAttempts / 2) + 1; // true majority: 2-of-3, 2-of-4, 3-of-5
   let passes = 0;
   let attempts = 0;
   const allFailures: string[] = [];

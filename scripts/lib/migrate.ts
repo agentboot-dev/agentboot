@@ -188,7 +188,36 @@ function revertMigration(repoPath: string): void {
     return;
   }
 
+  // Verify backup matches this directory
+  if (path.resolve(backup.repoPath) !== path.resolve(repoPath)) {
+    console.log(chalk.red(`  Backup was created for a different directory: ${backup.repoPath}`));
+    console.log(chalk.red(`  Current directory: ${repoPath}\n`));
+    console.log(chalk.gray("  This is a safety check. To proceed, edit the backup file manually.\n"));
+    return;
+  }
+
   console.log(chalk.cyan(`  Reverting migration from ${backup.createdAt}...\n`));
+
+  // Check for post-migration content that would be lost
+  const coreDir = path.join(repoPath, "core");
+  if (fs.existsSync(coreDir)) {
+    let coreFileCount = 0;
+    function countFiles(dir: string): void {
+      for (const entry of fs.readdirSync(dir)) {
+        const full = path.join(dir, entry);
+        if (fs.statSync(full).isDirectory()) countFiles(full);
+        else coreFileCount++;
+      }
+    }
+    countFiles(coreDir);
+    const originalCount = backup.files.length;
+    if (coreFileCount > originalCount) {
+      console.log(chalk.yellow(`  ⚠ core/ contains ${coreFileCount} files but migration imported ${originalCount}.`));
+      console.log(chalk.yellow(`  ${coreFileCount - originalCount} file(s) were added after migration and will be lost.\n`));
+      console.log(chalk.gray("  To proceed anyway, delete .agentboot-migrate-backup.json and remove core/ manually.\n"));
+      return;
+    }
+  }
 
   // Remove scaffolded files
   const scaffoldedPaths = [
@@ -233,16 +262,23 @@ function hashFile(filePath: string): string {
  * Wraps the scan result into a ScanManifest format.
  */
 function scanSingleRepo(repoPath: string): ScanManifest {
-  // Use the parent scan with a temp structure
   const parentDir = path.dirname(repoPath);
   const repoName = path.basename(repoPath);
 
-  // We can't use scanParentForContent directly since the repo would be
-  // excluded if it has agentboot.config.json. But at this point it doesn't
-  // (we check above). So we can use it with the parent.
-  const manifest = scanParentForContent(parentDir, []);
+  // Exclude ALL sibling directories to avoid reading unrelated repos.
+  // Only scan the target repo itself.
+  const excludeDirs: string[] = [];
+  try {
+    for (const entry of fs.readdirSync(parentDir)) {
+      const siblingPath = path.join(parentDir, entry);
+      if (siblingPath !== repoPath && fs.statSync(siblingPath).isDirectory()) {
+        excludeDirs.push(siblingPath);
+      }
+    }
+  } catch { /* permission denied — proceed with no excludes */ }
 
-  // Filter to only files from this repo
+  const manifest = scanParentForContent(parentDir, excludeDirs);
+
   return {
     parentDir: manifest.parentDir,
     scannedAt: manifest.scannedAt,

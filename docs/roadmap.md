@@ -115,22 +115,20 @@ Delivered:
 
 ---
 
-## Phase 6: "Governance & Quality" -- PLANNED
+## Phase 6: "Governance & Quality" -- DONE (v0.6.0, 2026-04-04)
 
 Enterprise governance, validation, testing, and CI. Make AgentBoot auditable and reliable at scale.
 
-Planned:
-- **Composition validation** -- check 5 (composition type consistency across scopes) and check 6 (rule override detection)
-- **Doctor composition diagnostics** -- missing manifests, orphaned overrides, shadow detection
-- **Doctor tool/format consistency** -- warn when `agents.tools` and `outputFormats` diverge
-- **`--strict` promotion** -- sync composition warnings become errors with `--strict`
-- **PreToolUse compliance hooks** -- compile compliance rules to lifecycle hooks that block operations before execution
-- **Behavioral testing** -- YAML-defined test cases run against personas via `claude -p` with assertions
-- **Snapshot and regression testing** -- detect unintended persona drift across versions
-- **CI integration** -- reusable GitHub Actions workflow and CI template for personas repos
-- **Hub migration** -- `agentboot migrate` converts existing repos into AgentBoot hubs with `--revert`
-- **API providers** -- `AnthropicAPIProvider`, `OpenAIAPIProvider`, `GoogleAPIProvider` for import
-- **Provider fallback chooser** -- interactive selection when configured provider unavailable
+Delivered:
+- **Composition validation** (AB-118, AB-119) -- check 5 (composition type consistency across scopes) and check 6 (rule override detection). Warnings in normal mode, errors in `--strict`.
+- **Doctor composition diagnostics** (AB-120) -- missing manifests, orphaned overrides, scope shadow detection
+- **Doctor tool/format consistency** (AB-121) -- warns when `agents.tools` and `personas.outputFormats` diverge
+- **PreToolUse compliance hooks** (AB-122) -- compiles `managed.guardrails.denyTools` to PreToolUse bash hooks that block denied tools. Fail-closed (blocks if jq missing).
+- **Behavioral testing** (AB-123) -- YAML-defined test cases with `contains`, `not-contains`, `regex` assertions. 2-of-3 flake tolerance. `agentboot test --behavioral`.
+- **Snapshot and regression testing** (AB-124) -- SHA-256 hashing of dist/ with diff reporting. `agentboot test --snapshot` and `--regression`.
+- **CI integration** (AB-125) -- reusable GitHub Actions workflow (`workflow_call`) with configurable version, snapshot, behavioral, and strict inputs.
+- **Hub migration** (AB-126) -- `agentboot migrate` converts repos to hubs with `--revert` (safety-checked against post-migration content) and `--dry-run`.
+- **API providers** (AB-127) -- `AnthropicAPIProvider`, `OpenAIAPIProvider`, `GoogleAPIProvider` with secure stdin-based prompt passing, TLS enforcement, API error checking, and automatic fallback via `resolveProviderWithFallback()`.
 
 ---
 

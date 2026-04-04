@@ -24,6 +24,8 @@ The CLI (`scripts/cli.ts`) wraps all pipeline commands with proper argument pars
 npx tsx scripts/cli.ts build [-c config]
 npx tsx scripts/cli.ts validate [--strict]
 npx tsx scripts/cli.ts sync [--repos-file path] [--dry-run]
+npx tsx scripts/cli.ts test [--behavioral] [--snapshot] [--regression]
+npx tsx scripts/cli.ts migrate [--path dir] [--revert] [--dry-run]
 npx tsx scripts/cli.ts dev-build
 npx tsx scripts/cli.ts --help
 ```
@@ -50,7 +52,7 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
 
 ### Build Pipeline
 
-1. **`scripts/validate.ts`** — 4 pre-build checks: persona existence, trait references, SKILL.md frontmatter, secret scanning
+1. **`scripts/validate.ts`** — 6 pre-build checks: persona existence, trait references, SKILL.md frontmatter, secret scanning, composition consistency across scopes, rule override detection
 2. **`scripts/compile.ts`** — loads `agentboot.config.json`, resolves trait references from `persona.config.json`, and emits **one self-contained folder per platform** under `dist/`:
    - **`dist/skill/`** — cross-platform SKILL.md (agentskills.io format, traits inlined) + PERSONAS.md
    - **`dist/claude/`** — CC-native: agents, skills, rules, traits, CLAUDE.md (`@imports`), settings.json, .mcp.json
