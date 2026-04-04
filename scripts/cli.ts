@@ -30,7 +30,7 @@ import fs from "node:fs";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -335,7 +335,7 @@ program
   .option("--org <name>", "organization name")
   .option("--path <dir>", "where to create the personas repo")
   .option("--hub-path <dir>", "path to existing personas repo (for --connect)")
-  .option("--non-interactive", "run without prompts (not yet implemented)")
+  .option("--non-interactive", "run without prompts (uses env var defaults)")
   .option("--skip-sync", "skip the optional sync step")
   .action(installAction);
 
@@ -358,6 +358,7 @@ program
   .option("--hub-path <dir>", "path to personas repo")
   .option("--overlap", "run heuristic overlap analysis")
   .option("--apply", "apply an existing import plan")
+  .option("--non-interactive", "run without prompts (auto-apply high-confidence matches)")
   .option("--isolated", "test prompts without user Claude settings (uses temp config)")
   .action(async (opts) => {
     const parentDir = opts["parent"] as string | undefined;
@@ -402,6 +403,7 @@ program
           hubPath: opts["hubPath"] as string | undefined,
           overlap: opts["overlap"] as boolean | undefined,
           apply: opts["apply"] as boolean | undefined,
+          nonInteractive: opts["nonInteractive"] as boolean | undefined,
         });
       }
     };
@@ -1860,6 +1862,22 @@ program
         console.error(chalk.red("Plugin output not found. Run `agentboot build` first."));
         console.error(chalk.gray("Ensure 'plugin' is in personas.outputFormats or build includes claude format."));
         process.exit(1);
+      }
+
+      // AB-131: Validate plugin.json against CC plugin spec
+      try {
+        const pluginManifest = JSON.parse(fs.readFileSync(pluginJson, "utf-8"));
+        const validationWarnings = validatePluginManifest(pluginManifest);
+        if (validationWarnings.length > 0) {
+          console.log(chalk.yellow("  Plugin manifest warnings:"));
+          for (const w of validationWarnings) {
+            const icon = w.level === "error" ? chalk.red("  ✗") : chalk.yellow("  ⚠");
+            console.log(`${icon} ${w.field}: ${w.message}`);
+          }
+          console.log(""); // blank line after warnings
+        }
+      } catch (e) {
+        console.log(chalk.yellow(`  Could not validate plugin.json: ${e instanceof Error ? e.message : String(e)}`));
       }
 
       const outputDir = opts.output

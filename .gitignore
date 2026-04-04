@@ -6,11 +6,15 @@ website/.docusaurus/
 # dev-sync output (local dogfooding, not committed)
 .claude/
 .github/copilot/
-.cursor/agentboot/
+.github/copilot-instructions.md
+.github/instructions/
+.cursor/
 .agentboot/skill/
 .gemini/agentboot/
-.github/copilot-instructions.md
+/personas/
 
-# Internal docs
+# Internal — never commit to public repo (see CLAUDE.md Git Safety Rules)
 /docs/internal/
+/internal/
+/intelligence/
 /temp/

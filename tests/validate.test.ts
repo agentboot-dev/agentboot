@@ -324,8 +324,12 @@ describe("persona.config.json", () => {
       expect(config.name, `${persona} should have name`).toBeTruthy();
       expect(config.description, `${persona} should have description`).toBeTruthy();
       expect(config.invocation, `${persona} should have invocation`).toBeTruthy();
-      expect(Array.isArray(config.traits), `${persona} traits should be array`).toBe(true);
-      expect(config.traits.length, `${persona} should have at least one trait`).toBeGreaterThan(0);
+      // AB-134: traits can be array or object (weight map)
+      const isArray = Array.isArray(config.traits);
+      const isObject = typeof config.traits === "object" && config.traits !== null && !isArray;
+      expect(isArray || isObject, `${persona} traits should be array or object`).toBe(true);
+      const traitCount = isArray ? config.traits.length : Object.keys(config.traits).length;
+      expect(traitCount, `${persona} should have at least one trait`).toBeGreaterThan(0);
     }
   });
 
@@ -347,7 +351,11 @@ describe("persona.config.json", () => {
       if (!fs.existsSync(pcPath)) continue;
 
       const config = JSON.parse(fs.readFileSync(pcPath, "utf-8"));
-      for (const trait of config.traits ?? []) {
+      // AB-134: traits can be array or object (weight map)
+      const traitNames = Array.isArray(config.traits)
+        ? config.traits
+        : Object.keys(config.traits ?? {});
+      for (const trait of traitNames) {
         expect(
           availableTraits.has(trait),
           `${persona} references trait "${trait}" which doesn't exist`
