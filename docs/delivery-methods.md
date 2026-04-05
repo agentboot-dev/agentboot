@@ -752,6 +752,19 @@ AgentBoot gets non-engineer reach for free when packaged as a plugin. Skills tha
 sense for non-engineers (compliance review, document analysis) surface in the Cowork GUI
 with structured forms.
 
+### D-06: agentskills.io listing export
+
+AgentBoot-compiled SKILL.md files are already in agentskills.io-compatible format.
+Export a skills-index.json for directory listing with:
+
+```bash
+agentboot export --format agentskills
+```
+
+This reads all built personas from `dist/skill/core/`, extracts metadata from each
+`persona.config.json` and SKILL.md frontmatter, and writes a single `skills-index.json`
+to `dist/`. Submit this file to agentskills.io for directory listing.
+
 ---
 
 ## Sources
