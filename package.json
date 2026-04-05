@@ -42,6 +42,7 @@
     "clean": "rm -rf dist/",
     "dev-sync": "tsx scripts/dev-sync.ts",
     "build": "tsx scripts/compile.ts",
+    "build-catalog": "tsx scripts/build-catalog.ts",
     "validate": "tsx scripts/validate.ts",
     "sync": "tsx scripts/sync.ts",
     "dev-build": "npm run clean && npm run validate && npm run build && npm run dev-sync",
