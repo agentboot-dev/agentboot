@@ -1097,6 +1097,9 @@ program
   .option("--snapshot", "create or update snapshot baseline from current dist/")
   .option("--regression", "compare current dist/ against saved snapshot")
   .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
+  .option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)")
+  .option("--verbose", "show detailed rationale per dimension (for --judge)")
+  .option("--min-score <score>", "minimum passing score for --judge (default: 3.0)", parseFloat)
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
   .action(async (opts) => {
     const {
@@ -1176,11 +1179,37 @@ program
     }
 
     // If no flags specified, show help
-    if (!opts["behavioral"] && !opts["snapshot"] && !opts["regression"]) {
+    // AB-156: LLM-as-Judge evaluation
+    if (opts["judge"]) {
+      const { loadJudgeTestCases, estimateJudgeCost } = await import("./lib/judge.js");
+      const testCases = loadJudgeTestCases(path.join(ROOT, "tests"));
+      if (testCases.length === 0) {
+        console.log(chalk.yellow("\n  No judge test cases found in tests/judge/"));
+        console.log(chalk.gray("  Create YAML or JSON test cases to get started.\n"));
+      } else {
+        const cost = estimateJudgeCost(testCases);
+        console.log(chalk.bold(`\n  LLM-as-Judge: ${testCases.length} test case(s)`));
+        console.log(chalk.gray(`  Estimated cost: ~$${cost.totalUsd} (${cost.breakdown})`));
+        if (opts["dryRun"]) {
+          for (const tc of testCases) {
+            console.log(chalk.gray(`    - ${tc.persona}: ${tc.ground_truth.must_find?.map((f: any) => f.topic).join(", ") ?? "general"}`));
+          }
+        } else {
+          console.log(chalk.yellow("  LLM provider required. Test cases loaded and validated."));
+          const resultsDir = path.join(process.env["HOME"] ?? "~", ".agentboot", "judge-results");
+          fs.mkdirSync(resultsDir, { recursive: true });
+          fs.writeFileSync(path.join(resultsDir, "last-run-summary.json"),
+            JSON.stringify({ timestamp: new Date().toISOString(), testCases: testCases.length, status: "pending_provider" }, null, 2) + "\n", "utf-8");
+        }
+      }
+    }
+
+    if (!opts["behavioral"] && !opts["snapshot"] && !opts["regression"] && !opts["judge"]) {
       console.log(chalk.gray("  Specify a test type:\n"));
       console.log(chalk.gray("    --behavioral   Run behavioral tests (LLM-powered, costs money)"));
       console.log(chalk.gray("    --snapshot     Create/update snapshot baseline from dist/"));
-      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot\n"));
+      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot"));
+      console.log(chalk.gray("    --judge        Run LLM-as-Judge evaluation tests\n"));
     }
 
     process.exit(exitCode);
@@ -1827,9 +1856,9 @@ program
 program
   .command("export")
   .description("Export compiled output in a specific format")
-  .option("--format <fmt>", "export format: plugin, marketplace, managed", "plugin")
+  .option("--format <fmt>", "export format: plugin, marketplace, managed, agentskills", "plugin")
   .option("--output <dir>", "output directory")
-  .action((opts, cmd) => {
+  .action(async (opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
     const configPath = globalOpts.config
@@ -1962,8 +1991,23 @@ program
       console.log(chalk.green(`  ✓ Created marketplace.json`));
       console.log(chalk.gray(`\n  Next: agentboot publish to add entries\n`));
 
+    } else if (format === "agentskills") {
+      // AB-162: agentskills.io listing export
+      const { generateSkillsIndex } = await import("./lib/export.js");
+      const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf-8"));
+      const index = generateSkillsIndex(distPath, {
+        org: config.org,
+        orgDisplayName: config.orgDisplayName as string | undefined,
+        version: pkg.version as string | undefined,
+      });
+      const outputPath = opts.output ?? path.join(distPath, "skills-index.json");
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, JSON.stringify(index, null, 2) + "\n", "utf-8");
+      console.log(chalk.green(`\n✓ Exported ${index.skills.length} skill(s) to ${outputPath}`));
+      console.log(chalk.gray("  Submit this file to agentskills.io for directory listing."));
+
     } else {
-      console.error(chalk.red(`Unknown export format: '${format}'. Use: plugin, marketplace, managed`));
+      console.error(chalk.red(`Unknown export format: '${format}'. Use: plugin, marketplace, managed, agentskills`));
       process.exit(1);
     }
   });
@@ -2259,6 +2303,223 @@ program
       verbose: globalOpts.verbose,
       quiet: globalOpts.quiet,
     });
+  });
+
+// ---------------------------------------------------------------------------
+// AB-150: Marketplace CLI commands
+// ---------------------------------------------------------------------------
+
+const marketplaceCmd = program
+  .command("marketplace")
+  .description("Marketplace: search, pull, and publish components");
+
+marketplaceCmd
+  .command("search [query]")
+  .description("Search the marketplace registry")
+  .option("--type <type>", "Filter by component type (trait, gotcha, persona, domain)")
+  .option("--layer <layer>", "Filter by trust layer (core, verified, community)")
+  .option("--tags <tags>", "Filter by tags (comma-separated)")
+  .option("--json", "Output as JSON")
+  .action(async (query: string = "", opts) => {
+    const { searchRegistry, getChannels, loadCachedRegistry } = await import("./lib/marketplace.js");
+    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
+    const channels = getChannels(config as any);
+    const hasCache = channels.some((ch: any) => loadCachedRegistry(ch.name) !== null);
+    if (!hasCache) {
+      console.log(chalk.yellow("No registry cache found. Run: agentboot registry seed"));
+      process.exit(0);
+    }
+    const tags = opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : undefined;
+    const results = searchRegistry(query, channels, { type: opts.type, layer: opts.layer, tags });
+    if (opts.json) { console.log(JSON.stringify(results, null, 2)); return; }
+    if (results.length === 0) { console.log(chalk.yellow(`No components found matching "${query}"`)); return; }
+    console.log(chalk.bold(`\nFound ${results.length} component(s):\n`));
+    for (const entry of results) {
+      const badge = entry.layer === "verified" ? chalk.green(`[${entry.layer}]`) : chalk.gray(`[${entry.layer}]`);
+      console.log(`  ${chalk.bold(entry.id.padEnd(35))} ${badge}  ${entry.description}`);
+    }
+    console.log(chalk.gray(`\nInstall with: agentboot marketplace pull <id>`));
+  });
+
+marketplaceCmd
+  .command("pull <id>")
+  .description("Install a component from the marketplace registry")
+  .option("--version <version>", "Pin to specific version")
+  .option("--dry-run", "Show what would be written without writing")
+  .option("--force", "Overwrite existing component")
+  .action(async (id: string, opts) => {
+    const { resolveComponent, getChannels, validateLicense } = await import("./lib/marketplace.js");
+    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
+    const channels = getChannels(config as any);
+    const resolved = resolveComponent(id, channels, opts.version);
+    if (!resolved) { console.error(chalk.red(`Component not found: ${id}`)); process.exit(1); }
+    const { entry, channel } = resolved;
+    console.log(chalk.bold(`\nPulling ${entry.id}@${entry.version} from ${channel.name}...`));
+    const typeDir = entry.type === "domain" ? "domains" : `${entry.type}s`;
+    const targetDir = path.join(ROOT, "core", typeDir, entry.name);
+    if (fs.existsSync(targetDir) && !opts.force) { console.error(chalk.red(`Already exists. Use --force.`)); process.exit(1); }
+    if (opts.dryRun) { console.log(chalk.yellow(`  [dry-run] Would write to: ${path.relative(ROOT, targetDir)}`)); return; }
+    const licenseCheck = validateLicense(entry.license);
+    if (!licenseCheck.valid) { console.error(chalk.red(`License: ${licenseCheck.reason}`)); process.exit(1); }
+    console.log(chalk.green("  ✓ License check passed") + chalk.gray(` (${entry.license})`));
+    fs.mkdirSync(targetDir, { recursive: true });
+    const manifest = { ...entry, installedFrom: channel.name, installedAt: new Date().toISOString() };
+    fs.writeFileSync(path.join(targetDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+    console.log(chalk.green(`  ✓ Written to ${path.relative(ROOT, targetDir)}`));
+    console.log(chalk.gray(`\nNext: add "${entry.name}" to agentboot.config.json → ${entry.type}s.enabled`));
+  });
+
+marketplaceCmd
+  .command("publish [component]")
+  .description("Publish a component to the marketplace")
+  .option("--layer <layer>", "Target layer: community or verified", "community")
+  .option("--dry-run", "Show what would be submitted without submitting")
+  .action(async (component: string | undefined, opts) => {
+    const { validateLicense } = await import("./lib/marketplace.js");
+    if (!component) { console.error(chalk.red("Usage: agentboot marketplace publish <type>/<name>")); process.exit(1); }
+    const parts = component.split("/");
+    if (parts.length !== 2) { console.error(chalk.red("Format: <type>/<name>")); process.exit(1); }
+    const [type, name] = parts;
+    const typeDir = type === "domain" ? "domains" : `${type}s`;
+    const componentDir = path.join(ROOT, "core", typeDir, name!);
+    if (!fs.existsSync(componentDir)) { console.error(chalk.red(`Not found: ${componentDir}`)); process.exit(1); }
+    console.log(chalk.bold(`\nPre-publish checks for ${component}:`));
+    const contentFiles = fs.readdirSync(componentDir).filter(f => f.endsWith(".md"));
+    if (contentFiles.length === 0 && type !== "domain") { console.error(chalk.red("  ✗ No content files")); process.exit(1); }
+    console.log(chalk.green("  ✓ Content file found"));
+    const manifestPath = path.join(componentDir, "manifest.json");
+    let manifest: any = {};
+    if (fs.existsSync(manifestPath)) { try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {} }
+    const license = manifest.license;
+    if (!license) { console.error(chalk.red("  ✗ No license in manifest")); process.exit(1); }
+    const licenseCheck = validateLicense(license);
+    if (!licenseCheck.valid) { console.error(chalk.red(`  ✗ ${licenseCheck.reason}`)); process.exit(1); }
+    console.log(chalk.green(`  ✓ License: ${license}`));
+    const secretPatterns = [/AKIA[A-Z0-9]{16}/, /sk-[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/];
+    let secretsFound = false;
+    for (const file of contentFiles) {
+      const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
+      for (const p of secretPatterns) { if (p.test(content)) { secretsFound = true; break; } }
+    }
+    if (secretsFound) { console.error(chalk.red("  ✗ Secrets detected")); process.exit(1); }
+    console.log(chalk.green("  ✓ No secrets detected"));
+    if (opts.dryRun) { console.log(chalk.yellow(`\n  [dry-run] Would submit PR for ${component}`)); return; }
+    console.log(chalk.green("\n  All pre-publish checks passed."));
+  });
+
+// ---------------------------------------------------------------------------
+// AB-150: Registry management commands
+// ---------------------------------------------------------------------------
+
+const registryCmd = program
+  .command("registry")
+  .description("Manage marketplace registry channels");
+
+registryCmd
+  .command("channels")
+  .description("List configured registry channels")
+  .action(async () => {
+    const { getChannels, loadCachedRegistry } = await import("./lib/marketplace.js");
+    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
+    const channels = getChannels(config as any);
+    console.log(chalk.bold("\nConfigured registry channels:\n"));
+    for (const ch of channels) {
+      const cached = loadCachedRegistry(ch.name);
+      const status = cached ? chalk.green(`cached (${cached.components.length} components)`) : chalk.gray("not cached");
+      console.log(`  ${chalk.bold(ch.name)} (priority: ${ch.priority})\n    URL: ${ch.url}\n    Cache: ${status}`);
+    }
+  });
+
+registryCmd
+  .command("refresh")
+  .description("Clear and refresh all registry caches")
+  .action(async () => {
+    const { refreshCache, getChannels } = await import("./lib/marketplace.js");
+    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
+    refreshCache(getChannels(config as any));
+  });
+
+registryCmd
+  .command("status")
+  .description("Show cache age and channel health")
+  .action(async () => {
+    const { getChannels, getCacheDir } = await import("./lib/marketplace.js");
+    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
+    const channels = getChannels(config as any);
+    console.log(chalk.bold("\nRegistry status:\n"));
+    console.log(`  Cache dir: ${getCacheDir()}`);
+    for (const ch of channels) {
+      const cachePath = path.join(getCacheDir(), `${ch.name}-registry.json`);
+      if (fs.existsSync(cachePath)) {
+        const stat = fs.statSync(cachePath);
+        const ageHours = Math.round((Date.now() - stat.mtimeMs) / (1000 * 60 * 60) * 10) / 10;
+        const stale = Date.now() - stat.mtimeMs > 24 * 60 * 60 * 1000;
+        console.log(`  ${ch.name}: ${stale ? chalk.yellow("stale") : chalk.green("fresh")} (${ageHours}h ago)`);
+      } else {
+        console.log(`  ${ch.name}: ${chalk.gray("no cache")}`);
+      }
+    }
+  });
+
+registryCmd
+  .command("seed")
+  .description("Generate a local registry from built components (for testing)")
+  .action(async () => {
+    const { writeCachedRegistry, computeSha256 } = await import("./lib/marketplace.js");
+    const traitDir = path.join(ROOT, "core", "traits");
+    const components: any[] = [];
+    if (fs.existsSync(traitDir)) {
+      for (const file of fs.readdirSync(traitDir).filter(f => f.endsWith(".md"))) {
+        const name = path.basename(file, ".md");
+        components.push({
+          id: `trait/${name}`, name, type: "trait", layer: "core", version: "1.0.0",
+          description: `Core trait: ${name}`, author: { handle: "agentboot" },
+          license: "Apache-2.0", tags: ["core"], path: `traits/core/${name}`,
+          sha: computeSha256(path.join(traitDir, file)),
+        });
+      }
+    }
+    const registry = { $schema: "https://agentboot.dev/schemas/registry/v1.json", version: "1", generated: new Date().toISOString(), components };
+    writeCachedRegistry("public", registry);
+    console.log(chalk.green(`\n✓ Seeded registry with ${components.length} component(s)`));
+  });
+
+// ---------------------------------------------------------------------------
+// AB-153: Optimize command
+// ---------------------------------------------------------------------------
+
+program
+  .command("optimize")
+  .description("Analyze persona telemetry and generate optimization recommendations")
+  .option("--since <date>", "Start date (YYYY-MM-DD)")
+  .option("--until <date>", "End date (YYYY-MM-DD)")
+  .option("--scope <scope>", "Filter by scope (e.g., team:platform/*)")
+  .option("--report", "Generate HTML report")
+  .option("--output-dir <path>", "Output directory for report", ".")
+  .option("--json", "Output raw JSON metrics")
+  .action(async (opts) => {
+    const { loadTelemetry, aggregateMetrics, generateModelRecommendations, analyzeCoverage, printOptimizeReport, generateHtmlReport } = await import("./lib/optimize.js");
+    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
+    const events = loadTelemetry({ since: opts.since, until: opts.until, scope: opts.scope });
+    if (events.length === 0) {
+      console.log(chalk.yellow("\nNo telemetry found. Run some personas first, or check ~/.agentboot/telemetry/"));
+      process.exit(0);
+    }
+    const metrics = aggregateMetrics(events);
+    const recommendations = generateModelRecommendations(metrics);
+    const enabledPersonas = config.personas?.enabled ?? [];
+    const knownScopes = metrics.map((m: any) => m.scope).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+    const gaps = analyzeCoverage(metrics, enabledPersonas, knownScopes);
+    if (opts.json) { console.log(JSON.stringify({ metrics, recommendations, gaps }, null, 2)); return; }
+    printOptimizeReport(metrics, recommendations, gaps, {});
+    if (opts.report) {
+      const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"));
+      const html = generateHtmlReport(metrics, recommendations, gaps, {}, pkg.version);
+      const date = new Date().toISOString().split("T")[0];
+      const reportPath = path.join(opts.outputDir ?? ".", `agentboot-optimize-${date}.html`);
+      fs.writeFileSync(reportPath, html, "utf-8");
+      console.log(chalk.green(`\n✓ Report written to ${reportPath}`));
+    }
   });
 
 // ---------------------------------------------------------------------------
