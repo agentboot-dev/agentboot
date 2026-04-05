@@ -7,7 +7,7 @@ sidebar_position: 2
 
 AgentBoot is a harness engineering build tool. It compiles agentic personas — the
 behavioral definitions that make AI agents reliable — into platform-native formats for
-every major coding agent (Claude Code, Copilot, Cursor, Codex) and the universal AGENTS.md
+every major coding agent (Claude Code, Copilot, Cursor, Gemini, Windsurf, JetBrains) and the universal AGENTS.md
 standard.
 
 This document explains the conceptual foundation. Read this before the configuration
@@ -186,7 +186,7 @@ personas, traits, gotchas, and instructions compile into the right format for ea
 platform — developers use whichever tool they prefer without losing governance.
 
 Output formats (see [Output Structure](../CLAUDE.md#output-structure)):
-- **AGENTS.md** — universal cross-tool standard (Codex, Cursor, Copilot, Gemini CLI)
+- **AGENTS.md** — universal cross-tool standard (Cursor, Copilot, Gemini CLI, etc.)
 - **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
 - **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions
 - **Cursor** — `.cursor/rules/*.mdc` with `alwaysApply`/`globs` frontmatter
@@ -252,8 +252,8 @@ This has three advantages over inlined output:
 
 The build system generates **one self-contained folder per platform** under `dist/`.
 Each platform folder (e.g., `dist/claude/`, `dist/copilot/`, `dist/cursor/`, `dist/skill/`,
-`dist/agents/`, `dist/gemini/`, `dist/windsurf/`) contains everything needed for that
-platform and nothing it doesn't. JetBrains output is planned for a future phase.
+`dist/agents/`, `dist/gemini/`, `dist/windsurf/`, `dist/jetbrains/`) contains everything
+needed for that platform and nothing it doesn't.
 The Claude Code folder uses @import-based files; the skill folder uses inlined SKILL.md
 for cross-platform distribution.
 

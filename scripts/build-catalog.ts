@@ -15,6 +15,10 @@ import chalk from "chalk";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 interface RegistryEntry {
   id: string; name: string; type: string; layer: string; version: string;
   description: string; author: { handle: string; org?: string };
@@ -62,12 +66,12 @@ footer{border-top:1px solid var(--border);padding:20px 0;margin-top:40px;color:v
 }
 
 function generateIndex(registry: Registry): string {
-  const cards = registry.components.map(e => `<div class="card" data-search="${e.name} ${e.description} ${e.tags.join(" ")}">
-  <h3><a href="${e.type}/${e.name}.html">${e.name}</a> ${layerBadge(e.layer)}</h3>
-  <p>${e.description}</p>
-  <div class="tags">${e.tags.map(t => `<span class="tag">${t}</span>`).join("")}</div>
-  <div class="install">agentboot pull ${e.id}</div>
-  <div class="meta"><span>${e.type}</span><span>v${e.version}</span><span>${e.license}</span></div>
+  const cards = registry.components.map(e => `<div class="card" data-search="${escapeHtml(e.name)} ${escapeHtml(e.description)} ${e.tags.map(t => escapeHtml(t)).join(" ")}">
+  <h3><a href="${escapeHtml(e.type)}/${escapeHtml(e.name)}.html">${escapeHtml(e.name)}</a> ${layerBadge(e.layer)}</h3>
+  <p>${escapeHtml(e.description)}</p>
+  <div class="tags">${e.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join("")}</div>
+  <div class="install">agentboot pull ${escapeHtml(e.id)}</div>
+  <div class="meta"><span>${escapeHtml(e.type)}</span><span>v${escapeHtml(e.version)}</span><span>${escapeHtml(e.license)}</span></div>
 </div>`).join("\n");
 
   return baseLayout("Browse", `
@@ -80,17 +84,17 @@ function generateIndex(registry: Registry): string {
 }
 
 function generateDetail(entry: RegistryEntry): string {
-  return baseLayout(entry.name, `
-<h2>${entry.name} ${layerBadge(entry.layer)}</h2>
-<p style="color:var(--muted);margin:10px 0">${entry.description}</p>
-<div class="install" style="display:inline-block">agentboot pull ${entry.id}</div>
+  return baseLayout(escapeHtml(entry.name), `
+<h2>${escapeHtml(entry.name)} ${layerBadge(entry.layer)}</h2>
+<p style="color:var(--muted);margin:10px 0">${escapeHtml(entry.description)}</p>
+<div class="install" style="display:inline-block">agentboot pull ${escapeHtml(entry.id)}</div>
 <table style="margin-top:20px;border-collapse:collapse">
-  <tr><td style="color:var(--muted);padding:4px 12px">Version</td><td>${entry.version}</td></tr>
-  <tr><td style="color:var(--muted);padding:4px 12px">License</td><td>${entry.license}</td></tr>
-  <tr><td style="color:var(--muted);padding:4px 12px">Type</td><td>${entry.type}</td></tr>
-  <tr><td style="color:var(--muted);padding:4px 12px">Author</td><td>${entry.author.handle}</td></tr>
+  <tr><td style="color:var(--muted);padding:4px 12px">Version</td><td>${escapeHtml(entry.version)}</td></tr>
+  <tr><td style="color:var(--muted);padding:4px 12px">License</td><td>${escapeHtml(entry.license)}</td></tr>
+  <tr><td style="color:var(--muted);padding:4px 12px">Type</td><td>${escapeHtml(entry.type)}</td></tr>
+  <tr><td style="color:var(--muted);padding:4px 12px">Author</td><td>${escapeHtml(entry.author.handle)}</td></tr>
 </table>
-<div class="tags" style="margin-top:15px">${entry.tags.map(t => `<span class="tag">${t}</span>`).join("")}</div>`);
+<div class="tags" style="margin-top:15px">${entry.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join("")}</div>`);
 }
 
 function main(): void {
@@ -148,6 +152,7 @@ function main(): void {
     const typeDir = path.join(outputDir, type);
     fs.mkdirSync(typeDir, { recursive: true });
     for (const entry of items) {
+      if (!/^[a-z][a-z0-9_-]{0,63}$/i.test(entry.name)) continue; // skip invalid names
       fs.writeFileSync(path.join(typeDir, `${entry.name}.html`), generateDetail(entry), "utf-8");
     }
     console.log(chalk.green(`  ✓ ${type}/ (${items.length} pages)`));

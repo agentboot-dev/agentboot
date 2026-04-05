@@ -11,6 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
 
@@ -76,10 +77,10 @@ export interface RegistryChannel {
 // Constants
 // ---------------------------------------------------------------------------
 
-const CACHE_DIR = path.join(process.env["HOME"] ?? "~", ".agentboot", "registry", "cache");
+const CACHE_DIR = path.join(os.homedir(), ".agentboot", "registry", "cache");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const ALLOWED_LICENSES = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense"];
-const REJECTED_LICENSES = ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "GPL-2.0-only", "GPL-3.0-only", "AGPL-3.0-only"];
+const REJECTED_LICENSES = ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "GPL-2.0-only", "GPL-3.0-only", "AGPL-3.0-only", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0"];
 const DEFAULT_CHANNEL: RegistryChannel = {
   name: "public",
   url: "https://github.com/agentboot/marketplace",
@@ -96,6 +97,9 @@ export function getCacheDir(): string {
 }
 
 function getCachePath(channelName: string): string {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(channelName)) {
+    throw new Error(`Invalid channel name: ${channelName}`);
+  }
   return path.join(getCacheDir(), `${channelName}-registry.json`);
 }
 
@@ -194,8 +198,9 @@ export function resolveComponent(
 // License validation
 // ---------------------------------------------------------------------------
 
-export function validateLicense(license: string): { valid: boolean; reason?: string } {
-  if (REJECTED_LICENSES.some(l => license.toUpperCase().includes(l.toUpperCase().replace(/-/g, "")))) {
+export function validateLicense(license: string): { valid: boolean; reason?: string | undefined } {
+  const upper = license.toUpperCase();
+  if (REJECTED_LICENSES.some(l => upper.includes(l.toUpperCase()))) {
     return { valid: false, reason: `License "${license}" is not compatible (GPL/AGPL licenses are rejected)` };
   }
   if (!ALLOWED_LICENSES.includes(license)) {

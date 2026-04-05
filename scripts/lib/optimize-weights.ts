@@ -167,8 +167,10 @@ export function applyWeightChanges(
     return { changed: false, diff: ["Traits must be weight-object format"] };
   }
 
+  const dangerousKeys = new Set(["__proto__", "constructor", "prototype", "toString", "valueOf"]);
   for (const rec of recommendations) {
     if (rec.current === rec.recommended) continue;
+    if (dangerousKeys.has(rec.trait)) continue;
     if (config.traits[rec.trait] !== undefined) {
       diff.push(`${rec.trait}: ${rec.current} → ${rec.recommended}`);
       config.traits[rec.trait] = rec.recommended;

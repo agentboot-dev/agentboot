@@ -25,7 +25,7 @@ export interface OrgSpecificityResult {
 const ORG_SPECIFICITY_PATTERNS: Array<{ category: string; pattern: RegExp }> = [
   { category: "internal-domain", pattern: /\b\w+\.(internal|corp|local)\b/i },
   { category: "internal-naming", pattern: /\b(my-company|acme-corp|internal-tool|corp-)\b/i },
-  { category: "internal-tool-ref", pattern: /\b[A-Z]{2,5}-\d{3,}\b/ },
+  { category: "internal-tool-ref", pattern: /\b(?!(?:CWE|CVE|RFC|ISO|OWASP|NIST|IEEE)-)[A-Z]{2,5}-\d{4,}\b/ },
   { category: "internal-email", pattern: /\b\w+@(?!example\.com|test\.com|gmail\.com|outlook\.com)\w+\.\w{2,}\b/i },
   { category: "internal-infra", pattern: /\b(vpc-[a-f0-9]+|i-[a-f0-9]+|sg-[a-f0-9]+|subnet-[a-f0-9]+)\b/ },
   { category: "internal-url", pattern: /https?:\/\/(?!github\.com|example\.com|agentboot\.dev)[a-z0-9-]+\.(internal|corp|local|intranet)\b/i },
@@ -97,15 +97,18 @@ export function validateContribution(
 
   let secretsFound = false;
   const secretPatterns = [/AKIA[A-Z0-9]{16}/, /sk-[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/, /xox[bp]-[a-zA-Z0-9-]+/];
+  let orgPassed = true;
+  const fileContents = new Map<string, string>();
   for (const file of contentFiles) {
     const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
+    fileContents.set(file, content);
+  }
+  for (const [, content] of fileContents) {
     for (const p of secretPatterns) { if (p.test(content)) { secretsFound = true; break; } }
   }
   checks.push({ name: "no-secrets", passed: !secretsFound, message: secretsFound ? "Secrets detected" : "No secrets" });
 
-  let orgPassed = true;
-  for (const file of contentFiles) {
-    const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
+  for (const [, content] of fileContents) {
     if (!checkOrgSpecificity(content).passed) orgPassed = false;
   }
   checks.push({ name: "org-specificity", passed: orgPassed, message: orgPassed ? "No org-specific content" : "Org-specific content detected" });

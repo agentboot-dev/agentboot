@@ -1192,7 +1192,7 @@ program
         console.log(chalk.gray(`  Estimated cost: ~$${cost.totalUsd} (${cost.breakdown})`));
         if (opts["dryRun"]) {
           for (const tc of testCases) {
-            console.log(chalk.gray(`    - ${tc.persona}: ${tc.ground_truth.must_find?.map((f: any) => f.topic).join(", ") ?? "general"}`));
+            console.log(chalk.gray(`    - ${tc.persona}: ${tc.ground_truth.must_find?.map((f: { topic: string }) => f.topic).join(", ") ?? "general"}`));
           }
         } else {
           console.log(chalk.yellow("  LLM provider required. Test cases loaded and validated."));
@@ -2357,6 +2357,13 @@ marketplaceCmd
     console.log(chalk.bold(`\nPulling ${entry.id}@${entry.version} from ${channel.name}...`));
     const typeDir = entry.type === "domain" ? "domains" : `${entry.type}s`;
     const targetDir = path.join(ROOT, "core", typeDir, entry.name);
+    // Path traversal protection
+    const validTypes = ["trait", "gotcha", "persona", "domain"];
+    if (!validTypes.includes(entry.type)) { console.error(chalk.red(`Invalid component type: ${entry.type}`)); process.exit(1); }
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(entry.name)) { console.error(chalk.red(`Invalid component name: ${entry.name}`)); process.exit(1); }
+    const resolvedTarget = path.resolve(targetDir);
+    const boundary = path.resolve(ROOT, "core");
+    if (!resolvedTarget.startsWith(boundary + path.sep) && resolvedTarget !== boundary) { console.error(chalk.red("Path traversal detected")); process.exit(1); }
     if (fs.existsSync(targetDir) && !opts.force) { console.error(chalk.red(`Already exists. Use --force.`)); process.exit(1); }
     if (opts.dryRun) { console.log(chalk.yellow(`  [dry-run] Would write to: ${path.relative(ROOT, targetDir)}`)); return; }
     const licenseCheck = validateLicense(entry.license);
