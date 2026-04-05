@@ -286,7 +286,7 @@ A security review that costs $5 on Opus costs $1 on Sonnet. If Sonnet's quality 
 sufficient for the task, that's $4 saved per invocation. Across 50 developers running
 10 reviews/day, that's $2,000/day.
 
-### `agentboot cost-estimate` (deferred to Phase 8)
+### `agentboot cost-estimate`
 
 ```bash
 $ agentboot cost-estimate

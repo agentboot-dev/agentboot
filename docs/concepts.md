@@ -252,8 +252,8 @@ This has three advantages over inlined output:
 
 The build system generates **one self-contained folder per platform** under `dist/`.
 Each platform folder (e.g., `dist/claude/`, `dist/copilot/`, `dist/cursor/`, `dist/skill/`,
-`dist/agents/`) contains everything needed for that platform and nothing it doesn't.
-Gemini and JetBrains output folders are planned for a future phase.
+`dist/agents/`, `dist/gemini/`, `dist/windsurf/`) contains everything needed for that
+platform and nothing it doesn't. JetBrains output is planned for a future phase.
 The Claude Code folder uses @import-based files; the skill folder uses inlined SKILL.md
 for cross-platform distribution.
 
