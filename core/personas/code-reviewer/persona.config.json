@@ -2,6 +2,7 @@
   "name": "Code Reviewer",
   "description": "Senior code reviewer — finds real bugs, not style nits",
   "invocation": "/review-code",
+  "pattern": "react",
   "traits": {
     "critical-thinking": "MEDIUM",
     "structured-output": "MEDIUM",
