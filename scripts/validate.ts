@@ -593,6 +593,71 @@ function walkDir(dir: string, extensions: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// AB-143: Check 7: MCP connection governance
+// ---------------------------------------------------------------------------
+
+function checkMcpGovernance(config: AgentBootConfig): CheckResult {
+  const result = check("MCP governance — approved servers and required servers validated");
+  const mcpConfig = config.mcp;
+
+  if (!mcpConfig) {
+    // No MCP governance configured — skip silently
+    return result;
+  }
+
+  // Validate approved servers have names
+  if (mcpConfig.approved) {
+    for (const server of mcpConfig.approved) {
+      if (!server.name || server.name.trim() === "") {
+        fail(result, "MCP approved server entry missing 'name' field");
+      }
+    }
+  }
+
+  // Validate required servers are in approved list
+  if (mcpConfig.required && mcpConfig.approved) {
+    const approvedNames = new Set(mcpConfig.approved.map(s => s.name));
+    for (const required of mcpConfig.required) {
+      if (!approvedNames.has(required)) {
+        fail(
+          result,
+          `MCP required server "${required}" is not in the approved servers list`
+        );
+      }
+    }
+  }
+
+  // Validate that claude.mcpServers entries match approved list (if enforceApproved)
+  if (mcpConfig.enforceApproved && config.claude?.mcpServers && mcpConfig.approved) {
+    const approvedNames = new Set(mcpConfig.approved.map(s => s.name));
+    for (const serverName of Object.keys(config.claude.mcpServers)) {
+      if (!approvedNames.has(serverName)) {
+        fail(
+          result,
+          `MCP server "${serverName}" in claude.mcpServers is not in the approved list. ` +
+          `Add it to mcp.approved or remove enforceApproved.`
+        );
+      }
+    }
+  }
+
+  // Warn about required servers not configured
+  if (mcpConfig.required && config.claude?.mcpServers) {
+    const configured = new Set(Object.keys(config.claude.mcpServers));
+    for (const required of mcpConfig.required) {
+      if (!configured.has(required)) {
+        warn(
+          result,
+          `MCP required server "${required}" is not configured in claude.mcpServers`
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -620,6 +685,7 @@ async function main(): Promise<void> {
     checkNoSecrets(config, configDir),
     checkCompositionConsistency(config, configDir),
     checkRuleOverrides(config, configDir),
+    checkMcpGovernance(config),
   ];
 
   // Print results.

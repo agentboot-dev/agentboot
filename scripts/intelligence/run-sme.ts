@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 // Types
 // ---------------------------------------------------------------------------
 
-type HarnessId = "cc" | "copilot" | "cursor" | "gemini" | "jetbrains";
+type HarnessId = "cc" | "copilot" | "cursor" | "gemini" | "jetbrains" | "strategic";
 
 interface FetchedSource {
   url: string;
@@ -80,6 +80,7 @@ const HARNESS_DIR_MAP: Record<HarnessId, string> = {
   cursor: "cursor-sme",
   gemini: "gemini-sme",
   jetbrains: "jetbrains-sme",
+  strategic: "strategic-analyst",
 };
 
 const HARNESS_LABEL: Record<HarnessId, string> = {
@@ -88,6 +89,7 @@ const HARNESS_LABEL: Record<HarnessId, string> = {
   cursor: "Cursor",
   gemini: "Gemini",
   jetbrains: "JetBrains AI",
+  strategic: "Strategic Analyst",
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +134,7 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(1);
   }
 
-  const validHarnesses: HarnessId[] = ["cc", "copilot", "cursor", "gemini", "jetbrains"];
+  const validHarnesses: HarnessId[] = ["cc", "copilot", "cursor", "gemini", "jetbrains", "strategic"];
   if (!validHarnesses.includes(harness as HarnessId)) {
     console.error(`Error: invalid harness "${harness}". Must be one of: ${validHarnesses.join(", ")}`);
     process.exit(1);
@@ -154,7 +156,7 @@ function printUsage(): void {
 Usage: run-sme --harness <id> --sources <path.json> --output <report.json>
 
 Options:
-  --harness     Harness ID: cc | copilot | cursor | gemini | jetbrains
+  --harness     Harness ID: cc | copilot | cursor | gemini | jetbrains | strategic
   --sources     Path to the fetched sources JSON (from fetch-sources)
   --output      Path to write the SME report JSON
   --max-tokens  Maximum tokens for the LLM response (default: 4096)

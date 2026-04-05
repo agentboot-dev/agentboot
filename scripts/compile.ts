@@ -506,6 +506,47 @@ function buildCopilotAgent(
 }
 
 // ---------------------------------------------------------------------------
+// AB-146: Windsurf output: .windsurfrules (flat text, project-level)
+// ---------------------------------------------------------------------------
+
+function buildWindsurfRules(
+  personaName: string,
+  personaConfig: PersonaConfig | null,
+  composedContent: string,
+  _config: AgentBootConfig
+): string {
+  const header = `# ${personaConfig?.name ?? personaName}\n# ${personaConfig?.description ?? ""}\n\n`;
+  // Strip HTML comments and frontmatter for clean Windsurf output
+  const stripped = composedContent
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^---\n[\s\S]*?\n---\n*/, "")
+    .trim();
+  return `${header}${stripped}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// AB-144: Gemini output: GEMINI.md + .gemini/ rules
+// ---------------------------------------------------------------------------
+
+function buildGeminiOutput(
+  personaName: string,
+  personaConfig: PersonaConfig | null,
+  composedContent: string,
+  _config: AgentBootConfig
+): string {
+  const header = `# ${personaConfig?.name ?? personaName}\n\n`;
+  const description = personaConfig?.description
+    ? `${personaConfig.description}\n\n---\n\n`
+    : "";
+  // Strip HTML comments for Gemini output
+  const stripped = composedContent
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^---\n[\s\S]*?\n---\n*/, "")
+    .trim();
+  return `${header}${description}${stripped}\n`;
+}
+
+// ---------------------------------------------------------------------------
 // Persona compilation — writes to each platform's dist folder
 // ---------------------------------------------------------------------------
 
@@ -669,6 +710,28 @@ function compilePersona(
     platforms.push("cursor");
   }
 
+  // AB-146: Windsurf output — .windsurfrules flat text file
+  if (outputFormats.includes("windsurf")) {
+    const windsurfDir = path.join(distPath, "windsurf", scopePath);
+    ensureDir(windsurfDir);
+    const windsurfContent = buildWindsurfRules(personaName, personaConfig, composed, config);
+    // Append each persona to a combined .windsurfrules file
+    const rulesPath = path.join(windsurfDir, ".windsurfrules");
+    const existing = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, "utf-8") : "";
+    const separator = existing ? "\n---\n\n" : "";
+    fs.writeFileSync(rulesPath, `${existing}${separator}${windsurfContent}`, "utf-8");
+    if (!platforms.includes("windsurf")) platforms.push("windsurf");
+  }
+
+  // AB-144: Gemini output — GEMINI.md + .gemini/ rules
+  if (outputFormats.includes("gemini")) {
+    const geminiDir = path.join(distPath, "gemini", scopePath, personaName);
+    ensureDir(geminiDir);
+    const geminiContent = buildGeminiOutput(personaName, personaConfig, composed, config);
+    fs.writeFileSync(path.join(geminiDir, "persona.md"), geminiContent, "utf-8");
+    if (!platforms.includes("gemini")) platforms.push("gemini");
+  }
+
   return { persona: personaName, platforms, traitsInjected: injected, scope };
 }
 
@@ -692,9 +755,9 @@ function compileInstructions(
   const provenanceEnabled = config.output?.provenanceHeaders !== false;
 
   for (const platform of outputFormats) {
-    if (platform === "agents" || platform === "plugin") continue; // handled separately
+    if (platform === "agents" || platform === "plugin" || platform === "windsurf") continue; // handled separately or appended
     // CC and Cursor use "rules/" for always-on instructions; other platforms use "instructions/"
-    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : "instructions";
+    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : (platform === "gemini" ? "rules" : "instructions");
     const outDir = path.join(distPath, platform, scopePath, dirName);
     ensureDir(outDir);
 
@@ -793,6 +856,25 @@ function compileGotchas(
         { globs, alwaysApply: false }
       );
       fs.writeFileSync(path.join(cursorRulesDir, `${name}.mdc`), cursorContent, "utf-8");
+    }
+
+    // AB-146: Windsurf gotchas — append to .windsurfrules
+    if (outputFormats.includes("windsurf")) {
+      const windsurfDir = path.join(distPath, "windsurf", scopePath);
+      ensureDir(windsurfDir);
+      const rulesPath = path.join(windsurfDir, ".windsurfrules");
+      const existing = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, "utf-8") : "";
+      const gotchaContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+      const separator = existing ? "\n---\n\n" : "";
+      fs.writeFileSync(rulesPath, `${existing}${separator}${gotchaContent}\n`, "utf-8");
+    }
+
+    // AB-144: Gemini gotchas — .gemini/ rules directory
+    if (outputFormats.includes("gemini")) {
+      const geminiRulesDir = path.join(distPath, "gemini", scopePath, "rules");
+      ensureDir(geminiRulesDir);
+      const geminiContent = content.replace(/<!--[\s\S]*?-->/g, "").trim();
+      fs.writeFileSync(path.join(geminiRulesDir, file), `${geminiContent}\n`, "utf-8");
     }
 
     // AB-130: Copilot scoped instructions — gotchas with paths: become .instructions.md
@@ -947,6 +1029,76 @@ function generateClaudeMd(
 }
 
 // ---------------------------------------------------------------------------
+// AB-144: GEMINI.md generation — Gemini CLI project instructions
+// ---------------------------------------------------------------------------
+
+function generateGeminiMd(
+  traitNames: string[],
+  traits: Map<string, TraitContent>,
+  instructionFileNames: string[],
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string,
+  personaConfigs?: Map<string, PersonaConfig>,
+  lexiconEntries?: LexiconEntry[]
+): void {
+  const org = config.orgDisplayName ?? config.org;
+
+  const lines: string[] = [
+    `# ${org} — Agent Configuration`,
+    "",
+    "<!-- Auto-generated by AgentBoot. Do not edit manually. -->",
+    "",
+  ];
+
+  // Lexicon
+  if (lexiconEntries && lexiconEntries.length > 0) {
+    lines.push(compileLexiconBlock(lexiconEntries));
+  }
+
+  // Instructions (inline content for Gemini since it doesn't support @imports)
+  if (instructionFileNames.length > 0) {
+    lines.push("## Instructions", "");
+    const coreInstructionsDir = path.join(ROOT, "core", "instructions");
+    for (const instrName of instructionFileNames) {
+      const instrPath = path.join(coreInstructionsDir, `${instrName}.md`);
+      if (fs.existsSync(instrPath)) {
+        const content = fs.readFileSync(instrPath, "utf-8")
+          .replace(/^---\n[\s\S]*?\n---\n*/, "")
+          .replace(/<!--[\s\S]*?-->/g, "")
+          .trim();
+        lines.push(content, "");
+      }
+    }
+  }
+
+  // Traits (inline)
+  if (traitNames.length > 0) {
+    lines.push("## Behavioral Traits", "");
+    for (const traitName of traitNames) {
+      const trait = traits.get(traitName);
+      if (trait) {
+        const content = trait.content.replace(/<!--[\s\S]*?-->/g, "").trim();
+        lines.push(content, "");
+      }
+    }
+  }
+
+  // Persona index
+  if (personaConfigs && personaConfigs.size > 0) {
+    lines.push("## Available Personas", "");
+    for (const [, pc] of personaConfigs) {
+      const cmd = pc.invocation ?? `/${pc.name}`;
+      lines.push(`- \`${cmd}\` — ${pc.description}`);
+    }
+    lines.push("");
+  }
+
+  const geminiMdPath = path.join(distPath, "gemini", scopePath, "GEMINI.md");
+  ensureDir(path.dirname(geminiMdPath));
+  fs.writeFileSync(geminiMdPath, lines.join("\n"), "utf-8");
+}
+
 // ---------------------------------------------------------------------------
 // AGENTS.md generation — universal cross-tool standard
 // ---------------------------------------------------------------------------
@@ -957,11 +1109,13 @@ function generateAgentsMd(
   personaConfigs: Map<string, PersonaConfig>,
   instructionFileNames: string[],
   lexiconEntries: LexiconEntry[],
-  instructionsDir: string
+  instructionsDir: string,
+  scopePath?: string
 ): void {
   const org = config.orgDisplayName ?? config.org;
+  const scopeLabel = scopePath ? ` (${scopePath})` : "";
   const lines: string[] = [
-    `# ${org} — Agent Configuration`,
+    `# ${org}${scopeLabel} — Agent Configuration`,
     "",
     `> Generated by [AgentBoot](https://agentboot.dev). Do not edit manually.`,
     "",
@@ -988,7 +1142,6 @@ function generateAgentsMd(
       const instrPath = path.join(instructionsDir, `${instrName}.md`);
       if (fs.existsSync(instrPath)) {
         const content = fs.readFileSync(instrPath, "utf-8");
-        // Skip frontmatter block, then find first non-heading, non-empty line
         const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "");
         const summaryLines = contentWithoutFrontmatter.split("\n")
           .filter(l => l.trim() && !l.startsWith("#"));
@@ -1020,9 +1173,16 @@ function generateAgentsMd(
     }
   }
 
-  const agentsDir = path.join(distPath, "agents");
-  ensureDir(agentsDir);
-  fs.writeFileSync(path.join(agentsDir, "AGENTS.md"), lines.join("\n"), "utf-8");
+  // AB-145: Scope-aware output path
+  if (scopePath) {
+    const agentsDir = path.join(distPath, "agents", scopePath);
+    ensureDir(agentsDir);
+    fs.writeFileSync(path.join(agentsDir, "AGENTS.md"), lines.join("\n"), "utf-8");
+  } else {
+    const agentsDir = path.join(distPath, "agents");
+    ensureDir(agentsDir);
+    fs.writeFileSync(path.join(agentsDir, "AGENTS.md"), lines.join("\n"), "utf-8");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,9 +1307,33 @@ function generateMcpJson(
 
   log(chalk.yellow("  ⚠ Generating .mcp.json with MCP servers — these will be synced to all target repos"));
 
+  // AB-143: MCP governance — warn about unapproved servers
+  if (config.mcp?.enforceApproved && config.mcp.approved) {
+    const approvedNames = new Set(config.mcp.approved.map(s => s.name));
+    for (const serverName of Object.keys(mcpServers)) {
+      if (!approvedNames.has(serverName)) {
+        log(chalk.red(`  ✗ MCP server "${serverName}" is not in the approved list — will be excluded from output`));
+        delete (mcpServers as Record<string, unknown>)[serverName];
+      }
+    }
+  }
+
   const mcpJson = { mcpServers };
   const mcpPath = path.join(distPath, "claude", scopePath, ".mcp.json");
   fs.writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
+
+  // AB-143: Generate MCP governance manifest
+  if (config.mcp?.approved) {
+    const mcpManifest = {
+      approved: config.mcp.approved,
+      enforceApproved: config.mcp.enforceApproved ?? false,
+      required: config.mcp.required ?? [],
+      generatedAt: new Date().toISOString(),
+    };
+    const manifestPath = path.join(distPath, "claude", scopePath, "mcp-governance.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(mcpManifest, null, 2) + "\n", "utf-8");
+    log(chalk.gray(`  → MCP governance manifest written`));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1663,6 +1847,94 @@ function generateComplianceSettingsJson(
 }
 
 // ---------------------------------------------------------------------------
+// AB-147: Per-persona hook compilation
+// ---------------------------------------------------------------------------
+
+/**
+ * Compile per-persona hooks from persona.config.json into settings.json.
+ * Each persona can define hooks that fire when that persona is invoked as a subagent.
+ * Also compiles gotcha-derived path protection hooks.
+ */
+function generatePersonaHooks(
+  _config: AgentBootConfig,
+  distPath: string,
+  scopePath: string,
+  personaDirs: Map<string, string>,
+  enabledPersonas: string[] | undefined
+): void {
+  const settingsPath = path.join(distPath, "claude", scopePath, "settings.json");
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    } catch { /* start fresh */ }
+  }
+
+  const hooks = (settings["hooks"] ?? {}) as Record<string, unknown[]>;
+  let personaHooksAdded = 0;
+
+  for (const [personaName, personaDir] of personaDirs) {
+    if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+    const pc = loadPersonaConfig(personaDir);
+    if (!pc?.hooks) continue;
+
+    // Merge persona-specific hooks into the settings
+    for (const [event, hookConfig] of Object.entries(pc.hooks)) {
+      if (!hooks[event]) hooks[event] = [];
+      // Wrap in SubagentStart matcher so hooks only fire for this persona
+      const entry = {
+        matcher: personaName,
+        ...(typeof hookConfig === "object" && hookConfig !== null ? hookConfig : {}),
+      };
+      (hooks[event] as unknown[]).push(entry);
+      personaHooksAdded++;
+    }
+  }
+
+  // AB-147: Compile gotcha path patterns into PreToolUse validation
+  // Gotchas with paths: frontmatter can generate hooks that warn on edits to sensitive paths
+  const gotchasDir = path.join(ROOT, "core", "gotchas");
+  if (fs.existsSync(gotchasDir)) {
+    const gotchaFiles = fs.readdirSync(gotchasDir).filter(f => f.endsWith(".md") && f !== "README.md");
+    const sensitiveGlobs: string[] = [];
+
+    for (const file of gotchaFiles) {
+      const content = fs.readFileSync(path.join(gotchasDir, file), "utf-8");
+      const fm = parseFrontmatter(content);
+      const rawPaths = fm?.get("paths");
+      if (rawPaths) {
+        const pathsStr = rawPaths.replace(/^["']|["']$/g, "");
+        sensitiveGlobs.push(...pathsStr.split(",").map(p => p.trim()).filter(Boolean));
+      }
+    }
+
+    if (sensitiveGlobs.length > 0) {
+      // Generate a PostToolUse hook that logs when gotcha-scoped files are edited
+      if (!hooks["PostToolUse"]) hooks["PostToolUse"] = [];
+      (hooks["PostToolUse"] as unknown[]).push({
+        matcher: `Edit|Write`,
+        hooks: [{
+          type: "command",
+          command: `.claude/hooks/agentboot-telemetry.sh`,
+          timeout: 3000,
+          async: true,
+        }],
+        // Comment: gotcha-scoped paths trigger telemetry for audit
+        _agentboot_gotcha_paths: sensitiveGlobs,
+      });
+    }
+  }
+
+  if (personaHooksAdded > 0 || Object.keys(hooks).length > 0) {
+    settings["hooks"] = hooks;
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+    if (personaHooksAdded > 0) {
+      log(chalk.gray(`  → ${personaHooksAdded} persona-specific hook(s) compiled`));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AB-64: Telemetry NDJSON schema file
 // ---------------------------------------------------------------------------
 
@@ -1838,7 +2110,7 @@ function main(): void {
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin"];
+  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -2013,6 +2285,26 @@ function main(): void {
     }
   }
 
+  // AB-144: Gemini-specific output (GEMINI.md with persona index)
+  if (outputFormats.includes("gemini")) {
+    const personaConfigs = new Map<string, PersonaConfig>();
+    for (const [personaName, personaDir] of personaDirs) {
+      if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+      const pc = loadPersonaConfig(personaDir);
+      if (pc) personaConfigs.set(personaName, pc);
+    }
+    generateGeminiMd(
+      [...traits.keys()],
+      traits,
+      instrFileNames,
+      config,
+      distPath,
+      "core",
+      personaConfigs,
+      lexiconEntries
+    );
+  }
+
   // AGENTS.md — universal cross-tool output (always generated if format enabled)
   if (outputFormats.includes("agents")) {
     log(chalk.cyan("\nGenerating AGENTS.md..."));
@@ -2028,7 +2320,7 @@ function main(): void {
 
   // Generate composition manifests for core scope (all platforms)
   for (const fmt of outputFormats) {
-    if (fmt === "agents" || fmt === "plugin") continue; // No scope merging for these
+    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf") continue; // No scope merging for these
     generateCompositionManifest(distPath, fmt, "core", config);
   }
 
@@ -2099,10 +2391,40 @@ function main(): void {
       log(chalk.gray("  (no node-level overrides found)"));
     }
 
+    // AB-145: Generate scope-specific AGENTS.md for each node
+    if (outputFormats.includes("agents")) {
+      for (const { path: nodePath } of flatNodes) {
+        // Collect personas that exist at this node
+        const parts = nodePath.split("/");
+        const nodePersonasDir = path.join(ROOT, "nodes", nodePath, "personas");
+        const legacyGroupDir = parts.length === 1 ? path.join(ROOT, "groups", parts[0]!, "personas") : undefined;
+        const legacyTeamDir = parts.length === 2 ? path.join(ROOT, "teams", parts[0]!, parts[1]!, "personas") : undefined;
+        const personasDir = fs.existsSync(nodePersonasDir) ? nodePersonasDir
+          : legacyGroupDir && fs.existsSync(legacyGroupDir) ? legacyGroupDir
+          : legacyTeamDir && fs.existsSync(legacyTeamDir) ? legacyTeamDir
+          : null;
+        if (!personasDir) continue;
+
+        const nodePersonaConfigs = new Map<string, PersonaConfig>();
+        // Start with core personas
+        for (const [pName, pDir] of personaDirs) {
+          if (enabledPersonas && !enabledPersonas.includes(pName)) continue;
+          const pc = loadPersonaConfig(pDir);
+          if (pc) nodePersonaConfigs.set(pName, pc);
+        }
+        // Override with node-specific personas
+        for (const entry of fs.readdirSync(personasDir).filter(e => fs.statSync(path.join(personasDir, e)).isDirectory())) {
+          const pc = loadPersonaConfig(path.join(personasDir, entry));
+          if (pc) nodePersonaConfigs.set(entry, pc);
+        }
+        generateAgentsMd(config, distPath, nodePersonaConfigs, instrFileNames, lexiconEntries, coreInstructionsDir, `nodes/${nodePath}`);
+      }
+    }
+
     // Generate composition manifests for scope nodes
     for (const { path: nodePath } of flatNodes) {
       for (const fmt of outputFormats) {
-        if (fmt === "agents" || fmt === "plugin") continue;
+        if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf") continue;
         generateCompositionManifest(distPath, fmt, `nodes/${nodePath}`, config);
       }
     }
@@ -2132,12 +2454,15 @@ function main(): void {
   }
 
   // ---------------------------------------------------------------------------
-  // 6. AB-59/60/63: Compliance & audit trail hooks
+  // 6. AB-59/60/63/147: Compliance & audit trail hooks
   // ---------------------------------------------------------------------------
 
   if (outputFormats.includes("claude")) {
     generateComplianceHooks(config, distPath, "core");
     generateComplianceSettingsJson(config, distPath, "core");
+
+    // AB-147: Per-persona hook compilation — merge persona-level hooks into settings
+    generatePersonaHooks(config, distPath, "core", personaDirs, enabledPersonas);
   }
 
   // ---------------------------------------------------------------------------
