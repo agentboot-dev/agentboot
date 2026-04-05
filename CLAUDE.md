@@ -136,7 +136,7 @@ See `docs/concepts.md` for full design rationale.
 - `agentboot lint` — static prompt analysis (token budgets, vague language, conflicts, security)
 - Token budget system — per-persona context cost calculation and enforcement
 - Model selection matrix — Haiku/Sonnet/Opus guidance per persona type
-- `agentboot cost-estimate` — projected monthly cost per persona across the org (planned, not yet implemented)
+- `agentboot cost-estimate` — projected monthly cost per persona across the org
 - Effectiveness metrics — efficiency (tokens, cost, latency), quality (accuracy, false positive rate), business (adoption, bug escapes)
 - Prompt style guide — imperative voice, 20-rule max, falsifiable instructions, examples over descriptions
 - `agentboot test` — deterministic (free) + behavioral (LLM) + regression (snapshot) testing

@@ -292,11 +292,11 @@ without opting in.
 
 ---
 
-### 5. MCP Server (`agentboot-mcp`) — Deferred to Phase 8
+### 5. MCP Server (`agentboot mcp-server`)
 
 **What it is:** AgentBoot exposed as an MCP server that any MCP-compatible agent can
-consume. Provides persona invocation, trait lookup, governance status, and knowledge
-base access as MCP tools and resources. **Not yet implemented** — deferred to Phase 8.
+consume. Provides persona listing, trait lookup, gotcha rules, and knowledge
+base access as MCP tools over JSON-RPC stdio. **Implemented in Phase 8 (AB-140).**
 
 **How it works:**
 ```json
@@ -627,8 +627,8 @@ through different channels.
    the org-scope always-on instructions.
 
 8. **MCP servers** — Copilot supports MCP in VS Code (GA) and CLI. AgentBoot's
-   MCP server (deferred to Phase 8) would work here for live persona serving and
-   knowledge base access.
+   MCP server (`agentboot mcp-server`, implemented in Phase 8) provides live persona
+   serving and knowledge base access.
 
 **What Copilot lacks vs. CC:**
 - No hooks (except CLI pre-prompt hook) — compliance enforcement is advisory only
