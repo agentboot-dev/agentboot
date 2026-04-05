@@ -946,8 +946,7 @@ function generatePersonasIndex(
     lines.push(`| **${result.persona}** | \`${invocation}\` | ${description} |`);
   }
 
-  lines.push("", `*Last compiled: ${new Date().toISOString()}*`, "");
-  const content = lines.join("\n");
+  const content = lines.join("\n") + "\n";
 
   for (const platform of outputFormats) {
     const outDir = path.join(distPath, platform, scopePath);

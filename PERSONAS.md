@@ -10,5 +10,3 @@
 | **security-reviewer** | `/review-security` | Adversarial security reviewer — finds vulns before attackers do |
 | **test-data-expert** | `/gen-testdata` | Data engineer specializing in synthetic, constraint-respecting test data |
 | **test-generator** | `/gen-tests` | Top QA engineer — writes tests, audits coverage, finds gaps, manages test plans |
-
-*Last compiled: 2026-04-05T14:21:35.077Z*
