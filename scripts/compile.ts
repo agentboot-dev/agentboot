@@ -755,9 +755,9 @@ function compileInstructions(
   const provenanceEnabled = config.output?.provenanceHeaders !== false;
 
   for (const platform of outputFormats) {
-    if (platform === "agents" || platform === "plugin" || platform === "windsurf") continue; // handled separately or appended
+    if (platform === "agents" || platform === "plugin" || platform === "windsurf" || platform === "gemini") continue; // handled separately; gemini inlines instructions in GEMINI.md
     // CC and Cursor use "rules/" for always-on instructions; other platforms use "instructions/"
-    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : (platform === "gemini" ? "rules" : "instructions");
+    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : "instructions";
     const outDir = path.join(distPath, platform, scopePath, dirName);
     ensureDir(outDir);
 
@@ -1307,18 +1307,22 @@ function generateMcpJson(
 
   log(chalk.yellow("  ⚠ Generating .mcp.json with MCP servers — these will be synced to all target repos"));
 
-  // AB-143: MCP governance — warn about unapproved servers
+  // AB-143: MCP governance — filter unapproved servers (without mutating original config)
+  let filteredServers = mcpServers;
   if (config.mcp?.enforceApproved && config.mcp.approved) {
     const approvedNames = new Set(config.mcp.approved.map(s => s.name));
-    for (const serverName of Object.keys(mcpServers)) {
-      if (!approvedNames.has(serverName)) {
-        log(chalk.red(`  ✗ MCP server "${serverName}" is not in the approved list — will be excluded from output`));
-        delete (mcpServers as Record<string, unknown>)[serverName];
-      }
-    }
+    filteredServers = Object.fromEntries(
+      Object.entries(mcpServers as Record<string, unknown>).filter(([name]) => {
+        if (!approvedNames.has(name)) {
+          log(chalk.red(`  ✗ MCP server "${name}" is not in the approved list — excluded from output`));
+          return false;
+        }
+        return true;
+      })
+    );
   }
 
-  const mcpJson = { mcpServers };
+  const mcpJson = { mcpServers: filteredServers };
   const mcpPath = path.join(distPath, "claude", scopePath, ".mcp.json");
   fs.writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
 
@@ -1881,10 +1885,11 @@ function generatePersonaHooks(
     // Merge persona-specific hooks into the settings
     for (const [event, hookConfig] of Object.entries(pc.hooks)) {
       if (!hooks[event]) hooks[event] = [];
-      // Wrap in SubagentStart matcher so hooks only fire for this persona
+      // Wrap in SubagentStart matcher so hooks only fire for this persona.
+      // Spread config first, then enforce matcher — persona can't override its own matcher.
       const entry = {
-        matcher: personaName,
         ...(typeof hookConfig === "object" && hookConfig !== null ? hookConfig : {}),
+        matcher: personaName,
       };
       (hooks[event] as unknown[]).push(entry);
       personaHooksAdded++;

@@ -7,7 +7,7 @@ sidebar_position: 2
 
 ## Current Status
 
-**v0.7.0** is the current release. Phases 1 through 6 are complete. Phase 7 is in progress.
+**v0.8.0** is the current release. Phases 1 through 8 are complete.
 
 ---
 
@@ -132,7 +132,7 @@ Delivered:
 
 ---
 
-## Phase 7: "Production Ready" -- IN PROGRESS
+## Phase 7: "Production Ready" -- COMPLETE
 
 Platform completeness, trait calibration, developer velocity, and harness intelligence.
 
@@ -142,34 +142,49 @@ Platform completeness, trait calibration, developer velocity, and harness intell
 - **CC Plugin validation** — manifest validation on export (AB-131)
 - **`--non-interactive` mode** — CI-safe install/import with env var defaults (AB-132)
 - **Real YAML parser** — js-yaml in test-runner with backward compat (AB-133)
-- **Trait weight system** ��� HIGH/MEDIUM/LOW/MAX/OFF calibration per persona (AB-134)
+- **Trait weight system** — HIGH/MEDIUM/LOW/MAX/OFF calibration per persona (AB-134)
 - **Harness SME personas** — 5 internal domain experts (AB-135)
 - **Nightly intelligence pipeline** — GitHub Actions workflow + scripts (AB-136)
 - **`/learn` skill** — contextual help for AgentBoot users (AB-137)
 - **Production sync testing** — multi-platform integration tests (AB-138)
 
-**Deferred to Phase 8:**
-- `agentboot cost-estimate` (AB-139)
-- MCP server (AB-140)
-- Strategic analysis layer (AB-141)
-- Monorepo support (AB-142)
+---
 
-**Remaining planned:
-- **Harness template library** -- topology-specific bundles (API service, event processor, data pipeline) packaging traits, gotchas, personas, and hooks
+## Phase 8: "Multi-Platform Coverage & Enterprise" -- COMPLETE
+
+Multi-platform output to counter competitive threats, enterprise compliance enforcement,
+and infrastructure improvements.
+
+**Delivered (v0.8.0):**
+- **Gemini output** — GEMINI.md project instructions + `.gemini/` rules directory (AB-144)
+- **Windsurf output** — `.windsurfrules` flat text file (AB-146)
+- **AGENTS.md scope awareness** — per-scope AGENTS.md for group/team nodes (AB-145)
+- **Compliance hook compilation** — per-persona hooks from persona.config.json (AB-147)
+- **MCP connection governance** — approved/required server validation (AB-143)
+- **`agentboot cost-estimate`** — projected monthly costs per persona (AB-139)
+- **MCP server** — JSON-RPC stdio server for cross-platform persona serving (AB-140)
+- **Strategic analysis layer** — cross-cutting intelligence synthesis persona (AB-141)
+- **Monorepo support** — per-package persona deployment via `packages[]` in repos.json (AB-142)
+
+Total: 7 output platforms (skill, claude, copilot, cursor, agents, gemini, windsurf).
+711 tests across 15 files.
+
+---
+
+**Remaining planned:**
+- **Harness template library** -- topology-specific bundles (API service, event processor, data pipeline)
 - **Public marketplace** -- core layer (bundled), verified layer (reviewed), web catalog
 - **agentskills.io listing** -- publish compiled skills to the Agent Skills marketplace
-- **MCP server** -- cross-platform persona serving (`@agentboot/mcp-server`)
+- **Copilot agent output** -- `.github/agents/*.agent.md` custom agents
 - **Team compositions** -- persona sets with handoff protocols for multi-agent coordination
-- **Blueprint integration** -- workflows mixing deterministic nodes (lint, test) with agentic nodes (implement, review)
+- **Blueprint integration** -- workflows mixing deterministic nodes with agentic nodes
 - **`agentboot audit`** -- periodic consistency checks (garbage collection pattern)
 - **Knowledge layer** -- SQLite index with MCP server (Stage 2), vector/RAG (Stage 3)
 - **JetBrains output** -- `.junie/guidelines.md` and `.aiassistant/rules/*.md`
-- **Gemini output** -- dedicated output format for Gemini CLI
 - **ADR governance** -- architectural decision records with exception lifecycle
 - **Autonomy progression** -- per-persona independence levels (Advisory to Autonomous)
 - **Abstract/binding composition** -- org defines semantic contracts, teams provide implementations
 - **Global hub registry** -- `~/.agentboot/config.json` mapping org slugs to hub paths
 - **Private prompt analytics** -- `/insights` skill for self-improvement
-- **Monorepo support** -- per-package persona deployment
 - **LLM-powered semantic dedup** -- beyond Jaccard, use LLM for content similarity
 - **Import from remote repos** -- `agentboot import --url github.com/org/repo`

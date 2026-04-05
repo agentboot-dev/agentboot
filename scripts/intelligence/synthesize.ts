@@ -81,8 +81,22 @@ function parseArgs(argv: string[]): CliArgs {
       skipLlm = true;
     } else if (arg === "--max-tokens" && i + 1 < argv.length) {
       maxTokens = parseInt(argv[++i]!, 10);
+      if (isNaN(maxTokens) || maxTokens <= 0) {
+        console.error("Error: --max-tokens must be a positive integer");
+        process.exit(1);
+      }
+      if (maxTokens > 32768) {
+        console.error("Error: --max-tokens exceeds maximum of 32768");
+        process.exit(1);
+      }
     } else if (arg === "--cycle" && i + 1 < argv.length) {
-      cycle = argv[++i] as "nightly" | "weekly" | "ad-hoc";
+      const validCycles = ["nightly", "weekly", "ad-hoc"];
+      const rawCycle = argv[++i]!;
+      if (!validCycles.includes(rawCycle)) {
+        console.error(`Error: --cycle must be one of: ${validCycles.join(", ")}`);
+        process.exit(1);
+      }
+      cycle = rawCycle as "nightly" | "weekly" | "ad-hoc";
     } else if (arg === "--help" || arg === "-h") {
       printUsage();
       process.exit(0);
@@ -262,7 +276,7 @@ function runStrategicAnalyst(reports: SmeReport[], maxTokens: number, cycle: str
   const skillPath = path.join(ROOT, "internal", "harness-sme", "strategic-analyst", "SKILL.md");
 
   if (!fs.existsSync(skillPath)) {
-    console.error(`Error: Strategic Analyst SKILL.md not found: ${skillPath}`);
+    console.error(`Error: Strategic Analyst SKILL.md not found at expected location`);
     return null;
   }
 
@@ -289,6 +303,10 @@ function runStrategicAnalyst(reports: SmeReport[], maxTokens: number, cycle: str
       timeout: 180_000, // 3 minute timeout (strategic analysis is heavier)
       maxBuffer: 10 * 1024 * 1024,
     });
+    // Check for spawn errors (timeout, ENOENT) before checking exit status
+    if (result.error) {
+      throw result.error;
+    }
     if (result.status !== 0) {
       const stderr = result.stderr?.trim() ?? "";
       throw new Error(stderr || `claude exited with code ${result.status}`);
@@ -311,7 +329,7 @@ function runStrategicAnalyst(reports: SmeReport[], maxTokens: number, cycle: str
     const parsed: unknown = JSON.parse(jsonStr);
     if (!validateStrategicReport(parsed)) {
       console.error("Error: Strategic Analyst output does not match expected schema");
-      console.error("Raw output:", rawOutput.slice(0, 500));
+      console.error("Raw output:", rawOutput.slice(0, 100));
       return null;
     }
 
@@ -322,7 +340,7 @@ function runStrategicAnalyst(reports: SmeReport[], maxTokens: number, cycle: str
     return parsed;
   } catch {
     console.error("Error: Strategic Analyst output is not valid JSON");
-    console.error("Raw output:", rawOutput.slice(0, 500));
+    console.error("Raw output:", rawOutput.slice(0, 100));
     return null;
   }
 }

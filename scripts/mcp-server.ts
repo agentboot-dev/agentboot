@@ -68,12 +68,25 @@ function listPersonaDirs(): string[] {
   });
 }
 
+/**
+ * Validate that a resolved path stays within the expected base directory.
+ * Prevents path traversal attacks via names like "../../.env".
+ */
+function isContainedIn(resolved: string, baseDir: string): boolean {
+  const normalizedBase = path.resolve(baseDir) + path.sep;
+  return path.resolve(resolved).startsWith(normalizedBase);
+}
+
 /** Load persona config from dist or core. */
 function loadPersonaConfig(name: string): PersonaConfig | null {
+  // Reject path traversal characters
+  if (name.includes("..") || name.includes("/") || name.includes("\\")) return null;
+
   const distPath = path.join(DIST_SKILL_CORE, name, "persona.config.json");
   const corePath = path.join(CORE_PERSONAS, name, "persona.config.json");
 
   const configPath = hasCompiledDist() && fs.existsSync(distPath) ? distPath : corePath;
+  if (!isContainedIn(configPath, hasCompiledDist() ? DIST_SKILL_CORE : CORE_PERSONAS)) return null;
   if (!fs.existsSync(configPath)) return null;
 
   try {
@@ -86,10 +99,14 @@ function loadPersonaConfig(name: string): PersonaConfig | null {
 
 /** Load persona SKILL.md content. */
 function loadPersonaSkill(name: string): string | null {
+  // Reject path traversal characters
+  if (name.includes("..") || name.includes("/") || name.includes("\\")) return null;
+
   const distPath = path.join(DIST_SKILL_CORE, name, "SKILL.md");
   const corePath = path.join(CORE_PERSONAS, name, "SKILL.md");
 
   const skillPath = hasCompiledDist() && fs.existsSync(distPath) ? distPath : corePath;
+  if (!isContainedIn(skillPath, hasCompiledDist() ? DIST_SKILL_CORE : CORE_PERSONAS)) return null;
   if (!fs.existsSync(skillPath)) return null;
 
   try {
@@ -107,7 +124,11 @@ function listTraitFiles(): string[] {
 
 /** Load trait content by name (without .md extension). */
 function loadTraitContent(name: string): string | null {
+  // Reject path traversal characters
+  if (name.includes("..") || name.includes("/") || name.includes("\\")) return null;
+
   const traitPath = path.join(CORE_TRAITS, `${name}.md`);
+  if (!isContainedIn(traitPath, CORE_TRAITS)) return null;
   if (!fs.existsSync(traitPath)) return null;
 
   try {
@@ -130,7 +151,11 @@ function listGotchaFiles(): Array<{ name: string; description: string; paths: st
     return {
       name: f.replace(/\.md$/, ""),
       description: (frontmatter["description"] as string) ?? "",
-      paths: (frontmatter["paths"] as string[]) ?? [],
+      paths: Array.isArray(frontmatter["paths"])
+        ? frontmatter["paths"] as string[]
+        : typeof frontmatter["paths"] === "string"
+          ? [frontmatter["paths"]]
+          : [],
     };
   });
 }
@@ -447,9 +472,18 @@ function startStdioServer(): void {
     terminal: false,
   });
 
+  const MAX_MESSAGE_SIZE = 1_048_576; // 1MB limit per message
+
   rl.on("line", (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
+
+    // Reject oversized messages to prevent memory exhaustion
+    if (trimmed.length > MAX_MESSAGE_SIZE) {
+      const errResp = makeError(null, -32600, "Message exceeds maximum size");
+      process.stdout.write(JSON.stringify(errResp) + "\n");
+      return;
+    }
 
     let request: JsonRpcRequest;
     try {
