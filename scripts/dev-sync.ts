@@ -105,6 +105,12 @@ const platforms: Array<{
     repoTarget: ".gemini/agentboot",
     available: false,
   },
+  {
+    name: "windsurf",
+    distSubdir: "windsurf/core",
+    repoTarget: ".",  // .windsurfrules goes at project root
+    available: false,
+  },
 ];
 
 // ---------------------------------------------------------------------------

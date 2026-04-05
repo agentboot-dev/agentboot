@@ -52,13 +52,15 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
 
 ### Build Pipeline
 
-1. **`scripts/validate.ts`** — 6 pre-build checks: persona existence, trait references, SKILL.md frontmatter, secret scanning, composition consistency across scopes, rule override detection
+1. **`scripts/validate.ts`** — 7 pre-build checks: persona existence, trait references, SKILL.md frontmatter, secret scanning, composition consistency across scopes, rule override detection, MCP governance
 2. **`scripts/compile.ts`** — loads `agentboot.config.json`, resolves trait references from `persona.config.json`, and emits **one self-contained folder per platform** under `dist/`:
    - **`dist/skill/`** — cross-platform SKILL.md (agentskills.io format, traits inlined) + PERSONAS.md
    - **`dist/claude/`** — CC-native: agents, skills, rules, traits, CLAUDE.md (`@imports`), settings.json, .mcp.json
    - **`dist/copilot/`** — per-persona copilot-instructions.md fragments + instructions
-   - **`dist/agents/`** — AGENTS.md universal standard
+   - **`dist/agents/`** — AGENTS.md universal standard (scope-aware)
    - **`dist/cursor/`** — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
+   - **`dist/gemini/`** — GEMINI.md project instructions + `.gemini/` rules
+   - **`dist/windsurf/`** — `.windsurfrules` flat text (all personas concatenated)
 3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
@@ -76,8 +78,10 @@ Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/copilot/` — per-persona copilot-instructions.md fragments + instructions + PERSONAS.md
 - `dist/agents/` — AGENTS.md universal standard
 - `dist/cursor/` — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
+- `dist/gemini/` — GEMINI.md project instructions + `.gemini/` rules directory
+- `dist/windsurf/` — `.windsurfrules` flat text file (all personas concatenated)
 
-Gemini and JetBrains output are planned for a future phase.
+JetBrains output is planned for a future phase.
 
 Within each platform folder, scope hierarchy is preserved:
 - `dist/{platform}/core/` — org-level personas
@@ -132,7 +136,7 @@ See `docs/concepts.md` for full design rationale.
 - `agentboot lint` — static prompt analysis (token budgets, vague language, conflicts, security)
 - Token budget system — per-persona context cost calculation and enforcement
 - Model selection matrix — Haiku/Sonnet/Opus guidance per persona type
-- `agentboot cost-estimate` — projected monthly cost per persona across the org (planned, not yet implemented)
+- `agentboot cost-estimate` — projected monthly cost per persona across the org
 - Effectiveness metrics — efficiency (tokens, cost, latency), quality (accuracy, false positive rate), business (adoption, bug escapes)
 - Prompt style guide — imperative voice, 20-rule max, falsifiable instructions, examples over descriptions
 - `agentboot test` — deterministic (free) + behavioral (LLM) + regression (snapshot) testing
@@ -210,7 +214,7 @@ Three-stage progression from flat files to RAG:
 
 ## Known Gaps
 
-- Gemini and JetBrains output formats not yet implemented
+- JetBrains output format not yet implemented
 - Managed settings group/team fragments — only `00-org.json` generated, no `10-group.json` or `20-team.json`
 - No runtime config schema validation (zod planned but not wired in)
 - `repos.json` is empty — production sync path untested with real external repos (integration tests use temp dirs)
