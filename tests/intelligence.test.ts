@@ -11,7 +11,12 @@ import { describe, it, expect } from "vitest";
 
 import { parseSourcesMd, toFetchableUrl } from "../scripts/intelligence/fetch-sources.js";
 import { buildPrompt, validateReport } from "../scripts/intelligence/run-sme.js";
-import { synthesizeReports } from "../scripts/intelligence/synthesize.js";
+import {
+  synthesizeReports,
+  generateRoadmapSuggestions,
+  formatRoadmapSuggestionsMd,
+} from "../scripts/intelligence/synthesize.js";
+import type { RoadmapSuggestion } from "../scripts/intelligence/synthesize.js";
 
 // ---------------------------------------------------------------------------
 // parseSourcesMd
@@ -442,5 +447,257 @@ describe("synthesizeReports", () => {
     expect(md).toContain("Item 1 from CC");
     expect(md).toContain("Item 2 from Copilot");
     expect(md).toContain("Item 3 from Copilot");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateRoadmapSuggestions (AB-163)
+// ---------------------------------------------------------------------------
+
+describe("generateRoadmapSuggestions", () => {
+  function makeReport(overrides: Record<string, unknown> = {}) {
+    return {
+      harness: "cc",
+      report_date: "2026-01-01",
+      cycle: "nightly",
+      findings: [] as Array<{
+        title: string;
+        category: string;
+        source: string;
+        summary: string;
+        technical_impact: string;
+        roadmap_signal: string;
+        action_required: string;
+        detail: string;
+      }>,
+      summary: "No significant findings.",
+      top_action_items: [] as string[],
+      ...overrides,
+    };
+  }
+
+  it("exports the RoadmapSuggestion type", () => {
+    // Type-level check: if this compiles, the type is exported
+    const suggestion: RoadmapSuggestion = {
+      title: "Test",
+      rationale: "Test rationale",
+      evidence: ["evidence"],
+      priority: "HIGH",
+      suggestedPhase: "current",
+      source: "telemetry",
+    };
+    expect(suggestion.priority).toBe("HIGH");
+  });
+
+  it("generates HIGH priority suggestions from critical findings", () => {
+    const reports = [
+      makeReport({
+        findings: [
+          {
+            title: "Breaking API Change",
+            category: "breaking-change",
+            source: "releases",
+            summary: "The API changed significantly.",
+            technical_impact: "critical",
+            roadmap_signal: "implement",
+            action_required: "escalate",
+            detail: "Full details here.",
+          },
+        ],
+      }),
+    ];
+    const suggestions = generateRoadmapSuggestions(reports);
+    expect(suggestions.length).toBeGreaterThanOrEqual(1);
+    const high = suggestions.filter((s) => s.priority === "HIGH");
+    expect(high.length).toBeGreaterThanOrEqual(1);
+    expect(high[0]!.title).toContain("Breaking API Change");
+  });
+
+  it("generates suggestions for recurring categories", () => {
+    const reports = [
+      makeReport({
+        harness: "cc",
+        findings: [
+          {
+            title: "Issue A",
+            category: "community-trend",
+            source: "forum",
+            summary: "First occurrence.",
+            technical_impact: "low",
+            roadmap_signal: "no-change",
+            action_required: "none",
+            detail: "",
+          },
+          {
+            title: "Issue B",
+            category: "community-trend",
+            source: "forum",
+            summary: "Second occurrence.",
+            technical_impact: "low",
+            roadmap_signal: "no-change",
+            action_required: "none",
+            detail: "",
+          },
+        ],
+      }),
+    ];
+    const suggestions = generateRoadmapSuggestions(reports);
+    const recurring = suggestions.filter((s) => s.title.includes("Recurring pattern"));
+    expect(recurring.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("generates LOW priority for silent harnesses", () => {
+    const reports = [makeReport({ harness: "copilot" })];
+    const suggestions = generateRoadmapSuggestions(reports);
+    const silent = suggestions.filter((s) => s.title.includes("Silent harness"));
+    expect(silent.length).toBe(1);
+    expect(silent[0]!.priority).toBe("LOW");
+  });
+
+  it("sorts suggestions by priority (HIGH > MEDIUM > LOW)", () => {
+    const reports = [
+      makeReport({
+        harness: "cc",
+        findings: [
+          {
+            title: "Critical Thing",
+            category: "breaking-change",
+            source: "releases",
+            summary: "Critical.",
+            technical_impact: "critical",
+            roadmap_signal: "implement",
+            action_required: "escalate",
+            detail: "",
+          },
+          {
+            title: "Low Thing",
+            category: "minor-update",
+            source: "docs",
+            summary: "Low impact.",
+            technical_impact: "low",
+            roadmap_signal: "no-change",
+            action_required: "none",
+            detail: "",
+          },
+        ],
+        top_action_items: ["a", "b", "c"],
+      }),
+      makeReport({ harness: "copilot" }), // silent → LOW
+    ];
+    const suggestions = generateRoadmapSuggestions(reports);
+    expect(suggestions.length).toBeGreaterThanOrEqual(2);
+
+    const priorities = suggestions.map((s) => s.priority);
+    const order = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+    for (let i = 1; i < priorities.length; i++) {
+      expect(order[priorities[i]!]).toBeGreaterThanOrEqual(order[priorities[i - 1]!]);
+    }
+  });
+
+  it("returns empty array when no patterns detected", () => {
+    const reports = [
+      makeReport({
+        harness: "cc",
+        findings: [
+          {
+            title: "Minor Update",
+            category: "minor-update",
+            source: "docs",
+            summary: "Minor.",
+            technical_impact: "low",
+            roadmap_signal: "no-change",
+            action_required: "none",
+            detail: "",
+          },
+        ],
+        top_action_items: ["One item"],
+      }),
+    ];
+    const suggestions = generateRoadmapSuggestions(reports);
+    // Only non-critical single findings with <3 action items and >=1 finding → no suggestions
+    expect(suggestions.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatRoadmapSuggestionsMd (AB-163)
+// ---------------------------------------------------------------------------
+
+describe("formatRoadmapSuggestionsMd", () => {
+  const sampleSuggestions: RoadmapSuggestion[] = [
+    {
+      title: "Fix critical API issue",
+      rationale: "Breaking change detected.",
+      evidence: ["[releases] API v2 broke backward compat"],
+      priority: "HIGH",
+      suggestedPhase: "current",
+      source: "incident",
+    },
+    {
+      title: "Add new persona for monitoring",
+      rationale: "Coverage gap identified.",
+      evidence: ["[cc] Missing monitoring coverage"],
+      priority: "MEDIUM",
+      suggestedPhase: "next",
+      source: "telemetry",
+    },
+    {
+      title: "Review stale harness",
+      rationale: "Harness produced no findings.",
+      evidence: ["[copilot] Zero findings on 2026-01-01"],
+      priority: "LOW",
+      suggestedPhase: "backlog",
+      source: "telemetry",
+    },
+  ];
+
+  it("includes the human review disclaimer", () => {
+    const md = formatRoadmapSuggestionsMd(sampleSuggestions);
+    expect(md).toContain("Human review required before acting on any suggestion.");
+  });
+
+  it("includes a generated timestamp", () => {
+    const md = formatRoadmapSuggestionsMd(sampleSuggestions);
+    expect(md).toMatch(/Generated: \d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("groups suggestions by priority with correct headers", () => {
+    const md = formatRoadmapSuggestionsMd(sampleSuggestions);
+    expect(md).toContain("## HIGH Priority");
+    expect(md).toContain("## MEDIUM Priority");
+    expect(md).toContain("## LOW Priority");
+  });
+
+  it("contains valid JSON in the Raw JSON block", () => {
+    const md = formatRoadmapSuggestionsMd(sampleSuggestions);
+    const jsonMatch = md.match(/```json\n([\s\S]*?)\n```/);
+    expect(jsonMatch).not.toBeNull();
+    const parsed = JSON.parse(jsonMatch![1]!);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(3);
+    expect(parsed[0].priority).toBe("HIGH");
+  });
+
+  it("handles empty suggestions array", () => {
+    const md = formatRoadmapSuggestionsMd([]);
+    expect(md).toContain("No suggestions generated");
+    expect(md).toContain("```json\n[]\n```");
+  });
+
+  it("omits priority sections that have no items", () => {
+    const highOnly: RoadmapSuggestion[] = [
+      {
+        title: "Only high",
+        rationale: "Test",
+        evidence: ["e1"],
+        priority: "HIGH",
+        suggestedPhase: "current",
+        source: "incident",
+      },
+    ];
+    const md = formatRoadmapSuggestionsMd(highOnly);
+    expect(md).toContain("## HIGH Priority");
+    expect(md).not.toContain("## MEDIUM Priority");
+    expect(md).not.toContain("## LOW Priority");
   });
 });
