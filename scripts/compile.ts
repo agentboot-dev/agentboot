@@ -776,6 +776,30 @@ function compilePersona(
     if (!platforms.includes("gemini")) platforms.push("gemini");
   }
 
+  // AB-158: JetBrains output — .junie/guidelines.md (concatenated personas)
+  if (outputFormats.includes("jetbrains")) {
+    const jetbrainsDir = path.join(distPath, "jetbrains", scopePath);
+    ensureDir(jetbrainsDir);
+    // Build content: strip frontmatter and HTML comments for clean markdown
+    const cleanContent = composed
+      .replace(/^---\n[\s\S]*?\n---\n*/, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .trim();
+    const personaHeader = `## ${personaConfig?.name ?? personaName}\n\n`;
+    const description = personaConfig?.description ? `> ${personaConfig.description}\n\n` : "";
+    const junieContent = `${personaHeader}${description}${cleanContent}\n`;
+
+    // Append to concatenated .junie/guidelines.md
+    const junieDir = path.join(jetbrainsDir, ".junie");
+    ensureDir(junieDir);
+    const guidelinesPath = path.join(junieDir, "guidelines.md");
+    const existing = fs.existsSync(guidelinesPath) ? fs.readFileSync(guidelinesPath, "utf-8") : "";
+    const separator = existing ? "\n---\n\n" : `<!-- AgentBoot compiled output — do not edit manually -->\n\n# AgentBoot Personas\n\n`;
+    fs.writeFileSync(guidelinesPath, `${existing}${separator}${junieContent}`, "utf-8");
+
+    if (!platforms.includes("jetbrains")) platforms.push("jetbrains");
+  }
+
   return { persona: personaName, platforms, traitsInjected: injected, scope };
 }
 
@@ -800,8 +824,10 @@ function compileInstructions(
 
   for (const platform of outputFormats) {
     if (platform === "agents" || platform === "plugin" || platform === "windsurf" || platform === "gemini") continue; // handled separately; gemini inlines instructions in GEMINI.md
-    // CC and Cursor use "rules/" for always-on instructions; other platforms use "instructions/"
-    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : "instructions";
+    // CC and Cursor use "rules/" for always-on instructions; JetBrains uses ".aiassistant/rules/"; other platforms use "instructions/"
+    const dirName = (platform === "claude" || platform === "cursor") ? "rules"
+      : platform === "jetbrains" ? ".aiassistant/rules"
+      : "instructions";
     const outDir = path.join(distPath, platform, scopePath, dirName);
     ensureDir(outDir);
 
@@ -944,6 +970,29 @@ function compileGotchas(
         ].join("\n");
         fs.writeFileSync(path.join(copilotInstrDir, `${name}.instructions.md`), copilotInstrContent, "utf-8");
       }
+    }
+
+    // AB-158: JetBrains AI Assistant gotchas — .aiassistant/rules/ with globs: frontmatter
+    if (outputFormats.includes("jetbrains")) {
+      const fm = parseFrontmatter(content);
+      const rawPaths = fm?.get("paths");
+      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      const name = path.basename(file, ".md");
+      const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
+      const jetbrainsRulesDir = path.join(distPath, "jetbrains", scopePath, ".aiassistant", "rules");
+      ensureDir(jetbrainsRulesDir);
+      const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+
+      const frontmatterLines = ["---"];
+      if (pathsStr) {
+        const globs = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
+        frontmatterLines.push(`globs: ${JSON.stringify(globs)}`);
+      }
+      frontmatterLines.push(`description: "${description}"`);
+      frontmatterLines.push("---");
+
+      const jetbrainsContent = [...frontmatterLines, "", strippedContent, ""].join("\n");
+      fs.writeFileSync(path.join(jetbrainsRulesDir, `${name}.rules.md`), jetbrainsContent, "utf-8");
     }
   }
 }
@@ -2158,7 +2207,7 @@ function main(): void {
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini"];
+  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -2368,7 +2417,7 @@ function main(): void {
 
   // Generate composition manifests for core scope (all platforms)
   for (const fmt of outputFormats) {
-    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf") continue; // No scope merging for these
+    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf" || fmt === "jetbrains") continue; // No scope merging for these
     generateCompositionManifest(distPath, fmt, "core", config);
   }
 
