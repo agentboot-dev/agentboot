@@ -534,9 +534,23 @@ function buildCopilotAgent(
   composedContent: string,
   _config: AgentBootConfig
 ): string {
+  const name = personaConfig?.name ?? personaName;
   const description = personaConfig?.description ?? personaName;
+  const model = personaConfig?.model ?? "claude-sonnet-4-6";
+  const safeName = name.replace(/"/g, '\\"');
+  const safeDescription = description.replace(/"/g, '\\"');
   const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-  return `---\ndescription: "${description}"\n---\n\n${stripped}\n`;
+  const frontmatter = [
+    "---",
+    `name: "AgentBoot ${safeName}"`,
+    `description: "${safeDescription}"`,
+    `model: "${model}"`,
+    "tools:",
+    "  - codebase",
+    "  - terminal",
+    "---",
+  ].join("\n");
+  return `${frontmatter}\n\n${stripped}\n`;
 }
 
 // ---------------------------------------------------------------------------
