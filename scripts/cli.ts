@@ -2484,6 +2484,24 @@ registryCmd
     console.log(chalk.green(`\n✓ Seeded registry with ${components.length} component(s)`));
   });
 
+registryCmd
+  .command("validate-contrib <path>")
+  .description("Validate a component for marketplace contribution")
+  .option("--layer <layer>", "Target layer: community or verified", "community")
+  .action(async (componentPath: string, opts) => {
+    const { validateContribution } = await import("./lib/contribution.js");
+    const absPath = path.resolve(componentPath);
+    if (!fs.existsSync(absPath)) { console.error(chalk.red(`Not found: ${absPath}`)); process.exit(1); }
+    console.log(chalk.bold(`\nValidating contribution: ${path.basename(absPath)}\n`));
+    const result = validateContribution(absPath, { layer: opts.layer });
+    for (const check of result.checks) {
+      console.log(`  ${check.passed ? chalk.green("✓") : chalk.red("✗")} ${check.name}: ${check.message}`);
+    }
+    console.log();
+    if (result.passed) { console.log(chalk.green("All checks passed!")); }
+    else { console.log(chalk.red("Some checks failed.")); process.exit(1); }
+  });
+
 // ---------------------------------------------------------------------------
 // AB-153: Optimize command
 // ---------------------------------------------------------------------------
