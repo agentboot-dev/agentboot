@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 
 /**
- * Harness Intelligence Pipeline — Report Synthesizer (Stub)
+ * Harness Intelligence Pipeline — Report Synthesizer
  *
- * Reads per-harness report JSONs from a directory, merges them into a combined
- * report, and writes a PENDING-REVIEW.md file. The actual LLM-powered strategic
- * synthesis will be added in Phase 8 (AB-141).
+ * Reads per-harness report JSONs from a directory, feeds them to the Strategic
+ * Analyst persona for cross-cutting analysis, and writes both a structured JSON
+ * report and a human-readable PENDING-REVIEW.md digest.
+ *
+ * The Strategic Analyst runs AFTER all per-harness SMEs complete. It reads their
+ * individual reports and produces competitive analysis, roadmap implications,
+ * risk flags, marketing signals, and feature matrix updates.
  *
  * Usage:
- *   npx tsx scripts/intelligence/synthesize.ts --reports dir --output weekly-digest.md
+ *   npx tsx scripts/intelligence/synthesize.ts --reports dir --output weekly-digest.md [--skip-llm]
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -54,11 +59,17 @@ const ROOT = path.resolve(__dirname, "../..");
 interface CliArgs {
   reports: string;
   output: string;
+  skipLlm: boolean;
+  maxTokens: number;
+  cycle: "nightly" | "weekly" | "ad-hoc";
 }
 
 function parseArgs(argv: string[]): CliArgs {
   let reports: string | undefined;
   let output: string | undefined;
+  let skipLlm = false;
+  let maxTokens = 8192;
+  let cycle: "nightly" | "weekly" | "ad-hoc" = "nightly";
 
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -66,6 +77,26 @@ function parseArgs(argv: string[]): CliArgs {
       reports = argv[++i];
     } else if (arg === "--output" && i + 1 < argv.length) {
       output = argv[++i];
+    } else if (arg === "--skip-llm") {
+      skipLlm = true;
+    } else if (arg === "--max-tokens" && i + 1 < argv.length) {
+      maxTokens = parseInt(argv[++i]!, 10);
+      if (isNaN(maxTokens) || maxTokens <= 0) {
+        console.error("Error: --max-tokens must be a positive integer");
+        process.exit(1);
+      }
+      if (maxTokens > 32768) {
+        console.error("Error: --max-tokens exceeds maximum of 32768");
+        process.exit(1);
+      }
+    } else if (arg === "--cycle" && i + 1 < argv.length) {
+      const validCycles = ["nightly", "weekly", "ad-hoc"];
+      const rawCycle = argv[++i]!;
+      if (!validCycles.includes(rawCycle)) {
+        console.error(`Error: --cycle must be one of: ${validCycles.join(", ")}`);
+        process.exit(1);
+      }
+      cycle = rawCycle as "nightly" | "weekly" | "ad-hoc";
     } else if (arg === "--help" || arg === "-h") {
       printUsage();
       process.exit(0);
@@ -85,7 +116,7 @@ function parseArgs(argv: string[]): CliArgs {
     process.exit(1);
   }
 
-  return { reports, output };
+  return { reports, output, skipLlm, maxTokens, cycle };
 }
 
 function printUsage(): void {
@@ -93,12 +124,12 @@ function printUsage(): void {
 Usage: synthesize --reports <dir> --output <weekly-digest.md>
 
 Options:
-  --reports   Directory containing per-harness report JSON files
-  --output    Path to write the synthesized digest
-  --help      Show this help message
-
-Note: This is a stub implementation. LLM-powered strategic synthesis
-will be added in Phase 8 (AB-141).
+  --reports     Directory containing per-harness report JSON files
+  --output      Path to write the synthesized digest
+  --skip-llm    Skip LLM-powered strategic analysis (produce merge-only digest)
+  --max-tokens  Maximum tokens for the Strategic Analyst LLM response (default: 8192)
+  --cycle       Report cycle: nightly | weekly | ad-hoc (default: nightly)
+  --help        Show this help message
 `);
 }
 
@@ -171,6 +202,238 @@ function synthesizeReports(reports: SmeReport[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Strategic Analyst — LLM-powered synthesis (AB-141)
+// ---------------------------------------------------------------------------
+
+interface StrategicAnalysis {
+  type: "strategic-analysis";
+  report_date: string;
+  cycle: string;
+  harnesses_analyzed: string[];
+  executive_summary: string;
+  competitive_landscape: unknown[];
+  roadmap_implications: unknown[];
+  risk_flags: unknown[];
+  marketing_signals: unknown[];
+  feature_matrix_updates: unknown[];
+  meta: Record<string, unknown>;
+}
+
+function buildStrategicPrompt(skillMd: string, reports: SmeReport[], cycle: string): string {
+  const today = new Date().toISOString().split("T")[0];
+
+  let reportsContent = "";
+  for (const report of reports) {
+    reportsContent += `\n--- HARNESS REPORT: ${report.harness} (${report.report_date}) ---\n`;
+    reportsContent += JSON.stringify(report, null, 2);
+    reportsContent += "\n\n";
+  }
+
+  return `You are the Strategic Analyst for AgentBoot. Today is ${today}. This is a ${cycle} intelligence cycle.
+
+${skillMd}
+
+## Per-Harness SME Reports
+
+The following reports were produced by the per-harness SME personas. Analyze them
+and produce your strategic analysis report.
+
+${reportsContent}
+
+## Task
+
+Read all per-harness reports above and produce a JSON strategic analysis report
+following the Output Format specified in your SKILL.md. The report should:
+
+1. Synthesize findings across all harnesses into cross-cutting insights
+2. Identify competitive landscape shifts
+3. Flag roadmap implications with priority levels (urgent/strategic/monitor)
+4. Assess risks to AgentBoot's model
+5. Extract marketing and positioning signals
+6. Note any feature matrix changes
+7. If the per-harness reports contain no significant findings, produce a minimal report stating that
+
+IMPORTANT: Output ONLY valid JSON matching the strategic analysis schema. No markdown fences, no explanation text outside the JSON.`;
+}
+
+function validateStrategicReport(data: unknown): data is StrategicAnalysis {
+  if (typeof data !== "object" || data === null) return false;
+
+  const report = data as Record<string, unknown>;
+  if (report["type"] !== "strategic-analysis") return false;
+  if (typeof report["report_date"] !== "string") return false;
+  if (typeof report["executive_summary"] !== "string") return false;
+  if (!Array.isArray(report["competitive_landscape"])) return false;
+  if (!Array.isArray(report["roadmap_implications"])) return false;
+  if (!Array.isArray(report["risk_flags"])) return false;
+  if (!Array.isArray(report["marketing_signals"])) return false;
+  if (!Array.isArray(report["feature_matrix_updates"])) return false;
+
+  return true;
+}
+
+function runStrategicAnalyst(reports: SmeReport[], maxTokens: number, cycle: string): StrategicAnalysis | null {
+  const skillPath = path.join(ROOT, "internal", "harness-sme", "strategic-analyst", "SKILL.md");
+
+  if (!fs.existsSync(skillPath)) {
+    console.error(`Error: Strategic Analyst SKILL.md not found at expected location`);
+    return null;
+  }
+
+  const skillMd = fs.readFileSync(skillPath, "utf-8");
+  const prompt = buildStrategicPrompt(skillMd, reports, cycle);
+
+  const estimatedInputTokens = Math.ceil(prompt.length / 4);
+  console.log(`\nRunning Strategic Analyst...`);
+  console.log(`  Input reports: ${reports.length}`);
+  console.log(`  Max tokens: ${maxTokens}`);
+  console.log(`  Estimated input tokens: ~${estimatedInputTokens}`);
+
+  let rawOutput: string;
+  try {
+    const result = spawnSync("claude", [
+      "-p", "--print",
+      "--max-turns", "1",
+      "--max-tokens", String(maxTokens),
+      "--model", "opus",
+    ], {
+      input: prompt,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 180_000, // 3 minute timeout (strategic analysis is heavier)
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    // Check for spawn errors (timeout, ENOENT) before checking exit status
+    if (result.error) {
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      const stderr = result.stderr?.trim() ?? "";
+      throw new Error(stderr || `claude exited with code ${result.status}`);
+    }
+    rawOutput = (result.stdout ?? "").trim();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Error invoking claude for strategic analysis: ${message}`);
+    return null;
+  }
+
+  // Parse and validate
+  try {
+    let jsonStr = rawOutput;
+    const fenceMatch = jsonStr.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+    if (fenceMatch) {
+      jsonStr = fenceMatch[1]!;
+    }
+
+    const parsed: unknown = JSON.parse(jsonStr);
+    if (!validateStrategicReport(parsed)) {
+      console.error("Error: Strategic Analyst output does not match expected schema");
+      console.error("Raw output:", rawOutput.slice(0, 100));
+      return null;
+    }
+
+    const estimatedOutputTokens = Math.ceil(rawOutput.length / 4);
+    console.log(`  Strategic analysis complete`);
+    console.log(`  Estimated total tokens: ~${estimatedInputTokens + estimatedOutputTokens}`);
+
+    return parsed;
+  } catch {
+    console.error("Error: Strategic Analyst output is not valid JSON");
+    console.error("Raw output:", rawOutput.slice(0, 100));
+    return null;
+  }
+}
+
+function formatStrategicDigest(analysis: StrategicAnalysis, mergeDigest: string): string {
+  const today = new Date().toISOString().split("T")[0];
+
+  let md = `# Strategic Intelligence Digest — ${today}\n\n`;
+  md += `> **Status**: PENDING HUMAN REVIEW\n\n`;
+
+  // Executive summary
+  md += `## Executive Summary\n\n`;
+  md += `${analysis.executive_summary}\n\n`;
+
+  // Competitive landscape
+  if (analysis.competitive_landscape.length > 0) {
+    md += `## Competitive Landscape Changes\n\n`;
+    for (const item of analysis.competitive_landscape as Array<Record<string, unknown>>) {
+      md += `### ${item["signal"] ?? "Unknown"}\n\n`;
+      md += `- **Nature**: ${item["nature"] ?? "unknown"}\n`;
+      md += `- **Harnesses**: ${(item["harnesses_involved"] as string[] ?? []).join(", ")}\n`;
+      md += `- **AgentBoot impact**: ${item["agentboot_impact"] ?? "unknown"}\n`;
+      md += `- **Confidence**: ${item["confidence"] ?? "unknown"}\n\n`;
+      md += `${item["detail"] ?? ""}\n\n`;
+    }
+  }
+
+  // Roadmap implications
+  const urgent = (analysis.roadmap_implications as Array<Record<string, unknown>>)
+    .filter((r) => r["priority"] === "urgent");
+  const strategic = (analysis.roadmap_implications as Array<Record<string, unknown>>)
+    .filter((r) => r["priority"] === "strategic");
+
+  if (urgent.length > 0) {
+    md += `## Urgent Roadmap Items\n\n`;
+    for (const item of urgent) {
+      md += `- **${item["title"]}** — ${item["recommended_action"]} [${item["confidence"]}]\n`;
+    }
+    md += "\n";
+  }
+
+  if (strategic.length > 0) {
+    md += `## Strategic Roadmap Items\n\n`;
+    for (const item of strategic) {
+      md += `- **${item["title"]}** — ${item["recommended_action"]} [${item["confidence"]}]\n`;
+    }
+    md += "\n";
+  }
+
+  // Risk flags
+  const highRisks = (analysis.risk_flags as Array<Record<string, unknown>>)
+    .filter((r) => r["severity"] === "high" || r["severity"] === "critical");
+  if (highRisks.length > 0) {
+    md += `## Risk Flags (High/Critical)\n\n`;
+    for (const risk of highRisks) {
+      md += `### ${risk["title"]} [${(risk["severity"] as string ?? "").toUpperCase()}]\n\n`;
+      md += `- **Type**: ${risk["risk_type"]}\n`;
+      md += `- **Harnesses**: ${(risk["harnesses_affected"] as string[] ?? []).join(", ")}\n`;
+      md += `- **Mitigation**: ${risk["mitigation"]}\n\n`;
+      md += `${risk["detail"]}\n\n`;
+    }
+  }
+
+  // Marketing signals
+  if (analysis.marketing_signals.length > 0) {
+    md += `## Marketing Signals\n\n`;
+    for (const signal of analysis.marketing_signals as Array<Record<string, unknown>>) {
+      md += `- **${signal["signal"]}** [${signal["type"]}] — ${signal["detail"]} (${signal["actionability"]})\n`;
+    }
+    md += "\n";
+  }
+
+  // Meta
+  const meta = analysis.meta;
+  md += `## Analysis Meta\n\n`;
+  md += `- **Findings ingested**: ${meta["total_findings_ingested"] ?? 0}\n`;
+  md += `- **High/Critical findings**: ${meta["high_critical_findings"] ?? 0}\n`;
+  md += `- **Analysis confidence**: ${meta["analysis_confidence"] ?? "unknown"}\n`;
+  md += `- **Rationale**: ${meta["confidence_rationale"] ?? "n/a"}\n\n`;
+
+  md += `---\n\n`;
+  md += `## Per-Harness Detail\n\n`;
+  md += `<details>\n<summary>Expand per-harness merge digest</summary>\n\n`;
+  md += mergeDigest;
+  md += `\n</details>\n\n`;
+
+  md += `---\n\n`;
+  md += `*Generated by AgentBoot Intelligence Pipeline (Strategic Analyst) on ${new Date().toISOString()}*\n`;
+
+  return md;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -209,7 +472,30 @@ function main(): void {
     process.exit(1);
   }
 
-  const digest = synthesizeReports(reports);
+  // Always produce the merge-only digest as a baseline
+  const mergeDigest = synthesizeReports(reports);
+
+  let finalDigest: string;
+
+  if (args.skipLlm) {
+    console.log(`\nSkipping LLM-powered strategic analysis (--skip-llm)`);
+    finalDigest = mergeDigest;
+  } else {
+    // Run the Strategic Analyst persona (AB-141)
+    const analysis = runStrategicAnalyst(reports, args.maxTokens, args.cycle);
+
+    if (analysis) {
+      // Write the raw strategic analysis JSON alongside the digest
+      const analysisJsonPath = args.output.replace(/\.md$/, ".strategic.json");
+      fs.writeFileSync(analysisJsonPath, JSON.stringify(analysis, null, 2), "utf-8");
+      console.log(`Wrote strategic analysis JSON to ${analysisJsonPath}`);
+
+      finalDigest = formatStrategicDigest(analysis, mergeDigest);
+    } else {
+      console.warn("Warning: Strategic Analyst failed. Falling back to merge-only digest.");
+      finalDigest = mergeDigest;
+    }
+  }
 
   // Write digest
   const outputDir = path.dirname(args.output);
@@ -217,18 +503,18 @@ function main(): void {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  fs.writeFileSync(args.output, digest, "utf-8");
+  fs.writeFileSync(args.output, finalDigest, "utf-8");
   console.log(`\nWrote digest to ${args.output}`);
 
   // Also write to intelligence/PENDING-REVIEW.md
   const pendingPath = path.join(ROOT, "intelligence", "PENDING-REVIEW.md");
   fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
-  fs.writeFileSync(pendingPath, digest, "utf-8");
+  fs.writeFileSync(pendingPath, finalDigest, "utf-8");
   console.log(`Wrote copy to ${pendingPath}`);
 }
 
-export { synthesizeReports };
-export type { SmeReport as SynthSmeReport, Finding as SynthFinding };
+export { synthesizeReports, buildStrategicPrompt, validateStrategicReport, runStrategicAnalyst };
+export type { SmeReport as SynthSmeReport, Finding as SynthFinding, StrategicAnalysis };
 
 // Only run main when invoked directly (not when imported for testing)
 const isDirectRun = process.argv[1]?.replace(/\.ts$/, "").replace(/\.js$/, "")

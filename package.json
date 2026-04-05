@@ -1,6 +1,6 @@
 {
   "name": "agentboot",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Bootstrap your agentic development teams. Convention over configuration for AI agent governance.",
   "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",
@@ -48,7 +48,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit && echo 'No lint errors'"
+    "lint": "tsc --noEmit && echo 'No lint errors'",
+    "mcp-server": "tsx scripts/mcp-server.ts"
   },
   "dependencies": {
     "@inquirer/prompts": "^8.3.2",

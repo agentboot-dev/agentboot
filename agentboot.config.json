@@ -69,12 +69,15 @@
     // "customDir": "./personas",
 
     // Persona output format controls what files are generated per persona.
-    // "skill"   — SKILL.md (agentskills.io-compatible)
-    // "claude"  — CLAUDE.md fragment (Claude Code slash command)
-    // "copilot" — .github/copilot-instructions.md fragment
-    // "agents" — AGENTS.md universal cross-tool standard
-    // Default: all four.
-    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents"]
+    // "skill"    — SKILL.md (agentskills.io-compatible)
+    // "claude"   — CLAUDE.md fragment (Claude Code slash command)
+    // "copilot"  — .github/copilot-instructions.md fragment
+    // "cursor"   — .cursor/rules/*.mdc flat rules
+    // "agents"   — AGENTS.md universal cross-tool standard
+    // "windsurf" — .windsurfrules flat text
+    // "gemini"   — GEMINI.md + .gemini/ rules
+    // Default: all seven.
+    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"]
   },
 
   // ---------------------------------------------------------------------------

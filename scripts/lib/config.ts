@@ -87,6 +87,9 @@ export interface AgentBootConfig {
   // AB-61: Managed settings (HARD guardrails for MDM)
   managed?: ManagedConfig;
 
+  // AB-143: MCP connection governance
+  mcp?: McpGovernanceConfig;
+
   validation?: {
     secretPatterns?: string[];
     strictMode?: boolean;
@@ -222,6 +225,30 @@ export interface ManagedConfig {
     /** Disable the ability to bypass permissions */
     disableBypassPermissions?: boolean;
   };
+}
+
+// ---------------------------------------------------------------------------
+// AB-143: MCP connection governance
+// ---------------------------------------------------------------------------
+
+export interface McpGovernanceConfig {
+  /** Approved MCP servers — only these are allowed in target repos */
+  approved?: McpServerEntry[];
+  /** If true, reject any MCP servers in target repos not in the approved list */
+  enforceApproved?: boolean;
+  /** MCP servers that are required in all repos */
+  required?: string[];
+}
+
+export interface McpServerEntry {
+  /** Server name/identifier */
+  name: string;
+  /** Expected command or module path */
+  command?: string;
+  /** Description of what this server provides */
+  description?: string;
+  /** Scope: which level this server is approved at */
+  scope?: "org" | "group" | "team" | "repo";
 }
 
 /** A trait weight value: named string, numeric 0.0–1.0, or boolean. */
