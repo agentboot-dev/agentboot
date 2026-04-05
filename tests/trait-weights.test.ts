@@ -209,6 +209,37 @@ describe("buildWeightPreamble", () => {
     const result = buildWeightPreamble("critical-thinking", 1.0);
     expect(result).toContain("adversarial");
   });
+
+  // AB-157: Calibration preambles for all 6 traits
+  const newTraits = [
+    "structured-output",
+    "source-citation",
+    "audit-trail",
+    "confidence-signaling",
+    "schema-awareness",
+  ] as const;
+
+  for (const trait of newTraits) {
+    it(`returns non-empty preamble for ${trait} at LOW (0.3)`, () => {
+      const result = buildWeightPreamble(trait, 0.3);
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it(`returns non-empty preamble for ${trait} at HIGH (0.7)`, () => {
+      const result = buildWeightPreamble(trait, 0.7);
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it(`returns non-empty preamble for ${trait} at MAX (1.0)`, () => {
+      const result = buildWeightPreamble(trait, 1.0);
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it(`returns empty string for ${trait} at DEFAULT_WEIGHT (0.5)`, () => {
+      const result = buildWeightPreamble(trait, DEFAULT_WEIGHT);
+      expect(result).toBe("");
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
