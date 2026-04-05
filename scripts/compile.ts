@@ -287,6 +287,31 @@ const TRAIT_CALIBRATIONS: Record<string, Record<string, string>> = {
     "0.7": "Apply thorough scrutiny: actively seek hidden issues. Surface all CRITICAL/ERROR/WARN. Flag MEDIUM-confidence concerns. Question non-obvious design choices.",
     "1.0": "Apply adversarial scrutiny: assume hostile or incorrect input. Verify every assumption. Surface all findings at all severity levels. Treat absence of proof as a concern.",
   },
+  "structured-output": {
+    "0.3": "Use prose by default. Apply structured format with severity/location/recommendation only when explicitly requested.",
+    "0.7": "Always use structured format with severity, location, and recommendation fields. Prose is acceptable only for brief clarifications between structured blocks.",
+    "1.0": "Enforce strict schema adherence on every output. Every finding must include severity, location, recommendation, and confidence. Never fall back to unstructured prose.",
+  },
+  "source-citation": {
+    "0.3": "Cite file and line references only for CRITICAL findings. Omit citations for lower-severity observations.",
+    "0.7": "Cite file:line references for every finding at WARN severity or above. Include function or symbol names where available.",
+    "1.0": "Cite every claim with exact file:line references. Link each assertion to its source evidence. Never state a finding without a traceable location.",
+  },
+  "audit-trail": {
+    "0.3": "Provide final conclusions only. Omit intermediate reasoning unless the conclusion is ambiguous or surprising.",
+    "0.7": "Explain reasoning for every significant decision. Show the chain of evidence from observation to conclusion.",
+    "1.0": "Document the full reasoning chain for every decision. Show each step from evidence to inference to conclusion. Make the audit trail complete enough for independent verification.",
+  },
+  "confidence-signaling": {
+    "0.3": "Signal confidence only on uncertain or ambiguous claims. Omit confidence markers when the finding is straightforward.",
+    "0.7": "State confidence level (HIGH/MEDIUM/LOW) on every finding. Distinguish between verified facts and inferred conclusions.",
+    "1.0": "State explicit confidence level on every claim. Justify each confidence assessment with the evidence that supports or limits it. Flag every assumption as such.",
+  },
+  "schema-awareness": {
+    "0.3": "Flag only breaking schema changes that would cause runtime errors. Ignore cosmetic type mismatches and optional field omissions.",
+    "0.7": "Validate all schemas, types, and contracts proactively. Flag any type mismatch, missing required field, or contract violation.",
+    "1.0": "Enforce exhaustive schema validation. Flag every type mismatch, missing field, and implicit any. Verify that all inputs and outputs conform to declared contracts at every boundary.",
+  },
 };
 
 /**
