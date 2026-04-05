@@ -212,6 +212,21 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
         continue;
       }
 
+      // AB-161: Validate pattern field
+      const validPatterns = ["react", "rewoo", "router", "sequential", "tool-calling"];
+      if (personaConfig.pattern !== undefined) {
+        if (!validPatterns.includes(personaConfig.pattern)) {
+          fail(
+            result,
+            `[${personaName}] Invalid pattern "${personaConfig.pattern}". ` +
+              `Valid values: ${validPatterns.join(", ")}`
+          );
+        }
+        if (personaConfig.pattern === "router" && !personaConfig.description?.toLowerCase().includes("orchestrat")) {
+          warn(result, `[${personaName}] pattern "router" is typically used for orchestrator personas`);
+        }
+      }
+
       // Collect all trait references in this persona config (supports both array and object formats).
       const traitRefs = new Set<string>();
       if (personaConfig.traits) {
