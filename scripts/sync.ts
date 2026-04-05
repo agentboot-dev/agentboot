@@ -751,6 +751,11 @@ function syncRepo(
     const results: SyncResult[] = [];
     for (const pkg of entry.packages) {
       const pkgPath = path.join(repoPath, pkg);
+      // Post-resolution containment check — prevents path traversal even if validation is bypassed
+      if (!path.resolve(pkgPath).startsWith(path.resolve(repoPath) + path.sep)) {
+        console.log(chalk.red(`  ✗ Package "${pkg}" escapes repo boundary — skipping`));
+        continue;
+      }
       if (!fs.existsSync(pkgPath)) {
         // Warn and skip non-existent packages.
         console.log(chalk.yellow(`  ⚠ Package "${pkg}" does not exist at ${pkgPath} — skipping`));
@@ -827,13 +832,15 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
           errors.push(`[${label}] Each package path must be a non-empty string`);
         } else if (pkg.includes("..")) {
           errors.push(`[${label}] Package path "${pkg}" must not contain ".." path segments`);
+        } else if (path.isAbsolute(pkg)) {
+          errors.push(`[${label}] Package path "${pkg}" must be relative, not absolute`);
         }
       }
     }
   }
 
   // Validate platform
-  const validPlatforms = ["skill", "claude", "copilot", "cursor"];
+  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"];
   const platform = entry.platform ?? "claude";
   if (!validPlatforms.includes(platform)) {
     errors.push(
@@ -1110,15 +1117,38 @@ async function main(): Promise<void> {
   for (const entry of repos) {
     const repoResults = syncRepo(entry, distPath, config, dryRun, isForce);
 
-    for (const result of repoResults) {
-      // AB-28: Create PR if in PR mode and not dry-run
-      if (isPrMode && !dryRun && result.errors.length === 0 && result.filesWritten.length > 0) {
-        const targetDir = config.sync?.targetDir ?? ".claude";
-        createSyncPR(path.resolve(entry.path), targetDir, config, result);
-      }
+    // Collect all successful results for this repo entry before creating a single PR.
+    // This prevents monorepo PR corruption where multiple git checkout -b calls
+    // from the same repo create overlapping branches.
+    const successResults: SyncResult[] = [];
 
+    for (const result of repoResults) {
       results.push(result);
       printSyncResult(result);
+      if (result.errors.length === 0 && result.filesWritten.length > 0) {
+        successResults.push(result);
+      }
+    }
+
+    // AB-28: Create ONE PR per repo entry (not per package) in PR mode
+    if (isPrMode && !dryRun && successResults.length > 0) {
+      const targetDir = config.sync?.targetDir ?? ".claude";
+      // Merge all package results into a single result for the PR
+      const mergedResult: SyncResult = {
+        repo: successResults[0]!.repo,
+        label: entry.label ?? path.basename(entry.path),
+        platform: successResults[0]!.platform ?? "claude",
+        filesWritten: successResults.flatMap(r => r.filesWritten),
+        filesSkipped: successResults.flatMap(r => r.filesSkipped),
+        errors: [],
+        dryRun,
+      };
+      createSyncPR(path.resolve(entry.path), targetDir, config, mergedResult);
+      // If PR creation added errors, include them in the results for the summary
+      if (mergedResult.errors.length > 0) {
+        results.push(mergedResult);
+        printSyncResult(mergedResult);
+      }
     }
   }
 

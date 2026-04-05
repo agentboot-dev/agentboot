@@ -102,9 +102,12 @@ describe("AB-144: Gemini output", () => {
     }
   });
 
-  it("generates rules directory in dist/gemini/core/rules/", () => {
-    const rulesDir = path.join(ROOT, "dist", "gemini", "core", "rules");
-    expect(fs.existsSync(rulesDir)).toBe(true);
+  it("inlines instructions in GEMINI.md (no separate rules for instructions)", () => {
+    const geminiPath = path.join(ROOT, "dist", "gemini", "core", "GEMINI.md");
+    const content = fs.readFileSync(geminiPath, "utf-8");
+    // Instructions are inlined in GEMINI.md since Gemini doesn't support @imports
+    expect(content).toContain("## Instructions");
+    expect(content).toContain("Code Quality Principles");
   });
 });
 

@@ -12,6 +12,7 @@
  *   4. No obvious secrets or credentials in trait/persona definitions
  *   5. Composition type consistency across scopes (AB-118)
  *   6. Rule override detection — lower scopes shadowing core rules (AB-119)
+ *   7. MCP governance — approved/required server validation (AB-143)
  *
  * Usage:
  *   npm run validate

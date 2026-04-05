@@ -190,6 +190,8 @@ Output formats (see [Output Structure](../CLAUDE.md#output-structure)):
 - **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
 - **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions
 - **Cursor** — `.cursor/rules/*.mdc` with `alwaysApply`/`globs` frontmatter
+- **Gemini** — `GEMINI.md` project instructions + `.gemini/` rules directory
+- **Windsurf** — `.windsurfrules` flat text file (all personas concatenated)
 - **SKILL.md** — agentskills.io cross-platform format
 
 ### Claude Code-native output

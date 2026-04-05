@@ -36,13 +36,14 @@ agentboot build -c path/to/config.json
 
 ## `agentboot validate`
 
-Run pre-build validation checks (6 checks):
+Run pre-build validation checks (7 checks):
 1. Persona existence — all enabled personas found in `core/personas/`
 2. Trait references — all traits in persona configs exist in `core/traits/`
 3. SKILL.md frontmatter — required fields present
 4. Secret scanning — no credentials in definitions
 5. Composition consistency — no scope conflicts between rule/preference types
 6. Rule override detection — lower scopes shadowing rule-type core artifacts
+7. MCP governance — approved/required server validation against `mcp` config
 
 ```
 agentboot validate
@@ -417,3 +418,47 @@ Only string values can be written via the CLI; arrays and objects must be edited
 **Type safety:** The CLI validates that the new value matches the expected type for the
 key. Writing a string to an array field (e.g., `agentboot config personas.enabled foo`)
 is rejected.
+
+---
+
+## `agentboot cost-estimate`
+
+Calculate projected monthly costs per persona across the org. Reads compiled
+SKILL.md files from `dist/skill/core/` to estimate token counts, then applies
+model pricing.
+
+```
+agentboot cost-estimate
+agentboot cost-estimate --model opus --team-size 25
+agentboot cost-estimate --json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--model <model>` | Claude model: `haiku`, `sonnet`, `opus` (default: `sonnet`) |
+| `--invocations <n>` | Invocations per persona per team member per month (default: `100`) |
+| `--team-size <n>` | Number of team members (default: `10`) |
+| `--json` | Output in machine-readable JSON format |
+
+Output: table showing Persona, Tokens, Monthly Invocations, and Estimated Monthly Cost.
+Requires `dist/` to exist — run `agentboot build` first.
+
+---
+
+## `agentboot mcp-server`
+
+Start a Model Context Protocol (MCP) server over stdio. Exposes AgentBoot persona
+and trait data to any MCP-compatible client.
+
+```
+agentboot mcp-server
+```
+
+Exposed tools:
+- `agentboot_list_personas` — list available personas with names and descriptions
+- `agentboot_get_persona` — get full SKILL.md content by persona name
+- `agentboot_list_traits` — list available traits
+- `agentboot_get_trait` — get trait content by name
+- `agentboot_list_gotchas` — list gotcha rules with path patterns
+
+Reads from compiled `dist/skill/core/` when available, falls back to `core/` source files.
