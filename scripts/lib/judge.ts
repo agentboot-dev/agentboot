@@ -10,10 +10,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import chalk from "chalk";
-
-const require = createRequire(import.meta.url);
+import yaml from "js-yaml";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -92,8 +90,6 @@ export function loadJudgeTestCases(testsDir: string): JudgeTestCase[] {
           testCases.push(parsed);
         }
       } else {
-        // YAML parsing via js-yaml (listed in dependencies)
-        const yaml = require("js-yaml") as typeof import("js-yaml");
         const parsed = yaml.load(content) as JudgeTestCase;
         if (parsed && parsed.persona && parsed.input) {
           testCases.push(parsed);
