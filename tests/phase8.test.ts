@@ -320,17 +320,18 @@ describe("AB-143: MCP governance validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("Multi-platform output completeness", () => {
-  it("all 7 platforms produce output", () => {
-    for (const platform of ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"]) {
+  it("all 8 platforms produce output", () => {
+    for (const platform of ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains"]) {
       const platformDir = path.join(ROOT, "dist", platform);
       expect(fs.existsSync(platformDir), `dist/${platform}/ should exist`).toBe(true);
     }
   });
 
-  it("compile output mentions all 7 platforms", () => {
+  it("compile output mentions all 8 platforms", () => {
     const output = run("scripts/compile.ts");
-    expect(output).toContain("7 platform(s)");
+    expect(output).toContain("8 platform(s)");
     expect(output).toContain("dist/windsurf/");
     expect(output).toContain("dist/gemini/");
+    expect(output).toContain("dist/jetbrains/");
   });
 });

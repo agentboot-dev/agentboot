@@ -76,8 +76,9 @@
     // "agents"   — AGENTS.md universal cross-tool standard
     // "windsurf" — .windsurfrules flat text
     // "gemini"   — GEMINI.md + .gemini/ rules
-    // Default: all seven.
-    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"]
+    // "jetbrains" — .junie/guidelines.md + .aiassistant/rules/
+    // Default: all eight.
+    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains"]
   },
 
   // ---------------------------------------------------------------------------
