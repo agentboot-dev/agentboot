@@ -2129,6 +2129,138 @@ program
     console.log("");
   });
 
+// ---- cost-estimate (AB-139) -----------------------------------------------
+
+program
+  .command("cost-estimate")
+  .description("Calculate projected monthly costs per persona across the org")
+  .option("--model <model>", "Claude model: haiku, sonnet, opus", "sonnet")
+  .option("--invocations <n>", "invocations per persona per team member per month", "100")
+  .option("--team-size <n>", "number of team members", "10")
+  .option("--json", "output in JSON format")
+  .action(async (opts, cmd) => {
+    const globalOpts = cmd.optsWithGlobals();
+    const cwd = process.cwd();
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config)
+      : path.join(cwd, "agentboot.config.json");
+
+    if (!fs.existsSync(configPath)) {
+      console.error(chalk.red("No agentboot.config.json found. Run `agentboot install`."));
+      process.exit(1);
+    }
+
+    let config;
+    try {
+      config = loadConfig(configPath);
+    } catch (e: unknown) {
+      console.error(chalk.red(`Failed to parse config: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+
+    const { estimateCosts, MODEL_PRICING } = await import("./lib/cost-estimate.js");
+
+    const model = opts.model as "haiku" | "sonnet" | "opus";
+    if (!MODEL_PRICING[model]) {
+      console.error(chalk.red(`Unknown model: '${model}'. Use: haiku, sonnet, opus`));
+      process.exit(1);
+    }
+
+    const invocations = parseInt(opts.invocations, 10);
+    const teamSize = parseInt(opts.teamSize, 10);
+
+    if (isNaN(invocations) || invocations <= 0) {
+      console.error(chalk.red("--invocations must be a positive integer."));
+      process.exit(1);
+    }
+    if (isNaN(teamSize) || teamSize <= 0) {
+      console.error(chalk.red("--team-size must be a positive integer."));
+      process.exit(1);
+    }
+
+    const enabledPersonas = config.personas?.enabled ?? [];
+    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+
+    if (!fs.existsSync(distPath)) {
+      console.error(chalk.red("dist/ not found. Run `agentboot build` first."));
+      process.exit(1);
+    }
+
+    const result = estimateCosts({
+      distPath,
+      enabledPersonas,
+      model,
+      invocations,
+      teamSize,
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(0);
+    }
+
+    console.log(chalk.bold("\nAgentBoot — cost-estimate\n"));
+    console.log(chalk.gray(`  Model: ${model}  |  Team size: ${teamSize}  |  Invocations/persona/member/month: ${invocations}\n`));
+
+    // Table header
+    const colPersona = 24;
+    const colTokens = 14;
+    const colInvocations = 22;
+    const colCost = 18;
+
+    console.log(
+      "  " +
+      "Persona".padEnd(colPersona) +
+      "Tokens".padEnd(colTokens) +
+      "Monthly Invocations".padEnd(colInvocations) +
+      "Est. Monthly Cost"
+    );
+    console.log("  " + "-".repeat(colPersona + colTokens + colInvocations + colCost));
+
+    for (const p of result.personas) {
+      const tokens = p.inputTokens > 0 ? p.inputTokens.toLocaleString() : chalk.yellow("n/a");
+      const inv = p.monthlyInvocations.toLocaleString();
+      const cost = p.inputTokens > 0
+        ? `$${p.monthlyCostUsd.toFixed(2)}`
+        : chalk.yellow("$0.00");
+
+      console.log(
+        "  " +
+        p.persona.padEnd(colPersona) +
+        String(tokens).padEnd(colTokens) +
+        inv.padEnd(colInvocations) +
+        cost
+      );
+    }
+
+    console.log("  " + "-".repeat(colPersona + colTokens + colInvocations + colCost));
+    console.log(
+      "  " +
+      chalk.bold("Total".padEnd(colPersona)) +
+      "".padEnd(colTokens) +
+      "".padEnd(colInvocations) +
+      chalk.bold(`$${result.totalMonthlyCostUsd.toFixed(2)}`)
+    );
+    console.log("");
+    console.log(chalk.gray("  Note: Estimates assume ~4 chars/token and output tokens = 2x input tokens."));
+    console.log(chalk.gray("  Actual costs depend on conversation length, caching, and usage patterns.\n"));
+  });
+
+// ---- mcp-server (AB-140) ---------------------------------------------------
+
+program
+  .command("mcp-server")
+  .description("Start the MCP server (JSON-RPC over stdio)")
+  .action((_opts, cmd) => {
+    const globalOpts = cmd.optsWithGlobals();
+    runScript({
+      script: "mcp-server.ts",
+      args: collectGlobalArgs(globalOpts),
+      verbose: globalOpts.verbose,
+      quiet: globalOpts.quiet,
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // Parse
 // ---------------------------------------------------------------------------

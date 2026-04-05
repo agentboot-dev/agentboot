@@ -55,6 +55,10 @@ interface RepoEntry {
   label?: string;
   // If true, suppress org-identifying information in generated file headers.
   public?: boolean;
+  // AB-142: Monorepo support — sync to specific packages instead of repo root.
+  // When specified, each package path (relative to repo root) gets its own persona deployment.
+  // e.g., ["packages/api", "packages/web"]
+  packages?: string[];
 }
 
 interface SyncResult {
@@ -450,26 +454,61 @@ function detectDrift(
 }
 
 // ---------------------------------------------------------------------------
-// Per-repo sync
+// AB-142: Monorepo detection
 // ---------------------------------------------------------------------------
 
-function syncRepo(
+/**
+ * Detect if a repo looks like a monorepo (has packages/ or apps/ directories)
+ * but has no explicit packages configuration. Emits a warning to help users
+ * discover the monorepo support feature.
+ */
+function detectMonorepo(repoPath: string): string[] {
+  const monorepoMarkers = ["packages", "apps"];
+  const detected: string[] = [];
+  for (const marker of monorepoMarkers) {
+    const markerPath = path.join(repoPath, marker);
+    if (fs.existsSync(markerPath) && fs.statSync(markerPath).isDirectory()) {
+      // List subdirectories as potential packages
+      try {
+        const entries = fs.readdirSync(markerPath);
+        for (const entry of entries) {
+          const entryPath = path.join(markerPath, entry);
+          if (fs.statSync(entryPath).isDirectory()) {
+            detected.push(`${marker}/${entry}`);
+          }
+        }
+      } catch { /* permission denied — skip */ }
+    }
+  }
+  return detected;
+}
+
+// ---------------------------------------------------------------------------
+// Per-repo sync (single target — repo root or a package subdirectory)
+// ---------------------------------------------------------------------------
+
+function syncRepoTarget(
   entry: RepoEntry,
   distPath: string,
   config: AgentBootConfig,
   dryRun: boolean,
-  force: boolean
+  force: boolean,
+  /** If set, sync to this subdirectory instead of repo root. */
+  packagePath?: string
 ): SyncResult {
   const repoPath = path.resolve(entry.path);
+  // AB-142: When syncing to a monorepo package, effectivePath is the package root.
+  const effectivePath = packagePath ? path.join(repoPath, packagePath) : repoPath;
   const platform = entry.platform ?? "claude";
   // AB-129: Cursor uses .cursor/ as its target directory
   const targetDir = platform === "cursor" ? ".cursor" : (config.sync?.targetDir ?? ".claude");
   const writePersonasIndex = config.sync?.writePersonasIndex !== false;
   const org = config.orgDisplayName ?? config.org;
 
+  const labelSuffix = packagePath ? ` [${packagePath}]` : "";
   const result: SyncResult = {
-    repo: repoPath,
-    ...(entry.label != null ? { label: entry.label } : {}),
+    repo: effectivePath,
+    ...(entry.label != null ? { label: `${entry.label}${labelSuffix}` } : (packagePath ? { label: `${path.basename(repoPath)}${labelSuffix}` } : {})),
     ...(entry.platform != null ? { platform: entry.platform } : { platform: "claude" }),
     ...(entry.group != null ? { group: entry.group } : {}),
     ...(entry.team != null ? { team: entry.team } : {}),
@@ -479,13 +518,13 @@ function syncRepo(
     dryRun,
   };
 
-  if (!fs.existsSync(repoPath)) {
-    result.errors.push(`Repo path does not exist: ${repoPath}`);
+  if (!fs.existsSync(effectivePath)) {
+    result.errors.push(`${packagePath ? "Package" : "Repo"} path does not exist: ${effectivePath}`);
     return result;
   }
 
   // Drift detection: check if managed files were modified outside AgentBoot.
-  const drift = detectDrift(repoPath, targetDir);
+  const drift = detectDrift(effectivePath, targetDir);
   if (!drift.clean && !force) {
     result.errors.push(
       `Drift detected — ${drift.drifted.length} managed file(s) modified outside AgentBoot:\n` +
@@ -501,7 +540,7 @@ function syncRepo(
   }
 
   // Archive existing content before first sync.
-  const archive = archiveExistingContent(repoPath, targetDir, dryRun);
+  const archive = archiveExistingContent(effectivePath, targetDir, dryRun);
   if (archive.archived) {
     const verb = dryRun ? "Would archive" : "Archived";
     console.log(chalk.cyan(`    ${verb} ${archive.fileCount} existing file(s) to ${targetDir}/.agentboot-archive/`));
@@ -544,11 +583,11 @@ function syncRepo(
   //   - copilot: merged copilot-instructions.md → .github/, scoped instructions → .github/instructions/
   //   - cursor: rules/*.mdc → .cursor/rules/
   //   - claude/skill: everything → {targetDir}/
-  const targetBase = path.join(repoPath, targetDir);
+  const targetBase = path.join(effectivePath, targetDir);
 
   if (platform === "cursor") {
     // AB-129: Cursor platform — write rules/*.mdc to .cursor/rules/
-    const cursorBase = path.join(repoPath, ".cursor");
+    const cursorBase = path.join(effectivePath, ".cursor");
     for (const [relPath, file] of merged) {
       if (relPath === "PERSONAS.md") continue;
 
@@ -558,7 +597,7 @@ function syncRepo(
       ensureDir(path.dirname(destPath), dryRun);
       const status = writeFile(destPath, content, dryRun);
 
-      const relDest = path.relative(repoPath, destPath);
+      const relDest = path.relative(effectivePath, destPath);
       if (status === "written") {
         result.filesWritten.push(relDest);
       } else {
@@ -582,7 +621,7 @@ function syncRepo(
       const content = fs.readFileSync(file.absolutePath, "utf-8");
       const status = writeFile(destPath, content, dryRun);
 
-      const relDest = path.relative(repoPath, destPath);
+      const relDest = path.relative(effectivePath, destPath);
       if (status === "written") {
         result.filesWritten.push(relDest);
       } else {
@@ -594,10 +633,10 @@ function syncRepo(
   // Write merged copilot-instructions.md to .github/.
   const copilotContent = buildCopilotInstructions(merged, org, entry.public);
   if (copilotContent) {
-    const copilotDest = path.join(repoPath, ".github", "copilot-instructions.md");
+    const copilotDest = path.join(effectivePath, ".github", "copilot-instructions.md");
     ensureDir(path.dirname(copilotDest), dryRun);
     const status = writeFile(copilotDest, copilotContent, dryRun);
-    const relDest = path.relative(repoPath, copilotDest);
+    const relDest = path.relative(effectivePath, copilotDest);
     if (status === "written") {
       result.filesWritten.push(relDest);
     } else {
@@ -610,11 +649,11 @@ function syncRepo(
     for (const [relPath, file] of merged) {
       if (relPath.startsWith("instructions/") && relPath.endsWith(".instructions.md")) {
         const fileName = path.basename(relPath);
-        const destPath = path.join(repoPath, ".github", "instructions", fileName);
+        const destPath = path.join(effectivePath, ".github", "instructions", fileName);
         const content = fs.readFileSync(file.absolutePath, "utf-8");
         ensureDir(path.dirname(destPath), dryRun);
         const status = writeFile(destPath, content, dryRun);
-        const relDest = path.relative(repoPath, destPath);
+        const relDest = path.relative(effectivePath, destPath);
         if (status === "written") {
           result.filesWritten.push(relDest);
         } else {
@@ -630,10 +669,10 @@ function syncRepo(
     for (const rootFile of rootFiles) {
       const file = merged.get(rootFile);
       if (file) {
-        const destPath = path.join(repoPath, rootFile);
+        const destPath = path.join(effectivePath, rootFile);
         const content = fs.readFileSync(file.absolutePath, "utf-8");
         const status = writeFile(destPath, content, dryRun);
-        const relDest = path.relative(repoPath, destPath);
+        const relDest = path.relative(effectivePath, destPath);
         if (status === "written") {
           result.filesWritten.push(relDest);
         } else {
@@ -646,10 +685,10 @@ function syncRepo(
   // Sync AGENTS.md to repo root (universal cross-tool standard).
   const agentsMdSrc = path.join(distPath, "agents", "AGENTS.md");
   if (fs.existsSync(agentsMdSrc)) {
-    const destPath = path.join(repoPath, "AGENTS.md");
+    const destPath = path.join(effectivePath, "AGENTS.md");
     const content = fs.readFileSync(agentsMdSrc, "utf-8");
     const status = writeFile(destPath, content, dryRun);
-    const relDest = path.relative(repoPath, destPath);
+    const relDest = path.relative(effectivePath, destPath);
     if (status === "written") {
       result.filesWritten.push(relDest);
     } else {
@@ -661,10 +700,10 @@ function syncRepo(
   if (writePersonasIndex) {
     const personasIndexSrc = path.join(coreDir, "PERSONAS.md");
     if (fs.existsSync(personasIndexSrc)) {
-      const destPath = path.join(repoPath, targetDir, "PERSONAS.md");
+      const destPath = path.join(effectivePath, targetDir, "PERSONAS.md");
       const content = fs.readFileSync(personasIndexSrc, "utf-8");
       const status = writeFile(destPath, content, dryRun);
-      const relDest = path.relative(repoPath, destPath);
+      const relDest = path.relative(effectivePath, destPath);
       if (status === "written") {
         result.filesWritten.push(relDest);
       } else {
@@ -675,7 +714,7 @@ function syncRepo(
 
   // AB-24: Generate manifest after all files are written.
   const manifestRelPath = generateManifest(
-    repoPath,
+    effectivePath,
     targetDir,
     result.filesWritten,
     entry.group,
@@ -687,6 +726,65 @@ function syncRepo(
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// AB-142: Monorepo-aware sync wrapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Sync a repo entry, handling monorepo packages if configured.
+ * When `entry.packages` is set, iterates over each package and syncs independently.
+ * When not set, syncs to repo root (backward compatible) and warns if monorepo detected.
+ */
+function syncRepo(
+  entry: RepoEntry,
+  distPath: string,
+  config: AgentBootConfig,
+  dryRun: boolean,
+  force: boolean
+): SyncResult[] {
+  const repoPath = path.resolve(entry.path);
+
+  if (entry.packages && entry.packages.length > 0) {
+    // Monorepo mode: sync to each package independently.
+    const results: SyncResult[] = [];
+    for (const pkg of entry.packages) {
+      const pkgPath = path.join(repoPath, pkg);
+      if (!fs.existsSync(pkgPath)) {
+        // Warn and skip non-existent packages.
+        console.log(chalk.yellow(`  ⚠ Package "${pkg}" does not exist at ${pkgPath} — skipping`));
+        const skipResult: SyncResult = {
+          repo: pkgPath,
+          label: `${entry.label ?? path.basename(repoPath)} [${pkg}]`,
+          platform: entry.platform ?? "claude",
+          filesWritten: [],
+          filesSkipped: [],
+          errors: [`Package path does not exist: ${pkgPath}`],
+          dryRun,
+        };
+        results.push(skipResult);
+        continue;
+      }
+      results.push(syncRepoTarget(entry, distPath, config, dryRun, force, pkg));
+    }
+    return results;
+  }
+
+  // Single-target mode (backward compatible).
+  // AB-142: Warn if monorepo structure detected but not configured.
+  if (fs.existsSync(repoPath)) {
+    const detected = detectMonorepo(repoPath);
+    if (detected.length > 0) {
+      console.log(chalk.yellow(
+        `  ⚠ Monorepo structure detected in ${entry.label ?? path.basename(repoPath)} ` +
+        `(${detected.length} package(s): ${detected.slice(0, 3).join(", ")}${detected.length > 3 ? ", ..." : ""}) ` +
+        `but no "packages" configured. Add "packages" to repos.json for per-package deployment.`
+      ));
+    }
+  }
+
+  return [syncRepoTarget(entry, distPath, config, dryRun, force)];
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +814,21 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
         `[${label}] Team "${entry.team}" is not a member of group "${entry.group}" ` +
           `(defined teams: ${groupTeams.join(", ") || "(none)"})`
       );
+    }
+  }
+
+  // AB-142: Validate packages array
+  if (entry.packages !== undefined) {
+    if (!Array.isArray(entry.packages)) {
+      errors.push(`[${label}] "packages" must be an array of strings`);
+    } else {
+      for (const pkg of entry.packages) {
+        if (typeof pkg !== "string" || pkg.length === 0) {
+          errors.push(`[${label}] Each package path must be a non-empty string`);
+        } else if (pkg.includes("..")) {
+          errors.push(`[${label}] Package path "${pkg}" must not contain ".." path segments`);
+        }
+      }
     }
   }
 
@@ -992,19 +1105,21 @@ async function main(): Promise<void> {
   // Determine sync mode: "local" (default) or "pr"
   const isPrMode = cliMode === "pr" || (config.sync?.pr?.enabled === true);
 
-  // Sync each repo.
+  // Sync each repo (may return multiple results for monorepo packages).
   const results: SyncResult[] = [];
   for (const entry of repos) {
-    const result = syncRepo(entry, distPath, config, dryRun, isForce);
+    const repoResults = syncRepo(entry, distPath, config, dryRun, isForce);
 
-    // AB-28: Create PR if in PR mode and not dry-run
-    if (isPrMode && !dryRun && result.errors.length === 0 && result.filesWritten.length > 0) {
-      const targetDir = config.sync?.targetDir ?? ".claude";
-      createSyncPR(path.resolve(entry.path), targetDir, config, result);
+    for (const result of repoResults) {
+      // AB-28: Create PR if in PR mode and not dry-run
+      if (isPrMode && !dryRun && result.errors.length === 0 && result.filesWritten.length > 0) {
+        const targetDir = config.sync?.targetDir ?? ".claude";
+        createSyncPR(path.resolve(entry.path), targetDir, config, result);
+      }
+
+      results.push(result);
+      printSyncResult(result);
     }
-
-    results.push(result);
-    printSyncResult(result);
   }
 
   // Summary.

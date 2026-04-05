@@ -29,7 +29,7 @@ function run(script: string, cwd = ROOT): string {
 describe("validate script", () => {
   it("passes all 6 checks", () => {
     const output = run("scripts/validate.ts");
-    expect(output).toContain("All 6 checks passed");
+    expect(output).toContain("All 7 checks passed");
   });
 
   it("detects missing persona", () => {
@@ -62,16 +62,21 @@ describe("validate script", () => {
 
 describe("compile script", () => {
   beforeAll(() => {
+    // Clean dist/ before compile tests, but handle contention with parallel test files
     const distPath = path.join(ROOT, "dist");
-    if (fs.existsSync(distPath)) {
-      fs.rmSync(distPath, { recursive: true });
+    try {
+      if (fs.existsSync(distPath)) {
+        fs.rmSync(distPath, { recursive: true });
+      }
+    } catch {
+      // Another test may be using dist/ concurrently — safe to continue
     }
   });
 
-  it("compiles all 4 personas across 5 platforms", () => {
+  it("compiles all 4 personas across 7 platforms", () => {
     const output = run("scripts/compile.ts");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("5 platform(s)");
+    expect(output).toContain("7 platform(s)");
     expect(output).toContain("dist/skill/");
     expect(output).toContain("dist/claude/");
     expect(output).toContain("dist/copilot/");
@@ -696,9 +701,9 @@ describe("full pipeline (validate → compile)", () => {
       { cwd: ROOT, env: { ...process.env, NODE_NO_WARNINGS: "1" }, timeout: 30_000 }
     ).toString();
 
-    expect(output).toContain("All 6 checks passed");
+    expect(output).toContain("All 7 checks passed");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("5 platform(s)");
+    expect(output).toContain("7 platform(s)");
   });
 });
 
