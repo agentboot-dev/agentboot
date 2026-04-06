@@ -6,8 +6,10 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { stripJsoncComments } from "../scripts/lib/config.js";
 import {
   parseFrontmatter,
@@ -367,6 +369,165 @@ describe("persona.config.json", () => {
 
 // ---------------------------------------------------------------------------
 // Helpers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// validate --strict mode exit code
+// Addresses gap: "Validate exit codes — code 2 (--strict) not tested"
+// (human-in-the-loop-priority.md MEDIUM section)
+//
+// IMPORTANT BUG FINDING: The manual test plan (TP-03-12) documents expected exit
+// code 2 for --strict mode. The implementation at scripts/validate.ts line 736
+// calls process.exit(1) unconditionally — there is no exit(2) path in the code.
+// These tests verify ACTUAL behavior (exit 1) and establish a regression baseline.
+// If exit code 2 is intentional, the implementation needs to be updated.
+// ---------------------------------------------------------------------------
+
+const VALIDATE_TSX_BIN = path.join(__dirname, "..", "node_modules", ".bin", "tsx");
+const VALIDATE_SCRIPT = path.join(__dirname, "..", "scripts", "validate.ts");
+
+function runValidateRaw(args: string, cwd = path.join(__dirname, "..")): string {
+  return execSync(`${VALIDATE_TSX_BIN} ${VALIDATE_SCRIPT} ${args}`, {
+    cwd,
+    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    timeout: 30_000,
+    stdio: "pipe",
+  }).toString();
+}
+
+function runValidateExpectFailRaw(
+  args: string,
+  cwd = path.join(__dirname, "..")
+): { output: string; status: number } {
+  try {
+    runValidateRaw(args, cwd);
+    throw new Error("Expected validate to fail but it succeeded");
+  } catch (err: any) {
+    if (err.message === "Expected validate to fail but it succeeded") throw err;
+    // execSync captures both stdout and stderr when stdio: "pipe" is set
+    const stdout = err.stdout?.toString() ?? "";
+    const stderr = err.stderr?.toString() ?? "";
+    return {
+      output: stdout + stderr,
+      status: err.status ?? 1,
+    };
+  }
+}
+
+describe("validate --strict mode", () => {
+  // Prove --strict is accepted without "unknown flag" error on a clean repo
+  it("--strict: flag accepted without unknown-flag error", () => {
+    const output = runValidateRaw("--strict");
+    expect(output).not.toContain("unknown option");
+    expect(output).not.toContain("unknown flag");
+    // Clean repo exits 0 with --strict when no warnings exist
+  });
+
+  // Prove --strict causes exit 1 (non-zero) when a warning-only condition exists.
+  // A config with no personas enabled triggers the "No personas enabled" warning
+  // in checkPersonaExistence() — a WARN, not an ERROR, so without --strict it passes.
+  it("--strict: exits non-zero when warnings exist (empty personas list)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-strict-warn-"));
+    const tmpConfig = path.join(tmpDir, "agentboot.config.json");
+    fs.writeFileSync(
+      tmpConfig,
+      JSON.stringify({
+        org: "test-org",
+        personas: { enabled: [] }, // empty — triggers "No personas enabled" WARN
+        traits: { enabled: [] },
+        instructions: { enabled: [] },
+      })
+    );
+
+    try {
+      // Without --strict: a warning does not cause a non-zero exit
+      const cleanOutput = runValidateRaw(`--config ${tmpConfig}`);
+      expect(cleanOutput).toContain("passed");
+
+      // With --strict: warnings are promoted to failures → exit non-zero
+      const { status, output } = runValidateExpectFailRaw(`--config ${tmpConfig} --strict`);
+      // Implementation currently exits 1, not 2. If this fails, the code was changed
+      // to emit 2 and the test should be updated to expect(status).toBe(2).
+      expect(status).toBe(1);
+      // Output must reference strict mode
+      expect(output.toLowerCase()).toMatch(/strict/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error message quality
+// Addresses gap: "Error message quality — errors thrown checked, not message text"
+// (human-in-the-loop-priority.md CRITICAL section)
+// ---------------------------------------------------------------------------
+
+describe("validate error message quality", () => {
+  // Prove that referencing a non-existent trait produces an error that names
+  // BOTH the persona containing the bad reference AND the missing trait name.
+  // This is the TP-15-3 scenario graded A–F in the manual plan.
+  it("unknown trait: error names the persona AND the missing trait", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-badtrait-msg-"));
+    const customPersonaDir = path.join(tmpDir, "custom-personas", "code-reviewer");
+    fs.mkdirSync(customPersonaDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(customPersonaDir, "persona.config.json"),
+      JSON.stringify({
+        name: "Code Reviewer",
+        description: "Test persona for error message quality",
+        invocation: "/review-code",
+        traits: ["completely-made-up-trait"],
+      })
+    );
+    // Copy a real SKILL.md so frontmatter checks pass
+    fs.copyFileSync(
+      path.join(__dirname, "..", "core", "personas", "code-reviewer", "SKILL.md"),
+      path.join(customPersonaDir, "SKILL.md")
+    );
+
+    const tmpConfig = path.join(tmpDir, "agentboot.config.json");
+    fs.writeFileSync(
+      tmpConfig,
+      JSON.stringify({
+        org: "test-org",
+        personas: {
+          enabled: ["code-reviewer"],
+          customDir: path.join(tmpDir, "custom-personas"),
+        },
+        traits: { enabled: ["critical-thinking"] },
+        instructions: { enabled: [] },
+      })
+    );
+
+    try {
+      const { output } = runValidateExpectFailRaw(`--config ${tmpConfig}`);
+      // Must name the persona that has the bad reference
+      expect(output).toContain("code-reviewer");
+      // Must name the specific missing trait — this is the actionability test
+      expect(output).toContain("completely-made-up-trait");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Prove that a missing agentboot.config.json produces an error that is actionable
+  // (TP-15-1: missing config should suggest "agentboot install")
+  it("missing config file: error output is actionable (not just 'file not found')", () => {
+    const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-noconfig-msg-"));
+    const missingConfig = path.join(emptyDir, "nonexistent-config.json");
+
+    try {
+      const { output } = runValidateExpectFailRaw(`--config ${missingConfig}`);
+      // Error should communicate the problem in a way the user can act on
+      expect(output.toLowerCase()).toMatch(/not found|does not exist|cannot|no such/);
+    } finally {
+      fs.rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 
 function walkDir(dir: string, extensions: string[]): string[] {

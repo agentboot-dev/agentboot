@@ -185,7 +185,7 @@ AgentBoot generates platform-native output for every major coding agent. The sam
 personas, traits, gotchas, and instructions compile into the right format for each
 platform — developers use whichever tool they prefer without losing governance.
 
-Output formats (see [Output Structure](../CLAUDE.md#output-structure)):
+Output formats:
 - **AGENTS.md** — universal cross-tool standard (Cursor, Copilot, Gemini CLI, etc.)
 - **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
 - **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions

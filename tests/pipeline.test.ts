@@ -881,3 +881,147 @@ describe("AB-138: multi-platform production sync", () => {
     expect(output).toContain("unchanged");
   });
 });
+
+// ===========================================================================
+// Sync idempotency: file content hash is byte-identical after two runs
+// Addresses gap: "sync idempotency — content unchanged on re-run" (pipeline.test.ts)
+// The existing "re-sync reports unchanged" test only checks the output STRING.
+// This test verifies the actual file bytes are identical after a second sync.
+// ===========================================================================
+
+import { createHash } from "node:crypto";
+
+describe("sync idempotency: file content hash identical after two runs", () => {
+  let isoSyncTarget: string;
+  let savedRepos: string;
+
+  beforeAll(() => {
+    savedRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    isoSyncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-idempotent-"));
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([{ path: isoSyncTarget, label: "idempotent-test", platform: "claude" }])
+    );
+    // First sync
+    run("scripts/sync.ts");
+  });
+
+  afterAll(() => {
+    fs.writeFileSync(path.join(ROOT, "repos.json"), savedRepos);
+    if (isoSyncTarget) fs.rmSync(isoSyncTarget, { recursive: true, force: true });
+  });
+
+  // Prove that agent file content is byte-identical after second sync
+  it("synced code-reviewer.md has the same SHA-256 hash after two sync runs", () => {
+    const agentFile = path.join(isoSyncTarget, ".claude", "agents", "code-reviewer.md");
+    const hashAfterFirst = createHash("sha256")
+      .update(fs.readFileSync(agentFile))
+      .digest("hex");
+
+    // Second sync
+    run("scripts/sync.ts");
+
+    const hashAfterSecond = createHash("sha256")
+      .update(fs.readFileSync(agentFile))
+      .digest("hex");
+
+    expect(hashAfterSecond).toBe(hashAfterFirst);
+  });
+});
+
+// ===========================================================================
+// Copilot .agent.md frontmatter: description: and model: fields present
+// Addresses gap: "Copilot .agent.md frontmatter fields — file existence only checked"
+// (human-in-the-loop-priority.md HIGH section)
+// GitHub Copilot requires description: and model: in .agent.md frontmatter.
+// ===========================================================================
+
+describe("Copilot .agent.md frontmatter required fields", () => {
+  const agentFiles = [
+    "code-reviewer.agent.md",
+    "security-reviewer.agent.md",
+    "test-generator.agent.md",
+    "test-data-expert.agent.md",
+  ];
+
+  it("all copilot .agent.md files contain description: in frontmatter", () => {
+    for (const file of agentFiles) {
+      const agentPath = path.join(ROOT, "dist", "copilot", "core", "agents", file);
+      expect(fs.existsSync(agentPath), `${file} should exist`).toBe(true);
+      const content = fs.readFileSync(agentPath, "utf-8");
+      // Must have a YAML frontmatter block
+      expect(content, `${file} must start with YAML frontmatter`).toMatch(/^---\n/);
+      // Must have description: field (required by GitHub Copilot)
+      expect(
+        content,
+        `${file} must have description: in frontmatter (GitHub Copilot requirement)`
+      ).toMatch(/^description:/m);
+    }
+  });
+
+  it("all copilot .agent.md files contain model: in frontmatter", () => {
+    for (const file of agentFiles) {
+      const agentPath = path.join(ROOT, "dist", "copilot", "core", "agents", file);
+      const content = fs.readFileSync(agentPath, "utf-8");
+      expect(
+        content,
+        `${file} must have model: in frontmatter (GitHub Copilot requirement)`
+      ).toMatch(/^model:/m);
+    }
+  });
+});
+
+// ===========================================================================
+// Cursor .mdc: alwaysApply and globs are mutually exclusive
+// Addresses gap: "Cursor mutual exclusivity of alwaysApply + globs not tested"
+// (human-in-the-loop-priority.md HIGH section)
+// A Cursor rule with both alwaysApply: true AND globs: is a format violation.
+// ===========================================================================
+
+describe("Cursor .mdc: alwaysApply and globs are mutually exclusive", () => {
+  it("no .mdc file has both alwaysApply: true and globs: set simultaneously", () => {
+    const rulesDir = path.join(ROOT, "dist", "cursor", "core", "rules");
+    expect(fs.existsSync(rulesDir), "dist/cursor/core/rules/ must exist").toBe(true);
+
+    const mdcFiles = fs.readdirSync(rulesDir).filter((f) => f.endsWith(".mdc"));
+    expect(mdcFiles.length).toBeGreaterThan(0);
+
+    for (const file of mdcFiles) {
+      const content = fs.readFileSync(path.join(rulesDir, file), "utf-8");
+      const hasAlwaysApplyTrue = /^alwaysApply:\s*true\b/m.test(content);
+      const hasGlobs = /^globs:/m.test(content);
+
+      expect(
+        hasAlwaysApplyTrue && hasGlobs,
+        `${file}: Cursor format violation — must not have both alwaysApply: true AND globs: ` +
+        `(alwaysApply: true means the rule always applies; globs: restricts scope — they are mutually exclusive)`
+      ).toBe(false);
+    }
+  });
+});
+
+// ===========================================================================
+// Hook scripts: shebang line present
+// Addresses gap: "Hook scripts have shebang line — not asserted"
+// (human-in-the-loop-priority.md HIGH section, real sync target verification)
+// Hook scripts must start with #!/ to be executable by the shell.
+// ===========================================================================
+
+describe("hook scripts: shebang line present", () => {
+  it("every file in dist/claude/core/hooks/ starts with #!/", () => {
+    const hooksDir = path.join(ROOT, "dist", "claude", "core", "hooks");
+    expect(fs.existsSync(hooksDir), "dist/claude/core/hooks/ must exist").toBe(true);
+
+    const hookFiles = fs.readdirSync(hooksDir);
+    expect(hookFiles.length).toBeGreaterThan(0);
+
+    for (const file of hookFiles) {
+      const content = fs.readFileSync(path.join(hooksDir, file), "utf-8");
+      expect(
+        content.startsWith("#!/"),
+        `${file}: hook scripts must start with a shebang line (#!/) to be executable. ` +
+        `A hook without a shebang will fail silently when the shell tries to run it.`
+      ).toBe(true);
+    }
+  });
+});

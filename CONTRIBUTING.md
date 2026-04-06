@@ -5,6 +5,38 @@ what belongs in the core versus a domain layer, and the quality bar for contribu
 
 ---
 
+## Individual contributors only
+
+AgentBoot accepts contributions from **individuals only**. Organizations, corporations,
+employers, and other legal entities may not submit contributions or hold contributor
+status. If you are employed, you are contributing in your personal capacity — your
+employer is not a party to any agreement with this project and acquires no rights
+through your contribution.
+
+### Developer Certificate of Origin (DCO)
+
+Every commit must include a `Signed-off-by` line:
+
+```
+git commit -s -m "your message"
+# or manually: Signed-off-by: Your Name <your@email.com>
+```
+
+This certifies that you wrote the contribution or have the right to submit it in your
+individual capacity. See [developercertificate.org](https://developercertificate.org).
+
+### A note on employer IP
+
+If you developed something during the course of employment, review your employment
+agreement before contributing. In some U.S. states (including California under Labor
+Code §2870), inventions developed entirely on your own time without company resources
+and unrelated to your employer's business are protected as personal IP. Laws vary by
+jurisdiction and employment agreement. AgentBoot cannot give legal advice and cannot
+adjudicate disputes between you and your employer — the representation in the CLA is
+yours to make. When in doubt, consult a lawyer before contributing.
+
+---
+
 ## What is in scope
 
 ### New core personas
@@ -132,13 +164,17 @@ does what it claims.
 
 ## Contributor License Agreement
 
-First-time contributors must sign our CLA. When you open your first pull request,
-the CLA bot will post a comment with instructions. This is a one-time process that
-takes about 30 seconds — you sign by posting a comment on the PR.
+First-time contributors must sign our Individual CLA. When you open your first pull
+request, the CLA bot will post a comment with instructions. Sign by posting a comment
+on the PR. This is a one-time process.
+
+**Individual contributors only.** The CLA requires you to confirm you are contributing
+as a natural person in your own capacity — not on behalf of an employer or organization.
+Read the full agreement carefully: [`CLA.md`](CLA.md).
 
 The CLA grants the project maintainers the right to relicense your contributions if
 needed for the long-term sustainability of the project. Your contributions remain
-attributed to you. The full agreement is in [`CLA.md`](CLA.md).
+attributed to you.
 
 ---
 
@@ -146,6 +182,7 @@ attributed to you. The full agreement is in [`CLA.md`](CLA.md).
 
 Before opening a PR, verify:
 
+- [ ] Every commit includes `Signed-off-by: Your Name <email>` (use `git commit -s`)
 - [ ] `npm run validate` passes with no errors
 - [ ] `npm run build` passes with no errors
 - [ ] `PERSONAS.md` is updated if you added or changed a persona
