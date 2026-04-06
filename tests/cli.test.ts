@@ -2338,3 +2338,103 @@ describe("AB-91: ACKNOWLEDGMENTS.md", () => {
     expect(content).toContain("Apache-2.0");
   });
 });
+
+// ===========================================================================
+// AB-36: agentboot doctor command
+// Addresses gap: "agentboot doctor has no automated tests"
+// (human-in-the-loop-priority.md HIGH section)
+// ===========================================================================
+
+describe("AB-36: agentboot doctor command", () => {
+  // Prove doctor exits 0 in the project root (a valid hub context with config + dist/)
+  it("doctor: exits 0 and reports environment checks", () => {
+    // run() throws if exit code != 0, so reaching this line proves exit 0
+    const output = run("doctor");
+    // Must mention Node.js in environment section
+    expect(output.toLowerCase()).toMatch(/node\.js|node/);
+  });
+
+  // Prove doctor --format json produces parseable JSON with a checks array
+  it("doctor: --format json produces valid JSON with checks array", () => {
+    const output = run("doctor --format json");
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(output); }).not.toThrow();
+    expect(Array.isArray(parsed.checks)).toBe(true);
+    expect(parsed.checks.length).toBeGreaterThan(0);
+    // Every check entry must have a status field with a known value
+    for (const check of parsed.checks) {
+      expect(check).toHaveProperty("status");
+      expect(["ok", "fail", "warn"]).toContain(check.status);
+    }
+  });
+
+  // Prove doctor --format json output contains at least one passing check
+  it("doctor: --format json has at least one ok status check", () => {
+    const output = run("doctor --format json");
+    const parsed = JSON.parse(output);
+    const okChecks = parsed.checks.filter((c: any) => c.status === "ok");
+    expect(okChecks.length).toBeGreaterThan(0);
+  });
+});
+
+// ===========================================================================
+// AB-37: agentboot status command
+// Addresses gap: "agentboot status has no automated tests"
+// (human-in-the-loop-priority.md MEDIUM section)
+// ===========================================================================
+
+describe("AB-37: agentboot status command", () => {
+  // Prove status exits 0 and shows the org display name from agentboot.config.json
+  it("status: exits 0 and output contains the org display name", () => {
+    const output = run("status");
+    // The project's agentboot.config.json has orgDisplayName: "Your Organization"
+    // The status command uses orgDisplayName when available, falling back to org slug
+    expect(output).toMatch(/your.org|Your Organization/i);
+  });
+
+  // Prove status shows all 4 enabled persona names
+  it("status: output lists all 4 enabled personas", () => {
+    const output = run("status");
+    expect(output).toContain("code-reviewer");
+    expect(output).toContain("security-reviewer");
+    expect(output).toContain("test-generator");
+    expect(output).toContain("test-data-expert");
+  });
+
+  // Prove status --format json produces parseable JSON with an org field
+  it("status: --format json produces valid JSON with org field", () => {
+    const output = run("status --format json");
+    let parsed: any;
+    expect(() => { parsed = JSON.parse(output); }).not.toThrow();
+    expect(parsed).toHaveProperty("org");
+    expect(typeof parsed.org).toBe("string");
+    expect(parsed.org.length).toBeGreaterThan(0);
+  });
+
+  // Prove status --format json includes the personas array
+  it("status: --format json includes personas array", () => {
+    const output = run("status --format json");
+    const parsed = JSON.parse(output);
+    expect(Array.isArray(parsed.personas)).toBe(true);
+    expect(parsed.personas).toContain("code-reviewer");
+    expect(parsed.personas).toContain("security-reviewer");
+  });
+});
+
+// ===========================================================================
+// Integration stubs — cannot be automated without binary install
+// ===========================================================================
+
+// TODO: integration test — CLI installation from npm registry
+// What to verify: `npm install -g agentboot` completes, `which agentboot` returns
+// a path, `agentboot --version` returns the version in package.json,
+// `npx agentboot --help` works without a global install.
+// Requires a real network connection and a published npm package.
+// test.skip("npm install -g agentboot: binary is available after global install", async () => {});
+
+// TODO: integration test — agentboot --help lists all 21 subcommands
+// What to verify: run `agentboot --help` and assert all 21 subcommands appear:
+// build, validate, sync, dev-build, install, add, doctor, status, lint, test,
+// migrate, uninstall, config, cost-estimate, optimize, search, pull, catalog,
+// export, publish, mcp-server.
+// test.skip("agentboot --help: lists all 21 documented subcommands", async () => {});

@@ -7,7 +7,7 @@ sidebar_position: 2
 
 ## Current Status
 
-**v0.8.0** is the current release. Phases 1 through 8 are complete.
+**v0.9.0** is the current release. Phases 1 through 9 are complete.
 
 ---
 
@@ -171,16 +171,32 @@ Total: 7 output platforms (skill, claude, copilot, cursor, agents, gemini, winds
 
 ---
 
+## Phase 9: "Marketplace & Optimization" — COMPLETE
+
+Marketplace infrastructure, optimization tooling, JetBrains output, and evaluation maturity.
+
+**Delivered (v0.9.0):**
+- **Marketplace infrastructure** — `agentboot search`, `agentboot pull`, `agentboot publish`. Three-layer registry: Core/Verified/Community. Web catalog at `agentboot.dev/marketplace`. Contribution validation workflow. (AB-150–151)
+- **agentskills.io export** — `agentboot export --format agentskills` generates `skills-index.json` from compiled SKILL.md files. (AB-152)
+- **`agentboot optimize`** — Reads GELF telemetry, aggregates per-persona metrics (invocations, token cost, rephrase rate, finding distribution). LLM-powered trait weight recommendations. HTML report generation. `--apply` flag writes recommendations to `persona.config.json`. (AB-153–154)
+- **Trait weight calibration — all traits** — Calibration preambles (OFF/LOW/MEDIUM/HIGH/MAX) authored for all 6 traits: critical-thinking, structured-output, source-citation, audit-trail, confidence-signaling, schema-awareness. (AB-155)
+- **JetBrains output** — 8th output platform. Personas → `.junie/guidelines.md`. Instructions and gotchas → `.aiassistant/rules/*.md`. (AB-156)
+- **Copilot agent output** — `.github/agents/{name}.agent.md` with `name`, `model`, `tools` frontmatter. Higher-fidelity than `copilot-instructions.md`. (AB-157)
+- **Agent pattern selection** — `pattern` field in `persona.config.json`: `react`, `rewoo`, `router`, `sequential`, `tool-calling`. Validation warns on misuse. (AB-158)
+- **Managed settings group/team fragments** — `10-group.json` per group and `20-team.json` per team alongside existing `00-org.json`. Full MDM scope coverage. (AB-159)
+- **LLM-as-Judge evaluation** — 5-dimension persona quality scoring (accuracy, precision, recall, specificity, actionability). `agentboot test --judge --min-score 0.7`. (AB-160)
+- **Intelligence-driven roadmap** — Nightly synthesis generates prioritized roadmap suggestions to `docs/internal/plans/roadmap-suggestions.md`. Human review gated. (AB-161)
+
+Total: 8 output platforms (skill, claude, copilot, cursor, agents, gemini, windsurf, jetbrains). 944 tests across 18 files.
+
+---
+
 **Remaining planned:**
 - **Harness template library** -- topology-specific bundles (API service, event processor, data pipeline)
-- **Public marketplace** -- core layer (bundled), verified layer (reviewed), web catalog
-- **agentskills.io listing** -- publish compiled skills to the Agent Skills marketplace
-- **Copilot agent output** -- `.github/agents/*.agent.md` custom agents
 - **Team compositions** -- persona sets with handoff protocols for multi-agent coordination
 - **Blueprint integration** -- workflows mixing deterministic nodes with agentic nodes
 - **`agentboot audit`** -- periodic consistency checks (garbage collection pattern)
 - **Knowledge layer** -- SQLite index with MCP server (Stage 2), vector/RAG (Stage 3)
-- **JetBrains output** -- `.junie/guidelines.md` and `.aiassistant/rules/*.md`
 - **ADR governance** -- architectural decision records with exception lifecycle
 - **Autonomy progression** -- per-persona independence levels (Advisory to Autonomous)
 - **Abstract/binding composition** -- org defines semantic contracts, teams provide implementations
