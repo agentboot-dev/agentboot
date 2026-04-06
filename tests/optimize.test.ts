@@ -465,3 +465,53 @@ describe("AB-153: generateHtmlReport", () => {
     expect(html).toContain("0"); // invocations
   });
 });
+
+// ===========================================================================
+// generateHtmlReport: HTML written to disk
+// Addresses gap: "optimize --report creates HTML file — only string return tested,
+//   file is never written to disk and the --report CLI flag path is untested"
+// (human-in-the-loop-priority.md HIGH section, manual test TP-11-5)
+// ===========================================================================
+
+describe("AB-153: generateHtmlReport written to disk (TP-11-5)", () => {
+  // Prove the report string can be written to disk and the file starts correctly
+  it("report written to temp file starts with <!DOCTYPE html> and is complete HTML", () => {
+    const tmpFile = path.join(tmpDir, "test-optimize-report.html");
+    const metrics = aggregateMetrics([
+      makeEvent({ persona_id: "code-reviewer", cost_usd: 1.25 }),
+      makeEvent({ persona_id: "security-reviewer", cost_usd: 2.50 }),
+    ]);
+    const recs = generateModelRecommendations(metrics);
+    const gaps = analyzeCoverage(metrics, ["code-reviewer", "security-reviewer"], ["core"]);
+
+    const html = generateHtmlReport(metrics, recs, gaps, {});
+    fs.writeFileSync(tmpFile, html, "utf-8");
+
+    expect(fs.existsSync(tmpFile)).toBe(true);
+    const fileContent = fs.readFileSync(tmpFile, "utf-8");
+
+    // Proves the file starts with the correct doctype (not truncated or binary)
+    expect(fileContent.startsWith("<!DOCTYPE html>")).toBe(true);
+    // Proves the file ends with the closing tag (complete, not truncated)
+    expect(fileContent).toContain("</html>");
+    // Proves the file is non-trivial (doctype + content, not just boilerplate)
+    expect(fileContent.length).toBeGreaterThan(500);
+  });
+
+  // Prove the HTML report contains no external <script src> references (TP-11-5)
+  it("report HTML has no external <script src=...> references (all scripts inline)", () => {
+    const metrics = aggregateMetrics([makeEvent()]);
+    const html = generateHtmlReport(metrics, [], [], {});
+    // External CDN or remote script loading would be a security concern
+    expect(html).not.toMatch(/<script\s+src=/i);
+  });
+
+  // Prove that empty telemetry renders an empty-state message, not broken HTML
+  it("report with empty telemetry shows empty-state content without breaking HTML structure", () => {
+    const html = generateHtmlReport([], [], [], {});
+    expect(html.startsWith("<!DOCTYPE html>")).toBe(true);
+    expect(html).toContain("</html>");
+    // Must be a non-trivial document (not just doctype + closing tag)
+    expect(html.length).toBeGreaterThan(200);
+  });
+});

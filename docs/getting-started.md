@@ -8,7 +8,7 @@ sidebar_position: 1
 AgentBoot is a harness engineering build tool that manages your AI agent behavior
 as source code — versioned, reviewed, tested, and deployed from a central personas
 repo to every project in your org. It compiles personas into platform-native formats
-for Claude Code, Copilot, Cursor, Gemini, Windsurf, and the universal AGENTS.md standard.
+for Claude Code, Copilot, Cursor, Gemini, Windsurf, JetBrains AI, and the universal AGENTS.md standard (8 platforms total).
 
 This guide takes you from zero to a working deployment in one sitting. By the
 end you will have: an org personas repo, a working sync to one target repo, and a
@@ -37,7 +37,7 @@ Before you start, you need:
    [Local evaluation](#local-evaluation-no-github-repo-required) below.
 
 4. **One target repository** that you want to deploy AgentBoot personas to. This is
-   any existing codebase where you want AI agent governance. You need write access.
+   any existing codebase where you want consistent AI agent behavior. You need write access.
 
 ---
 
@@ -370,7 +370,7 @@ reviewer persona, layered on top of the org defaults. Other repos are unaffected
 
 ---
 
-## Step 7: Set up governance
+## Step 7: Configure your harness
 
 Your personas repo is a codebase. Treat it like one:
 

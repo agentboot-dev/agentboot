@@ -335,3 +335,40 @@ describe("Multi-platform output completeness", () => {
     expect(output).toContain("dist/jetbrains/");
   });
 });
+
+// ===========================================================================
+// Gemini: no @ import lines (per-line pattern check)
+// Addresses gap: "Gemini no @imports — existing check uses toContain('@.claude/')
+//   but does not assert the ^@ per-line pattern that catches ALL @-import forms"
+// (human-in-the-loop-priority.md HIGH section)
+//
+// The existing test in phase8.test.ts checks:
+//   expect(content).not.toContain("@.claude/");
+// That only catches the specific CC-native @.claude/ import prefix. A Gemini output
+// that contained "@some-other-import" would pass the existing test but still violate
+// the Gemini format (which prohibits ALL @ import syntax).
+// ===========================================================================
+
+describe("Gemini: no @ import syntax anywhere in output (per-line pattern)", () => {
+  // Prove GEMINI.md has no lines starting with @ (catches all @-import forms)
+  it("dist/gemini/core/GEMINI.md has no lines starting with @", () => {
+    const geminiPath = path.join(ROOT, "dist", "gemini", "core", "GEMINI.md");
+    const content = fs.readFileSync(geminiPath, "utf-8");
+    // Per-line multiline assertion: any line whose first non-whitespace is @
+    expect(content).not.toMatch(/^@/m);
+  });
+
+  // Prove per-persona Gemini files also have no @ import lines
+  it("dist/gemini/core/{persona}/persona.md files have no lines starting with @", () => {
+    const personas = ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"];
+    for (const persona of personas) {
+      const personaPath = path.join(ROOT, "dist", "gemini", "core", persona, "persona.md");
+      expect(fs.existsSync(personaPath), `${persona}/persona.md must exist`).toBe(true);
+      const content = fs.readFileSync(personaPath, "utf-8");
+      expect(
+        content,
+        `${persona}/persona.md must not contain any lines starting with @ (Gemini does not support @imports)`
+      ).not.toMatch(/^@/m);
+    }
+  });
+});

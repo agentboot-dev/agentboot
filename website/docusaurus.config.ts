@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'AgentBoot',
-  tagline: 'Convention over configuration for agentic development teams',
+  tagline: 'The build tool for AI coding assistant governance',
   favicon: 'img/favicon.png',
 
   future: {
@@ -37,7 +37,8 @@ const config: Config = {
           // Exclude internal docs from the public site
           exclude: ['internal/**'],
         },
-        blog: false, // Disable blog for now
+        // Blog coming soon — see docs/internal/plans/marketing-overhaul.md
+        blog: false,
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -47,7 +48,7 @@ const config: Config = {
 
   themeConfig: {
     colorMode: {
-      defaultMode: 'light',
+      defaultMode: 'dark',
       respectPrefersColorScheme: true,
     },
     navbar: {
@@ -66,6 +67,11 @@ const config: Config = {
         {
           to: '/docs/roadmap',
           label: 'Roadmap',
+          position: 'left',
+        },
+        {
+          to: '/docs/marketplace',
+          label: 'Marketplace',
           position: 'left',
         },
         {
@@ -104,6 +110,10 @@ const config: Config = {
             {
               label: 'Issues',
               href: 'https://github.com/agentboot-dev/agentboot/issues',
+            },
+            {
+              label: 'Blog (coming soon)',
+              href: 'https://github.com/agentboot-dev/agentboot/discussions',
             },
           ],
         },

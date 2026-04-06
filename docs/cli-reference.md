@@ -66,8 +66,10 @@ Run behavioral and snapshot tests for personas.
 agentboot test --behavioral              # Run YAML behavioral tests (LLM-powered)
 agentboot test --snapshot                 # Create/update snapshot baseline from dist/
 agentboot test --regression               # Compare dist/ against saved snapshot
+agentboot test --judge                    # LLM-as-Judge evaluation (5-dimension scoring)
 agentboot test --behavioral --test-dir tests/behavioral
 agentboot test --regression --snapshot-file .agentboot-snapshot.json
+agentboot test --judge --min-score 0.7
 ```
 
 | Flag | Description |
@@ -75,8 +77,14 @@ agentboot test --regression --snapshot-file .agentboot-snapshot.json
 | `--behavioral` | Run behavioral tests (requires LLM, costs money) |
 | `--snapshot` | Create or update snapshot baseline from current `dist/` |
 | `--regression` | Compare current `dist/` against saved snapshot |
+| `--judge` | Run LLM-as-Judge evaluation (requires LLM, costs money) |
+| `--min-score <n>` | Minimum acceptable judge score 0.0–1.0 (default: `0.7`); exit 1 if below |
 | `--test-dir <dir>` | Directory with behavioral test YAML files (default: `tests/behavioral`) |
 | `--snapshot-file <path>` | Path to snapshot baseline file (default: `.agentboot-snapshot.json`) |
+
+**LLM-as-Judge** scores each persona across 5 dimensions: accuracy, precision, recall,
+specificity, and actionability. Scores are averaged per persona and across all personas.
+Exit code `1` if the average score is below `--min-score`.
 
 ---
 
@@ -338,11 +346,13 @@ agentboot export
 agentboot export --format plugin
 agentboot export --format managed --output ./out
 agentboot export --format marketplace
+agentboot export --format agentskills
+agentboot export --format agentskills --output ./skills-export
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--format <fmt>` | Export format: `plugin` (default), `managed`, `marketplace` |
+| `--format <fmt>` | Export format: `plugin` (default), `managed`, `marketplace`, `agentskills` |
 | `--output <dir>` | Output directory (defaults vary by format) |
 
 ### Export formats
@@ -352,8 +362,9 @@ agentboot export --format marketplace
 | `plugin` | Claude Code plugin directory | `.claude-plugin/` |
 | `managed` | Managed settings for MDM deployment | `managed-output/` |
 | `marketplace` | `marketplace.json` scaffold | current directory |
+| `agentskills` | `skills-index.json` from compiled SKILL.md files (agentskills.io standard) | `dist/agentskills/` |
 
-Requires `agentboot build` to have been run first (for `plugin` and `managed` formats).
+Requires `agentboot build` to have been run first (for `plugin`, `managed`, and `agentskills` formats).
 
 ---
 
@@ -462,3 +473,96 @@ Exposed tools:
 - `agentboot_list_gotchas` — list gotcha rules with path patterns
 
 Reads from compiled `dist/skill/core/` when available, falls back to `core/` source files.
+
+---
+
+## `agentboot optimize`
+
+Aggregate telemetry metrics and generate LLM-powered trait weight recommendations.
+Reads GELF telemetry data, computes per-persona metrics (invocations, token cost,
+rephrase rate, finding distribution), and optionally applies weight recommendations
+to `persona.config.json`.
+
+```
+agentboot optimize
+agentboot optimize --persona code-reviewer
+agentboot optimize --report ./optimize-report.html
+agentboot optimize --apply
+agentboot optimize --apply --dry-run
+```
+
+| Flag | Description |
+|------|-------------|
+| `--persona <name>` | Analyze a specific persona only |
+| `--report <path>` | Write HTML report to file (default: `agentboot-optimize-report.html`) |
+| `--apply` | Write recommended trait weight changes to `persona.config.json` |
+| `-d, --dry-run` | Preview changes without writing (use with `--apply`) |
+| `--json` | Output metrics in machine-readable JSON |
+
+Requires telemetry data to have been collected. Uses `resolveProvider()` for the LLM
+recommendation step — requires an active Claude Code session or configured API provider.
+
+---
+
+## `agentboot search`
+
+Search the AgentBoot marketplace registry for traits, personas, gotchas, and domain layers.
+
+```
+agentboot search traits "gdpr"
+agentboot search gotchas "postgres"
+agentboot search domains "healthcare"
+agentboot search personas "accessibility"
+agentboot search "phi-awareness"
+```
+
+| Argument | Description |
+|----------|-------------|
+| `<type>` | Content type to filter: `traits`, `gotchas`, `personas`, `domains` (optional) |
+| `<query>` | Search term |
+
+| Flag | Description |
+|------|-------------|
+| `--layer <layer>` | Filter by marketplace layer: `core`, `verified`, `community` |
+| `--json` | Output results in machine-readable JSON |
+
+---
+
+## `agentboot pull`
+
+Download and add a marketplace item to your personas repo.
+
+```
+agentboot pull trait phi-awareness
+agentboot pull gotcha postgres-rls
+agentboot pull domain healthcare-compliance
+agentboot pull persona accessibility-reviewer
+```
+
+| Argument | Description |
+|----------|-------------|
+| `<type>` | Content type: `trait`, `gotcha`, `domain`, `persona` |
+| `<name>` | Marketplace item name |
+
+| Flag | Description |
+|------|-------------|
+| `--from <source>` | Registry source: `marketplace` (default), `github:user/repo` |
+| `--version <ver>` | Pin to a specific version |
+| `--dry-run` | Preview what would be added without writing |
+
+---
+
+## `agentboot catalog`
+
+List all installed marketplace content and check for available updates.
+
+```
+agentboot catalog
+agentboot catalog --updates
+agentboot catalog --json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--updates` | Check for available updates to installed marketplace content |
+| `--json` | Output in machine-readable JSON |
