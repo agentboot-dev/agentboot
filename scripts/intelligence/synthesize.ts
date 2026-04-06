@@ -511,6 +511,195 @@ function main(): void {
   fs.mkdirSync(path.dirname(pendingPath), { recursive: true });
   fs.writeFileSync(pendingPath, finalDigest, "utf-8");
   console.log(`Wrote copy to ${pendingPath}`);
+
+  // Generate roadmap suggestions (AB-163)
+  const suggestions = generateRoadmapSuggestions(reports);
+  const roadmapPath = writeRoadmapSuggestions(suggestions, ROOT);
+  console.log(`Wrote ${suggestions.length} roadmap suggestion(s) to ${roadmapPath}`);
+}
+
+// ---------------------------------------------------------------------------
+// Roadmap Suggestions (AB-163)
+// ---------------------------------------------------------------------------
+
+export interface RoadmapSuggestion {
+  title: string;
+  rationale: string;
+  evidence: string[];
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  suggestedPhase: string;
+  source: "telemetry" | "community" | "incident" | "trend";
+}
+
+/**
+ * Extracts actionable roadmap suggestions from synthesis results.
+ *
+ * Scans findings for patterns that indicate improvements:
+ * - High rephrase rates → persona needs calibration
+ * - Repeated errors → new gotcha rule needed
+ * - Missing coverage → new persona or trait needed
+ * - Cost spikes → model optimization needed
+ */
+export function generateRoadmapSuggestions(reports: SmeReport[]): RoadmapSuggestion[] {
+  const suggestions: RoadmapSuggestion[] = [];
+  const allFindings = reports.flatMap((r) => r.findings);
+
+  // Pattern 1: Critical/high impact findings → HIGH priority suggestions
+  const criticalFindings = allFindings.filter(
+    (f) => f.technical_impact === "critical" || f.technical_impact === "high",
+  );
+  for (const finding of criticalFindings) {
+    suggestions.push({
+      title: `Address: ${finding.title}`,
+      rationale: `Finding with ${finding.technical_impact} technical impact requires attention. ${finding.roadmap_signal !== "no-change" ? `Roadmap signal: ${finding.roadmap_signal}.` : ""}`,
+      evidence: [`[${finding.source}] ${finding.summary}`],
+      priority: finding.technical_impact === "critical" ? "HIGH" : "MEDIUM",
+      suggestedPhase: finding.action_required === "escalate" ? "current" : "next",
+      source: categorizeSource(finding.category),
+    });
+  }
+
+  // Pattern 2: Repeated categories across reports → systemic issue
+  const categoryCount = new Map<string, Finding[]>();
+  for (const finding of allFindings) {
+    const existing = categoryCount.get(finding.category) ?? [];
+    existing.push(finding);
+    categoryCount.set(finding.category, existing);
+  }
+  for (const [category, findings] of categoryCount) {
+    if (findings.length >= 2) {
+      // Skip if we already created HIGH suggestions for all of these
+      const nonCritical = findings.filter(
+        (f) => f.technical_impact !== "critical" && f.technical_impact !== "high",
+      );
+      if (nonCritical.length > 0 || findings.length >= 3) {
+        suggestions.push({
+          title: `Recurring pattern: ${category}`,
+          rationale: `Category "${category}" appeared ${findings.length} times across reports. Recurring patterns may indicate a need for a new gotcha rule or persona trait.`,
+          evidence: findings.map((f) => `[${f.source}] ${f.title}: ${f.summary}`),
+          priority: findings.length >= 3 ? "HIGH" : "MEDIUM",
+          suggestedPhase: "next",
+          source: "trend",
+        });
+      }
+    }
+  }
+
+  // Pattern 3: Multiple action items from a single harness → coverage gap
+  for (const report of reports) {
+    if (report.top_action_items.length >= 3) {
+      suggestions.push({
+        title: `Coverage gap in ${report.harness} harness`,
+        rationale: `${report.top_action_items.length} action items from a single harness suggest a coverage gap that may require a new persona or trait.`,
+        evidence: report.top_action_items.map((item) => `[${report.harness}] ${item}`),
+        priority: "MEDIUM",
+        suggestedPhase: "next",
+        source: "telemetry",
+      });
+    }
+  }
+
+  // Pattern 4: Reports with no findings from a harness that normally has them
+  for (const report of reports) {
+    if (report.findings.length === 0 && report.top_action_items.length === 0) {
+      suggestions.push({
+        title: `Silent harness: ${report.harness}`,
+        rationale: `Harness "${report.harness}" produced no findings and no action items. This may indicate the harness is stale or its sources are no longer relevant.`,
+        evidence: [`[${report.harness}] Zero findings on ${report.report_date}`],
+        priority: "LOW",
+        suggestedPhase: "backlog",
+        source: "telemetry",
+      });
+    }
+  }
+
+  // Deduplicate by title (keep higher priority)
+  const seen = new Map<string, RoadmapSuggestion>();
+  const priorityOrder: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  for (const s of suggestions) {
+    const existing = seen.get(s.title);
+    if (!existing || priorityOrder[s.priority]! < priorityOrder[existing.priority]!) {
+      seen.set(s.title, s);
+    }
+  }
+
+  // Sort by priority: HIGH > MEDIUM > LOW
+  return [...seen.values()].sort(
+    (a, b) => priorityOrder[a.priority]! - priorityOrder[b.priority]!,
+  );
+}
+
+function categorizeSource(category: string): RoadmapSuggestion["source"] {
+  if (category.includes("community") || category.includes("forum") || category.includes("discussion")) {
+    return "community";
+  }
+  if (category.includes("incident") || category.includes("outage") || category.includes("breaking")) {
+    return "incident";
+  }
+  if (category.includes("trend") || category.includes("pattern") || category.includes("signal")) {
+    return "trend";
+  }
+  return "telemetry";
+}
+
+/**
+ * Formats roadmap suggestions as a structured markdown document.
+ */
+export function formatRoadmapSuggestionsMd(suggestions: RoadmapSuggestion[]): string {
+  const timestamp = new Date().toISOString();
+
+  let md = `# Roadmap Suggestions\n\n`;
+  md += `> Auto-generated by AgentBoot intelligence pipeline. **Human review required before acting on any suggestion.**\n`;
+  md += `> Generated: ${timestamp}\n\n`;
+
+  const groups: Record<string, RoadmapSuggestion[]> = { HIGH: [], MEDIUM: [], LOW: [] };
+  for (const s of suggestions) {
+    groups[s.priority]!.push(s);
+  }
+
+  for (const priority of ["HIGH", "MEDIUM", "LOW"] as const) {
+    const items = groups[priority]!;
+    if (items.length === 0) continue;
+
+    md += `## ${priority} Priority\n\n`;
+    for (const s of items) {
+      md += `### ${s.title}\n`;
+      md += `- **Rationale:** ${s.rationale}\n`;
+      md += `- **Evidence:**\n`;
+      for (const e of s.evidence) {
+        md += `  - ${e}\n`;
+      }
+      md += `- **Suggested Phase:** ${s.suggestedPhase}\n`;
+      md += `- **Source:** ${s.source}\n\n`;
+    }
+  }
+
+  if (suggestions.length === 0) {
+    md += `_No suggestions generated from current intelligence cycle._\n\n`;
+  }
+
+  md += `---\n\n`;
+  md += `## Raw JSON\n\n`;
+  md += "```json\n";
+  md += JSON.stringify(suggestions, null, 2);
+  md += "\n```\n";
+
+  return md;
+}
+
+/**
+ * Writes roadmap suggestions to docs/internal/plans/roadmap-suggestions.md.
+ */
+export function writeRoadmapSuggestions(suggestions: RoadmapSuggestion[], rootDir: string): string {
+  const outputPath = path.join(rootDir, "docs", "internal", "plans", "roadmap-suggestions.md");
+  const outputDir = path.dirname(outputPath);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const md = formatRoadmapSuggestionsMd(suggestions);
+  fs.writeFileSync(outputPath, md, "utf-8");
+  return outputPath;
 }
 
 export { synthesizeReports, buildStrategicPrompt, validateStrategicReport, runStrategicAnalyst };

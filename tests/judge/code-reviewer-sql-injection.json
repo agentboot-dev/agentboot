@@ -1,0 +1,18 @@
+{
+  "persona": "code-reviewer",
+  "input": "Review this TypeScript function:\n```ts\nasync function getUser(id: string) {\n  const user = await db.query(`SELECT * FROM users WHERE id = '${id}'`);\n  return user;\n}\n```",
+  "ground_truth": {
+    "must_find": [
+      {
+        "severity": "CRITICAL",
+        "topic": "sql-injection",
+        "location_hint": "db.query"
+      }
+    ],
+    "must_not_find": [
+      { "topic": "performance" }
+    ]
+  },
+  "dimensions_focus": ["accuracy", "specificity"],
+  "model": "claude-opus-4-6"
+}

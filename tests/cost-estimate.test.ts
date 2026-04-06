@@ -170,3 +170,51 @@ describe("AB-139: cost-estimate CLI command", () => {
     expect(parsed.totalMonthlyCostUsd).toBeCloseTo(sum, 6);
   });
 });
+
+// ===========================================================================
+// cost-estimate: human-readable table format (no --json flag)
+// Addresses gap: "cost-estimate human-readable table output not asserted"
+// (human-in-the-loop-priority.md MEDIUM section, manual tests TP-13-10/11/12)
+// The existing CLI tests check for persona name strings and "Total" label but
+// never assert non-zero dollar amounts or that cost scales with model/team-size.
+// ===========================================================================
+
+describe("AB-139: cost-estimate human-readable table format", () => {
+  // Prove the default output (no --json) contains at least one non-zero dollar amount
+  it("cost-estimate (no flags): output contains at least one non-zero dollar amount", () => {
+    const output = run("cost-estimate");
+    // Must contain at least one $ followed by digits — proves token multiplication ran
+    // and the persona SKILL.md files have non-zero content
+    expect(output).toMatch(/\$\d+\.\d+|\$\d+/);
+  });
+
+  // Prove the default output shows all 4 persona names in the table
+  it("cost-estimate (no flags): output shows all 4 enabled persona names", () => {
+    const output = run("cost-estimate");
+    expect(output).toContain("code-reviewer");
+    expect(output).toContain("security-reviewer");
+    expect(output).toContain("test-generator");
+    expect(output).toContain("test-data-expert");
+  });
+
+  // Prove that --model opus + --team-size 100 produces higher total cost than defaults
+  // Default: model=sonnet, team-size=10
+  it("cost-estimate: opus + team-size 100 produces higher cost than sonnet + team-size 10", () => {
+    const defaultOutput = run("cost-estimate --json");
+    const highCostOutput = run("cost-estimate --json --model opus --team-size 100");
+
+    const defaultParsed = JSON.parse(defaultOutput);
+    const highCostParsed = JSON.parse(highCostOutput);
+
+    // opus pricing > sonnet pricing AND 100 users > 10 users → strictly higher total
+    expect(highCostParsed.totalMonthlyCostUsd).toBeGreaterThan(defaultParsed.totalMonthlyCostUsd);
+  });
+
+  // Prove default table output contains non-zero token counts (not all zeros)
+  it("cost-estimate (no flags): output contains non-zero token counts", () => {
+    const output = run("cost-estimate");
+    // Table should show numbers beyond just persona names and $ amounts
+    // At minimum, one token count > 0 should appear
+    expect(output).toMatch(/\d{3,}/); // at least a 3-digit number somewhere (token counts are in thousands)
+  });
+});

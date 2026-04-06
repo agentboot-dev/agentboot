@@ -1,4 +1,7 @@
+/* ─── AgentBoot Design System ──────────────────────────────────────────────── */
+
 :root {
+  /* Primary blue — Docusaurus integration */
   --ifm-color-primary: #2563eb;
   --ifm-color-primary-dark: #1d4ed8;
   --ifm-color-primary-darker: #1e40af;
@@ -6,11 +9,39 @@
   --ifm-color-primary-light: #3b82f6;
   --ifm-color-primary-lighter: #60a5fa;
   --ifm-color-primary-lightest: #93c5fd;
-  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+
+  /* AgentBoot palette tokens */
+  --ab-bg: #0f172a;
+  --ab-surface: #1e293b;
+  --ab-surface-hover: #263347;
+  --ab-border: #334155;
+  --ab-primary: #3b82f6;
+  --ab-primary-hover: #2563eb;
+  --ab-primary-glow: rgba(59, 130, 246, 0.15);
+  --ab-text: #f8fafc;
+  --ab-muted: #94a3b8;
+  --ab-green: #10b981;
+  --ab-green-glow: rgba(16, 185, 129, 0.12);
+  --ab-amber: #f59e0b;
+  --ab-purple: #8b5cf6;
+  --ab-pink: #ec4899;
+
+  /* Typography */
+  --ifm-font-family-base: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  --ifm-font-family-monospace: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --ifm-code-font-size: 90%;
+  --ifm-font-size-base: 16px;
+  --ifm-line-height-base: 1.7;
+  --ifm-font-weight-bold: 700;
+
+  /* Code blocks */
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+
+  /* Transitions */
+  --ab-transition: all 0.18s ease;
 }
 
+/* ─── Dark mode (primary theme) ──────────────────────────────────────────── */
 [data-theme='dark'] {
   --ifm-color-primary: #3b82f6;
   --ifm-color-primary-dark: #2563eb;
@@ -20,4 +51,314 @@
   --ifm-color-primary-lighter: #93c5fd;
   --ifm-color-primary-lightest: #bfdbfe;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+
+  --ifm-background-color: #0f172a;
+  --ifm-background-surface-color: #1e293b;
+  --ifm-navbar-background-color: rgba(15, 23, 42, 0.92);
+  --ifm-footer-background-color: #0a1120;
+  --ifm-color-content: #f1f5f9;
+  --ifm-color-content-secondary: #94a3b8;
+
+  --ifm-heading-color: #f8fafc;
+  --ifm-link-color: #60a5fa;
+  --ifm-link-hover-color: #93c5fd;
+  --ifm-link-decoration: none;
+
+  --ifm-navbar-link-color: #cbd5e1;
+  --ifm-navbar-link-hover-color: #f8fafc;
+
+  --ifm-toc-border-color: #334155;
+  --ifm-hr-border-color: #334155;
+  --ifm-table-border-color: #334155;
+  --ifm-table-stripe-background: rgba(255, 255, 255, 0.03);
+
+  --ifm-code-background: #1e293b;
+  --ifm-pre-background: #0d1929;
+  --ifm-pre-border-radius: 8px;
+  --ifm-pre-padding: 1.25rem 1.5rem;
+
+  --ifm-breadcrumb-color-active: #60a5fa;
+  --ifm-menu-color-active: #60a5fa;
+  --ifm-menu-color-background-active: rgba(59, 130, 246, 0.1);
+  --ifm-menu-color-background-hover: rgba(255, 255, 255, 0.04);
+}
+
+/* ─── Light mode fallback ─────────────────────────────────────────────────── */
+[data-theme='light'] {
+  --ifm-background-color: #f8fafc;
+  --ifm-background-surface-color: #ffffff;
+  --ifm-navbar-background-color: rgba(248, 250, 252, 0.95);
+  --ifm-footer-background-color: #1e293b;
+  --ifm-color-content: #0f172a;
+  --ifm-color-content-secondary: #475569;
+  --ifm-heading-color: #0f172a;
+  --ifm-link-color: #2563eb;
+  --ifm-link-hover-color: #1d4ed8;
+  --ifm-toc-border-color: #e2e8f0;
+  --ifm-hr-border-color: #e2e8f0;
+  --ifm-table-border-color: #e2e8f0;
+  --ifm-code-background: #f1f5f9;
+  --ifm-pre-background: #f8fafc;
+}
+
+/* ─── Base resets ─────────────────────────────────────────────────────────── */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Remove default margins from headings in pages */
+.hero__title {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+/* ─── Navbar ──────────────────────────────────────────────────────────────── */
+.navbar {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  box-shadow: none;
+}
+
+[data-theme='dark'] .navbar {
+  background-color: rgba(15, 23, 42, 0.9);
+}
+
+.navbar__logo {
+  height: 28px;
+}
+
+.navbar__title {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.navbar__link {
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.navbar__link:hover,
+.navbar__link--active {
+  color: var(--ifm-color-primary-light) !important;
+}
+
+/* ─── Footer ──────────────────────────────────────────────────────────────── */
+.footer {
+  border-top: 1px solid #334155;
+}
+
+[data-theme='dark'] .footer {
+  background-color: #080f1e;
+}
+
+.footer__link-item {
+  transition: color 0.15s ease;
+}
+
+.footer__link-item:hover {
+  color: var(--ifm-color-primary-light);
+}
+
+/* ─── Typography ──────────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+a {
+  transition: color 0.15s ease;
+}
+
+/* ─── Code & pre ──────────────────────────────────────────────────────────── */
+code {
+  border-radius: 4px;
+  font-size: var(--ifm-code-font-size);
+  padding: 0.15em 0.4em;
+}
+
+[data-theme='dark'] code {
+  background: rgba(30, 41, 59, 0.8);
+  color: #93c5fd;
+  border: 1px solid #334155;
+}
+
+pre {
+  border-radius: var(--ifm-pre-border-radius, 8px);
+}
+
+[data-theme='dark'] pre {
+  border: 1px solid #1e293b;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Sidebar ─────────────────────────────────────────────────────────────── */
+[data-theme='dark'] .menu {
+  background: transparent;
+}
+
+[data-theme='dark'] .menu__link {
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .menu__link:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #f1f5f9;
+}
+
+[data-theme='dark'] .menu__link--active {
+  color: #60a5fa;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+/* ─── Docusaurus admonitions (dark mode) ──────────────────────────────────── */
+[data-theme='dark'] .alert {
+  border-color: #334155;
+  background-color: #1e293b;
+}
+
+[data-theme='dark'] .alert--info {
+  border-left-color: #3b82f6;
+  background-color: rgba(59, 130, 246, 0.08);
+}
+
+[data-theme='dark'] .alert--warning {
+  border-left-color: #f59e0b;
+  background-color: rgba(245, 158, 11, 0.08);
+}
+
+[data-theme='dark'] .alert--danger {
+  border-left-color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
+[data-theme='dark'] .alert--success {
+  border-left-color: #10b981;
+  background-color: rgba(16, 185, 129, 0.08);
+}
+
+/* ─── Tables ──────────────────────────────────────────────────────────────── */
+[data-theme='dark'] table {
+  border-collapse: collapse;
+}
+
+[data-theme='dark'] th {
+  background: #1e293b;
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+[data-theme='dark'] td {
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+[data-theme='dark'] tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ─── Breadcrumbs ─────────────────────────────────────────────────────────── */
+[data-theme='dark'] .breadcrumbs__link {
+  color: #64748b;
+}
+
+[data-theme='dark'] .breadcrumbs__link:hover {
+  color: #94a3b8;
+  background: transparent;
+}
+
+/* ─── TOC ─────────────────────────────────────────────────────────────────── */
+[data-theme='dark'] .table-of-contents__link {
+  color: #64748b;
+  transition: color 0.15s ease;
+}
+
+[data-theme='dark'] .table-of-contents__link:hover,
+[data-theme='dark'] .table-of-contents__link--active {
+  color: #60a5fa;
+}
+
+/* ─── Buttons ─────────────────────────────────────────────────────────────── */
+.button {
+  border-radius: 8px;
+  font-weight: 600;
+  transition: var(--ab-transition);
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+[data-theme='dark'] .button--secondary {
+  border-color: #334155;
+  color: #f1f5f9;
+}
+
+[data-theme='dark'] .button--secondary:hover {
+  background: #263347;
+  border-color: #475569;
+}
+
+/* ─── Card hover utility ──────────────────────────────────────────────────── */
+.ab-card {
+  transition: var(--ab-transition);
+}
+
+.ab-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Pagination ──────────────────────────────────────────────────────────── */
+[data-theme='dark'] .pagination-nav__link {
+  border-color: #334155;
+  background: #1e293b;
+  transition: var(--ab-transition);
+}
+
+[data-theme='dark'] .pagination-nav__link:hover {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.08);
+}
+
+/* ─── Search ──────────────────────────────────────────────────────────────── */
+[data-theme='dark'] .navbar__search-input {
+  background: #0f172a;
+  border-color: #334155;
+  color: #f1f5f9;
+}
+
+/* ─── Scrollbar (WebKit) ──────────────────────────────────────────────────── */
+[data-theme='dark'] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* ─── Selection ───────────────────────────────────────────────────────────── */
+[data-theme='dark'] ::selection {
+  background: rgba(59, 130, 246, 0.35);
+  color: #f8fafc;
+}
+
+/* ─── Landing page: strip Docusaurus page padding ────────────────────────── */
+.landing-no-padding .main-wrapper {
+  padding: 0;
 }

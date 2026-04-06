@@ -2,11 +2,11 @@
 
 **Bootstrap your agentic development teams.**
 
-AgentBoot is a build tool that compiles AI agent personas and distributes them across your organization's repositories. Define once, deploy everywhere. Convention over configuration for AI agent governance.
+AgentBoot is a build tool that compiles AI agent personas and distributes them across your organization's repositories. Define once, deploy everywhere. Your agentic development harness.
 
 ## The Problem
 
-Every team adopting AI coding tools (Claude Code, GitHub Copilot, Cursor) ends up writing its own CLAUDE.md, its own rules, its own agents — independently, inconsistently, and without governance. There's no standard for distributing agent behavior across repos, no mechanism for enforcing compliance, no way to measure value, and no path for sharing improvements.
+Every team adopting AI coding tools (Claude Code, GitHub Copilot, Cursor) ends up writing its own CLAUDE.md, its own rules, its own agents — independently, inconsistently, with no shared quality baseline. There's no standard for distributing agent behavior across repos, no mechanism for enforcing behavioral consistency, no way to measure value, and no path for sharing improvements.
 
 AgentBoot solves that. It's the shared foundation everyone was going to build anyway, done once, done well.
 

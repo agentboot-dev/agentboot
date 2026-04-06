@@ -280,12 +280,46 @@ const TRAITS_END_MARKER = "<!-- traits:end -->";
  * Only traits that opt into calibration are listed here.
  * The key is the numeric weight as a string (e.g., "0.3").
  */
+// AB-161: Pattern-specific configuration defaults
+export const PATTERN_CONFIGS: Record<string, { maxTurns?: number; planFirst?: boolean }> = {
+  react: { maxTurns: 10 },
+  rewoo: { maxTurns: 5, planFirst: true },
+  router: { maxTurns: 1 },
+  sequential: { maxTurns: 3 },
+  "tool-calling": { maxTurns: 1 },
+};
+
 const TRAIT_CALIBRATIONS: Record<string, Record<string, string>> = {
   "critical-thinking": {
     "0.3": "Apply light scrutiny: surface only CRITICAL findings. Trust the author's intent; flag only clear defects with high confidence. Suppress WARN/NOTE/INFO.",
     "0.5": "Apply standard scrutiny: surface CRITICAL and ERROR findings reliably. Flag WARN items that represent real risk. Omit nitpicks and style preferences.",
     "0.7": "Apply thorough scrutiny: actively seek hidden issues. Surface all CRITICAL/ERROR/WARN. Flag MEDIUM-confidence concerns. Question non-obvious design choices.",
     "1.0": "Apply adversarial scrutiny: assume hostile or incorrect input. Verify every assumption. Surface all findings at all severity levels. Treat absence of proof as a concern.",
+  },
+  "structured-output": {
+    "0.3": "Use prose by default. Apply structured format with severity/location/recommendation only when explicitly requested.",
+    "0.7": "Always use structured format with severity, location, and recommendation fields. Prose is acceptable only for brief clarifications between structured blocks.",
+    "1.0": "Enforce strict schema adherence on every output. Every finding must include severity, location, recommendation, and confidence. Never fall back to unstructured prose.",
+  },
+  "source-citation": {
+    "0.3": "Cite file and line references only for CRITICAL findings. Omit citations for lower-severity observations.",
+    "0.7": "Cite file:line references for every finding at WARN severity or above. Include function or symbol names where available.",
+    "1.0": "Cite every claim with exact file:line references. Link each assertion to its source evidence. Never state a finding without a traceable location.",
+  },
+  "audit-trail": {
+    "0.3": "Provide final conclusions only. Omit intermediate reasoning unless the conclusion is ambiguous or surprising.",
+    "0.7": "Explain reasoning for every significant decision. Show the chain of evidence from observation to conclusion.",
+    "1.0": "Document the full reasoning chain for every decision. Show each step from evidence to inference to conclusion. Make the audit trail complete enough for independent verification.",
+  },
+  "confidence-signaling": {
+    "0.3": "Signal confidence only on uncertain or ambiguous claims. Omit confidence markers when the finding is straightforward.",
+    "0.7": "State confidence level (HIGH/MEDIUM/LOW) on every finding. Distinguish between verified facts and inferred conclusions.",
+    "1.0": "State explicit confidence level on every claim. Justify each confidence assessment with the evidence that supports or limits it. Flag every assumption as such.",
+  },
+  "schema-awareness": {
+    "0.3": "Flag only breaking schema changes that would cause runtime errors. Ignore cosmetic type mismatches and optional field omissions.",
+    "0.7": "Validate all schemas, types, and contracts proactively. Flag any type mismatch, missing required field, or contract violation.",
+    "1.0": "Enforce exhaustive schema validation. Flag every type mismatch, missing field, and implicit any. Verify that all inputs and outputs conform to declared contracts at every boundary.",
   },
 };
 
@@ -500,9 +534,23 @@ function buildCopilotAgent(
   composedContent: string,
   _config: AgentBootConfig
 ): string {
+  const name = personaConfig?.name ?? personaName;
   const description = personaConfig?.description ?? personaName;
+  const model = personaConfig?.model ?? "claude-sonnet-4-6";
+  const safeName = name.replace(/"/g, '\\"');
+  const safeDescription = description.replace(/"/g, '\\"');
   const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-  return `---\ndescription: "${description}"\n---\n\n${stripped}\n`;
+  const frontmatter = [
+    "---",
+    `name: "AgentBoot ${safeName}"`,
+    `description: "${safeDescription}"`,
+    `model: "${model}"`,
+    "tools:",
+    "  - codebase",
+    "  - terminal",
+    "---",
+  ].join("\n");
+  return `${frontmatter}\n\n${stripped}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +704,17 @@ function compilePersona(
     ];
     if (model) agentFrontmatter.push(`model: "${model}"`);
     if (permMode && permMode !== "default") agentFrontmatter.push(`permissionMode: "${permMode}"`);
-    if (personaConfig?.maxTurns) agentFrontmatter.push(`maxTurns: ${personaConfig.maxTurns}`);
+    // AB-161: Add pattern to agent frontmatter (omit "react" as it's the default)
+    if (personaConfig?.pattern && personaConfig.pattern !== "react") {
+      agentFrontmatter.push(`agentProfile: "${personaConfig.pattern}"`);
+    }
+    if (personaConfig?.maxTurns) {
+      agentFrontmatter.push(`maxTurns: ${personaConfig.maxTurns}`);
+    } else if (personaConfig?.pattern) {
+      // AB-161: Use pattern's default maxTurns when persona doesn't specify one
+      const patternConfig = PATTERN_CONFIGS[personaConfig.pattern];
+      if (patternConfig?.maxTurns) agentFrontmatter.push(`maxTurns: ${patternConfig.maxTurns}`);
+    }
     // Tool restrictions — CC enforces these at runtime
     if (personaConfig?.disallowedTools && personaConfig.disallowedTools.length > 0) {
       agentFrontmatter.push(`disallowedTools:`);
@@ -732,6 +790,30 @@ function compilePersona(
     if (!platforms.includes("gemini")) platforms.push("gemini");
   }
 
+  // AB-158: JetBrains output — .junie/guidelines.md (concatenated personas)
+  if (outputFormats.includes("jetbrains")) {
+    const jetbrainsDir = path.join(distPath, "jetbrains", scopePath);
+    ensureDir(jetbrainsDir);
+    // Build content: strip frontmatter and HTML comments for clean markdown
+    const cleanContent = composed
+      .replace(/^---\n[\s\S]*?\n---\n*/, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .trim();
+    const personaHeader = `## ${personaConfig?.name ?? personaName}\n\n`;
+    const description = personaConfig?.description ? `> ${personaConfig.description}\n\n` : "";
+    const junieContent = `${personaHeader}${description}${cleanContent}\n`;
+
+    // Append to concatenated .junie/guidelines.md
+    const junieDir = path.join(jetbrainsDir, ".junie");
+    ensureDir(junieDir);
+    const guidelinesPath = path.join(junieDir, "guidelines.md");
+    const existing = fs.existsSync(guidelinesPath) ? fs.readFileSync(guidelinesPath, "utf-8") : "";
+    const separator = existing ? "\n---\n\n" : `<!-- AgentBoot compiled output — do not edit manually -->\n\n# AgentBoot Personas\n\n`;
+    fs.writeFileSync(guidelinesPath, `${existing}${separator}${junieContent}`, "utf-8");
+
+    if (!platforms.includes("jetbrains")) platforms.push("jetbrains");
+  }
+
   return { persona: personaName, platforms, traitsInjected: injected, scope };
 }
 
@@ -756,8 +838,10 @@ function compileInstructions(
 
   for (const platform of outputFormats) {
     if (platform === "agents" || platform === "plugin" || platform === "windsurf" || platform === "gemini") continue; // handled separately; gemini inlines instructions in GEMINI.md
-    // CC and Cursor use "rules/" for always-on instructions; other platforms use "instructions/"
-    const dirName = (platform === "claude" || platform === "cursor") ? "rules" : "instructions";
+    // CC and Cursor use "rules/" for always-on instructions; JetBrains uses ".aiassistant/rules/"; other platforms use "instructions/"
+    const dirName = (platform === "claude" || platform === "cursor") ? "rules"
+      : platform === "jetbrains" ? ".aiassistant/rules"
+      : "instructions";
     const outDir = path.join(distPath, platform, scopePath, dirName);
     ensureDir(outDir);
 
@@ -900,6 +984,29 @@ function compileGotchas(
         ].join("\n");
         fs.writeFileSync(path.join(copilotInstrDir, `${name}.instructions.md`), copilotInstrContent, "utf-8");
       }
+    }
+
+    // AB-158: JetBrains AI Assistant gotchas — .aiassistant/rules/ with globs: frontmatter
+    if (outputFormats.includes("jetbrains")) {
+      const fm = parseFrontmatter(content);
+      const rawPaths = fm?.get("paths");
+      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      const name = path.basename(file, ".md");
+      const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
+      const jetbrainsRulesDir = path.join(distPath, "jetbrains", scopePath, ".aiassistant", "rules");
+      ensureDir(jetbrainsRulesDir);
+      const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+
+      const frontmatterLines = ["---"];
+      if (pathsStr) {
+        const globs = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
+        frontmatterLines.push(`globs: ${JSON.stringify(globs)}`);
+      }
+      frontmatterLines.push(`description: "${description}"`);
+      frontmatterLines.push("---");
+
+      const jetbrainsContent = [...frontmatterLines, "", strippedContent, ""].join("\n");
+      fs.writeFileSync(path.join(jetbrainsRulesDir, `${name}.rules.md`), jetbrainsContent, "utf-8");
     }
   }
 }
@@ -2114,7 +2221,7 @@ function main(): void {
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini"];
+  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -2324,7 +2431,7 @@ function main(): void {
 
   // Generate composition manifests for core scope (all platforms)
   for (const fmt of outputFormats) {
-    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf") continue; // No scope merging for these
+    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf" || fmt === "jetbrains") continue; // No scope merging for these
     generateCompositionManifest(distPath, fmt, "core", config);
   }
 
@@ -2430,6 +2537,56 @@ function main(): void {
       for (const fmt of outputFormats) {
         if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf") continue;
         generateCompositionManifest(distPath, fmt, `nodes/${nodePath}`, config);
+      }
+    }
+
+    // AB-160: Generate group/team managed settings fragments
+    if (outputFormats.includes("claude")) {
+      for (const { path: nodePath } of flatNodes) {
+        const parts = nodePath.split("/");
+        const isGroup = parts.length === 1;
+        const isTeam = parts.length >= 2;
+
+        const groupName = parts[0]!;
+        const groupConfig = config.groups?.[groupName];
+
+        if (isGroup && groupConfig) {
+          const managedDir = path.join(distPath, "claude", `nodes/${nodePath}`, "managed-settings.d");
+          ensureDir(managedDir);
+          const fragment: Record<string, unknown> = {
+            "// source": `Generated by AgentBoot — org:${config.org} / group:${groupName}`,
+          };
+          if (groupConfig.permissions) fragment["permissions"] = groupConfig.permissions;
+          if (groupConfig.mcpServers) fragment["mcpServers"] = groupConfig.mcpServers;
+          if (groupConfig.enabledPlugins) fragment["enabledPlugins"] = groupConfig.enabledPlugins;
+
+          if (Object.keys(fragment).length > 1) {
+            fs.writeFileSync(
+              path.join(managedDir, "10-group.json"),
+              JSON.stringify(fragment, null, 2) + "\n",
+              "utf-8"
+            );
+            log(chalk.gray(`  → Managed settings: 10-group.json for ${groupName}`));
+          }
+        }
+
+        if (isTeam) {
+          const teamName = parts[parts.length - 1]!;
+          const managedDir = path.join(distPath, "claude", `nodes/${nodePath}`, "managed-settings.d");
+          ensureDir(managedDir);
+          const fragment: Record<string, unknown> = {
+            "// source": `Generated by AgentBoot — org:${config.org} / team:${groupName}/${teamName}`,
+          };
+          // Teams can have scope-specific settings (placeholder for team-specific config)
+          if (Object.keys(fragment).length > 1) {
+            fs.writeFileSync(
+              path.join(managedDir, "20-team.json"),
+              JSON.stringify(fragment, null, 2) + "\n",
+              "utf-8"
+            );
+            log(chalk.gray(`  → Managed settings: 20-team.json for ${groupName}/${teamName}`));
+          }
+        }
       }
     }
   }

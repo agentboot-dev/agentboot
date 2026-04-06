@@ -98,6 +98,10 @@ export interface AgentBootConfig {
 
 export interface GroupConfig {
   teams?: string[];
+  /** AB-160: Group-level managed settings */
+  permissions?: { allow?: string[]; deny?: string[] };
+  mcpServers?: Record<string, unknown>;
+  enabledPlugins?: Array<{ url: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +277,8 @@ export interface PersonaConfig {
   background?: boolean;
   isolation?: "none" | "worktree";
   tokenBudget?: number;
+  /** AB-161: Agent orchestration pattern */
+  pattern?: "react" | "rewoo" | "router" | "sequential" | "tool-calling";
   traits?: TraitRefs;
   groups?: Record<string, { traits?: TraitRefs }>;
   teams?: Record<string, { traits?: TraitRefs }>;

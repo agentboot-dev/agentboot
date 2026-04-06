@@ -8,6 +8,8 @@ sidebar_position: 1
 How developers and organizations contribute, discover, and share traits, personas,
 rules, and domain layers through AgentBoot's marketplace ecosystem.
 
+> **v0.9.0:** The marketplace CLI commands are implemented. `agentboot search`, `agentboot pull`, `agentboot publish`, and `agentboot registry` are available. The hosted registry at agentboot.dev/marketplace is coming soon. See [CLI Reference](./cli-reference.md) for full syntax.
+
 ---
 
 ## The Vision

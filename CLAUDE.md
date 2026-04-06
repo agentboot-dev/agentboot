@@ -61,6 +61,7 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
    - **`dist/cursor/`** — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
    - **`dist/gemini/`** — GEMINI.md project instructions + `.gemini/` rules
    - **`dist/windsurf/`** — `.windsurfrules` flat text (all personas concatenated)
+   - **`dist/jetbrains/`** — `.junie/guidelines.md` (Junie) + `.aiassistant/rules/*.md` (AI Assistant)
 3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
@@ -80,8 +81,7 @@ Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/cursor/` — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
 - `dist/gemini/` — GEMINI.md project instructions + `.gemini/` rules directory
 - `dist/windsurf/` — `.windsurfrules` flat text file (all personas concatenated)
-
-JetBrains output is planned for a future phase.
+- `dist/jetbrains/` — `.junie/guidelines.md` (Junie) + `.aiassistant/rules/*.md` (AI Assistant)
 
 Within each platform folder, scope hierarchy is preserved:
 - `dist/{platform}/core/` — org-level personas
@@ -214,11 +214,11 @@ Three-stage progression from flat files to RAG:
 
 ## Known Gaps
 
-- JetBrains output format not yet implemented
-- Managed settings group/team fragments — only `00-org.json` generated, no `10-group.json` or `20-team.json`
 - No runtime config schema validation (zod planned but not wired in)
 - `repos.json` is empty — production sync path untested with real external repos (integration tests use temp dirs)
-- Trait weight calibration text only implemented for `critical-thinking` — other traits use default weight without calibration preamble
+- Marketplace registry not yet hosted (agentboot/marketplace repo planned)
+- `agentboot optimize` LLM calls require provider configuration (resolveProvider from Phase 6)
+- `agentboot test --judge` LLM invocation deferred until provider integration
 - This repo is the build tool, not a personas hub — orgs create a separate `personas` repo that uses AgentBoot as the build tool
 
 See `docs/internal/plans/remaining-work.md` for full inventory of planned features and research needs.

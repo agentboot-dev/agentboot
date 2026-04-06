@@ -209,6 +209,37 @@ describe("buildWeightPreamble", () => {
     const result = buildWeightPreamble("critical-thinking", 1.0);
     expect(result).toContain("adversarial");
   });
+
+  // AB-157: Calibration preambles for all 6 traits
+  const newTraits = [
+    "structured-output",
+    "source-citation",
+    "audit-trail",
+    "confidence-signaling",
+    "schema-awareness",
+  ] as const;
+
+  for (const trait of newTraits) {
+    it(`returns non-empty preamble for ${trait} at LOW (0.3)`, () => {
+      const result = buildWeightPreamble(trait, 0.3);
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it(`returns non-empty preamble for ${trait} at HIGH (0.7)`, () => {
+      const result = buildWeightPreamble(trait, 0.7);
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it(`returns non-empty preamble for ${trait} at MAX (1.0)`, () => {
+      const result = buildWeightPreamble(trait, 1.0);
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it(`returns empty string for ${trait} at DEFAULT_WEIGHT (0.5)`, () => {
+      const result = buildWeightPreamble(trait, DEFAULT_WEIGHT);
+      expect(result).toBe("");
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -396,5 +427,122 @@ describe("validate detects invalid weights", () => {
     } finally {
       fs.rmSync(badDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trait weight compiled OUTPUT TEXT differences (HIGH vs OFF in prose)
+// Addresses gap: "Trait weight visible output difference — weight math tested;
+//   compiled text diff not checked" (human-in-the-loop-priority.md HIGH section)
+//
+// Existing tests verify the weight annotation COMMENT (e.g., <!-- trait: critical-
+// thinking (weight: 0.7) -->). These tests verify that the behavioral PREAMBLE TEXT
+// (the prose that changes behavior, not just the metadata comment) actually differs
+// between weight levels in the compiled skill output.
+// ---------------------------------------------------------------------------
+
+describe("trait weight compiled text differences — HIGH vs OFF preamble prose", () => {
+  let highWeightTempDir: string;
+  let offWeightTempDir: string;
+
+  beforeAll(() => {
+    highWeightTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-ct-high-"));
+    offWeightTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-ct-off-"));
+
+    // Build security-reviewer with default HIGH critical-thinking weight
+    const highConfig = path.join(highWeightTempDir, "agentboot.config.json");
+    fs.writeFileSync(highConfig, JSON.stringify({
+      org: "test-high",
+      personas: {
+        enabled: ["security-reviewer"],
+        outputFormats: ["skill", "cursor"],
+      },
+      traits: {
+        enabled: [
+          "critical-thinking", "structured-output", "source-citation",
+          "confidence-signaling", "audit-trail", "schema-awareness",
+        ],
+      },
+      instructions: { enabled: [] },
+    }));
+    run(`scripts/compile.ts --config ${highConfig}`);
+
+    // Build code-reviewer with critical-thinking explicitly set to OFF
+    const offPersonaDir = path.join(offWeightTempDir, "custom-personas", "code-reviewer");
+    fs.mkdirSync(offPersonaDir, { recursive: true });
+    fs.writeFileSync(path.join(offPersonaDir, "persona.config.json"), JSON.stringify({
+      name: "Code Reviewer",
+      description: "Test OFF weight build for preamble prose check",
+      invocation: "/review-code",
+      traits: {
+        "critical-thinking": "OFF",
+        "structured-output": "MEDIUM",
+      },
+    }));
+    fs.copyFileSync(
+      path.join(ROOT, "core", "personas", "code-reviewer", "SKILL.md"),
+      path.join(offPersonaDir, "SKILL.md")
+    );
+
+    const offConfig = path.join(offWeightTempDir, "agentboot.config.json");
+    fs.writeFileSync(offConfig, JSON.stringify({
+      org: "test-off",
+      personas: {
+        enabled: ["code-reviewer"],
+        outputFormats: ["skill"],
+        customDir: path.join(offWeightTempDir, "custom-personas"),
+      },
+      traits: {
+        enabled: [
+          "critical-thinking", "structured-output", "source-citation",
+          "confidence-signaling", "schema-awareness",
+        ],
+      },
+      instructions: { enabled: [] },
+    }));
+    run(`scripts/compile.ts --config ${offConfig}`);
+  });
+
+  afterAll(() => {
+    if (highWeightTempDir) fs.rmSync(highWeightTempDir, { recursive: true, force: true });
+    if (offWeightTempDir) fs.rmSync(offWeightTempDir, { recursive: true, force: true });
+  });
+
+  // Prove HIGH weight: compiled SKILL.md contains adversarial/thorough calibration prose
+  it("HIGH critical-thinking: skill SKILL.md contains adversarial calibration text", () => {
+    const skillPath = path.join(
+      highWeightTempDir, "dist", "skill", "core", "security-reviewer", "SKILL.md"
+    );
+    const content = fs.readFileSync(skillPath, "utf-8");
+    // Weight annotation comment is already tested in trait weight integration block.
+    // This assertion targets the PROSE preamble that directs behavior.
+    expect(content).toMatch(/adversarial|thorough scrutiny/i);
+  });
+
+  // Prove HIGH weight effect is present in Cursor .mdc (second platform check)
+  // This is the "at least 2 platforms" requirement from the manual test plan TP-06
+  it("HIGH critical-thinking: cursor .mdc output also contains calibration text", () => {
+    const mdcPath = path.join(
+      highWeightTempDir, "dist", "cursor", "core", "rules", "security-reviewer.mdc"
+    );
+    expect(fs.existsSync(mdcPath), "security-reviewer.mdc must exist in cursor output").toBe(true);
+    const content = fs.readFileSync(mdcPath, "utf-8");
+    // Cursor strips HTML comments but the preamble prose must survive
+    expect(content).toMatch(/adversarial|thorough scrutiny/i);
+  });
+
+  // Prove OFF weight: compiled SKILL.md has NO critical-thinking trait block at all
+  it("OFF critical-thinking: skill SKILL.md has no critical-thinking content", () => {
+    const skillPath = path.join(
+      offWeightTempDir, "dist", "skill", "core", "code-reviewer", "SKILL.md"
+    );
+    const content = fs.readFileSync(skillPath, "utf-8");
+    // No trait block comment should appear when weight is OFF
+    expect(content).not.toContain("<!-- trait: critical-thinking");
+    expect(content).not.toContain("<!-- /trait: critical-thinking -->");
+    // No adversarial prose should bleed into the output
+    expect(content).not.toMatch(/adversarial reviewer/i);
+    // The structured-output trait (MEDIUM) must still be present
+    expect(content).toContain("<!-- trait: structured-output -->");
   });
 });
