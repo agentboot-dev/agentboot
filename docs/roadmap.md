@@ -9,6 +9,18 @@ sidebar_position: 2
 
 **v0.9.0** is the current release. Phases 1 through 9 are complete.
 
+### Version Architecture
+
+| Version | Phase(s) | Target | Description |
+|---|---|---|---|
+| **v0.9.0** | 1–9 | Now (stealth) | Full build pipeline, 8 platforms, marketplace infra |
+| **v1.0 GA** | 10–11 | June 2026 | Knowledge layer (brain index), marketplace live, org scale |
+| **v1.x** | 12 | Aug–Oct 2026 | Org scale: ADR governance, A2A, domain layers |
+| **v2.0** | 13 | Q1 2027 | ADLC governance: agent registry, approval workflows, compliance scoring, full UI |
+| **v2.x** | 14+ | H1 2027+ | Platform/OEM: non-coding agent compilation, white-labeled hub |
+
+See `docs/internal/plans/commercialization-roadmap.md` for full business model and go-to-market strategy.
+
 ---
 
 ## Phase 1: "AgentBoot Builds Itself" -- COMPLETE
@@ -191,16 +203,48 @@ Total: 8 output platforms (skill, claude, copilot, cursor, agents, gemini, winds
 
 ---
 
-**Remaining planned:**
-- **Harness template library** -- topology-specific bundles (API service, event processor, data pipeline)
-- **Team compositions** -- persona sets with handoff protocols for multi-agent coordination
-- **Blueprint integration** -- workflows mixing deterministic nodes with agentic nodes
-- **`agentboot audit`** -- periodic consistency checks (garbage collection pattern)
-- **Knowledge layer** -- SQLite index with MCP server (Stage 2), vector/RAG (Stage 3)
-- **ADR governance** -- architectural decision records with exception lifecycle
-- **Autonomy progression** -- per-persona independence levels (Advisory to Autonomous)
-- **Abstract/binding composition** -- org defines semantic contracts, teams provide implementations
-- **Global hub registry** -- `~/.agentboot/config.json` mapping org slugs to hub paths
-- **Private prompt analytics** -- `/insights` skill for self-improvement
-- **LLM-powered semantic dedup** -- beyond Jaccard, use LLM for content similarity
-- **Import from remote repos** -- `agentboot import --url github.com/org/repo`
+---
+
+## Phase 10: "Engineer Traction" — NEXT (v0.10.0)
+
+Make the harness worth using every day. The Second Brain is the centerpiece.
+
+What's planned:
+- **Second Brain Stage 2** — SQLite knowledge index + `agentboot-brain` MCP server + `agentboot brain` CLI (index/query/add/stats). Queryable org memory at the file level.
+- **Second Brain Stage 2.5** — ADR and incident ingestion as first-class knowledge types. `agentboot add adr` / `agentboot add incident` scaffolding.
+- **`/ask` skill** — natural language queries against the Second Brain. "Why does the session middleware not use Redis directly?" → ADR surface, zero prompting.
+- **Harness template library** — `agentboot add template api-service|event-processor|data-pipeline`. Traits + gotchas + personas pre-bundled for common topologies. Ships in Core marketplace tier.
+- **Import from remote repos + interop** — `agentboot import --url github.com/org/repo`. Supports AGENTS.md repos, Google Conductor repos, Context Hub repos, SuperClaude repos.
+- **`agentboot audit`** — periodic consistency checks: orphaned traits, dead gotchas, stale ADRs, scope shadows, manifest drift.
+- **Global hub registry** — `~/.agentboot/config.json`, `agentboot connect`, `agentboot use`, `agentboot hubs`.
+
+---
+
+## Phase 11: "org scale" — (v0.11.0)
+
+Target: AI Engineer World's Fair, June 29–July 2, 2026. Come out of stealth with a live marketplace, a working Second Brain demo, and competitive positioning.
+
+What's planned:
+- **agentboot.dev/marketplace live** — hosted registry; `agentboot publish` functional; Core/Verified/Community tiers; web catalog.
+- **Community launch** — Dev.to, Hacker News Show HN, AI Engineer World's Fair, Latent Space Discord. Messaging: "context engineering, not prompt engineering."
+- **SuperClaude cross-listing** — shared portable trait format standard; cross-list in both marketplaces; submit to AAIF/AGENTS.md working group.
+- **MCP marketplace listing** — list `agentboot-brain` and `agentboot` MCP servers on mcp.so, pulsemcp, Smithery.
+- **Security hardening** — CVE audit against CVE-2025-59536/CVE-2026-21852/DXT patterns; security advisory; new `agentboot validate` check for dangerous hook patterns.
+- **OpenCode / Cline research** — integration viability assessment for 9th/10th output platforms.
+- **Competitive positioning** — internal docs: Google Conductor, Context Hub, SuperClaude, Copilot Cowork.
+
+---
+
+## Phase 12: "Org Scale" — (v0.12.0)
+
+Gated on engineer adoption landing. Goals: compliance differentiators, governance lifecycle, multi-agent enterprise architecture.
+
+What's planned:
+- **ADR governance** -- exception lifecycle, expired ADR validation errors, `agentboot adr` CLI.
+- **`/insights` skill + org dashboard** -- personal prompt pattern extraction; anonymized org metrics (rephrase rates, false positives, cost by team). Raw prompts never leave the machine.
+- **Domain layers: healthcare/fintech/govtech** -- complete compliance packages (traits + personas + gotchas + instructions); Verified marketplace tier.
+- **A2A protocol support** -- Agent-to-Agent server/client; personas as A2A-callable services; complements MCP.
+- **Autonomy progression** -- Advisory → Auto-approve → Autonomous, with telemetry-gated promotion.
+- **Abstract/binding composition** -- org semantic contracts, team implementations, validation check 9.
+- **Second Brain Stage 3** -- sqlite-vec semantic retrieval for 500+ knowledge item hubs.
+- **OpenCode + Cline output platforms** -- if Phase 11 research confirms viability.

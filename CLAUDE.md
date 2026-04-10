@@ -151,7 +151,7 @@ See `docs/concepts.md` for full design rationale.
 Three-stage progression from flat files to RAG:
 - **Stage 1 (Flat files):** Current default. Markdown gotchas/traits with path scoping. Works for 5-50 items.
 - **Stage 2 (Structured store):** SQLite index generated from frontmatter. MCP server exposes tag/category queries. Handles 50-500 items. Zero new infrastructure.
-- **Stage 3 (Vector/RAG):** Embeddings + semantic retrieval via sqlite-vss. Personas find knowledge by relevance, not keywords. "This code is similar to an incident last year." Handles 500+ items.
+- **Stage 3 (Vector/RAG):** Embeddings + semantic retrieval via sqlite-vec (replaces deprecated sqlite-vss; same author Alex Garcia). Personas find knowledge by relevance, not keywords. "This code is similar to an incident last year." Handles 500+ items.
 - MCP interface stays stable across all three stages — personas don't change when the backing store upgrades.
 - Killer use case: context-aware review that brings organizational memory (incidents, ADRs, patterns) to every PR.
 - Most orgs stay at Stage 1 forever. Stage 2 is the sweet spot for mature orgs. Stage 3 is for compliance-heavy industries.
