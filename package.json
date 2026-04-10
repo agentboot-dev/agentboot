@@ -1,6 +1,6 @@
 {
   "name": "agentboot",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Bootstrap your agentic development teams. Convention over configuration for AI agent governance.",
   "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",
@@ -33,6 +33,14 @@
   "engines": {
     "node": ">=22"
   },
+  "files": [
+    "bin/",
+    "scripts/",
+    "core/",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
   "type": "module",
   "bin": {
     "agentboot": "./bin/agentboot.js"
