@@ -314,10 +314,12 @@ describe("AB-33.2: install command", () => {
     expect(output).toContain("--hub-path");
   });
 
-  it("detects existing agentboot.config.json and redirects to doctor", () => {
-    // Run from the project root which has agentboot.config.json
+  it("detects existing agentboot.config.json and enters reconfigure mode", () => {
+    // Run from the project root which has agentboot.config.json.
+    // The reconfigure flow is interactive (checkbox prompt), so --non-interactive
+    // exits before prompting — confirm it at least reaches the hub detection step.
     const output = run("install --hub");
-    expect(output).toContain("already exists");
+    expect(output).toContain("Personas repo found");
   });
 
   it("setup command shows deprecation notice", () => {

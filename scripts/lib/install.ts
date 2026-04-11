@@ -1367,6 +1367,233 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
 }
 
 // ---------------------------------------------------------------------------
+// Path 1 (Reconfigure): Hub exists — run skipped steps
+// ---------------------------------------------------------------------------
+
+async function path1Reconfigure(hubDir: string, opts: InstallOptions): Promise<void> {
+  // Read existing config for org context
+  const configPath = path.join(hubDir, "agentboot.config.json");
+  let orgSlug = "unknown";
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    orgSlug = config.org ?? orgSlug;
+  } catch { /* leave defaults */ }
+
+  console.log(chalk.bold(`\n  Personas repo found at ${hubDir}\n`));
+  console.log(chalk.gray(`  Org: ${orgSlug}\n`));
+
+  const steps = await checkbox({
+    message: "What would you like to do?",
+    choices: [
+      { name: "Add / search for repos to register in repos.json", value: "repos", checked: true },
+      { name: "Scan nearby repos and import AI agent artifacts", value: "import", checked: true },
+    ],
+  });
+
+  if (steps.length === 0) {
+    console.log(chalk.gray("\n  Nothing selected — no changes made.\n"));
+    return;
+  }
+
+  let importedAny = false;
+  let reposAdded = false;
+  let buildSucceeded = fs.existsSync(path.join(hubDir, "dist"));
+
+  // ── Import step ────────────────────────────────────────────────────────────
+
+  if (steps.includes("import")) {
+    const parentOfHub = path.dirname(hubDir);
+
+    const claudeReady = (() => {
+      try {
+        const v = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        if (v.status !== 0) return false;
+        const a = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        return a.status === 0;
+      } catch { return false; }
+    })();
+
+    if (!claudeReady) {
+      console.log(chalk.gray(
+        "\n  Import uses your Claude account to classify files. You'll need to\n" +
+        "  be logged in.\n"
+      ));
+      const shouldLogin = await confirm({ message: "Log in to Claude now?", default: true });
+      if (shouldLogin) spawnSync("claude", ["auth", "login"], { stdio: "inherit" });
+    }
+
+    const canClassify = (() => {
+      try {
+        return spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).status === 0;
+      } catch { return false; }
+    })();
+
+    const shouldScan = await confirm({
+      message: `Scan subdirectories of ${parentOfHub} for existing AI agent content to import?`,
+      default: true,
+    });
+
+    if (shouldScan) {
+      const { scanParentForContent, printScanManifest, classifyScannedFiles, printClassificationResults, finalizeImport } =
+        await import("./import.js");
+
+      const manifest = scanParentForContent(parentOfHub, [hubDir]);
+      printScanManifest(manifest);
+
+      if (manifest.files.length === 0) {
+        console.log(chalk.gray("  No AI agent content found nearby.\n"));
+      } else if (!canClassify) {
+        console.log(chalk.gray(
+          "  Classification requires Claude. Run `agentboot import` later to\n" +
+          "  classify and import this content.\n"
+        ));
+      } else {
+        console.log(chalk.gray(
+          "  AgentBoot will use your Claude account to classify each file into\n" +
+          "  the right category (trait, gotcha, instruction, etc.). This uses\n" +
+          "  one LLM call per file — typically a few cents total.\n\n" +
+          "  No existing files will be modified. New files will be created in\n" +
+          "  your personas repo at " + hubDir + ".\n"
+        ));
+
+        const continueImport = await confirm({ message: "Classify and import now?", default: true });
+
+        if (continueImport) {
+          const { classifications, trustedSources } = classifyScannedFiles(manifest, hubDir);
+
+          if (classifications.length > 0) {
+            printClassificationResults(classifications);
+            const applyNow = await confirm({ message: "Import these artifacts into your personas repo?", default: true });
+            const result = finalizeImport(classifications, trustedSources, hubDir, applyNow);
+            if (applyNow && result.created > 0) importedAny = true;
+          } else {
+            console.log(chalk.gray("  No content classified.\n"));
+          }
+        } else {
+          console.log(chalk.gray(
+            "  You can import later by running:\n\n" +
+            `    cd ${hubDir}\n` +
+            `    agentboot import --path ${parentOfHub}\n`
+          ));
+        }
+      }
+    }
+
+    if (importedAny) {
+      console.log(chalk.cyan("\n  Rebuilding with imported content..."));
+      buildSucceeded = runBuild(hubDir);
+    }
+  }
+
+  // ── Repo registration step ─────────────────────────────────────────────────
+
+  if (steps.includes("repos")) {
+    console.log(chalk.bold("\n  Register target repos\n"));
+    console.log(chalk.gray(
+      "  A target repo is any codebase where you want AgentBoot personas deployed.\n" +
+      "  It can be anywhere on your filesystem.\n"
+    ));
+
+    // Scan siblings for same-org repos to offer in bulk
+    const parentDir = path.dirname(hubDir);
+    const hubGit = getGitOrgAndRepo(hubDir);
+    const existingRepos: Array<{ path: string; label?: string }> = (() => {
+      try { return JSON.parse(fs.readFileSync(path.join(hubDir, "repos.json"), "utf-8")); }
+      catch { return []; }
+    })();
+    const alreadyRegistered = new Set(existingRepos.map(r => r.path));
+
+    // Surface unregistered same-org siblings
+    try {
+      const siblingEntries = fs.readdirSync(parentDir);
+      const candidates: Array<{ dirPath: string; label: string }> = [];
+
+      for (const entry of siblingEntries) {
+        const sibPath = path.join(parentDir, entry);
+        if (sibPath === hubDir) continue;
+        if (alreadyRegistered.has(sibPath)) continue;
+        try {
+          if (!fs.statSync(sibPath).isDirectory()) continue;
+          if (!fs.existsSync(path.join(sibPath, ".git"))) continue;
+        } catch { continue; }
+
+        const sibGit = getGitOrgAndRepo(sibPath);
+        if (hubGit && sibGit && sibGit.org === hubGit.org) {
+          candidates.push({ dirPath: sibPath, label: `${sibGit.org}/${sibGit.repo}` });
+        } else if (!hubGit && sibGit) {
+          candidates.push({ dirPath: sibPath, label: `${sibGit.org}/${sibGit.repo}` });
+        }
+      }
+
+      if (candidates.length > 0) {
+        console.log(chalk.gray(`  Found ${candidates.length} nearby repo(s) not yet registered:\n`));
+        for (const r of candidates) {
+          const shouldRegister = await confirm({ message: `Register ${r.label}?`, default: true });
+          if (shouldRegister) {
+            if (addToReposJson(hubDir, r.dirPath, r.label)) {
+              console.log(chalk.green(`    Added ${r.label} to repos.json.`));
+              reposAdded = true;
+            }
+          }
+        }
+      } else {
+        console.log(chalk.gray("  No unregistered same-org repos found nearby.\n"));
+      }
+    } catch { /* permission errors */ }
+
+    // Always offer manual entry loop
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const addMore = await confirm({ message: "Register another repo manually?", default: false });
+      if (!addMore) break;
+
+      const morePath = await promptForPath("Path to repo:");
+      const resolvedMore = path.resolve(morePath);
+      if (!fs.existsSync(resolvedMore)) {
+        console.log(chalk.yellow(`  Path does not exist: ${resolvedMore}`));
+        continue;
+      }
+      const moreGit = getGitOrgAndRepo(resolvedMore);
+      const moreLabel = moreGit ? `${moreGit.org}/${moreGit.repo}` : path.basename(resolvedMore);
+      if (addToReposJson(hubDir, resolvedMore, moreLabel)) {
+        console.log(chalk.green(`    Added ${moreLabel} to repos.json.`));
+        reposAdded = true;
+      } else {
+        console.log(chalk.yellow(`    ${moreLabel} is already registered.`));
+      }
+    }
+  }
+
+  // ── Build + sync ───────────────────────────────────────────────────────────
+
+  if ((importedAny || reposAdded) && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+    console.log(chalk.gray(
+      "\n  Sync deploys the compiled personas to registered repos' .claude/ directories.\n" +
+      "  This writes files locally — it does not commit or push.\n"
+    ));
+    const shouldSync = await confirm({ message: "Deploy personas now?", default: true });
+    if (shouldSync) {
+      console.log(chalk.cyan("\n  Syncing..."));
+      if (runSync(hubDir)) {
+        console.log(chalk.green("\n  Personas deployed."));
+      }
+    }
+  } else if (importedAny || reposAdded) {
+    console.log(chalk.gray(
+      `\n  To deploy, run:\n\n` +
+      `    cd ${hubDir}\n` +
+      `    agentboot build && agentboot sync\n`
+    ));
+  }
+
+  if (!importedAny && !reposAdded) {
+    console.log(chalk.gray("\n  No changes made.\n"));
+  } else {
+    console.log(chalk.green("\n  Done.\n"));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Path 2: Connect this repo to an existing hub (Developer)
 // ---------------------------------------------------------------------------
 
@@ -1672,11 +1899,10 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
 
   const detection = detectCwd(cwd);
 
-  // If already a hub, redirect to doctor
+  // If already a hub, offer reconfigure instead of exiting
   if (detection.hasAgentbootConfig && !opts.connect) {
-    console.log(chalk.yellow("  agentboot.config.json already exists in this directory."));
-    console.log(chalk.gray("  Run `agentboot doctor` to check your configuration.\n"));
-    throw new AgentBootError(0);
+    await path1Reconfigure(cwd, opts);
+    return;
   }
 
   // If already managed by AgentBoot, note it
