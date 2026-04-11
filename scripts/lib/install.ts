@@ -991,101 +991,172 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   // working baseline. If imports are found, we'll rebuild with them included.
   let buildSucceeded = runBuild(hubDir);
 
-  // Step 1.6: Scan and import existing AI agent content
+  // Step 1.5: Register target repos
   //
-  // Scan all subdirectories of the parent folder at once for AI agent content.
-  // This uses the shared import API from import.ts so the install wizard and
-  // the `agentboot import` CLI use the same code path.
+  // Repos are registered before importing so the import scan is scoped to
+  // only the repos the user has opted in to — no surprise scanning of
+  // unrelated directories.
 
+  const registeredRepoPaths: string[] = [];
   const parentOfHub = path.dirname(hubDir);
-  let importedAny = false;
 
-  // Check if Claude is available and authenticated for LLM classification
-  const claudeReady = (() => {
-    try {
-      const versionCheck = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-      if (versionCheck.status !== 0) return false;
-      const authCheck = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-      return authCheck.status === 0;
-    } catch { return false; }
-  })();
+  console.log(chalk.bold("\n  Register target repos\n"));
+  console.log(chalk.gray(
+    "  A target repo is any codebase where you want AgentBoot personas deployed.\n" +
+    "  Registered repos receive compiled personas when you run `agentboot sync`.\n"
+  ));
 
-  if (!claudeReady) {
-    // Try to log in
-    console.log(chalk.gray(
-      "\n  Import scans nearby repos for AI agent content and uses Claude to\n" +
-      "  classify it into the right categories. You'll need to be logged in.\n"
-    ));
-    const shouldLogin = await confirm({
-      message: "Log in to Claude now?",
-      default: true,
+  // Scan all git repos that are siblings of the hub and offer each one Y/n.
+  try {
+    const siblings = fs.readdirSync(parentOfHub, { withFileTypes: true });
+    const gitSiblings = siblings
+      .filter(e => e.isDirectory() && !e.name.startsWith("."))
+      .map(e => path.join(parentOfHub, e.name))
+      .filter(p => p !== hubDir && fs.existsSync(path.join(p, ".git")));
+
+    if (gitSiblings.length > 0) {
+      console.log(chalk.gray(`  Found ${gitSiblings.length} repo(s) next to your personas repo:\n`));
+      for (const sibPath of gitSiblings) {
+        const sibGit = getGitOrgAndRepo(sibPath);
+        const label = sibGit ? `${sibGit.org}/${sibGit.repo}` : path.basename(sibPath);
+        const shouldRegister = await confirm({ message: `Register ${label}?`, default: true });
+        if (!shouldRegister) continue;
+
+        // If the first registered repo has a different GitHub org than the slug
+        // the user typed, offer to update the config now.
+        if (registeredRepoPaths.length === 0 && sibGit && sibGit.org !== orgSlug) {
+          const useGitOrg = await confirm({
+            message: `Repo's GitHub org is "${sibGit.org}" but config has "${orgSlug}". Update to "${sibGit.org}"?`,
+            default: true,
+          });
+          if (useGitOrg) {
+            orgSlug = sibGit.org;
+            const updatedDisplayName = orgSlug.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+            const configPath = path.join(hubDir, "agentboot.config.json");
+            try {
+              const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+              config.org = orgSlug;
+              config.orgDisplayName = updatedDisplayName;
+              fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+              console.log(chalk.green(`  Updated agentboot.config.json: org → "${orgSlug}"`));
+            } catch {
+              console.log(chalk.yellow("  Could not update agentboot.config.json — edit it manually."));
+            }
+          }
+        }
+
+        if (addToReposJson(hubDir, sibPath, label)) {
+          console.log(chalk.green(`    Added ${label} to repos.json.`));
+          registeredRepoPaths.push(sibPath);
+          if (fs.existsSync(path.join(sibPath, ".claude"))) {
+            console.log(chalk.gray(
+              `    This repo has existing .claude/ content. AgentBoot will archive it\n` +
+              `    to .claude/.agentboot-archive/ on first sync.\n`
+            ));
+          }
+        }
+      }
+    } else {
+      console.log(chalk.gray("  No git repos found next to the personas repo.\n"));
+    }
+  } catch { /* permission errors */ }
+
+  // Manual path entry loop — always offered so the user can add repos from
+  // anywhere on the filesystem, not just siblings.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const addMore = await confirm({
+      message: "Register a repo by path?",
+      default: registeredRepoPaths.length === 0,
     });
-    if (shouldLogin) {
-      spawnSync("claude", ["auth", "login"], { stdio: "inherit" });
+    if (!addMore) break;
+
+    const morePath = await promptForPath("Path to repo:");
+    const resolvedMore = path.resolve(morePath);
+    if (!fs.existsSync(resolvedMore)) {
+      console.log(chalk.yellow(`  Path does not exist: ${resolvedMore}`));
+      continue;
+    }
+    const moreGit = getGitOrgAndRepo(resolvedMore);
+    const moreLabel = moreGit ? `${moreGit.org}/${moreGit.repo}` : path.basename(resolvedMore);
+    if (addToReposJson(hubDir, resolvedMore, moreLabel)) {
+      console.log(chalk.green(`    Added ${moreLabel} to repos.json.`));
+      registeredRepoPaths.push(resolvedMore);
+    } else {
+      console.log(chalk.yellow(`    ${moreLabel} is already registered.`));
     }
   }
 
-  // Re-check after possible login
-  const canClassify = (() => {
-    try {
-      const r = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-      return r.status === 0;
-    } catch { return false; }
-  })();
+  // Step 1.6: Import AI agent content from registered repos
+  //
+  // Scoped to registered repos only — the user has already opted in to each
+  // one. Uses scanRepoDirs() instead of scanParentForContent() so unrelated
+  // sibling directories are never touched.
 
-  // Step 1 of import: Scan — always do this, it's free and fast
-  const shouldScan = await confirm({
-    message: `Scan subdirectories of ${parentOfHub} for existing AI agent content to import?`,
-    default: true,
-  });
+  let importedAny = false;
 
-  if (shouldScan) {
-    const { scanParentForContent, printScanManifest, classifyScannedFiles, printClassificationResults, finalizeImport } =
-      await import("./import.js");
+  if (registeredRepoPaths.length > 0) {
+    const claudeReady = (() => {
+      try {
+        const v = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        if (v.status !== 0) return false;
+        return spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).status === 0;
+      } catch { return false; }
+    })();
 
-    const manifest = scanParentForContent(parentOfHub, [hubDir]);
-    printScanManifest(manifest);
+    if (!claudeReady) {
+      console.log(chalk.gray(
+        "\n  Import uses your Claude account to classify agent content. You'll need\n" +
+        "  to be logged in.\n"
+      ));
+      const shouldLogin = await confirm({ message: "Log in to Claude now?", default: true });
+      if (shouldLogin) spawnSync("claude", ["auth", "login"], { stdio: "inherit" });
+    }
 
-    if (manifest.files.length > 0) {
-      if (!canClassify) {
+    const canClassify = (() => {
+      try {
+        return spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).status === 0;
+      } catch { return false; }
+    })();
+
+    const shouldScan = await confirm({
+      message: `Scan ${registeredRepoPaths.length} registered repo(s) for existing AI agent content to import?`,
+      default: true,
+    });
+
+    if (shouldScan) {
+      const { scanRepoDirs, printScanManifest, classifyScannedFiles, printClassificationResults, finalizeImport } =
+        await import("./import.js");
+
+      const manifest = scanRepoDirs(registeredRepoPaths);
+      printScanManifest(manifest);
+
+      if (manifest.files.length === 0) {
+        console.log(chalk.gray("  No AI agent content found in registered repos.\n"));
+      } else if (!canClassify) {
         console.log(chalk.gray(
           "  Classification requires Claude. Run `agentboot import` later to\n" +
           "  classify and import this content.\n"
         ));
       } else {
-        // Educate the user on what happens next
         console.log(chalk.gray(
           "  AgentBoot will use your Claude account to classify each file into\n" +
           "  the right category (trait, gotcha, instruction, etc.). This uses\n" +
           "  one LLM call per file — typically a few cents total.\n\n" +
           "  No existing files will be modified. New files will be created in\n" +
-          "  your personas repo at " + hubDir + ".\n"
+          `  your personas repo at ${hubDir}.\n`
         ));
 
-        const continueImport = await confirm({
-          message: "Classify and import now?",
-          default: true,
-        });
+        const continueImport = await confirm({ message: "Classify and import now?", default: true });
 
         if (continueImport) {
-          // Step 2: Classify via LLM
           const { classifications, trustedSources } = classifyScannedFiles(manifest, hubDir);
 
           if (classifications.length > 0) {
-            // Show summary and ask Y/n
             printClassificationResults(classifications);
-
-            const applyNow = await confirm({
-              message: "Import these artifacts into your personas repo?",
-              default: true,
-            });
-
-            // Step 3: Apply or save plan
+            const applyNow = await confirm({ message: "Import these artifacts into your personas repo?", default: true });
             const result = finalizeImport(classifications, trustedSources, hubDir, applyNow);
-
-            if (applyNow && result.created > 0) {
-              importedAny = true;
-            }
+            if (applyNow && result.created > 0) importedAny = true;
           } else {
             console.log(chalk.gray("  No content classified.\n"));
           }
@@ -1093,11 +1164,16 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
           console.log(chalk.gray(
             "  You can import later by running:\n\n" +
             `    cd ${hubDir}\n` +
-            `    agentboot import --path ${parentOfHub}\n`
+            `    agentboot import --path <repo>\n`
           ));
         }
       }
     }
+  } else {
+    console.log(chalk.gray(
+      "  No repos registered — skipping import scan.\n" +
+      "  Run `agentboot import --path <dir>` later to import agent content.\n"
+    ));
   }
 
   // Rebuild if imports added new content
@@ -1106,204 +1182,41 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     buildSucceeded = runBuild(hubDir);
   }
 
-  // Step 1.6: Register first repo (optional)
-  //
-  // A "target repo" is any codebase where you want AI agent governance.
-  // Registering it adds it to repos.json — the list of repos that receive
-  // compiled personas when you run `agentboot sync`.
-  //
-  // The personas repo and target repos can be anywhere on your filesystem.
-  // They don't need to be siblings or in the same parent directory.
-
-  let registeredRepo = false;
-  let registeredRepoName = "";
-  let registeredRepoPath = "";
-
-  console.log(chalk.bold("\n  Register a target repo\n"));
-  console.log(chalk.gray(
-    "  A target repo is any codebase where you want AgentBoot personas deployed.\n" +
-    "  It can be anywhere on your filesystem — it does not need to be next to\n" +
-    "  this personas repo.\n"
-  ));
-
-  const registerRepo = await confirm({
-    message: "Register your first target repo now?",
-    default: true,
-  });
-
-  if (registerRepo) {
-    const repoPathInput = await promptForPath(
-      "Path to target repo (absolute or relative):",
-      detection.looksLikeCodeRepo ? cwd : undefined,
-    );
-    const repoPath = path.resolve(repoPathInput);
-
-    if (!fs.existsSync(repoPath)) {
-      console.log(chalk.yellow(`  Path does not exist: ${repoPath}`));
-    } else {
-      // Detect repo name from git
-      const gitInfo = getGitOrgAndRepo(repoPath);
-      const repoName = gitInfo ? `${gitInfo.org}/${gitInfo.repo}` : path.basename(repoPath);
-
-      // Confirm org slug — the git remote is the authoritative signal.
-      // If it differs from our earlier guess, offer to update.
-      if (gitInfo && gitInfo.org !== orgSlug) {
-        const useGitOrg = await confirm({
-          message: `Your repo's GitHub org is "${gitInfo.org}" but config has "${orgSlug}". Update to "${gitInfo.org}"?`,
-          default: true,
-        });
-        if (useGitOrg) {
-          orgSlug = gitInfo.org;
-          const updatedDisplayName = orgSlug
-            .split(/[-_]/)
-            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-            .join(" ");
-          // Update the config file in place
-          const configPath = path.join(hubDir, "agentboot.config.json");
-          try {
-            const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-            config.org = orgSlug;
-            config.orgDisplayName = updatedDisplayName;
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
-            console.log(chalk.green(`  Updated agentboot.config.json: org → "${orgSlug}"`));
-          } catch {
-            console.log(chalk.yellow(`  Could not update agentboot.config.json — edit it manually.`));
-          }
+  // Offer to sync now that repos are registered and build is current
+  const firstRepoPath = registeredRepoPaths[0] ?? "";
+  if (registeredRepoPaths.length > 0 && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+    console.log(chalk.gray(
+      "\n  Sync deploys the compiled personas to registered repos' .claude/ directories.\n" +
+      "  This writes files locally — it does not commit or push.\n"
+    ));
+    const shouldSync = await confirm({ message: "Deploy personas now?", default: true });
+    if (shouldSync) {
+      console.log(chalk.cyan("\n  Syncing..."));
+      if (runSync(hubDir)) {
+        console.log(chalk.green("\n  Personas deployed."));
+        if (firstRepoPath) {
+          console.log(chalk.gray(
+            "\n  To activate them, commit the .claude/ directory in each repo:\n\n" +
+            `    cd ${firstRepoPath}\n` +
+            `    git add .claude/\n` +
+            `    git commit -m "chore: deploy AgentBoot personas"\n\n` +
+            `  Then open Claude Code in that repo and try: /review-code`
+          ));
         }
-      }
-
-      if (addToReposJson(hubDir, repoPath, repoName)) {
-        console.log(chalk.green(`\n  Added ${repoName} to repos.json.`));
-        registeredRepo = true;
-        registeredRepoName = repoName;
-        registeredRepoPath = repoPath;
-      } else {
-        console.log(chalk.yellow(`  ${repoName} is already registered in repos.json.`));
-      }
-
-      // Check for existing .claude/ content
-      if (fs.existsSync(path.join(repoPath, ".claude"))) {
-        console.log(chalk.gray(
-          `\n  This repo has existing .claude/ content. On first sync, AgentBoot\n` +
-          `  will archive it to .claude/.agentboot-archive/ before deploying.\n` +
-          `  You can restore the original content anytime with: agentboot uninstall`
-        ));
-      }
-
-      // Same-org repo registration: scan siblings for repos with matching org
-      if (registeredRepo && gitInfo) {
-        const parentDir = path.dirname(hubDir !== cwd ? cwd : hubDir);
-        try {
-          const siblingEntries = fs.readdirSync(parentDir);
-          const sameOrgRepos: Array<{ dirPath: string; label: string }> = [];
-
-          for (const entry of siblingEntries) {
-            const sibPath = path.join(parentDir, entry);
-            if (sibPath === hubDir || sibPath === repoPath) continue;
-            try {
-              if (!fs.statSync(sibPath).isDirectory()) continue;
-              if (!fs.existsSync(path.join(sibPath, ".git"))) continue;
-            } catch { continue; }
-
-            const sibGit = getGitOrgAndRepo(sibPath);
-            if (sibGit && sibGit.org === gitInfo.org) {
-              sameOrgRepos.push({
-                dirPath: sibPath,
-                label: `${sibGit.org}/${sibGit.repo}`,
-              });
-            }
-          }
-
-          if (sameOrgRepos.length > 0) {
-            console.log(chalk.gray(`\n  Found ${sameOrgRepos.length} other ${gitInfo.org} repo(s) nearby:\n`));
-            for (const r of sameOrgRepos) {
-              // addToReposJson handles dedup — skip silently if already registered
-              const shouldRegister = await confirm({
-                message: `Register ${r.label}?`,
-                default: true,
-              });
-              if (shouldRegister) {
-                if (addToReposJson(hubDir, r.dirPath, r.label)) {
-                  console.log(chalk.green(`    Added ${r.label} to repos.json.`));
-                } else {
-                  console.log(chalk.gray(`    ${r.label} is already registered.`));
-                }
-              }
-            }
-          }
-        } catch { /* permission errors scanning parent */ }
-
-        // Offer to register additional repos manually
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const registerMore = await confirm({
-            message: "Register another repo?",
-            default: false,
-          });
-          if (!registerMore) break;
-
-          const morePath = await promptForPath("Path to repo:");
-          let resolvedMore = path.resolve(morePath);
-          try { resolvedMore = fs.realpathSync(resolvedMore); } catch { /* doesn't exist */ }
-          if (!fs.existsSync(resolvedMore)) {
-            console.log(chalk.yellow(`  Path does not exist: ${resolvedMore}`));
-            continue;
-          }
-          const moreGit = getGitOrgAndRepo(resolvedMore);
-          const moreLabel = moreGit ? `${moreGit.org}/${moreGit.repo}` : path.basename(resolvedMore);
-          if (addToReposJson(hubDir, resolvedMore, moreLabel)) {
-            console.log(chalk.green(`    Added ${moreLabel} to repos.json.`));
-          } else {
-            console.log(chalk.yellow(`    ${moreLabel} is already registered.`));
-          }
-        }
-      }
-
-      // Offer to sync — only if build succeeded (dist/ exists)
-      if (!opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
-        console.log(chalk.gray(
-          `\n  Sync deploys the compiled personas to registered repos' .claude/ directories.\n` +
-          `  This writes files locally — it does not commit or push. You review\n` +
-          `  the output before committing.`
-        ));
-
-        const shouldSync = await confirm({
-          message: `Deploy personas now?`,
-          default: true,
-        });
-
-        if (shouldSync) {
-          console.log(chalk.cyan("\n  Syncing..."));
-          if (runSync(hubDir)) {
-            console.log(chalk.green(`\n  Personas deployed.`));
-            console.log(chalk.gray(
-              `\n  To activate them, commit the .claude/ directory in each repo:\n\n` +
-              `    cd ${registeredRepoPath}\n` +
-              `    git add .claude/\n` +
-              `    git commit -m "chore: deploy AgentBoot personas"\n\n` +
-              `  Then open Claude Code in that repo and try: /review-code`
-            ));
-          }
-        }
-      } else if (!buildSucceeded) {
-        console.log(chalk.gray(
-          `\n  Repo registered. To deploy personas, build first:\n\n` +
-          `    cd ${hubDir}\n` +
-          `    agentboot build && agentboot sync`
-        ));
       }
     }
+  } else if (registeredRepoPaths.length > 0 && !buildSucceeded) {
+    console.log(chalk.gray(
+      `\n  Repos registered. To deploy personas, build first:\n\n` +
+      `    cd ${hubDir}\n` +
+      `    agentboot build && agentboot sync`
+    ));
   }
 
   // Step 1.7: Summary and next steps
-  //
-  // Context-aware: the summary reflects what actually happened during install,
-  // so the user knows exactly where they are and what to do next.
-
   console.log(chalk.bold("\n  ─────────────────────────────────────────────"));
   console.log(chalk.bold(`\n  ${chalk.green("✓")} AgentBoot setup complete\n`));
 
-  // What was created
   console.log(chalk.cyan("  What was created:\n"));
   console.log(chalk.gray(`    Personas repo:    ${hubDir}`));
   console.log(chalk.gray(`    Config:           ${hubDir}/agentboot.config.json`));
@@ -1311,20 +1224,16 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   if (buildSucceeded) {
     console.log(chalk.gray(`    Compiled output:  ${hubDir}/dist/`));
   }
-  if (registeredRepo) {
-    console.log(chalk.gray(`    Target repo:      ${registeredRepoPath} (${registeredRepoName})`));
+  if (registeredRepoPaths.length > 0) {
+    console.log(chalk.gray(`    Target repos:     ${registeredRepoPaths.length} registered in repos.json`));
   }
 
-  // Remote status
   const hubHasRemote = getGitOrgAndRepo(hubDir) !== null;
-
   if (!hubHasRemote) {
     console.log(chalk.gray("    Remote:           none (local only — fine for evaluation)"));
   }
 
-  // Context-aware next steps
   console.log(chalk.cyan("\n  What to do next:\n"));
-
   let step = 1;
 
   if (!buildSucceeded) {
@@ -1332,11 +1241,11 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     step++;
   }
 
-  if (!registeredRepo) {
+  if (registeredRepoPaths.length === 0) {
     console.log(chalk.gray(`    ${step}. Register a repo:   agentboot install (from your code repo)`));
     console.log(chalk.gray(`       Or edit:            ${hubDir}/repos.json`));
     step++;
-  } else if (buildSucceeded && !fs.existsSync(path.join(registeredRepoPath, ".claude", ".agentboot-manifest.json"))) {
+  } else if (buildSucceeded && firstRepoPath && !fs.existsSync(path.join(firstRepoPath, ".claude", ".agentboot-manifest.json"))) {
     console.log(chalk.gray(`    ${step}. Deploy personas:   cd ${hubDir} && agentboot sync`));
     step++;
   }
@@ -1345,7 +1254,6 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   step++;
   console.log(chalk.gray(`    ${step}. Customize:         Edit personas in ${hubDir}/core/personas/`));
   step++;
-
   console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
   step++;
 
@@ -1354,7 +1262,6 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     step++;
   }
 
-  // Governance — brief, not a wall
   console.log(chalk.cyan("\n  Governance tips:\n"));
   console.log(chalk.gray("    - Enable branch protection on main (persona changes deserve review)"));
   console.log(chalk.gray("    - Add `agentboot validate --strict` to CI"));
