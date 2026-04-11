@@ -224,6 +224,7 @@ What's planned:
   - *Interaction model*: clarify ambiguity first, then present a concrete plan, then execute with `agentboot` CLI calls. Yolo mode (skip confirm step) planned as a configurable flag in a later release.
   - *Scope*: `/ab` teaches scope vocabulary (org / group / team / repo / path) through repeated clarification questions rather than requiring the user to know it upfront. Users learn the model by being asked, not by reading docs.
   - *Examples*: `/ab add a rule for the team that requires structured logging`, `/ab what traits does the code-reviewer persona use?`, `/ab show me what's registered`, `/ab create a persona for data engineers at the group level`.
+  - *Architecture — orchestrator, not monolith*: `ab.md` is a thin orchestrator that classifies intent and handles clarification. It dispatches to specialist sub-agents in `core/skills/ab/` that carry only the context relevant to that operation: `ab/author.md` (trait/gotcha/persona/instruction authoring), `ab/diagnose.md` (doctor, validate, audit), `ab/query.md` (read hub state via MCP), `ab/manage.md` (sync, build, import). Sub-agents receive a clean context fork — the parent passes only what they need. This keeps `/ab`'s per-invocation context cost flat regardless of how many specialists exist. Adding a capability means adding a specialist file, not growing `ab.md`. The MCP server call happens in the orchestrator before dispatch, so sub-agents receive live hub state as input rather than needing to know how to fetch it.
 
 ---
 
