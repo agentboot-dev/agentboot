@@ -217,6 +217,10 @@ What's planned:
 - **Import from remote repos + interop** — `agentboot import --url github.com/org/repo`. Supports AGENTS.md repos, Google Conductor repos, Context Hub repos, SuperClaude repos.
 - **`agentboot audit`** — periodic consistency checks: orphaned traits, dead gotchas, stale ADRs, scope shadows, manifest drift.
 - **Global hub registry** — `~/.agentboot/config.json`, `agentboot connect`, `agentboot use`, `agentboot hubs`.
+- **Agentboot authoring instruction** — `core/instructions/agentboot-authoring.instructions.md` compiled into every hub's `.claude/rules/`. Teaches Claude the trait format, weight semantics, validation rules, and anti-patterns so free-form assistance produces artifacts that pass `agentboot validate --strict` without correction.
+- **Authoring skills** — `/add-trait`, `/add-gotcha`, `/add-persona` slash commands in `core/skills/`. Each runs `agentboot add` as a subprocess, reads the scaffolded file, and fills it in with real content from the developer's description. Compiled into the hub's own `.claude/agents/`.
+- **MCP server wired into hub** — add `agentboot mcp-server` entry to the hub's compiled `.mcp.json`. Enables Claude to call `get_repos`, `get_persona_config`, `get_build_status` without manual file reads. Sets up the Second Brain query path when Stage 2 lands.
+- **`/agentboot` meta-skill** — hub status and help in a single slash command: registered repos, last build result, persona list, open validate warnings. Replaces "run the CLI and paste the output" with a native Claude Code command.
 
 ---
 
