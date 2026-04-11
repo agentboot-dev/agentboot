@@ -1147,6 +1147,39 @@ action is needed. No silent state changes.
 
 ---
 
+## Claude as the UX layer
+
+AgentBoot's CLI is the build tool for architects. Claude is the interface for
+everyone else. The design principle that follows from this:
+
+**Move UX into Claude wherever possible. Teach through clarification, not docs.**
+
+Instead of requiring users to learn CLI flags, subcommands, and taxonomy upfront,
+AgentBoot skills ask clarifying questions that teach the model as a side effect.
+A developer who has never heard of "group scope" learns it exists because `/ab`
+asked: *"Should this apply to the whole org or just one team?"* The question is
+the lesson. The user absorbs the mental model by answering, not by reading.
+
+This applies to any concept the user needs to understand to use AgentBoot
+effectively: scope hierarchy, artifact types, trait weights, persona composition.
+The right place to teach all of these is inside a skill clarification loop —
+not a getting-started guide.
+
+**Practical rules that follow from this principle:**
+
+- When intent is ambiguous, ask — never guess and silently proceed
+- When a concept needs to be introduced (scope, artifact type, weight), name it
+  in the clarifying question so the user learns the vocabulary
+- Present a concrete plan before executing — the plan is itself a teaching moment
+  showing what AgentBoot does and where it puts things
+- Prefer fewer, more capable skills over many narrow ones — the user should need
+  to remember as little as possible
+- The CLI remains the power-user and CI interface; Claude is the human interface
+
+This is the same philosophy behind great CLI tools that also ship a good REPL:
+the underlying primitives don't change, but the interaction layer meets the user
+where they think, not where the implementation lives.
+
 ## Anti-patterns
 
 These patterns were tried in AgentBoot's origin implementations and should be
