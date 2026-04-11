@@ -887,12 +887,18 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   // registers their first target repo (Step 1.6), we'll have a git remote —
   // the real GitHub org — and can confirm or update the slug at that point.
   //
+  // Step 1.2: Org detection
+  //
   // Signals in priority order:
-  //   1. Explicit --org flag (trusted)
-  //   2. Git remote of the current working directory (strong)
-  //   3. Git remote of the hub directory (strong, if already a repo)
-  //   4. Parent directory name of the personas repo (weak guess)
-  let orgSlug = opts.org ?? detection.gitOrg ?? null;
+  //   1. Explicit --org flag (trusted — skip confirmation)
+  //   2. Git remote of the hub directory (strong, if already a repo)
+  //   3. Parent directory name of the personas repo (weak guess)
+  //
+  // The cwd git remote is intentionally NOT used here: the user may be running
+  // the installer from an unrelated repo, which would produce the wrong org slug.
+  // We always confirm any detected value before proceeding.
+
+  let orgSlug: string | null = opts.org ?? null;
 
   if (!orgSlug) {
     const hubGitInfo = getGitOrgAndRepo(hubDir);
@@ -906,14 +912,17 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     if (looksLikeOrg) orgSlug = parentName;
   }
 
-  // If we still have nothing, we have to ask — but keep it brief.
-  if (!orgSlug) {
-    console.log(chalk.gray(
-      `\n  We need a short identifier for your org (e.g. your GitHub org name\n` +
-      `  or username). This goes in agentboot.config.json and can be changed later.\n`
-    ));
-    orgSlug = await input({ message: "Org identifier:" });
-  }
+  console.log(chalk.gray(
+    `\n  We need a short identifier for your org — typically your GitHub org name\n` +
+    `  or username. This goes in agentboot.config.json and can be changed later.\n`
+  ));
+
+  // Always prompt, using any detected value as the default so the user can
+  // confirm or correct it. Never silently accept a guessed org slug.
+  orgSlug = await input({
+    message: "Org identifier:",
+    ...(orgSlug ? { default: orgSlug } : {}),
+  });
 
   // Normalize slug: lowercase, replace spaces with hyphens
   orgSlug = orgSlug.toLowerCase().replace(/\s+/g, "-");
