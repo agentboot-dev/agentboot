@@ -274,6 +274,39 @@ export function scanParentForContent(parentDir: string, excludeDirs: string[] = 
 }
 
 /**
+ * Build a ScanManifest from a specific list of repo directories.
+ * Used by the install wizard to scope import scanning to registered repos only.
+ */
+export function scanRepoDirs(repoPaths: string[]): ScanManifest {
+  const manifest: ScanManifest = {
+    parentDir: "",
+    scannedAt: new Date().toISOString(),
+    files: [],
+  };
+
+  for (const repoPath of repoPaths) {
+    const resolved = path.resolve(repoPath);
+    if (!fs.existsSync(resolved)) continue;
+    if (fs.existsSync(path.join(resolved, "agentboot.config.json"))) continue;
+
+    const repoName = path.basename(resolved);
+    const scan = scanPath(resolved);
+    for (const file of scan.files) {
+      manifest.files.push({
+        absolutePath: file.path,
+        relativePath: file.relativePath,
+        repoDir: resolved,
+        repoName,
+        lines: file.lines,
+        type: file.type,
+      });
+    }
+  }
+
+  return manifest;
+}
+
+/**
  * Check if a file was compiled by AgentBoot (provenance detection).
  * Checks for the provenance header comment in the first 500 bytes.
  */
