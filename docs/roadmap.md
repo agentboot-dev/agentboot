@@ -218,9 +218,12 @@ What's planned:
 - **`agentboot audit`** — periodic consistency checks: orphaned traits, dead gotchas, stale ADRs, scope shadows, manifest drift.
 - **Global hub registry** — `~/.agentboot/config.json`, `agentboot connect`, `agentboot use`, `agentboot hubs`.
 - **Agentboot authoring instruction** — `core/instructions/agentboot-authoring.instructions.md` compiled into every hub's `.claude/rules/`. Teaches Claude the trait format, weight semantics, validation rules, and anti-patterns so free-form assistance produces artifacts that pass `agentboot validate --strict` without correction.
-- **Authoring skills** — `/add-trait`, `/add-gotcha`, `/add-persona` slash commands in `core/skills/`. Each runs `agentboot add` as a subprocess, reads the scaffolded file, and fills it in with real content from the developer's description. Compiled into the hub's own `.claude/agents/`.
-- **MCP server wired into hub** — add `agentboot mcp-server` entry to the hub's compiled `.mcp.json`. Enables Claude to call `get_repos`, `get_persona_config`, `get_build_status` without manual file reads. Sets up the Second Brain query path when Stage 2 lands.
-- **`/agentboot` meta-skill** — hub status and help in a single slash command: registered repos, last build result, persona list, open validate warnings. Replaces "run the CLI and paste the output" with a native Claude Code command.
+- **MCP server + `/ab` skill (built together)** — these ship as a unit because `/ab` depends on live hub state from MCP to be useful.
+  - *MCP server*: `agentboot mcp-server` entry added to the compiled `.mcp.json` in `core/`. Tools: `get_repos`, `get_personas`, `get_traits`, `get_build_status`, `get_validate_warnings`. Sets up the Second Brain query path when Stage 2 lands.
+  - *`/ab` skill*: single NL-driven entry point in `core/skills/`, compiled to every repo (hub and spoke). Natural language intent → clarify with user → confirm plan → execute. Replaces the separate `/add-trait`, `/add-gotcha`, `/add-persona`, and `/agentboot` meta-skill concepts — those become internal routing, not user-facing commands.
+  - *Interaction model*: clarify ambiguity first, then present a concrete plan, then execute with `agentboot` CLI calls. Yolo mode (skip confirm step) planned as a configurable flag in a later release.
+  - *Scope*: `/ab` teaches scope vocabulary (org / group / team / repo / path) through repeated clarification questions rather than requiring the user to know it upfront. Users learn the model by being asked, not by reading docs.
+  - *Examples*: `/ab add a rule for the team that requires structured logging`, `/ab what traits does the code-reviewer persona use?`, `/ab show me what's registered`, `/ab create a persona for data engineers at the group level`.
 
 ---
 
