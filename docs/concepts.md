@@ -1174,7 +1174,7 @@ not a getting-started guide.
   showing what AgentBoot does and where it puts things
 - Prefer fewer, more capable skills over many narrow ones — the user should need
   to remember as little as possible
-- The CLI remains the power-user and CI interface; Claude is the human interface
+- The CLI remains the CI and scripting interface; `/ab` is the human interface — most CLI subcommands are soft-deprecated once `/ab` covers the same ground. No new CLI features or enhancements once a `/ab` alternative exists; bug fixes only
 - **Infer artifact type from description, not from the word the user used.** When
   the inferred type differs from what the user said, surface the mismatch as a
   teaching moment before proceeding. Example: a user who says "add a rule that

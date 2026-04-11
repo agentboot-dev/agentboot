@@ -209,6 +209,8 @@ Total: 8 output platforms (skill, claude, copilot, cursor, agents, gemini, winds
 
 Make the harness worth using every day. The Second Brain is the centerpiece.
 
+**CLI feature freeze:** Starting Phase 10, the `agentboot` CLI is the CI and scripting interface only. `/ab` is the human interface. All CLI subcommands are soft-deprecated once `/ab` covers the equivalent ground — they remain functional but receive no new features or enhancements. Bug fixes are still applied. No new CLI subcommands in Phase 10 unless there is no `/ab` alternative.
+
 What's planned:
 - **Second Brain Stage 2** — SQLite knowledge index + `agentboot-brain` MCP server + `agentboot brain` CLI (index/query/add/stats). Queryable org memory at the file level.
 - **Second Brain Stage 2.5** — ADR and incident ingestion as first-class knowledge types. `agentboot add adr` / `agentboot add incident` scaffolding.
@@ -227,6 +229,29 @@ What's planned:
   - *Architecture — orchestrator, not monolith*: `ab.md` is a thin orchestrator that classifies intent and handles clarification. It dispatches to specialist sub-agents in `core/skills/ab/` that carry only the context relevant to that operation: `ab/author.md` (trait/gotcha/persona/instruction authoring), `ab/diagnose.md` (doctor, validate, audit), `ab/query.md` (read hub state via MCP), `ab/manage.md` (sync, build, import). Sub-agents receive a clean context fork — the parent passes only what they need. This keeps `/ab`'s per-invocation context cost flat regardless of how many specialists exist. Adding a capability means adding a specialist file, not growing `ab.md`. The MCP server call happens in the orchestrator before dispatch, so sub-agents receive live hub state as input rather than needing to know how to fetch it.
   - *Artifact type classifier*: between intent detection and specialist dispatch, the orchestrator infers the correct artifact type from what the user described — not just what they called it. If the inferred type differs from the user's language, `/ab` surfaces the mismatch as a teaching moment before routing. Example: `/ab add a rule that when I say gtd you always know that refers to David Allen's Getting Things Done` — the user said "rule" but the pattern ("when I say X it means Y") is a lexicon entry. The classifier catches it: *"This looks like a lexicon entry — a domain term definition that teaches Claude vocabulary without using up rule space. Want me to create it as a lexicon entry instead?"* The user learns what a lexicon is by being corrected, not by reading docs. Classifier covers the full artifact taxonomy: lexicon (term definitions), gotcha (path-scoped operational knowledge), trait (behavioral building blocks), instruction (always-on guardrails), persona (role definitions).
 
+**`/ab` specialist coverage (replaces CLI subcommands):**
+- **`ab/manage`** — repo management (`/ab show registered repos`, `/ab add this repo`, `/ab remove repo X`), build, sync. Replaces manual `repos.json` editing and `agentboot sync`. Also surfaces the collateral capability: run git operations across all registered repos (`/ab git pull all`).
+- **`ab/upgrade`** — migrate existing hub to new AgentBoot core content when a new version ships. Replaces `agentboot upgrade` CLI (not yet built). Clarify → show diff of what would change → confirm → apply.
+- **`ab/import`** — replace the LLM-powered `agentboot import` CLI with a skill. Claude drives the import conversation: scan, classify, surface duplicates, offer promotion, handle source attribution. Consistent with the "Claude as UX layer" principle. CLI import remains for CI use; skill is the human path.
+- **`ab/diagnose`** — covers doctor, validate, audit, prune. `/ab something seems off`, `/ab prune stale artifacts`, `/ab audit for orphaned traits`. Replaces standalone `agentboot doctor`, `agentboot audit`.
+
+**CLI bug fixes (Phase 10, not enhancements):**
+- `agentboot doctor` runs from any directory, not just hub cwd
+- Smart sync: only open PRs for repos affected by a given change, not all registered repos on every sync
+- Fix org install: ensure initial commit is created correctly during hub scaffold
+- Import: batch all files from the same repo into a single LLM call (perf); track timeouts (exit code 143) and offer retry; fix path-scoped files not appearing in scan; document which model is used
+- Import source attribution: record which repo each imported artifact came from
+- Import duplicate detection: offer to promote when the same content appears in multiple repos
+
+**Docs and narrative:**
+- Fix "developer never runs agentboot" theme in `docs/org-connection.md` — this messaging conflicts with the grassroots artifact promotion pipeline, which depends on developers engaging with the tool
+- Hub repo CI/CD guide: recommended branching strategy, versioning conventions, GitHub Actions templates for validate/build/sync
+- GitHub bot setup: docs and scaffolding to help orgs configure a bot that auto-PRs sync artifacts and auto-merges when CI passes
+- Document which subcommands require hub cwd vs work from anywhere (interim until `/ab` covers all of it)
+
+**Multi-platform repos:**
+- Support registering a repo for multiple output platforms (e.g. a repo used by both Claude Code and Copilot users receives both compiled outputs in a single sync)
+
 ---
 
 ## Phase 11: "org scale" — (v0.11.0)
@@ -241,6 +266,15 @@ What's planned:
 - **Security hardening** — CVE audit against CVE-2025-59536/CVE-2026-21852/DXT patterns; security advisory; new `agentboot validate` check for dangerous hook patterns.
 - **OpenCode / Cline research** — integration viability assessment for 9th/10th output platforms.
 - **Competitive positioning** — internal docs: Google Conductor, Context Hub, SuperClaude, Copilot Cowork.
+- **Catalog built-in platform artifacts** — catalog what each agent platform (Claude Code, Copilot, Cursor, Gemini) ships natively alongside AB core artifacts; surface gaps and overlaps per platform in the marketplace.
+- **Copilot per-request cost model** — `agentboot cost-estimate` currently models token cost; Copilot CLI bills per premium request, not per token. Model both in cost-estimate output.
+- **Conventions and defaults docs** — how AgentBoot establishes conventions in a volatile/new industry; rationale for current defaults; how orgs override them.
+- **Anonymized usage telemetry opt-in** — user/org option to share anonymized data; informs roadmap prioritization.
+- **Platform obsolescence playbook** — design doc for the scenario where a platform ships a native feature that replaces AB-managed content; migration and graceful deprecation path.
+- **CLI rename deferred from Phase 10** — install path rename (`hub` → `org`, `connect` → `user`) once CLI freeze lifts; post-adoption timing.
+- **Shell tab completion / OMZ plugin** — deferred from Phase 10 CLI freeze.
+- **`agentboot/agentboot` as GitHub template** — research and product planning: using the repo as a `gh repo create --template` source; concerns TBD.
+- **Richer CLI help** — verbose mode, examples per subcommand, man pages; deferred from Phase 10 CLI freeze.
 
 ---
 
@@ -257,3 +291,6 @@ What's planned:
 - **Abstract/binding composition** -- org semantic contracts, team implementations, validation check 9.
 - **Second Brain Stage 3** -- sqlite-vec semantic retrieval for 500+ knowledge item hubs.
 - **OpenCode + Cline output platforms** -- if Phase 11 research confirms viability.
+- **Personal brain / brain of brains** -- human-scoped knowledge federation. A person works across multiple orgs (each with its own hub and Second Brain). The brain of brains is a personal layer that aggregates across them — AT brain, HG brain, AB brain — queryable as a unified personal knowledge index. Org brains remain org-scoped; the personal layer is additive. Design TBD; see discussion notes.
+- **Distributed repo operations** -- collateral of repo management: `agentboot git pull` (or `/ab git pull all`) runs a git operation across all registered repos. Surfaces naturally once `/ab manage` exists.
+- **OS user-scope via symlinks** -- personal AgentBoot installation scoped to the OS user rather than a hub, managed via symlinks. Enables solo developers without a formal org hub.
