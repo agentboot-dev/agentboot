@@ -693,10 +693,7 @@ async function validateHubTarget(initialDir: string): Promise<string> {
     });
 
     if (choice === "custom") {
-      const customPath = await input({
-        message: "Path for the personas repo:",
-        default: personasPath,
-      });
+      const customPath = await promptForPath("Path for the personas repo:", personasPath);
       hubDir = path.resolve(customPath);
       continue; // re-validate the new target
     }
@@ -751,10 +748,7 @@ async function nudgePersonasConvention(hubDir: string): Promise<string> {
     });
     if (!reallyKeep) {
       // Recurse — let them pick again
-      const newPath = await input({
-        message: "Path for the personas repo:",
-        default: personasDir,
-      });
+      const newPath = await promptForPath("Path for the personas repo:", personasDir);
       return nudgePersonasConvention(path.resolve(newPath));
     }
     return hubDir;
@@ -1129,17 +1123,10 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   });
 
   if (registerRepo) {
-    let promptOpts: { message: string; default?: string };
-    if (detection.looksLikeCodeRepo) {
-      promptOpts = {
-        message: `Path to target repo (absolute or relative):`,
-        default: cwd,
-      };
-    } else {
-      promptOpts = { message: "Path to target repo (absolute or relative):" };
-    }
-
-    const repoPathInput = await input(promptOpts);
+    const repoPathInput = await promptForPath(
+      "Path to target repo (absolute or relative):",
+      detection.looksLikeCodeRepo ? cwd : undefined,
+    );
     const repoPath = path.resolve(repoPathInput);
 
     if (!fs.existsSync(repoPath)) {
@@ -1674,7 +1661,7 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
         return path1CreateHub(cwd, opts, detection);
       }
 
-      const hubPathInput = await input({ message: "Path to personas repo:" });
+      const hubPathInput = await promptForPath("Path to personas repo:");
       hubDir = path.resolve(hubPathInput);
     }
   }
