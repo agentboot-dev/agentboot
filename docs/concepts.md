@@ -1175,6 +1175,15 @@ not a getting-started guide.
 - Prefer fewer, more capable skills over many narrow ones — the user should need
   to remember as little as possible
 - The CLI remains the power-user and CI interface; Claude is the human interface
+- **Infer artifact type from description, not from the word the user used.** When
+  the inferred type differs from what the user said, surface the mismatch as a
+  teaching moment before proceeding. Example: a user who says "add a rule that
+  when I say GTD you know it means Getting Things Done" used the word "rule" but
+  described a lexicon entry. The right response is: *"This looks like a lexicon
+  entry — a domain term definition that teaches Claude vocabulary without using up
+  rule space. Want me to create it as a lexicon entry instead?"* The correction
+  teaches the distinction between lexicon, gotcha, trait, instruction, and persona
+  without the user having to read about them first.
 
 This is the same philosophy behind great CLI tools that also ship a good REPL:
 the underlying primitives don't change, but the interaction layer meets the user
