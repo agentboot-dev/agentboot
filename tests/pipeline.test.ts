@@ -157,6 +157,18 @@ describe("compile script", () => {
     }
   });
 
+  // --- Story 12: /ab skill files in dist/claude/core/agents/ ---
+
+  it("claude: copies all 5 /ab skill files to dist/claude/core/agents/", () => {
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const skillPath = path.join(ROOT, "dist", "claude", "core", "agents", file);
+      expect(fs.existsSync(skillPath), `agents/${file} should exist`).toBe(true);
+      const content = fs.readFileSync(skillPath, "utf-8");
+      expect(content).toMatch(/^---\ndescription:/);
+    }
+  });
+
   // --- AB-19: CLAUDE.md with @imports ---
 
   it("claude: generates CLAUDE.md with all @import directives", () => {
@@ -451,6 +463,27 @@ describe("sync script", () => {
     for (const file of manifest.files) {
       expect(file.path).toBeDefined();
       expect(file.hash).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  // --- Story 12: /ab skill files synced to spoke repos ---
+
+  it("syncs /ab skill files to .claude/agents/ in target repo", () => {
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const skillPath = path.join(syncTarget, ".claude", "agents", file);
+      expect(fs.existsSync(skillPath), `.claude/agents/${file} should be synced`).toBe(true);
+    }
+  });
+
+  it("includes /ab skill files in .agentboot-manifest.json hashes", () => {
+    const manifestPath = path.join(syncTarget, ".claude", ".agentboot-manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const filePaths = manifest.files.map((f: { path: string }) => f.path);
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const expectedPath = `.claude/agents/${file}`;
+      expect(filePaths, `manifest should include ${expectedPath}`).toContain(expectedPath);
     }
   });
 
