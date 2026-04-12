@@ -508,10 +508,18 @@ export function stripJsoncComments(raw: string): string {
 // Config loading
 // ---------------------------------------------------------------------------
 
-export function resolveConfigPath(argv: string[], root: string): string {
+export function resolveConfigPath(argv: string[], root: string, cwd?: string): string {
   const idx = argv.indexOf("--config");
   if (idx !== -1 && argv[idx + 1]) {
     return path.resolve(argv[idx + 1]!);
+  }
+
+  // Prefer cwd if it has a config (user is in their hub directory).
+  // Fall back to the package root (for running from the build tool repo itself).
+  const effectiveCwd = cwd ?? process.cwd();
+  const cwdConfig = path.join(effectiveCwd, "agentboot.config.json");
+  if (fs.existsSync(cwdConfig)) {
+    return cwdConfig;
   }
   return path.join(root, "agentboot.config.json");
 }

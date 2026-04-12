@@ -94,7 +94,8 @@ describe("stripJsoncComments (edge cases)", () => {
 
 describe("resolveConfigPath", () => {
   it("returns default path when --config is not in argv", () => {
-    const result = resolveConfigPath([], "/some/root");
+    // Pass a cwd without agentboot.config.json so fallback to root is tested
+    const result = resolveConfigPath([], "/some/root", "/tmp");
     expect(result).toBe(path.join("/some/root", "agentboot.config.json"));
   });
 
@@ -124,8 +125,15 @@ describe("resolveConfigPath", () => {
 
   it("returns default path when --config is the last arg with no value", () => {
     // --config is present but has no following argument
-    const result = resolveConfigPath(["--config"], "/some/root");
+    const result = resolveConfigPath(["--config"], "/some/root", "/tmp");
     expect(result).toBe(path.join("/some/root", "agentboot.config.json"));
+  });
+
+  it("prefers cwd config over package root when cwd has agentboot.config.json", () => {
+    // When running from a hub directory, cwd config should take priority
+    const cwd = path.resolve(__dirname, "..");
+    const result = resolveConfigPath([], "/some/other/root", cwd);
+    expect(result).toBe(path.join(cwd, "agentboot.config.json"));
   });
 });
 
