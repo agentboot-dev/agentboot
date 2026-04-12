@@ -359,6 +359,7 @@ program
   .option("--overlap", "run heuristic overlap analysis")
   .option("--apply", "apply an existing import plan")
   .option("--non-interactive", "run without prompts (auto-apply high-confidence matches)")
+  .option("--retry-failed", "retry previously timed-out files from .agentboot-import-failed.json")
   .option("--isolated", "test prompts without user Claude settings (uses temp config)")
   .action(async (opts) => {
     const parentDir = opts["parent"] as string | undefined;
@@ -404,6 +405,7 @@ program
           overlap: opts["overlap"] as boolean | undefined,
           apply: opts["apply"] as boolean | undefined,
           nonInteractive: opts["nonInteractive"] as boolean | undefined,
+          retryFailed: opts["retryFailed"] as boolean | undefined,
         });
       }
     };

@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 import { input } from "@inquirer/prompts";
 import { loadPrompt, loadSchema } from "../prompts/index.js";
@@ -44,6 +45,13 @@ export interface ImportOptions {
   apply?: boolean | undefined;
   hubPath?: string | undefined;
   nonInteractive?: boolean | undefined;
+  retryFailed?: boolean | undefined;
+}
+
+export interface TimedOutFile {
+  file: string;
+  repoName: string;
+  timedOutAt: string;
 }
 
 interface ScannedFile {
@@ -135,6 +143,13 @@ function scanPath(targetPath: string): ScanResult {
     else if (basename === ".mcp.json") type = "mcp";
     else if (basename === ".cursorrules") type = "cursorrules";
     else if (basename === "copilot-instructions.md") type = "copilot-instructions";
+
+    // Promote "other" markdown files with paths: frontmatter to "rule" type.
+    // These are path-scoped rules that may not live in a rules/ directory
+    // but should still be importable as gotchas.
+    if (type === "other" && ext === ".md" && content.startsWith("---") && content.includes("paths:")) {
+      type = "rule";
+    }
     else if (dir.includes("prompts") && basename.endsWith(".prompt.md")) type = "copilot-prompt";
 
     return { path: filePath, relativePath: relPath, lines, type };
@@ -524,12 +539,8 @@ function readHubInventory(hubPath: string): HubInventory {
 // Classification via claude -p (LLM)
 // ---------------------------------------------------------------------------
 
-function buildClassificationPrompt(
-  fileContent: string,
-  filePath: string,
-  inventory: HubInventory
-): string {
-  const hubContext = [
+function buildHubContext(inventory: HubInventory): string {
+  return [
     "## Existing hub content (avoid duplicates):",
     "",
     "### Traits:",
@@ -548,12 +559,158 @@ function buildClassificationPrompt(
     ...inventory.instructions.map(i => `- ${i.name}: ${i.firstLine}`),
     ...(inventory.instructions.length === 0 ? ["(none)"] : []),
   ].join("\n");
+}
+
+function buildClassificationPrompt(
+  fileContent: string,
+  filePath: string,
+  inventory: HubInventory
+): string {
+  const hubContext = buildHubContext(inventory);
 
   return loadPrompt("classify-content", {
     HUB_CONTEXT: hubContext,
     FILE_PATH: filePath,
     FILE_CONTENT: fileContent,
   });
+}
+
+/** Maximum number of files to include in a single batched LLM call. */
+export const BATCH_SIZE = 10;
+
+interface BatchFileEntry {
+  filePath: string;
+  absolutePath: string;
+  content: string;
+  lines: number;
+}
+
+/**
+ * Build a batched classification prompt that includes multiple files from the same repo.
+ * Each file is clearly delimited so the LLM can classify them independently.
+ */
+function buildBatchedClassificationPrompt(
+  files: BatchFileEntry[],
+  repoName: string,
+  inventory: HubInventory
+): string {
+  const hubContext = buildHubContext(inventory);
+
+  const fileBlocks = files.map((f, i) => {
+    let content = f.content;
+    if (content.length > MAX_FILE_CONTENT_CHARS) {
+      content = content.slice(0, MAX_FILE_CONTENT_CHARS) + "\n\n<!-- truncated -->";
+    }
+    return `=== FILE ${i + 1}: ${f.filePath} (${f.lines} lines) ===\n\`\`\`\n${content}\n\`\`\``;
+  }).join("\n\n");
+
+  return loadPrompt("classify-content", {
+    HUB_CONTEXT: hubContext,
+    FILE_PATH: `[BATCH: ${files.length} files from ${repoName}]`,
+    FILE_CONTENT: fileBlocks,
+  });
+}
+
+interface BatchClassifyResult {
+  classifications: Map<string, Classification[]>;
+  timedOut: boolean;
+}
+
+/**
+ * Classify a batch of files via a single LLM call. Returns per-file classifications
+ * keyed by the file's relative path from the batch, plus timeout status.
+ */
+function classifyBatchViaLLM(
+  files: BatchFileEntry[],
+  repoName: string,
+  inventory: HubInventory,
+  provider?: LLMProvider
+): BatchClassifyResult | null {
+  const prompt = buildBatchedClassificationPrompt(files, repoName, inventory);
+  const llm = provider ?? new ClaudeCodeProvider();
+
+  // Show the prompt being sent
+  console.log(chalk.cyan("\n  ── LLM prompt (batch) ──────────────────────────────────"));
+  console.log(chalk.gray(`  Provider: ${llm.name}`));
+  console.log(chalk.gray(`  Batch: ${files.length} files from ${repoName}`));
+  for (const f of files) {
+    console.log(chalk.gray(`    - ${f.filePath} (${f.lines} lines)`));
+  }
+  console.log(chalk.cyan("  ──────────────────────────────────────────────────────\n"));
+
+  const classifyResult = llm.classify(prompt, CLASSIFICATION_SCHEMA);
+  if (!classifyResult) return null;
+
+  // Detect timeout
+  if (classifyResult.timedOut) {
+    return { classifications: new Map(), timedOut: true };
+  }
+
+  const parsed = typeof classifyResult.data === "string"
+    ? JSON.parse(classifyResult.data as string)
+    : classifyResult.data as Record<string, unknown>;
+  const raw = (parsed.classifications ?? []) as Array<Record<string, unknown>>;
+
+  if (raw.length === 0) {
+    console.log(chalk.yellow(`    LLM returned no classifications for this batch.`));
+    return { classifications: new Map(), timedOut: false };
+  }
+
+  // Group classifications by source_file — the LLM should reference files by their path
+  const result = new Map<string, Classification[]>();
+  for (const f of files) {
+    result.set(f.filePath, []);
+  }
+
+  // Runtime validation
+  const VALID_TYPES = ["lexicon", "trait", "gotcha", "persona", "persona-rule", "instruction", "skip"];
+  const VALID_ACTIONS = ["create", "skip", "merge"];
+  const VALID_COMPOSITIONS = ["rule", "preference"];
+  let invalidCount = 0;
+
+  for (const item of raw) {
+    const lines = item["lines"] as unknown;
+    const classification = item["classification"] as string | undefined;
+    const suggestedPath = item["suggested_path"] as string | undefined;
+    const action = item["action"] as string | undefined;
+    const compType = item["composition_type"] as string | undefined;
+    const sourceFile = item["source_file"] as string | undefined;
+
+    if (!Array.isArray(lines) || lines.length !== 2) { invalidCount++; continue; }
+    if (typeof lines[0] !== "number" || typeof lines[1] !== "number") { invalidCount++; continue; }
+    if (!classification || !VALID_TYPES.includes(classification)) { invalidCount++; continue; }
+    if (typeof suggestedPath !== "string") { invalidCount++; continue; }
+    if (!action || !VALID_ACTIONS.includes(action)) item["action"] = "create";
+    if (!compType || !VALID_COMPOSITIONS.includes(compType)) {
+      item["composition_type"] = DEFAULT_COMPOSITION[classification] ?? "preference";
+    }
+    if (classification === "skip" || item["action"] === "skip") continue;
+
+    // Match classification to a file in the batch
+    // Try matching by source_file field, then fall back to first file (single-file compat)
+    let matchedFile: string | null = null;
+    if (sourceFile) {
+      for (const f of files) {
+        if (sourceFile.includes(f.filePath) || f.filePath.includes(sourceFile)) {
+          matchedFile = f.filePath;
+          break;
+        }
+      }
+    }
+    if (!matchedFile) {
+      // If only one file in batch, assign to it; otherwise try to match by suggested_path or first file
+      matchedFile = files.length === 1 ? files[0]!.filePath : (files[0]?.filePath ?? null);
+    }
+    if (matchedFile && result.has(matchedFile)) {
+      result.get(matchedFile)!.push(item as unknown as Classification);
+    }
+  }
+
+  if (invalidCount > 0) {
+    console.log(chalk.yellow(`    ${invalidCount} section(s) had invalid format and were dropped.`));
+  }
+
+  return { classifications: result, timedOut: false };
 }
 
 const CLASSIFICATION_SCHEMA = loadSchema("classify-content");
@@ -679,6 +836,7 @@ function classifyViaLLM(
 export interface ClassifyResult {
   classifications: Classification[];
   trustedSources: Set<string>;
+  timedOutFiles: TimedOutFile[];
 }
 
 /**
@@ -700,6 +858,7 @@ export function classifyScannedFiles(
 
   const allClassifications: Classification[] = [];
   const trustedSources = new Set<string>();
+  const timedOutFiles: TimedOutFile[] = [];
 
   // Filter to classifiable file types
   const classifiable = manifest.files.filter(f =>
@@ -708,28 +867,66 @@ export function classifyScannedFiles(
 
   if (classifiable.length === 0) {
     console.log(chalk.yellow("  No classifiable content found.\n"));
-    return { classifications: [], trustedSources };
+    return { classifications: [], trustedSources, timedOutFiles };
   }
 
+  // Group files by repo for batched LLM calls
+  const byRepo = new Map<string, typeof classifiable>();
   for (const file of classifiable) {
-    console.log(chalk.cyan(`  Classifying: ${file.repoName}/${file.relativePath}...`));
-    const content = fs.readFileSync(file.absolutePath, "utf-8");
-    const rawClassifications = classifyViaLLM(content, file.relativePath, inventory, provider);
-
-    if (!rawClassifications) {
-      console.log(chalk.yellow(`    Skipped (classification failed)`));
-      continue;
-    }
-
-    trustedSources.add(file.absolutePath);
-    for (const c of rawClassifications) {
-      allClassifications.push({ ...c, source_file: file.absolutePath });
-    }
-
-    console.log(chalk.green(`    ${rawClassifications.length} section(s) classified`));
+    const list = byRepo.get(file.repoName) ?? [];
+    list.push(file);
+    byRepo.set(file.repoName, list);
   }
 
-  return { classifications: allClassifications, trustedSources };
+  for (const [repoName, repoFiles] of byRepo) {
+    // Split into batches of BATCH_SIZE
+    for (let batchStart = 0; batchStart < repoFiles.length; batchStart += BATCH_SIZE) {
+      const batch = repoFiles.slice(batchStart, batchStart + BATCH_SIZE);
+
+      // Build batch entries
+      const batchEntries: BatchFileEntry[] = batch.map(file => ({
+        filePath: file.relativePath,
+        absolutePath: file.absolutePath,
+        content: fs.readFileSync(file.absolutePath, "utf-8"),
+        lines: file.lines,
+      }));
+
+      console.log(chalk.cyan(`  Classifying batch: ${batch.length} file(s) from ${repoName}...`));
+
+      const batchResults = classifyBatchViaLLM(batchEntries, repoName, inventory, provider);
+
+      if (!batchResults) {
+        console.log(chalk.yellow(`    Batch classification failed for ${repoName}`));
+        continue;
+      }
+
+      // Track timed-out files
+      if (batchResults.timedOut) {
+        console.log(chalk.yellow(`    Batch timed out for ${repoName} (${batch.length} file(s))`));
+        for (const file of batch) {
+          timedOutFiles.push({
+            file: file.absolutePath,
+            repoName: file.repoName,
+            timedOutAt: new Date().toISOString(),
+          });
+        }
+        continue;
+      }
+
+      for (const file of batch) {
+        trustedSources.add(file.absolutePath);
+        const fileClassifications = batchResults.classifications.get(file.relativePath) ?? [];
+        for (const c of fileClassifications) {
+          allClassifications.push({ ...c, source_file: file.absolutePath });
+        }
+        if (fileClassifications.length > 0) {
+          console.log(chalk.green(`    ${file.relativePath}: ${fileClassifications.length} section(s) classified`));
+        }
+      }
+    }
+  }
+
+  return { classifications: allClassifications, trustedSources, timedOutFiles };
 }
 
 // ---------------------------------------------------------------------------
@@ -815,6 +1012,115 @@ function readStagingFile(stagingPath: string): ImportPlan | null {
 }
 
 // ---------------------------------------------------------------------------
+// Timeout tracking — .agentboot-import-failed.json
+// ---------------------------------------------------------------------------
+
+const FAILED_FILE_NAME = ".agentboot-import-failed.json";
+
+/**
+ * Write timed-out files to .agentboot-import-failed.json so they can be retried.
+ */
+export function writeFailedFile(timedOutFiles: TimedOutFile[], hubPath: string): string {
+  const failedPath = path.join(hubPath, FAILED_FILE_NAME);
+  fs.writeFileSync(failedPath, JSON.stringify(timedOutFiles, null, 2) + "\n", "utf-8");
+  return failedPath;
+}
+
+/**
+ * Read timed-out files from .agentboot-import-failed.json.
+ */
+export function readFailedFile(hubPath: string): TimedOutFile[] {
+  const failedPath = path.join(hubPath, FAILED_FILE_NAME);
+  try {
+    return JSON.parse(fs.readFileSync(failedPath, "utf-8")) as TimedOutFile[];
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Source attribution — contributor + source fields for imported artifacts
+// ---------------------------------------------------------------------------
+
+export interface Attribution {
+  contributor: string | null;
+  source: string;
+}
+
+/**
+ * Resolve attribution for an imported file.
+ * - source: the repoName (from the scan manifest)
+ * - contributor: git blame author-mail on line 1, falling back to git config user.email
+ */
+export function resolveAttribution(absolutePath: string, repoDir: string, repoName: string): Attribution {
+  const attr: Attribution = { contributor: null, source: repoName };
+
+  // Try git blame on line 1
+  try {
+    const blame = spawnSync("git", ["blame", "--porcelain", "-L", "1,1", absolutePath], {
+      cwd: repoDir,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
+    if (blame.status === 0 && blame.stdout) {
+      const mailMatch = blame.stdout.match(/^author-mail <(.+?)>/m);
+      if (mailMatch && mailMatch[1]) {
+        attr.contributor = mailMatch[1];
+      }
+    }
+  } catch { /* git blame failed */ }
+
+  // Fall back to git config user.email
+  if (!attr.contributor) {
+    try {
+      const config = spawnSync("git", ["config", "user.email"], {
+        cwd: repoDir,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      });
+      if (config.status === 0 && config.stdout?.trim()) {
+        attr.contributor = config.stdout.trim();
+      }
+    } catch { /* git config failed */ }
+  }
+
+  return attr;
+}
+
+/**
+ * Inject contributor and source fields into content frontmatter.
+ * If the content already has frontmatter, fields are added after any existing `type:` line.
+ * If no frontmatter exists, a new frontmatter block is prepended.
+ */
+export function injectAttribution(content: string, attr: Attribution): string {
+  const attrLines: string[] = [];
+  if (attr.contributor) attrLines.push(`contributor: ${attr.contributor}`);
+  attrLines.push(`source: ${attr.source}`);
+
+  if (content.startsWith("---\n")) {
+    // Has frontmatter — inject after opening --- (and after type: if present)
+    const endIdx = content.indexOf("---", 3);
+    if (endIdx > 0) {
+      const frontmatter = content.slice(4, endIdx);
+      const body = content.slice(endIdx);
+      const fmLines = frontmatter.split("\n");
+
+      // Find the type: line to insert after it
+      const typeIdx = fmLines.findIndex(l => l.startsWith("type:"));
+      const insertIdx = typeIdx >= 0 ? typeIdx + 1 : 0;
+      fmLines.splice(insertIdx, 0, ...attrLines);
+
+      return "---\n" + fmLines.join("\n") + body;
+    }
+  }
+
+  // No frontmatter — prepend new block
+  return `---\n${attrLines.join("\n")}\n---\n\n${content}`;
+}
+
+// ---------------------------------------------------------------------------
 // Apply: write classified content to hub
 // ---------------------------------------------------------------------------
 
@@ -893,6 +1199,14 @@ function applyPlan(
         } else {
           contentToWrite = `---\ncomposition: ${comp}\n---\n\n${contentToWrite}`;
         }
+      }
+
+      // Add source attribution to imported artifacts
+      if (item.action === "create") {
+        const sourceDir = path.dirname(resolvedSource);
+        const repoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+        const attr = resolveAttribution(resolvedSource, sourceDir, repoName);
+        contentToWrite = injectAttribution(contentToWrite, attr);
       }
 
       // Write the file
@@ -988,6 +1302,46 @@ export async function runImport(opts: ImportOptions): Promise<void> {
       "  Import requires hub access to detect overlaps with existing content.\n"
     ));
     throw new AgentBootError(1);
+  }
+
+  // If --retry-failed, load and retry timed-out files
+  if (opts.retryFailed) {
+    const failedFiles = readFailedFile(hubPath);
+    if (failedFiles.length === 0) {
+      console.log(chalk.green("  No failed imports to retry.\n"));
+      return;
+    }
+    console.log(chalk.cyan(`  Retrying ${failedFiles.length} previously timed-out file(s)...\n`));
+    for (const f of failedFiles) {
+      console.log(chalk.gray(`    ${f.repoName}: ${f.file} (timed out at ${f.timedOutAt})`));
+    }
+    // Re-run import on just those files
+    const retryManifest: ScanManifest = {
+      parentDir: path.dirname(failedFiles[0]!.file),
+      scannedAt: new Date().toISOString(),
+      files: failedFiles.map(f => ({
+        absolutePath: f.file,
+        relativePath: path.basename(f.file),
+        repoDir: path.dirname(f.file),
+        repoName: f.repoName,
+        lines: 0,
+        type: "claude-md" as const,
+      })),
+    };
+    const retryResult = classifyScannedFiles(retryManifest, hubPath);
+    if (retryResult.timedOutFiles.length > 0) {
+      writeFailedFile(retryResult.timedOutFiles, hubPath);
+      console.log(chalk.yellow(`  ${retryResult.timedOutFiles.length} file(s) still timing out.\n`));
+    } else {
+      // Clean up failed file
+      const failedPath = path.join(hubPath, FAILED_FILE_NAME);
+      if (fs.existsSync(failedPath)) fs.unlinkSync(failedPath);
+      console.log(chalk.green("  All previously failed files retried successfully.\n"));
+    }
+    if (retryResult.classifications.length > 0) {
+      printClassificationResults(retryResult.classifications);
+    }
+    return;
   }
 
   console.log(chalk.gray(`  Hub: ${hubPath}`));
@@ -1332,6 +1686,187 @@ function analyzeOverlap(
 }
 
 // ---------------------------------------------------------------------------
+// Duplicate detection during import (Story 13h)
+// ---------------------------------------------------------------------------
+
+export interface DuplicateMatch {
+  scannedFile: string;
+  matchedArtifact: string;
+  similarity: number;
+  type: "DUPLICATE" | "PROMOTION_CANDIDATE";
+}
+
+/**
+ * Tokenize content for Jaccard similarity: split on whitespace/punctuation,
+ * lowercase, filter tokens <= 3 chars.
+ */
+export function tokenizeForJaccard(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase().split(/[\s\W]+/).filter(t => t.length > 3)
+  );
+}
+
+/**
+ * Compute Jaccard similarity between two token sets.
+ */
+export function jaccardSimilarityTokenized(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  const intersection = new Set([...a].filter(t => b.has(t)));
+  const union = new Set([...a, ...b]);
+  return union.size === 0 ? 0 : intersection.size / union.size;
+}
+
+/**
+ * Load all existing hub artifacts (traits, gotchas, instructions) into token sets
+ * for comparison with scanned files.
+ */
+function loadHubArtifactTokens(hubPath: string): Array<{ path: string; tokens: Set<string> }> {
+  const artifacts: Array<{ path: string; tokens: Set<string> }> = [];
+
+  function loadDir(dir: string, prefix: string): void {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith(".md")) continue;
+      try {
+        const content = fs.readFileSync(path.join(dir, entry), "utf-8");
+        artifacts.push({
+          path: `${prefix}/${entry}`,
+          tokens: tokenizeForJaccard(content),
+        });
+      } catch { /* skip unreadable */ }
+    }
+  }
+
+  loadDir(path.join(hubPath, "core", "traits"), "core/traits");
+  loadDir(path.join(hubPath, "core", "gotchas"), "core/gotchas");
+  loadDir(path.join(hubPath, "core", "instructions"), "core/instructions");
+
+  return artifacts;
+}
+
+/**
+ * Detect duplicates and promotion candidates in the scan manifest.
+ *
+ * - DUPLICATE: scanned file with >= 0.85 Jaccard similarity to an existing hub artifact.
+ * - PROMOTION_CANDIDATE: pattern appearing in 3+ different repos in the same scan.
+ */
+export function detectDuplicates(
+  manifest: ScanManifest,
+  hubPath: string,
+): DuplicateMatch[] {
+  const matches: DuplicateMatch[] = [];
+  const hubArtifacts = loadHubArtifactTokens(hubPath);
+
+  // Tokenize all scanned files
+  const scannedTokens: Array<{
+    file: typeof manifest.files[0];
+    tokens: Set<string>;
+  }> = [];
+
+  for (const file of manifest.files) {
+    try {
+      const content = fs.readFileSync(file.absolutePath, "utf-8");
+      scannedTokens.push({ file, tokens: tokenizeForJaccard(content) });
+    } catch {
+      scannedTokens.push({ file, tokens: new Set() });
+    }
+  }
+
+  // Compare scanned files against hub artifacts (DUPLICATE detection)
+  for (const scanned of scannedTokens) {
+    if (scanned.tokens.size === 0) continue;
+
+    for (const hub of hubArtifacts) {
+      const sim = jaccardSimilarityTokenized(scanned.tokens, hub.tokens);
+      if (sim >= 0.85) {
+        matches.push({
+          scannedFile: `${scanned.file.repoName}/${scanned.file.relativePath}`,
+          matchedArtifact: hub.path,
+          similarity: sim,
+          type: "DUPLICATE",
+        });
+      }
+    }
+  }
+
+  // Cross-scan comparison for PROMOTION_CANDIDATE detection
+  // Group scanned files by content similarity across different repos
+  const groups: Array<{ files: typeof scannedTokens; repos: Set<string> }> = [];
+
+  for (let i = 0; i < scannedTokens.length; i++) {
+    const a = scannedTokens[i]!;
+    if (a.tokens.size === 0) continue;
+
+    // Check if this file already belongs to a group
+    let addedToGroup = false;
+    for (const group of groups) {
+      const representative = group.files[0]!;
+      const sim = jaccardSimilarityTokenized(a.tokens, representative.tokens);
+      if (sim >= 0.85) {
+        group.files.push(a);
+        group.repos.add(a.file.repoName);
+        addedToGroup = true;
+        break;
+      }
+    }
+
+    if (!addedToGroup) {
+      groups.push({
+        files: [a],
+        repos: new Set([a.file.repoName]),
+      });
+    }
+  }
+
+  // Flag groups that span 3+ repos as promotion candidates
+  for (const group of groups) {
+    if (group.repos.size >= 3) {
+      for (const entry of group.files) {
+        matches.push({
+          scannedFile: `${entry.file.repoName}/${entry.file.relativePath}`,
+          matchedArtifact: `pattern in ${group.repos.size} repos: ${[...group.repos].join(", ")}`,
+          similarity: 1.0,
+          type: "PROMOTION_CANDIDATE",
+        });
+      }
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Print duplicate detection results to console.
+ */
+export function printDuplicateDetection(matches: DuplicateMatch[]): void {
+  const duplicates = matches.filter(m => m.type === "DUPLICATE");
+  const promotions = matches.filter(m => m.type === "PROMOTION_CANDIDATE");
+
+  if (duplicates.length > 0) {
+    console.log(chalk.bold("\n  Duplicate detection:\n"));
+    for (const d of duplicates) {
+      const pct = Math.round(d.similarity * 100);
+      console.log(chalk.yellow(
+        `    WARNING: ${d.scannedFile} is very similar to existing ${d.matchedArtifact} (${pct}% match). Import as new, update existing, or skip?`
+      ));
+    }
+  }
+
+  if (promotions.length > 0) {
+    // Deduplicate promotion messages (same pattern across repos)
+    const seen = new Set<string>();
+    console.log(chalk.bold("\n  Promotion candidates:\n"));
+    for (const p of promotions) {
+      if (seen.has(p.matchedArtifact)) continue;
+      seen.add(p.matchedArtifact);
+      console.log(chalk.cyan(
+        `    This pattern appears in ${p.matchedArtifact.replace("pattern in ", "")}. Consider promoting to core scope.`
+      ));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AB-112: Whole-file import — agents → personas, traits → traits, rules → gotchas
 // ---------------------------------------------------------------------------
 
@@ -1560,8 +2095,14 @@ export function applyWholeFileImports(
     try {
       const content = fs.readFileSync(imp.source_file, "utf-8");
 
+      // Resolve attribution for the source file
+      const sourceDir = path.dirname(imp.source_file);
+      const sourceRepoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+      const attr = resolveAttribution(imp.source_file, sourceDir, sourceRepoName);
+
       if (imp.import_type === "agent") {
-        const body = stripFrontmatter(content);
+        let body = stripFrontmatter(content);
+        body = injectAttribution(body, attr);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         fs.writeFileSync(destPath, body + "\n", "utf-8");
 
@@ -1578,16 +2119,19 @@ export function applyWholeFileImports(
         }
         console.log(chalk.green(`    + ${imp.target_path} (persona from agent)`));
       } else if (imp.import_type === "trait") {
+        const attributed = injectAttribution(content, attr);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        fs.writeFileSync(destPath, content, "utf-8");
+        fs.writeFileSync(destPath, attributed, "utf-8");
         console.log(chalk.green(`    + ${imp.target_path} (trait)`));
       } else if (imp.import_type === "rule") {
+        const attributed = injectAttribution(content, attr);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        fs.writeFileSync(destPath, content, "utf-8");
+        fs.writeFileSync(destPath, attributed, "utf-8");
         console.log(chalk.green(`    + ${imp.target_path} (gotcha from rule)`));
       } else if (imp.import_type === "skill") {
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        const body = stripFrontmatter(content);
+        let body = stripFrontmatter(content);
+        body = injectAttribution(body, attr);
         // Linked skills append to existing SKILL.md instead of overwriting
         if (fs.existsSync(destPath)) {
           const existing = fs.readFileSync(destPath, "utf-8");
@@ -2199,6 +2743,15 @@ export function runExpandedImport(
   hubPath: string,
   trustedSources: Set<string>,
 ): ImportPlanV2 {
+  // 0. Duplicate detection (before classification)
+  console.log(chalk.cyan("\n  Checking for duplicates..."));
+  const duplicateMatches = detectDuplicates(manifest, hubPath);
+  if (duplicateMatches.length > 0) {
+    printDuplicateDetection(duplicateMatches);
+  } else {
+    console.log(chalk.gray("    No duplicates detected"));
+  }
+
   // 1. Whole-file imports (free, instant)
   console.log(chalk.cyan("\n  Processing whole-file imports..."));
   const wholeFileImports = processWholeFileImports(categorized.wholeFile, hubPath);
@@ -2263,6 +2816,15 @@ export function runExpandedImport(
     classifications = classifyResult.classifications;
     for (const src of classifyResult.trustedSources) {
       trustedSources.add(src);
+    }
+
+    // Track and persist timed-out files
+    if (classifyResult.timedOutFiles.length > 0) {
+      const failedPath = writeFailedFile(classifyResult.timedOutFiles, hubPath);
+      console.log(chalk.yellow(
+        `\n  ${classifyResult.timedOutFiles.length} file(s) timed out — retry with: agentboot import --retry-failed`
+      ));
+      console.log(chalk.gray(`  Failed files recorded in: ${failedPath}\n`));
     }
   }
 
@@ -2335,7 +2897,7 @@ export function applyImportPlanV2(
 
 export {
   analyzeOverlap, normalizeContent, jaccardSimilarity, scanPath, applyPlan,
-  buildClassificationPrompt, ALLOWED_CLASSIFICATION_DIRS,
+  buildClassificationPrompt, buildBatchedClassificationPrompt, ALLOWED_CLASSIFICATION_DIRS,
   detectPlatform, slugify, parseAgentFrontmatter, stripFrontmatter, extractTraitRefs,
   writeStagingFileV2, readStagingFileV2,
 };
