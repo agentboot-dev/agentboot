@@ -411,7 +411,7 @@ describe("sync script", () => {
 
   it("syncs claude platform files to target repo", () => {
     const output = run("scripts/sync.ts");
-    expect(output).toContain("Synced 1 repo");
+    expect(output).toContain("Synced 1 of 1 repo");
   });
 
   it("creates .claude/ directory in target", () => {
@@ -454,9 +454,15 @@ describe("sync script", () => {
     }
   });
 
-  it("skips unchanged files on re-sync", () => {
+  it("smart sync: skips repo with no changes on re-sync", () => {
     const output = run("scripts/sync.ts");
-    expect(output).toContain("unchanged");
+    expect(output).toContain("skipped (no changes)");
+    expect(output).toContain("Synced 0 of 1");
+  });
+
+  it("smart sync: --force bypasses skip and syncs all repos", () => {
+    const output = run("scripts/sync.ts -- --force");
+    expect(output).toContain("Synced 1 of 1 repo");
   });
 
   it("supports dry-run mode", () => {
@@ -488,7 +494,7 @@ describe("sync script", () => {
 
     try {
       const output = run("scripts/sync.ts");
-      expect(output).toContain("Synced 1 repo");
+      expect(output).toContain("Synced 1 of 1 repo");
 
       // Copilot platform should have merged copilot-instructions.md in .github/
       expect(
@@ -525,7 +531,7 @@ describe("sync script", () => {
 
     try {
       const output = run("scripts/sync.ts");
-      expect(output).toContain("Synced 1 repo");
+      expect(output).toContain("Synced 1 of 1 repo");
 
       // Cursor rules should be written to .cursor/rules/
       const cursorRulesDir = path.join(cursorTarget, ".cursor", "rules");
@@ -587,6 +593,75 @@ describe("sync script", () => {
     }
     // Ensure we actually tested something — if run() succeeded, no assertions ran
     expect(caught).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 14b: Multi-platform repos
+// ---------------------------------------------------------------------------
+
+describe("multi-platform repo support", () => {
+  let multiTarget: string;
+  let originalRepos: string;
+
+  beforeAll(() => {
+    originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    multiTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-multi-"));
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([{
+        path: multiTarget,
+        label: "multi-platform-test",
+        platforms: ["claude", "copilot"],
+      }])
+    );
+  });
+
+  afterAll(() => {
+    fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+    if (multiTarget) {
+      fs.rmSync(multiTarget, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs both claude and copilot platforms to the same repo", () => {
+    const output = run("scripts/sync.ts");
+    // Should produce 2 results (one per platform)
+    expect(output).toContain("Synced 2 of 2 repo");
+  });
+
+  it("creates .claude/ directory for claude platform", () => {
+    expect(fs.existsSync(path.join(multiTarget, ".claude"))).toBe(true);
+    expect(fs.existsSync(path.join(multiTarget, ".claude", "skills"))).toBe(true);
+  });
+
+  it("creates copilot-instructions.md for copilot platform", () => {
+    expect(
+      fs.existsSync(path.join(multiTarget, ".github", "copilot-instructions.md"))
+    ).toBe(true);
+  });
+
+  it("backward compatible: singular platform field still works", () => {
+    const singleTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-single-"));
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([{ path: singleTarget, label: "single-platform", platform: "claude" }])
+    );
+    try {
+      const output = run("scripts/sync.ts");
+      expect(output).toContain("Synced 1 of 1 repo");
+      expect(fs.existsSync(path.join(singleTarget, ".claude"))).toBe(true);
+    } finally {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{
+          path: multiTarget,
+          label: "multi-platform-test",
+          platforms: ["claude", "copilot"],
+        }])
+      );
+      fs.rmSync(singleTarget, { recursive: true, force: true });
+    }
   });
 });
 
