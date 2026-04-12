@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 import { input } from "@inquirer/prompts";
 import { loadPrompt, loadSchema } from "../prompts/index.js";
@@ -1005,6 +1006,88 @@ export function readFailedFile(hubPath: string): TimedOutFile[] {
 }
 
 // ---------------------------------------------------------------------------
+// Source attribution — contributor + source fields for imported artifacts
+// ---------------------------------------------------------------------------
+
+export interface Attribution {
+  contributor: string | null;
+  source: string;
+}
+
+/**
+ * Resolve attribution for an imported file.
+ * - source: the repoName (from the scan manifest)
+ * - contributor: git blame author-mail on line 1, falling back to git config user.email
+ */
+export function resolveAttribution(absolutePath: string, repoDir: string, repoName: string): Attribution {
+  const attr: Attribution = { contributor: null, source: repoName };
+
+  // Try git blame on line 1
+  try {
+    const blame = spawnSync("git", ["blame", "--porcelain", "-L", "1,1", absolutePath], {
+      cwd: repoDir,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
+    if (blame.status === 0 && blame.stdout) {
+      const mailMatch = blame.stdout.match(/^author-mail <(.+?)>/m);
+      if (mailMatch && mailMatch[1]) {
+        attr.contributor = mailMatch[1];
+      }
+    }
+  } catch { /* git blame failed */ }
+
+  // Fall back to git config user.email
+  if (!attr.contributor) {
+    try {
+      const config = spawnSync("git", ["config", "user.email"], {
+        cwd: repoDir,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      });
+      if (config.status === 0 && config.stdout?.trim()) {
+        attr.contributor = config.stdout.trim();
+      }
+    } catch { /* git config failed */ }
+  }
+
+  return attr;
+}
+
+/**
+ * Inject contributor and source fields into content frontmatter.
+ * If the content already has frontmatter, fields are added after any existing `type:` line.
+ * If no frontmatter exists, a new frontmatter block is prepended.
+ */
+export function injectAttribution(content: string, attr: Attribution): string {
+  const attrLines: string[] = [];
+  if (attr.contributor) attrLines.push(`contributor: ${attr.contributor}`);
+  attrLines.push(`source: ${attr.source}`);
+
+  if (content.startsWith("---\n")) {
+    // Has frontmatter — inject after opening --- (and after type: if present)
+    const endIdx = content.indexOf("---", 3);
+    if (endIdx > 0) {
+      const frontmatter = content.slice(4, endIdx);
+      const body = content.slice(endIdx);
+      const fmLines = frontmatter.split("\n");
+
+      // Find the type: line to insert after it
+      const typeIdx = fmLines.findIndex(l => l.startsWith("type:"));
+      const insertIdx = typeIdx >= 0 ? typeIdx + 1 : 0;
+      fmLines.splice(insertIdx, 0, ...attrLines);
+
+      return "---\n" + fmLines.join("\n") + body;
+    }
+  }
+
+  // No frontmatter — prepend new block
+  return `---\n${attrLines.join("\n")}\n---\n\n${content}`;
+}
+
+// ---------------------------------------------------------------------------
 // Apply: write classified content to hub
 // ---------------------------------------------------------------------------
 
@@ -1083,6 +1166,14 @@ function applyPlan(
         } else {
           contentToWrite = `---\ncomposition: ${comp}\n---\n\n${contentToWrite}`;
         }
+      }
+
+      // Add source attribution to imported artifacts
+      if (item.action === "create") {
+        const sourceDir = path.dirname(resolvedSource);
+        const repoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+        const attr = resolveAttribution(resolvedSource, sourceDir, repoName);
+        contentToWrite = injectAttribution(contentToWrite, attr);
       }
 
       // Write the file
@@ -1790,8 +1881,14 @@ export function applyWholeFileImports(
     try {
       const content = fs.readFileSync(imp.source_file, "utf-8");
 
+      // Resolve attribution for the source file
+      const sourceDir = path.dirname(imp.source_file);
+      const sourceRepoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+      const attr = resolveAttribution(imp.source_file, sourceDir, sourceRepoName);
+
       if (imp.import_type === "agent") {
-        const body = stripFrontmatter(content);
+        let body = stripFrontmatter(content);
+        body = injectAttribution(body, attr);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         fs.writeFileSync(destPath, body + "\n", "utf-8");
 
@@ -1808,16 +1905,19 @@ export function applyWholeFileImports(
         }
         console.log(chalk.green(`    + ${imp.target_path} (persona from agent)`));
       } else if (imp.import_type === "trait") {
+        const attributed = injectAttribution(content, attr);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        fs.writeFileSync(destPath, content, "utf-8");
+        fs.writeFileSync(destPath, attributed, "utf-8");
         console.log(chalk.green(`    + ${imp.target_path} (trait)`));
       } else if (imp.import_type === "rule") {
+        const attributed = injectAttribution(content, attr);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        fs.writeFileSync(destPath, content, "utf-8");
+        fs.writeFileSync(destPath, attributed, "utf-8");
         console.log(chalk.green(`    + ${imp.target_path} (gotcha from rule)`));
       } else if (imp.import_type === "skill") {
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        const body = stripFrontmatter(content);
+        let body = stripFrontmatter(content);
+        body = injectAttribution(body, attr);
         // Linked skills append to existing SKILL.md instead of overwriting
         if (fs.existsSync(destPath)) {
           const existing = fs.readFileSync(destPath, "utf-8");

@@ -21,9 +21,12 @@ import {
   buildBatchedClassificationPrompt,
   writeFailedFile,
   readFailedFile,
+  resolveAttribution,
+  injectAttribution,
   type ScanManifest,
   type CategorizedScan,
   type TimedOutFile,
+  type Attribution,
 } from "../scripts/lib/import.js";
 
 // ---------------------------------------------------------------------------
@@ -323,5 +326,84 @@ describe("Story 13e: Import timeout tracking", () => {
     };
     expect(result.timedOutFiles).toHaveLength(1);
     expect(result.timedOutFiles[0]!.file).toBe("/path");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 13g: Source attribution in import
+// ---------------------------------------------------------------------------
+
+describe("Story 13g: Source attribution", () => {
+  it("injectAttribution adds attribution to content without frontmatter", () => {
+    const attr: Attribution = { contributor: "mike@acme.com", source: "auth-service" };
+    const content = "# My Rule\nDo something safely.";
+    const result = injectAttribution(content, attr);
+
+    expect(result).toContain("---");
+    expect(result).toContain("contributor: mike@acme.com");
+    expect(result).toContain("source: auth-service");
+    expect(result).toContain("# My Rule");
+  });
+
+  it("injectAttribution adds attribution to content with existing frontmatter", () => {
+    const attr: Attribution = { contributor: "jane@acme.com", source: "api-gateway" };
+    const content = [
+      "---",
+      "type: gotcha",
+      'paths: ["src/auth/**"]',
+      "description: Auth rules",
+      "---",
+      "",
+      "# Auth Rules",
+    ].join("\n");
+
+    const result = injectAttribution(content, attr);
+    expect(result).toContain("contributor: jane@acme.com");
+    expect(result).toContain("source: api-gateway");
+    // Attribution should appear after type:
+    const typeIdx = result.indexOf("type: gotcha");
+    const contribIdx = result.indexOf("contributor:");
+    expect(contribIdx).toBeGreaterThan(typeIdx);
+  });
+
+  it("injectAttribution handles null contributor", () => {
+    const attr: Attribution = { contributor: null, source: "my-repo" };
+    const content = "# Test\nContent.";
+    const result = injectAttribution(content, attr);
+
+    expect(result).toContain("source: my-repo");
+    expect(result).not.toContain("contributor:");
+  });
+
+  it("resolveAttribution returns source from repoName", () => {
+    // Create a temp git repo
+    const repoDir = path.join(tmpDir, "test-repo");
+    fs.mkdirSync(repoDir, { recursive: true });
+    const filePath = path.join(repoDir, "test.md");
+    fs.writeFileSync(filePath, "# Test\n", "utf-8");
+
+    const attr = resolveAttribution(filePath, repoDir, "test-repo");
+    expect(attr.source).toBe("test-repo");
+    // contributor may be null if not a git repo — that's fine
+  });
+
+  it("resolveAttribution uses git blame when available", () => {
+    // Initialize a git repo and commit a file
+    const repoDir = path.join(tmpDir, "git-repo");
+    fs.mkdirSync(repoDir, { recursive: true });
+
+    const { spawnSync } = require("node:child_process");
+    spawnSync("git", ["init"], { cwd: repoDir, stdio: "pipe" });
+    spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir, stdio: "pipe" });
+    spawnSync("git", ["config", "user.name", "Test User"], { cwd: repoDir, stdio: "pipe" });
+
+    const filePath = path.join(repoDir, "rule.md");
+    fs.writeFileSync(filePath, "# Safety Rule\nBe safe.\n", "utf-8");
+    spawnSync("git", ["add", "rule.md"], { cwd: repoDir, stdio: "pipe" });
+    spawnSync("git", ["commit", "-m", "add rule"], { cwd: repoDir, stdio: "pipe" });
+
+    const attr = resolveAttribution(filePath, repoDir, "git-repo");
+    expect(attr.source).toBe("git-repo");
+    expect(attr.contributor).toBe("test@example.com");
   });
 });
