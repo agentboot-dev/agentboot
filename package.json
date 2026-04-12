@@ -37,6 +37,7 @@
     "bin/",
     "scripts/",
     "core/",
+    "templates/",
     "README.md",
     "LICENSE",
     "NOTICE"
