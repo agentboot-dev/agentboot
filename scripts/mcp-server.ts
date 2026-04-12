@@ -24,7 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { stripJsoncComments, type PersonaConfig, type AgentBootConfig, loadConfig } from "./lib/config.js";
 import { scanParentForContent } from "./lib/import.js";
 import { fileURLToPath } from "node:url";
@@ -1296,14 +1296,26 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
   const kebab = basename.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
   let branchName = `ab/${kebab}`;
 
-  // Check if branch exists already
+  // Detect the default branch (main, master, or whatever the repo uses).
+  let defaultBranch = "main";
   try {
-    const branches = execSync("git branch --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
-    if (branches.includes(branchName)) {
+    const symbolicRef = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
+      cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe",
+    }).trim();
+    defaultBranch = symbolicRef.replace("refs/remotes/origin/", "");
+  } catch {
+    // Fall back to "main" if not determinable
+  }
+
+  // Check if branch exists already — exact line match, not substring.
+  try {
+    const localBranches = execSync("git branch --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" })
+      .split("\n").map(b => b.replace(/^\*?\s+/, "").trim()).filter(Boolean);
+    if (localBranches.includes(branchName)) {
       branchName = `${branchName}-${Date.now()}`;
     }
-    // Also check remote branches
-    const remoteBranches = execSync("git branch -r --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
+    const remoteBranches = execSync("git branch -r --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" })
+      .split("\n").map(b => b.trim()).filter(Boolean);
     if (remoteBranches.includes(`origin/${branchName}`)) {
       branchName = `${branchName}-${Date.now()}`;
     }
@@ -1311,20 +1323,43 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
     // If git fails, just proceed with the branch name
   }
 
-  try {
-    // Use simple-git if available, otherwise use git commands directly
-    // Ensure we start from main
-    execSync("git checkout main", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
+  // Helper: run a git/gh command safely via spawnSync (no shell interpolation).
+  function gitRun(args: string[], opts?: { cwd?: string }): { ok: boolean; out: string; err: string } {
+    const result = spawnSync("git", args, {
+      cwd: opts?.cwd ?? HUB_ROOT,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+    return {
+      ok: result.status === 0,
+      out: (result.stdout ?? "").trim(),
+      err: (result.stderr ?? "").trim(),
+    };
+  }
+  function ghRun(args: string[]): { ok: boolean; out: string; err: string } {
+    const result = spawnSync("gh", args, {
+      cwd: HUB_ROOT,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+    return {
+      ok: result.status === 0,
+      out: (result.stdout ?? "").trim(),
+      err: (result.stderr ?? "").trim(),
+    };
+  }
 
-    // Pull latest
-    try {
-      execSync("git pull --ff-only", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
-    } catch {
-      // May fail if no remote configured, that's OK
-    }
+  try {
+    // Ensure we start from the default branch
+    const checkoutDefault = gitRun(["checkout", defaultBranch]);
+    if (!checkoutDefault.ok) throw new Error(`git checkout ${defaultBranch}: ${checkoutDefault.err}`);
+
+    // Pull latest (best effort)
+    gitRun(["pull", "--ff-only"]);
 
     // Create and checkout new branch
-    execSync(`git checkout -b ${branchName}`, { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
+    const checkoutBranch = gitRun(["checkout", "-b", branchName]);
+    if (!checkoutBranch.ok) throw new Error(`git checkout -b ${branchName}: ${checkoutBranch.err}`);
 
     // Write the file
     const dir = path.dirname(fullPath);
@@ -1332,48 +1367,43 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
     fs.writeFileSync(fullPath, content, "utf-8");
 
     // Stage
-    execSync(`git add ${JSON.stringify(relativePath)}`, { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
+    const addResult = gitRun(["add", "--", relativePath]);
+    if (!addResult.ok) throw new Error(`git add: ${addResult.err}`);
 
-    // Commit
-    const authorFlag = contributor ? `--author="${contributor} <${contributor}>"` : "";
-    const escapedMessage = commitMessage.replace(/"/g, '\\"');
-    execSync(`git commit -m "${escapedMessage}" ${authorFlag}`.trim(), {
-      cwd: HUB_ROOT,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
+    // Commit — pass message and author as separate args (no shell interpolation)
+    const commitArgs = ["commit", "-m", commitMessage];
+    if (contributor) {
+      commitArgs.push(`--author=${contributor} <${contributor}>`);
+    }
+    const commitResult = gitRun(commitArgs);
+    if (!commitResult.ok) throw new Error(`git commit: ${commitResult.err}`);
 
     // Push
-    execSync(`git push origin ${branchName} --set-upstream`, {
-      cwd: HUB_ROOT,
-      encoding: "utf-8",
-      stdio: "pipe",
-    });
+    const pushResult = gitRun(["push", "origin", branchName, "--set-upstream"]);
+    if (!pushResult.ok) throw new Error(`git push: ${pushResult.err}`);
 
-    // Create PR
-    const escapedTitle = prTitle.replace(/"/g, '\\"');
+    // Create PR — pass title/body as separate args
     const fullBody = `${prBody}\n\n---\n*Proposed via /ab*`;
     let prUrl = "";
-    try {
-      const prOutput = execSync(
-        `gh pr create --title "${escapedTitle}" --body "${fullBody.replace(/"/g, '\\"')}" --base main --head ${branchName}`,
-        { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" },
-      );
-      prUrl = prOutput.trim();
-    } catch (prErr: unknown) {
-      const prError = prErr as { stdout?: string; stderr?: string; message?: string };
-      const prMsg = prError.stdout ?? prError.stderr ?? prError.message ?? "";
-      // Try to extract URL from output even on error
-      const urlMatch = String(prMsg).match(/(https:\/\/github\.com\/[^\s]+)/);
-      prUrl = urlMatch ? urlMatch[1]! : `PR creation failed: ${String(prMsg).trim()}`;
+    const prResult = ghRun([
+      "pr", "create",
+      "--title", prTitle,
+      "--body", fullBody,
+      "--base", defaultBranch,
+      "--head", branchName,
+    ]);
+    if (prResult.ok) {
+      prUrl = prResult.out;
+    } else {
+      // Try to extract URL from output even on error (gh sometimes writes URL to stderr)
+      const combined = `${prResult.out} ${prResult.err}`;
+      const urlMatch = combined.match(/(https:\/\/github\.com\/[^\s]+)/);
+      // Still return success — the branch and commit were created even if PR open failed
+      prUrl = urlMatch ? urlMatch[1]! : `Branch pushed but PR creation failed: ${prResult.err}`;
     }
 
-    // Return to main
-    try {
-      execSync("git checkout main", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
-    } catch {
-      // Best effort
-    }
+    // Return to default branch
+    gitRun(["checkout", defaultBranch]);
 
     return toolOk({
       prUrl,
@@ -1381,16 +1411,11 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
       path: relativePath,
     });
   } catch (err: unknown) {
-    // Try to return to main on any error
-    try {
-      execSync("git checkout main", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" });
-    } catch {
-      // Best effort cleanup
-    }
+    // Best-effort return to default branch on any error
+    gitRun(["checkout", defaultBranch]);
 
-    const error = err as { stdout?: string; stderr?: string; message?: string };
-    const errorMsg = error.stderr ?? error.stdout ?? error.message ?? "Unknown error";
-    return toolError(`propose_change failed: ${String(errorMsg).trim()}`);
+    const error = err as { message?: string };
+    return toolError(`propose_change failed: ${error.message ?? String(err)}`);
   }
 }
 

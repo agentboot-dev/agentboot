@@ -52,6 +52,7 @@ export interface TimedOutFile {
   file: string;
   repoName: string;
   timedOutAt: string;
+  fileType?: ScannedFile["type"];
 }
 
 interface ScannedFile {
@@ -908,6 +909,7 @@ export function classifyScannedFiles(
             file: file.absolutePath,
             repoName: file.repoName,
             timedOutAt: new Date().toISOString(),
+            fileType: file.type,
           });
         }
         continue;
@@ -1315,17 +1317,18 @@ export async function runImport(opts: ImportOptions): Promise<void> {
     for (const f of failedFiles) {
       console.log(chalk.gray(`    ${f.repoName}: ${f.file} (timed out at ${f.timedOutAt})`));
     }
-    // Re-run import on just those files
+    // Re-run import on just those files.
+    // parentDir: use the hub path as a stable common root (failed files may span multiple repos).
     const retryManifest: ScanManifest = {
-      parentDir: path.dirname(failedFiles[0]!.file),
+      parentDir: hubPath,
       scannedAt: new Date().toISOString(),
       files: failedFiles.map(f => ({
         absolutePath: f.file,
-        relativePath: path.basename(f.file),
+        relativePath: path.relative(path.dirname(f.file), f.file),
         repoDir: path.dirname(f.file),
         repoName: f.repoName,
         lines: 0,
-        type: "claude-md" as const,
+        type: (f.fileType ?? "claude-md") as ScannedFile["type"],
       })),
     };
     const retryResult = classifyScannedFiles(retryManifest, hubPath);
@@ -1570,15 +1573,6 @@ function normalizeContent(content: string): string[] {
     .filter(w => w.length > 2);      // Drop very short words
 }
 
-function jaccardSimilarity(setA: Set<string>, setB: Set<string>): number {
-  if (setA.size === 0 && setB.size === 0) return 0;
-  let intersection = 0;
-  for (const item of setA) {
-    if (setB.has(item)) intersection++;
-  }
-  const union = setA.size + setB.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
 
 interface OverlapMatch {
   sourceItem: string;
@@ -1637,7 +1631,7 @@ function analyzeOverlap(
 
     // Against hub
     for (const hub of hubContent) {
-      const similarity = jaccardSimilarity(tokens, hub.tokens);
+      const similarity = jaccardSimilarityTokenized(tokens, hub.tokens);
       if (similarity >= 0.7) {
         matches.push({
           sourceItem: itemName,
@@ -1663,7 +1657,7 @@ function analyzeOverlap(
     for (let j = i + 1; j < classificationSets.length; j++) {
       const a = classificationSets[i]!;
       const b = classificationSets[j]!;
-      const similarity = jaccardSimilarity(a.tokens, b.tokens);
+      const similarity = jaccardSimilarityTokenized(a.tokens, b.tokens);
       if (similarity >= 0.7) {
         matches.push({
           sourceItem: a.name,
@@ -2599,7 +2593,7 @@ export function deduplicateCrossPlatform(
       // Only dedup across different platforms
       if (a.platform === b.platform) continue;
 
-      const similarity = jaccardSimilarity(a.tokens, b.tokens);
+      const similarity = jaccardSimilarityTokenized(a.tokens, b.tokens);
       if (similarity >= 0.7) {
         duplicates.push({
           path: b.file.relativePath,
@@ -2896,7 +2890,7 @@ export function applyImportPlanV2(
 }
 
 export {
-  analyzeOverlap, normalizeContent, jaccardSimilarity, scanPath, applyPlan,
+  analyzeOverlap, normalizeContent, jaccardSimilarityTokenized as jaccardSimilarity, scanPath, applyPlan,
   buildClassificationPrompt, buildBatchedClassificationPrompt, ALLOWED_CLASSIFICATION_DIRS,
   detectPlatform, slugify, parseAgentFrontmatter, stripFrontmatter, extractTraitRefs,
   writeStagingFileV2, readStagingFileV2,

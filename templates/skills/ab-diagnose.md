@@ -128,7 +128,7 @@ When the user asks to run tests:
 
    Do not run LLM-powered tests without explicit confirmation.
 
-3. Call `agentboot_build` to run the test suite (test invocation is integrated into the build pipeline for Phase 10).
+3. Ask the user which test mode to run: deterministic (`agentboot test`), behavioral, or LLM-as-judge. For deterministic tests, instruct the user to run `npm test` or `npx vitest run` in the hub directory — these cannot be invoked via MCP. For behavioral tests, invoke `agentboot_build` only if the user needs a fresh build first.
 
 4. Present results:
 
