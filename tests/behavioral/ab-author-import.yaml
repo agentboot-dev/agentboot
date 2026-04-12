@@ -14,8 +14,7 @@ tests:
       - groups_by_confidence_tier: true
       - confidence_tiers:
           - high
-          - medium
-          - low
+          - uncertain
       - asks_for_confirmation_before_import: true
     pass_threshold: 0.8
 
