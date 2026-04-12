@@ -184,14 +184,29 @@ describe("MCP message handling", () => {
     expect(response).not.toBeNull();
     const result = response!.result as { tools: Array<{ name: string }> };
     expect(result.tools).toBeDefined();
-    expect(result.tools.length).toBe(5);
+    expect(result.tools.length).toBeGreaterThanOrEqual(5);
 
     const toolNames = result.tools.map((t) => t.name);
+    // Original 5 tools
     expect(toolNames).toContain("agentboot_list_personas");
     expect(toolNames).toContain("agentboot_get_persona");
     expect(toolNames).toContain("agentboot_list_traits");
     expect(toolNames).toContain("agentboot_get_trait");
     expect(toolNames).toContain("agentboot_list_gotchas");
+    // Phase 10 read tools
+    expect(toolNames).toContain("agentboot_status");
+    expect(toolNames).toContain("agentboot_list_repos");
+    expect(toolNames).toContain("agentboot_cost_estimate");
+    expect(toolNames).toContain("agentboot_scan_for_import");
+    // Phase 10 execute tools
+    expect(toolNames).toContain("agentboot_validate");
+    expect(toolNames).toContain("agentboot_lint");
+    expect(toolNames).toContain("agentboot_doctor");
+    expect(toolNames).toContain("agentboot_build");
+    expect(toolNames).toContain("agentboot_sync");
+    expect(toolNames).toContain("agentboot_optimize_metrics");
+    // Phase 10 write tool
+    expect(toolNames).toContain("agentboot_propose_change");
   });
 
   it("handles tools/call", () => {
