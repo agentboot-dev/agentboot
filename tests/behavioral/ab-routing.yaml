@@ -43,6 +43,23 @@ tests:
       - intent: list-personas
     pass_threshold: 0.8
 
+  - id: routing-classifier-lexicon
+    description: User says "rule" but describes a term definition — classify as lexicon
+    prompt: "add a rule that GTD means Getting Things Done"
+    expect:
+      - routes_to: ab-author
+      - artifact_type: lexicon
+      - teaches_type_system: true
+    pass_threshold: 0.8
+
+  - id: routing-connect-to-manage
+    description: Route repo connection request to ab-manage
+    prompt: "connect this repo to our hub"
+    expect:
+      - routes_to: ab-manage
+      - intent: install
+    pass_threshold: 0.8
+
   - id: routing-ambiguous-clarify
     description: Ambiguous input triggers clarifying question instead of routing
     prompt: "I want to improve the code reviewer"

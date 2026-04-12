@@ -25,6 +25,14 @@ tests:
       - no_error_findings: true
     pass_threshold: 0.8
 
+  - id: diagnose-optimize
+    description: Optimize request calls optimize_metrics and presents recommendations
+    prompt: "optimize my personas for cost"
+    expect:
+      - calls_tool: agentboot_optimize_metrics
+      - presents_recommendations: true
+    pass_threshold: 0.8
+
   - id: diagnose-lint-persona
     description: Lint command targets specific persona and returns actionable findings
     prompt: "lint the security-reviewer persona"

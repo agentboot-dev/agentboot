@@ -36,7 +36,7 @@ Detect the user's intent from natural language and route to the correct speciali
 - Share or contribute something to the hub
 - Classify or reclassify an artifact
 
-Keywords: create, add, write, scaffold, import, migrate, pull, promote, demote, share, contribute, classify, move up, move down, narrow, broaden
+Keywords: create, add, write, scaffold, import, migrate, pull, promote, demote, share, contribute, classify, move up, move down, narrow, broaden, convert
 
 **Route to `ab-diagnose` when the user wants to:**
 - Check health or fix problems
@@ -60,7 +60,7 @@ Keywords: broken, failing, wrong, check, validate, lint, test, score, optimize, 
 - Export to a specific format
 - Publish to the marketplace
 
-Keywords: build, compile, sync, deploy, push, install, setup, uninstall, configure, enable, disable, export, publish, config, settings
+Keywords: build, compile, sync, deploy, push, install, setup, uninstall, configure, enable, disable, export, publish, config, settings, connect
 
 **Route to `ab-query` when the user wants to:**
 - Check status of the hub

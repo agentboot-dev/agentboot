@@ -42,7 +42,9 @@ Frontmatter:
 ```yaml
 ---
 type: gotcha
-paths: "{user-specified-paths}"
+paths:
+  - "{user-specified-pattern-1}"
+  - "{user-specified-pattern-2}"
 description: "{one-sentence description}"
 scope: "{resolved-scope}"
 contributor: "{git-identity}"
