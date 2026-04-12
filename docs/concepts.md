@@ -1189,6 +1189,93 @@ This is the same philosophy behind great CLI tools that also ship a good REPL:
 the underlying primitives don't change, but the interaction layer meets the user
 where they think, not where the implementation lives.
 
+## Promotion pathways
+
+AgentBoot is often described top-down: the org architects behavior, the hub distributes
+it, developers receive it. That model is real and important. But it is only half the
+system. The other half flows the opposite direction — and this is where orgs actually
+win or lose with agentic tooling.
+
+**The problem with personal scope as a dead end:**
+Developers naturally collect useful prompts, gotchas, and patterns. Claude Code's
+`~/.claude/` is where most of them live — personal, unjournaled, unjournalled,
+invisible to the org. Each developer ends up with 30 individually optimized setups
+that evaporate when they leave and never compound into shared knowledge. The org
+has AgentBoot installed and a sea of isolated solo users.
+
+**The core insight: the PR is the permission system.**
+In a git-based model, "writing" at org scope does not mean directly modifying the
+hub. It means opening a pull request on the hub. That PR can be rejected, questioned,
+or improved by reviewers. The approval mechanism is already present in the workflow.
+A separate per-scope ACL layer — "developers can only write at team scope" — is
+redundant, paternalistic, and cuts off the contribution signal the org needs.
+
+The implication: `/ab` and the wider AgentBoot toolchain should never block a
+contribution attempt based on scope. Anyone can propose anything at any scope. Scope
+is guidance ("this probably belongs at team level first"), not a gate. Hub owners
+control what merges — not what gets proposed.
+
+**What promotion pathways are:**
+
+The four-level scope hierarchy (org → group → team → repo) is not only a distribution
+model — it is a career path for an artifact. A new gotcha might earn its place at team
+scope after one sprint. If it proves universal, a team member or org admin promotes
+it to group or org scope. Promotion is incremental. No artifact has to justify org-wide
+scope from day one.
+
+The three promotion mechanisms:
+
+1. **Direct contribution** — a developer opens a PR to the hub at any scope, via
+   `/ab add a gotcha [at org scope]`. No permission gate. The PR is the gate.
+
+2. **Explicit promote flow** — a developer has something working in their personal
+   config and wants to share it. `/ab promote [artifact]` walks scope selection and
+   opens a PR on the hub with full attribution.
+
+3. **Import as discovery trigger** — when `/ab import` scans repos and finds the same
+   pattern in multiple places, it surfaces a promotion suggestion: *"This gotcha appears
+   in 4 repos independently. It may be worth promoting to core so everyone benefits from
+   one maintained version."* Duplicate detection becomes a contribution signal, not just
+   deduplication.
+
+**Demotion is a learning event, not a failure:**
+Promotion goes both directions. An artifact that was promoted to org scope but turns
+out to be too narrow gets demoted — scoped down to the team or group where it actually
+applies. This is framed as root-cause analysis, never criticism. The demotion trail
+records why the scope was narrowed ("pattern specific to Redis keyspace expiry, not
+general cache behavior") so the next person who encounters the same edge case finds
+the explanation rather than a gap.
+
+**Source attribution:**
+Every artifact in the hub carries provenance: who created it, what repo it came from
+if imported, who promoted it and when, and its full scope history. This is not a
+trophy case — it is institutional memory. When a developer asks the Second Brain
+*"why does this rule exist?"*, attribution is what makes the answer meaningful: *"This
+gotcha was contributed by the auth team after the 2025-11 session expiry incident.
+Promoted to org scope in Q1 2026."*
+
+Recognition without gamification: the value is not a badge or a leaderboard. An
+engineer's insight becomes visible in the PERSONAS.md that ships to every developer
+in the org, surfaces in Second Brain answers, and is queryable. That is meaningful
+recognition for engineers who care about craft. No gift cards, no points, no rankings.
+
+**The evaluation lens:**
+Every design decision in AgentBoot — new features, workflow changes, architectural
+choices — should be evaluated against:
+
+> *Does this make it easier or harder for developer discoveries to flow upward and
+> become org knowledge?*
+
+| Verdict | Examples |
+|---|---|
+| Supports promotion | PR-mediated writes at any scope; import duplicate detection as promotion trigger; source attribution in frontmatter; Second Brain surfacing provenance |
+| Neutral | Read-only query operations; build/sync pipeline internals |
+| Detracts from promotion | Hard scope permission gates; personal config with no path to sharing; org-only import sources; anonymous contributions |
+
+This lens applies to new features, workflow choices, and product positioning. A feature
+that makes individual developers more effective but siloes that effectiveness is net
+neutral at best and net negative if it displaces time from contributing up the chain.
+
 ## Anti-patterns
 
 These patterns were tried in AgentBoot's origin implementations and should be

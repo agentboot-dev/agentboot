@@ -202,6 +202,8 @@ Three-stage progression from flat files to RAG:
 ### Planning Documents
 
 `docs/internal/plans/` contains planning docs:
+- `remaining-work.md` — master internal planning index: Phase 10-12+ detail, priority buckets, long-horizon backlog
+- `phase-10-ab-skill.md` — Phase 10 deep dive: `/ab` skill architecture, MCP server tools, every CLI subcommand mapped to its `/ab` equivalent, implementation sequence
 - `phase-4-design.md` — Phase 4 design: install wizard flows, import system, global hub registry, org/repo subcommands
 
 ### Internal Operations
