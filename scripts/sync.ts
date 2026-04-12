@@ -72,6 +72,8 @@ interface SyncResult {
   errors: string[];
   dryRun: boolean;
   prUrl?: string;
+  /** True when smart sync determined the repo is already up-to-date. */
+  skippedNoChanges?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +486,133 @@ function detectMonorepo(repoPath: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Smart sync: check if repo is already up-to-date
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the existing manifest from a repo and build a hash lookup.
+ * Returns null if no manifest exists (first sync).
+ */
+function loadManifestHashes(
+  repoPath: string,
+  targetDir: string
+): Map<string, string> | null {
+  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const hashes = new Map<string, string>();
+    for (const entry of manifest.files ?? []) {
+      if (entry.path && entry.hash) {
+        hashes.set(entry.path, entry.hash);
+      }
+    }
+    return hashes;
+  } catch {
+    return null; // Corrupt manifest — sync as normal
+  }
+}
+
+/**
+ * Check if all files that would be synced to a repo match the existing manifest.
+ * Returns true if the repo is up-to-date and can be skipped.
+ */
+function isRepoUpToDate(
+  mergedFiles: Map<string, ScopedFile>,
+  repoPath: string,
+  targetDir: string,
+  platform: string,
+  distPath: string,
+  org: string,
+  isPublic?: boolean,
+  writePersonasIndex?: boolean,
+): boolean {
+  const manifestHashes = loadManifestHashes(repoPath, targetDir);
+  if (!manifestHashes) return false; // No manifest = first sync, must sync
+
+  // Build a map of destination-path → source-content-hash for everything we would write
+  const wouldWrite = new Map<string, string>();
+
+  for (const [relPath, file] of mergedFiles) {
+    // Skip copilot fragments — they get merged into a single file
+    if (relPath.endsWith("copilot-instructions.md")) continue;
+    if (relPath === "PERSONAS.md") continue;
+    if (relPath === ".mcp.json" || relPath === "CLAUDE.md") continue;
+
+    const content = fs.readFileSync(file.absolutePath);
+    const hash = createHash("sha256").update(content).digest("hex");
+
+    let destRelPath: string;
+    if (platform === "cursor") {
+      destRelPath = path.join(".cursor", relPath);
+    } else if (platform === "copilot") {
+      if (relPath.startsWith("instructions/") && relPath.endsWith(".instructions.md")) {
+        destRelPath = path.join(".github", "instructions", path.basename(relPath));
+      } else {
+        continue;
+      }
+    } else {
+      destRelPath = path.join(targetDir, relPath);
+    }
+    wouldWrite.set(destRelPath, hash);
+  }
+
+  // Handle merged copilot instructions
+  const copilotContent = buildCopilotInstructions(mergedFiles, org, isPublic);
+  if (copilotContent) {
+    const hash = createHash("sha256").update(copilotContent).digest("hex");
+    wouldWrite.set(path.join(".github", "copilot-instructions.md"), hash);
+  }
+
+  // Handle root-level files
+  if (platform !== "copilot" && platform !== "cursor") {
+    for (const rootFile of [".mcp.json", "CLAUDE.md"]) {
+      const file = mergedFiles.get(rootFile);
+      if (file) {
+        const content = fs.readFileSync(file.absolutePath);
+        const hash = createHash("sha256").update(content).digest("hex");
+        wouldWrite.set(rootFile, hash);
+      }
+    }
+  }
+
+  // Handle PERSONAS.md
+  if (writePersonasIndex) {
+    const coreDir = path.join(distPath, platform, "core");
+    const personasIndexSrc = path.join(coreDir, "PERSONAS.md");
+    if (fs.existsSync(personasIndexSrc)) {
+      const content = fs.readFileSync(personasIndexSrc);
+      const hash = createHash("sha256").update(content).digest("hex");
+      wouldWrite.set(path.join(targetDir, "PERSONAS.md"), hash);
+    }
+  }
+
+  // Handle AGENTS.md
+  const agentsMdSrc = path.join(distPath, "agents", "AGENTS.md");
+  if (fs.existsSync(agentsMdSrc)) {
+    const content = fs.readFileSync(agentsMdSrc);
+    const hash = createHash("sha256").update(content).digest("hex");
+    wouldWrite.set("AGENTS.md", hash);
+  }
+
+  // Compare: every file we would write must exist in manifest with same hash
+  for (const [destPath, hash] of wouldWrite) {
+    const manifestHash = manifestHashes.get(destPath);
+    if (manifestHash !== hash) return false;
+  }
+
+  // Also check: manifest shouldn't have files we wouldn't write (deleted files)
+  // Skip the manifest file itself
+  for (const [manifestPath] of manifestHashes) {
+    if (manifestPath.endsWith(".agentboot-manifest.json")) continue;
+    if (!wouldWrite.has(manifestPath)) return false;
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Per-repo sync (single target — repo root or a package subdirectory)
 // ---------------------------------------------------------------------------
 
@@ -576,6 +705,19 @@ function syncRepoTarget(
   // Print composition warnings
   for (const w of warnings) {
     console.log(chalk.yellow(`  ⚠ ${w}`));
+  }
+
+  // Smart sync: check if repo is already up-to-date (skip if no changes)
+  if (!force) {
+    const writePersonasIndex = config.sync?.writePersonasIndex !== false;
+    const upToDate = isRepoUpToDate(
+      merged, effectivePath, targetDir, platform, distPath, org,
+      entry.public, writePersonasIndex,
+    );
+    if (upToDate) {
+      result.skippedNoChanges = true;
+      return result;
+    }
   }
 
   // Write all merged files to the target directory.
@@ -1009,6 +1151,13 @@ function printSyncResult(result: SyncResult): void {
   const scope = scopeParts.join("/");
   const dryRunTag = result.dryRun ? chalk.yellow(" [DRY RUN]") : "";
 
+  if (result.skippedNoChanges) {
+    console.log(
+      `  ${chalk.gray("–")} ${repoLabel}${chalk.gray(` (${scope})`)} — ${chalk.gray("skipped (no changes)")}`
+    );
+    return;
+  }
+
   if (result.errors.length > 0) {
     console.log(`  ${chalk.red("✗")} ${repoLabel} (${scope})${dryRunTag}`);
     for (const err of result.errors) {
@@ -1156,6 +1305,8 @@ async function main(): Promise<void> {
   const totalWritten = results.reduce((acc, r) => acc + r.filesWritten.length, 0);
   const totalSkipped = results.reduce((acc, r) => acc + r.filesSkipped.length, 0);
   const failedRepos = results.filter((r) => r.errors.length > 0);
+  const skippedRepos = results.filter((r) => r.skippedNoChanges);
+  const syncedRepos = results.filter((r) => !r.skippedNoChanges && r.errors.length === 0);
 
   console.log("");
 
@@ -1172,12 +1323,16 @@ async function main(): Promise<void> {
   }
 
   const dryRunNote = dryRun ? chalk.yellow(" (dry run — nothing written)") : "";
+  const skippedNote = skippedRepos.length > 0
+    ? ` (${skippedRepos.length} skipped — no changes)`
+    : "";
   console.log(
     chalk.bold(
       chalk.green("✓") +
-        ` Synced ${results.length} repo${results.length > 1 ? "s" : ""}` +
+        ` Synced ${syncedRepos.length} of ${results.length} repo${results.length > 1 ? "s" : ""}` +
         ` — ${totalWritten} file${totalWritten !== 1 ? "s" : ""} written, ` +
         `${totalSkipped} unchanged` +
+        skippedNote +
         dryRunNote
     )
   );
