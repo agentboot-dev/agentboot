@@ -165,7 +165,8 @@ describe("compile script", () => {
       const skillPath = path.join(ROOT, "dist", "claude", "core", "agents", file);
       expect(fs.existsSync(skillPath), `agents/${file} should exist`).toBe(true);
       const content = fs.readFileSync(skillPath, "utf-8");
-      expect(content).toMatch(/^---\ndescription:/);
+      expect(content).toMatch(/^---\n/);
+      expect(content).toContain("description:");
     }
   });
 

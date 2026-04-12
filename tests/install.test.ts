@@ -773,10 +773,11 @@ describe("scaffoldHub: writes /ab skill files to .claude/agents/", () => {
     }
   });
 
-  it("ab.md contains /ab header", () => {
+  it("ab.md contains AgentBoot orchestrator content", () => {
     scaffoldHub(tempDir, "test-org");
     const content = fs.readFileSync(path.join(tempDir, ".claude", "agents", "ab.md"), "utf-8");
-    expect(content).toContain("# /ab");
+    expect(content).toContain("AgentBoot");
+    expect(content).toContain("description:");
   });
 
   it("is idempotent — second scaffold overwrites skill files without error", () => {
