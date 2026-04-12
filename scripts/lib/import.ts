@@ -44,6 +44,13 @@ export interface ImportOptions {
   apply?: boolean | undefined;
   hubPath?: string | undefined;
   nonInteractive?: boolean | undefined;
+  retryFailed?: boolean | undefined;
+}
+
+export interface TimedOutFile {
+  file: string;
+  repoName: string;
+  timedOutAt: string;
 }
 
 interface ScannedFile {
@@ -563,16 +570,21 @@ function buildBatchedClassificationPrompt(
   });
 }
 
+interface BatchClassifyResult {
+  classifications: Map<string, Classification[]>;
+  timedOut: boolean;
+}
+
 /**
  * Classify a batch of files via a single LLM call. Returns per-file classifications
- * keyed by the file's relative path from the batch.
+ * keyed by the file's relative path from the batch, plus timeout status.
  */
 function classifyBatchViaLLM(
   files: BatchFileEntry[],
   repoName: string,
   inventory: HubInventory,
   provider?: LLMProvider
-): Map<string, Classification[]> | null {
+): BatchClassifyResult | null {
   const prompt = buildBatchedClassificationPrompt(files, repoName, inventory);
   const llm = provider ?? new ClaudeCodeProvider();
 
@@ -588,6 +600,11 @@ function classifyBatchViaLLM(
   const classifyResult = llm.classify(prompt, CLASSIFICATION_SCHEMA);
   if (!classifyResult) return null;
 
+  // Detect timeout
+  if (classifyResult.timedOut) {
+    return { classifications: new Map(), timedOut: true };
+  }
+
   const parsed = typeof classifyResult.data === "string"
     ? JSON.parse(classifyResult.data as string)
     : classifyResult.data as Record<string, unknown>;
@@ -595,7 +612,7 @@ function classifyBatchViaLLM(
 
   if (raw.length === 0) {
     console.log(chalk.yellow(`    LLM returned no classifications for this batch.`));
-    return new Map();
+    return { classifications: new Map(), timedOut: false };
   }
 
   // Group classifications by source_file — the LLM should reference files by their path
@@ -652,7 +669,7 @@ function classifyBatchViaLLM(
     console.log(chalk.yellow(`    ${invalidCount} section(s) had invalid format and were dropped.`));
   }
 
-  return result;
+  return { classifications: result, timedOut: false };
 }
 
 const CLASSIFICATION_SCHEMA = loadSchema("classify-content");
@@ -778,6 +795,7 @@ function classifyViaLLM(
 export interface ClassifyResult {
   classifications: Classification[];
   trustedSources: Set<string>;
+  timedOutFiles: TimedOutFile[];
 }
 
 /**
@@ -799,6 +817,7 @@ export function classifyScannedFiles(
 
   const allClassifications: Classification[] = [];
   const trustedSources = new Set<string>();
+  const timedOutFiles: TimedOutFile[] = [];
 
   // Filter to classifiable file types
   const classifiable = manifest.files.filter(f =>
@@ -807,7 +826,7 @@ export function classifyScannedFiles(
 
   if (classifiable.length === 0) {
     console.log(chalk.yellow("  No classifiable content found.\n"));
-    return { classifications: [], trustedSources };
+    return { classifications: [], trustedSources, timedOutFiles };
   }
 
   // Group files by repo for batched LLM calls
@@ -840,9 +859,22 @@ export function classifyScannedFiles(
         continue;
       }
 
+      // Track timed-out files
+      if (batchResults.timedOut) {
+        console.log(chalk.yellow(`    Batch timed out for ${repoName} (${batch.length} file(s))`));
+        for (const file of batch) {
+          timedOutFiles.push({
+            file: file.absolutePath,
+            repoName: file.repoName,
+            timedOutAt: new Date().toISOString(),
+          });
+        }
+        continue;
+      }
+
       for (const file of batch) {
         trustedSources.add(file.absolutePath);
-        const fileClassifications = batchResults.get(file.relativePath) ?? [];
+        const fileClassifications = batchResults.classifications.get(file.relativePath) ?? [];
         for (const c of fileClassifications) {
           allClassifications.push({ ...c, source_file: file.absolutePath });
         }
@@ -853,7 +885,7 @@ export function classifyScannedFiles(
     }
   }
 
-  return { classifications: allClassifications, trustedSources };
+  return { classifications: allClassifications, trustedSources, timedOutFiles };
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +967,33 @@ function readStagingFile(stagingPath: string): ImportPlan | null {
     return JSON.parse(fs.readFileSync(stagingPath, "utf-8"));
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Timeout tracking — .agentboot-import-failed.json
+// ---------------------------------------------------------------------------
+
+const FAILED_FILE_NAME = ".agentboot-import-failed.json";
+
+/**
+ * Write timed-out files to .agentboot-import-failed.json so they can be retried.
+ */
+export function writeFailedFile(timedOutFiles: TimedOutFile[], hubPath: string): string {
+  const failedPath = path.join(hubPath, FAILED_FILE_NAME);
+  fs.writeFileSync(failedPath, JSON.stringify(timedOutFiles, null, 2) + "\n", "utf-8");
+  return failedPath;
+}
+
+/**
+ * Read timed-out files from .agentboot-import-failed.json.
+ */
+export function readFailedFile(hubPath: string): TimedOutFile[] {
+  const failedPath = path.join(hubPath, FAILED_FILE_NAME);
+  try {
+    return JSON.parse(fs.readFileSync(failedPath, "utf-8")) as TimedOutFile[];
+  } catch {
+    return [];
   }
 }
 
@@ -1112,6 +1171,46 @@ export async function runImport(opts: ImportOptions): Promise<void> {
       "  Import requires hub access to detect overlaps with existing content.\n"
     ));
     throw new AgentBootError(1);
+  }
+
+  // If --retry-failed, load and retry timed-out files
+  if (opts.retryFailed) {
+    const failedFiles = readFailedFile(hubPath);
+    if (failedFiles.length === 0) {
+      console.log(chalk.green("  No failed imports to retry.\n"));
+      return;
+    }
+    console.log(chalk.cyan(`  Retrying ${failedFiles.length} previously timed-out file(s)...\n`));
+    for (const f of failedFiles) {
+      console.log(chalk.gray(`    ${f.repoName}: ${f.file} (timed out at ${f.timedOutAt})`));
+    }
+    // Re-run import on just those files
+    const retryManifest: ScanManifest = {
+      parentDir: path.dirname(failedFiles[0]!.file),
+      scannedAt: new Date().toISOString(),
+      files: failedFiles.map(f => ({
+        absolutePath: f.file,
+        relativePath: path.basename(f.file),
+        repoDir: path.dirname(f.file),
+        repoName: f.repoName,
+        lines: 0,
+        type: "claude-md" as const,
+      })),
+    };
+    const retryResult = classifyScannedFiles(retryManifest, hubPath);
+    if (retryResult.timedOutFiles.length > 0) {
+      writeFailedFile(retryResult.timedOutFiles, hubPath);
+      console.log(chalk.yellow(`  ${retryResult.timedOutFiles.length} file(s) still timing out.\n`));
+    } else {
+      // Clean up failed file
+      const failedPath = path.join(hubPath, FAILED_FILE_NAME);
+      if (fs.existsSync(failedPath)) fs.unlinkSync(failedPath);
+      console.log(chalk.green("  All previously failed files retried successfully.\n"));
+    }
+    if (retryResult.classifications.length > 0) {
+      printClassificationResults(retryResult.classifications);
+    }
+    return;
   }
 
   console.log(chalk.gray(`  Hub: ${hubPath}`));
@@ -2387,6 +2486,15 @@ export function runExpandedImport(
     classifications = classifyResult.classifications;
     for (const src of classifyResult.trustedSources) {
       trustedSources.add(src);
+    }
+
+    // Track and persist timed-out files
+    if (classifyResult.timedOutFiles.length > 0) {
+      const failedPath = writeFailedFile(classifyResult.timedOutFiles, hubPath);
+      console.log(chalk.yellow(
+        `\n  ${classifyResult.timedOutFiles.length} file(s) timed out — retry with: agentboot import --retry-failed`
+      ));
+      console.log(chalk.gray(`  Failed files recorded in: ${failedPath}\n`));
     }
   }
 

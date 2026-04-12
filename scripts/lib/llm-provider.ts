@@ -29,6 +29,8 @@ export interface ClassificationResult {
   usage?: { inputTokens: number; outputTokens: number };
   /** Cost in USD if available. */
   costUsd?: number;
+  /** True if the LLM call timed out (exit code 143 or SIGTERM). */
+  timedOut?: boolean;
 }
 
 export interface LLMProvider {
@@ -98,6 +100,13 @@ export class ClaudeCodeProvider implements LLMProvider {
       const stderr = result.stderr?.trim() ?? "";
       const stdout = result.stdout?.trim() ?? "";
       const combined = stderr + " " + stdout;
+
+      // Detect timeout: exit code 143 (SIGTERM) or signal SIGTERM
+      if (result.status === 143 || result.signal === "SIGTERM") {
+        console.log(chalk.yellow("  Timed out (exit code 143 / SIGTERM)"));
+        console.log(chalk.cyan("  ──────────────────────────────────────────────────────\n"));
+        return { data: { classifications: [] }, timedOut: true };
+      }
 
       if (combined.includes("not logged in") || combined.includes("Not logged in") || combined.includes("/login")) {
         console.log(chalk.red("  Not logged in"));

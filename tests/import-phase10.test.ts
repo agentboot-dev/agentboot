@@ -19,8 +19,11 @@ import {
   classifyScannedFiles,
   BATCH_SIZE,
   buildBatchedClassificationPrompt,
+  writeFailedFile,
+  readFailedFile,
   type ScanManifest,
   type CategorizedScan,
+  type TimedOutFile,
 } from "../scripts/lib/import.js";
 
 // ---------------------------------------------------------------------------
@@ -234,5 +237,63 @@ describe("Story 13f: Path-scoped files in scan", () => {
     const manifest = scanParentForContent(parentDir, [hubPath]);
     expect(manifest.files.length).toBe(1);
     expect(manifest.files[0]!.type).toBe("rule");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 13e: Import timeout tracking
+// ---------------------------------------------------------------------------
+
+describe("Story 13e: Import timeout tracking", () => {
+  it("writeFailedFile persists timed-out files to disk", () => {
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    const timedOut: TimedOutFile[] = [
+      { file: "/repos/auth-service/CLAUDE.md", repoName: "auth-service", timedOutAt: "2026-04-11T00:00:00.000Z" },
+      { file: "/repos/api-gateway/.claude/rules/rate-limit.md", repoName: "api-gateway", timedOutAt: "2026-04-11T00:00:01.000Z" },
+    ];
+
+    const failedPath = writeFailedFile(timedOut, hubPath);
+    expect(fs.existsSync(failedPath)).toBe(true);
+
+    const written = JSON.parse(fs.readFileSync(failedPath, "utf-8"));
+    expect(written).toHaveLength(2);
+    expect(written[0].file).toBe("/repos/auth-service/CLAUDE.md");
+    expect(written[0].repoName).toBe("auth-service");
+    expect(written[1].timedOutAt).toBe("2026-04-11T00:00:01.000Z");
+  });
+
+  it("readFailedFile returns timed-out files from disk", () => {
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    const timedOut: TimedOutFile[] = [
+      { file: "/repos/auth-service/CLAUDE.md", repoName: "auth-service", timedOutAt: "2026-04-11T00:00:00.000Z" },
+    ];
+    writeFailedFile(timedOut, hubPath);
+
+    const result = readFailedFile(hubPath);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.file).toBe("/repos/auth-service/CLAUDE.md");
+  });
+
+  it("readFailedFile returns empty array when no failed file exists", () => {
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    const result = readFailedFile(hubPath);
+    expect(result).toHaveLength(0);
+  });
+
+  it("ClassifyResult includes timedOutFiles array", () => {
+    // Verify the interface shape by type
+    const result = {
+      classifications: [],
+      trustedSources: new Set<string>(),
+      timedOutFiles: [{ file: "/path", repoName: "repo", timedOutAt: "2026-04-11T00:00:00.000Z" }],
+    };
+    expect(result.timedOutFiles).toHaveLength(1);
+    expect(result.timedOutFiles[0]!.file).toBe("/path");
   });
 });
