@@ -107,7 +107,7 @@ Recommend starting with code-reviewer and security-reviewer. You can add more an
 
 Proceed?"
 
-**Step 4:** Execute the installation.
+**Step 4:** Execute the installation by calling `agentboot_build` with the resolved hub path. Note: `agentboot_install` is not an MCP tool in Phase 10 — the scaffold is handled by calling `npx agentboot install --hub --path {path} --org {org}` via the terminal, then `agentboot_build` to compile the initial output. Inform the user: "Running install… this will scaffold the hub structure and compile an initial build."
 
 **Step 5:** After install completes:
 "Hub created at `{path}`. Next steps:

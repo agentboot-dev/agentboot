@@ -74,6 +74,12 @@ Keywords: status, what do I have, how much, cost, find, search, why did we, what
 
 **Multi-step requests:** When the user asks for multiple operations (e.g., "build and then sync"), confirm the sequence and route to the specialist that handles the first operation. Include the full sequence in the handoff so the specialist can chain them.
 
+**"check" disambiguation:** The word "check" is ambiguous. Resolve by what follows it:
+- "check health", "check what's broken", "check errors", "check if tests pass" → `ab-diagnose`
+- "check my config", "check my settings", "check what's enabled" → `ab-manage` or `ab-query`
+- "check the status", "check what personas I have" → `ab-query`
+When context is still unclear after reading the full request, ask: "Are you checking for problems (I'll run diagnostics) or checking your current configuration (I'll query the hub)?"
+
 **Ambiguous requests:** When intent is genuinely unclear, ask one clarifying question. Do not guess.
 
 ---
