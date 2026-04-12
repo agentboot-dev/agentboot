@@ -44,9 +44,13 @@ const ROOT = path.resolve(__dirname, "..");
 interface RepoEntry {
   // Absolute or relative path to the repo root.
   path: string;
-  // Platform distribution to sync: "claude", "copilot", "cursor", "skill", "gemini".
+  // Platform distribution to sync (singular, deprecated — use `platforms`).
   // Defaults to "claude".
   platform?: string;
+  // Multiple platform distributions to sync to this repo.
+  // e.g., ["claude", "copilot"] — repo receives both platform outputs.
+  // Takes precedence over `platform` if both are set.
+  platforms?: string[];
   // Group this repo belongs to (must match a key in config.groups).
   group?: string;
   // Team this repo belongs to (must be a member of the group's teams).
@@ -61,6 +65,17 @@ interface RepoEntry {
   packages?: string[];
 }
 
+/**
+ * Normalize platform(s) for a repo entry. Handles both the old singular
+ * `platform` field and the new `platforms` array. Returns an array.
+ */
+function getRepoPlatforms(entry: RepoEntry): string[] {
+  if (entry.platforms && entry.platforms.length > 0) {
+    return entry.platforms;
+  }
+  return [entry.platform ?? "claude"];
+}
+
 interface SyncResult {
   repo: string;
   label?: string;
@@ -72,6 +87,8 @@ interface SyncResult {
   errors: string[];
   dryRun: boolean;
   prUrl?: string;
+  /** True when smart sync determined the repo is already up-to-date. */
+  skippedNoChanges?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +501,133 @@ function detectMonorepo(repoPath: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Smart sync: check if repo is already up-to-date
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the existing manifest from a repo and build a hash lookup.
+ * Returns null if no manifest exists (first sync).
+ */
+function loadManifestHashes(
+  repoPath: string,
+  targetDir: string
+): Map<string, string> | null {
+  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const hashes = new Map<string, string>();
+    for (const entry of manifest.files ?? []) {
+      if (entry.path && entry.hash) {
+        hashes.set(entry.path, entry.hash);
+      }
+    }
+    return hashes;
+  } catch {
+    return null; // Corrupt manifest — sync as normal
+  }
+}
+
+/**
+ * Check if all files that would be synced to a repo match the existing manifest.
+ * Returns true if the repo is up-to-date and can be skipped.
+ */
+function isRepoUpToDate(
+  mergedFiles: Map<string, ScopedFile>,
+  repoPath: string,
+  targetDir: string,
+  platform: string,
+  distPath: string,
+  org: string,
+  isPublic?: boolean,
+  writePersonasIndex?: boolean,
+): boolean {
+  const manifestHashes = loadManifestHashes(repoPath, targetDir);
+  if (!manifestHashes) return false; // No manifest = first sync, must sync
+
+  // Build a map of destination-path → source-content-hash for everything we would write
+  const wouldWrite = new Map<string, string>();
+
+  for (const [relPath, file] of mergedFiles) {
+    // Skip copilot fragments — they get merged into a single file
+    if (relPath.endsWith("copilot-instructions.md")) continue;
+    if (relPath === "PERSONAS.md") continue;
+    if (relPath === ".mcp.json" || relPath === "CLAUDE.md") continue;
+
+    const content = fs.readFileSync(file.absolutePath);
+    const hash = createHash("sha256").update(content).digest("hex");
+
+    let destRelPath: string;
+    if (platform === "cursor") {
+      destRelPath = path.join(".cursor", relPath);
+    } else if (platform === "copilot") {
+      if (relPath.startsWith("instructions/") && relPath.endsWith(".instructions.md")) {
+        destRelPath = path.join(".github", "instructions", path.basename(relPath));
+      } else {
+        continue;
+      }
+    } else {
+      destRelPath = path.join(targetDir, relPath);
+    }
+    wouldWrite.set(destRelPath, hash);
+  }
+
+  // Handle merged copilot instructions
+  const copilotContent = buildCopilotInstructions(mergedFiles, org, isPublic);
+  if (copilotContent) {
+    const hash = createHash("sha256").update(copilotContent).digest("hex");
+    wouldWrite.set(path.join(".github", "copilot-instructions.md"), hash);
+  }
+
+  // Handle root-level files
+  if (platform !== "copilot" && platform !== "cursor") {
+    for (const rootFile of [".mcp.json", "CLAUDE.md"]) {
+      const file = mergedFiles.get(rootFile);
+      if (file) {
+        const content = fs.readFileSync(file.absolutePath);
+        const hash = createHash("sha256").update(content).digest("hex");
+        wouldWrite.set(rootFile, hash);
+      }
+    }
+  }
+
+  // Handle PERSONAS.md
+  if (writePersonasIndex) {
+    const coreDir = path.join(distPath, platform, "core");
+    const personasIndexSrc = path.join(coreDir, "PERSONAS.md");
+    if (fs.existsSync(personasIndexSrc)) {
+      const content = fs.readFileSync(personasIndexSrc);
+      const hash = createHash("sha256").update(content).digest("hex");
+      wouldWrite.set(path.join(targetDir, "PERSONAS.md"), hash);
+    }
+  }
+
+  // Handle AGENTS.md
+  const agentsMdSrc = path.join(distPath, "agents", "AGENTS.md");
+  if (fs.existsSync(agentsMdSrc)) {
+    const content = fs.readFileSync(agentsMdSrc);
+    const hash = createHash("sha256").update(content).digest("hex");
+    wouldWrite.set("AGENTS.md", hash);
+  }
+
+  // Compare: every file we would write must exist in manifest with same hash
+  for (const [destPath, hash] of wouldWrite) {
+    const manifestHash = manifestHashes.get(destPath);
+    if (manifestHash !== hash) return false;
+  }
+
+  // Also check: manifest shouldn't have files we wouldn't write (deleted files)
+  // Skip the manifest file itself
+  for (const [manifestPath] of manifestHashes) {
+    if (manifestPath.endsWith(".agentboot-manifest.json")) continue;
+    if (!wouldWrite.has(manifestPath)) return false;
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Per-repo sync (single target — repo root or a package subdirectory)
 // ---------------------------------------------------------------------------
 
@@ -494,12 +638,14 @@ function syncRepoTarget(
   dryRun: boolean,
   force: boolean,
   /** If set, sync to this subdirectory instead of repo root. */
-  packagePath?: string
+  packagePath?: string,
+  /** Explicit platform override (for multi-platform repos). */
+  platformOverride?: string,
 ): SyncResult {
   const repoPath = path.resolve(entry.path);
   // AB-142: When syncing to a monorepo package, effectivePath is the package root.
   const effectivePath = packagePath ? path.join(repoPath, packagePath) : repoPath;
-  const platform = entry.platform ?? "claude";
+  const platform = platformOverride ?? entry.platform ?? "claude";
   // AB-129: Cursor uses .cursor/ as its target directory
   const targetDir = platform === "cursor" ? ".cursor" : (config.sync?.targetDir ?? ".claude");
   const writePersonasIndex = config.sync?.writePersonasIndex !== false;
@@ -509,7 +655,7 @@ function syncRepoTarget(
   const result: SyncResult = {
     repo: effectivePath,
     ...(entry.label != null ? { label: `${entry.label}${labelSuffix}` } : (packagePath ? { label: `${path.basename(repoPath)}${labelSuffix}` } : {})),
-    ...(entry.platform != null ? { platform: entry.platform } : { platform: "claude" }),
+    platform,
     ...(entry.group != null ? { group: entry.group } : {}),
     ...(entry.team != null ? { team: entry.team } : {}),
     filesWritten: [],
@@ -576,6 +722,19 @@ function syncRepoTarget(
   // Print composition warnings
   for (const w of warnings) {
     console.log(chalk.yellow(`  ⚠ ${w}`));
+  }
+
+  // Smart sync: check if repo is already up-to-date (skip if no changes)
+  if (!force) {
+    const writePersonasIndex = config.sync?.writePersonasIndex !== false;
+    const upToDate = isRepoUpToDate(
+      merged, effectivePath, targetDir, platform, distPath, org,
+      entry.public, writePersonasIndex,
+    );
+    if (upToDate) {
+      result.skippedNoChanges = true;
+      return result;
+    }
   }
 
   // Write all merged files to the target directory.
@@ -745,51 +904,57 @@ function syncRepo(
   force: boolean
 ): SyncResult[] {
   const repoPath = path.resolve(entry.path);
+  const platforms = getRepoPlatforms(entry);
 
-  if (entry.packages && entry.packages.length > 0) {
-    // Monorepo mode: sync to each package independently.
-    const results: SyncResult[] = [];
-    for (const pkg of entry.packages) {
-      const pkgPath = path.join(repoPath, pkg);
-      // Post-resolution containment check — prevents path traversal even if validation is bypassed
-      if (!path.resolve(pkgPath).startsWith(path.resolve(repoPath) + path.sep)) {
-        console.log(chalk.red(`  ✗ Package "${pkg}" escapes repo boundary — skipping`));
-        continue;
+  // Multi-platform: iterate over each platform for this repo entry.
+  const allResults: SyncResult[] = [];
+
+  for (const platform of platforms) {
+    if (entry.packages && entry.packages.length > 0) {
+      // Monorepo mode: sync to each package independently.
+      for (const pkg of entry.packages) {
+        const pkgPath = path.join(repoPath, pkg);
+        // Post-resolution containment check — prevents path traversal even if validation is bypassed
+        if (!path.resolve(pkgPath).startsWith(path.resolve(repoPath) + path.sep)) {
+          console.log(chalk.red(`  ✗ Package "${pkg}" escapes repo boundary — skipping`));
+          continue;
+        }
+        if (!fs.existsSync(pkgPath)) {
+          // Warn and skip non-existent packages.
+          console.log(chalk.yellow(`  ⚠ Package "${pkg}" does not exist at ${pkgPath} — skipping`));
+          const skipResult: SyncResult = {
+            repo: pkgPath,
+            label: `${entry.label ?? path.basename(repoPath)} [${pkg}]`,
+            platform,
+            filesWritten: [],
+            filesSkipped: [],
+            errors: [`Package path does not exist: ${pkgPath}`],
+            dryRun,
+          };
+          allResults.push(skipResult);
+          continue;
+        }
+        allResults.push(syncRepoTarget(entry, distPath, config, dryRun, force, pkg, platform));
       }
-      if (!fs.existsSync(pkgPath)) {
-        // Warn and skip non-existent packages.
-        console.log(chalk.yellow(`  ⚠ Package "${pkg}" does not exist at ${pkgPath} — skipping`));
-        const skipResult: SyncResult = {
-          repo: pkgPath,
-          label: `${entry.label ?? path.basename(repoPath)} [${pkg}]`,
-          platform: entry.platform ?? "claude",
-          filesWritten: [],
-          filesSkipped: [],
-          errors: [`Package path does not exist: ${pkgPath}`],
-          dryRun,
-        };
-        results.push(skipResult);
-        continue;
+    } else {
+      // Single-target mode (backward compatible).
+      // AB-142: Warn if monorepo structure detected but not configured.
+      if (platform === platforms[0] && fs.existsSync(repoPath)) {
+        const detected = detectMonorepo(repoPath);
+        if (detected.length > 0) {
+          console.log(chalk.yellow(
+            `  ⚠ Monorepo structure detected in ${entry.label ?? path.basename(repoPath)} ` +
+            `(${detected.length} package(s): ${detected.slice(0, 3).join(", ")}${detected.length > 3 ? ", ..." : ""}) ` +
+            `but no "packages" configured. Add "packages" to repos.json for per-package deployment.`
+          ));
+        }
       }
-      results.push(syncRepoTarget(entry, distPath, config, dryRun, force, pkg));
+
+      allResults.push(syncRepoTarget(entry, distPath, config, dryRun, force, undefined, platform));
     }
-    return results;
   }
 
-  // Single-target mode (backward compatible).
-  // AB-142: Warn if monorepo structure detected but not configured.
-  if (fs.existsSync(repoPath)) {
-    const detected = detectMonorepo(repoPath);
-    if (detected.length > 0) {
-      console.log(chalk.yellow(
-        `  ⚠ Monorepo structure detected in ${entry.label ?? path.basename(repoPath)} ` +
-        `(${detected.length} package(s): ${detected.slice(0, 3).join(", ")}${detected.length > 3 ? ", ..." : ""}) ` +
-        `but no "packages" configured. Add "packages" to repos.json for per-package deployment.`
-      ));
-    }
-  }
-
-  return [syncRepoTarget(entry, distPath, config, dryRun, force)];
+  return allResults;
 }
 
 // ---------------------------------------------------------------------------
@@ -839,13 +1004,28 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
     }
   }
 
-  // Validate platform
+  // Validate platform(s)
   const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"];
-  const platform = entry.platform ?? "claude";
-  if (!validPlatforms.includes(platform)) {
-    errors.push(
-      `[${label}] Platform "${platform}" is not supported. Valid: ${validPlatforms.join(", ")}`
-    );
+  const platforms = getRepoPlatforms(entry);
+  for (const platform of platforms) {
+    if (!validPlatforms.includes(platform)) {
+      errors.push(
+        `[${label}] Platform "${platform}" is not supported. Valid: ${validPlatforms.join(", ")}`
+      );
+    }
+  }
+
+  // Validate platforms array format if specified
+  if (entry.platforms !== undefined) {
+    if (!Array.isArray(entry.platforms)) {
+      errors.push(`[${label}] "platforms" must be an array of strings`);
+    } else {
+      for (const p of entry.platforms) {
+        if (typeof p !== "string" || p.length === 0) {
+          errors.push(`[${label}] Each platform must be a non-empty string`);
+        }
+      }
+    }
   }
 
   // Validate repo path safety — resolve symlinks to check the real target
@@ -1009,6 +1189,13 @@ function printSyncResult(result: SyncResult): void {
   const scope = scopeParts.join("/");
   const dryRunTag = result.dryRun ? chalk.yellow(" [DRY RUN]") : "";
 
+  if (result.skippedNoChanges) {
+    console.log(
+      `  ${chalk.gray("–")} ${repoLabel}${chalk.gray(` (${scope})`)} — ${chalk.gray("skipped (no changes)")}`
+    );
+    return;
+  }
+
   if (result.errors.length > 0) {
     console.log(`  ${chalk.red("✗")} ${repoLabel} (${scope})${dryRunTag}`);
     for (const err of result.errors) {
@@ -1156,6 +1343,8 @@ async function main(): Promise<void> {
   const totalWritten = results.reduce((acc, r) => acc + r.filesWritten.length, 0);
   const totalSkipped = results.reduce((acc, r) => acc + r.filesSkipped.length, 0);
   const failedRepos = results.filter((r) => r.errors.length > 0);
+  const skippedRepos = results.filter((r) => r.skippedNoChanges);
+  const syncedRepos = results.filter((r) => !r.skippedNoChanges && r.errors.length === 0);
 
   console.log("");
 
@@ -1172,12 +1361,16 @@ async function main(): Promise<void> {
   }
 
   const dryRunNote = dryRun ? chalk.yellow(" (dry run — nothing written)") : "";
+  const skippedNote = skippedRepos.length > 0
+    ? ` (${skippedRepos.length} skipped — no changes)`
+    : "";
   console.log(
     chalk.bold(
       chalk.green("✓") +
-        ` Synced ${results.length} repo${results.length > 1 ? "s" : ""}` +
+        ` Synced ${syncedRepos.length} of ${results.length} repo${results.length > 1 ? "s" : ""}` +
         ` — ${totalWritten} file${totalWritten !== 1 ? "s" : ""} written, ` +
         `${totalSkipped} unchanged` +
+        skippedNote +
         dryRunNote
     )
   );

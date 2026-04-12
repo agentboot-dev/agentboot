@@ -1,0 +1,45 @@
+# ab-diagnose behavioral tests
+# Validates hub health check, validation, and lint workflows
+
+tests:
+  - id: diagnose-doctor-findings
+    description: Doctor command formats findings with severity labels
+    prompt: "is my hub healthy?"
+    expect:
+      - calls_tool: agentboot_doctor
+      - formats_findings_with_severity: true
+      - severity_labels:
+          - CRITICAL
+          - ERROR
+          - WARN
+          - INFO
+      - findings_are_grouped_by_severity: true
+    pass_threshold: 0.8
+
+  - id: diagnose-validate-pass
+    description: Validate command returns success message when all checks pass
+    prompt: "validate before I build"
+    expect:
+      - calls_tool: agentboot_validate
+      - response_contains: "All checks passed"
+      - no_error_findings: true
+    pass_threshold: 0.8
+
+  - id: diagnose-optimize
+    description: Optimize request calls optimize_metrics and presents recommendations
+    prompt: "optimize my personas for cost"
+    expect:
+      - calls_tool: agentboot_optimize_metrics
+      - presents_recommendations: true
+    pass_threshold: 0.8
+
+  - id: diagnose-lint-persona
+    description: Lint command targets specific persona and returns actionable findings
+    prompt: "lint the security-reviewer persona"
+    expect:
+      - calls_tool: agentboot_lint
+      - tool_args:
+          persona: "security-reviewer"
+      - returns_findings_with_suggestions: true
+      - findings_reference_persona: "security-reviewer"
+    pass_threshold: 0.8

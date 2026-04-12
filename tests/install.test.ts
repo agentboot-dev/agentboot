@@ -490,6 +490,48 @@ describe("scaffoldHub: additional edge cases", () => {
     const raw = fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8");
     expect(raw.endsWith("\n")).toBe(true);
   });
+
+  // Story 13c: scaffoldHub creates an initial git commit
+  it("creates an initial git commit with all scaffolded files", () => {
+    const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-initcommit-"));
+    try {
+      scaffoldHub(freshDir, "test-org", "Test Org");
+
+      // Verify git log shows an initial commit
+      const logResult = execSync("git log --oneline -1", {
+        cwd: freshDir,
+        encoding: "utf-8",
+      });
+      expect(logResult).toContain("initialize AgentBoot personas hub");
+
+      // Verify there are no uncommitted files (clean working tree)
+      const statusResult = execSync("git status --porcelain", {
+        cwd: freshDir,
+        encoding: "utf-8",
+      });
+      expect(statusResult.trim()).toBe("");
+    } finally {
+      fs.rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  // Story 13c: initial commit works in environments without global git config
+  it("initial commit succeeds without global git user config", () => {
+    const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-nogituser-"));
+    try {
+      // scaffoldHub sets local git config if global is missing
+      scaffoldHub(freshDir, "test-org", "Test Org");
+
+      // Should have a commit regardless of global config
+      const logResult = execSync("git log --oneline -1", {
+        cwd: freshDir,
+        encoding: "utf-8",
+      });
+      expect(logResult).toContain("initialize AgentBoot personas hub");
+    } finally {
+      fs.rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -702,6 +744,111 @@ describe("scaffoldHub: non-destructive safety guarantees", () => {
     scaffoldHub(tempDir, "second-org");
     const logAfter = execSync("git log --oneline", { cwd: tempDir, encoding: "utf-8" });
     expect(logAfter).toBe(logBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scaffoldHub: /ab skill files and .mcp.json (Story 4)
+// ---------------------------------------------------------------------------
+
+describe("scaffoldHub: writes /ab skill files to .claude/agents/", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-skills-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("writes all five /ab skill files to .claude/agents/", () => {
+    scaffoldHub(tempDir, "test-org");
+    const agentsDir = path.join(tempDir, ".claude", "agents");
+    for (const file of ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"]) {
+      const filePath = path.join(agentsDir, file);
+      expect(fs.existsSync(filePath), `expected ${file} to exist`).toBe(true);
+      const content = fs.readFileSync(filePath, "utf-8");
+      expect(content.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("ab.md contains AgentBoot orchestrator content", () => {
+    scaffoldHub(tempDir, "test-org");
+    const content = fs.readFileSync(path.join(tempDir, ".claude", "agents", "ab.md"), "utf-8");
+    expect(content).toContain("AgentBoot");
+    expect(content).toContain("description:");
+  });
+
+  it("is idempotent — second scaffold overwrites skill files without error", () => {
+    scaffoldHub(tempDir, "test-org");
+    expect(() => scaffoldHub(tempDir, "test-org")).not.toThrow();
+    // Files should still exist after second run
+    expect(fs.existsSync(path.join(tempDir, ".claude", "agents", "ab.md"))).toBe(true);
+  });
+});
+
+describe("scaffoldHub: writes .mcp.json with AgentBoot MCP server", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-mcp-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("creates .mcp.json with agentboot server entry", () => {
+    scaffoldHub(tempDir, "test-org");
+    const mcpPath = path.join(tempDir, ".mcp.json");
+    expect(fs.existsSync(mcpPath)).toBe(true);
+
+    const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
+    expect(mcp.mcpServers).toBeDefined();
+    expect(mcp.mcpServers.agentboot).toBeDefined();
+    expect(mcp.mcpServers.agentboot.command).toBe("npx");
+    expect(mcp.mcpServers.agentboot.args).toEqual(["agentboot", "mcp-server"]);
+    expect(mcp.mcpServers.agentboot.env.AGENTBOOT_HUB).toBe(path.resolve(tempDir));
+  });
+
+  it("merges into existing .mcp.json without overwriting other servers", () => {
+    const mcpPath = path.join(tempDir, ".mcp.json");
+    const existing = {
+      mcpServers: {
+        "other-server": {
+          command: "node",
+          args: ["other.js"],
+        },
+      },
+    };
+    fs.writeFileSync(mcpPath, JSON.stringify(existing, null, 2) + "\n");
+
+    scaffoldHub(tempDir, "test-org");
+
+    const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
+    // Original server preserved
+    expect(mcp.mcpServers["other-server"]).toBeDefined();
+    expect(mcp.mcpServers["other-server"].command).toBe("node");
+    // AgentBoot server added
+    expect(mcp.mcpServers.agentboot).toBeDefined();
+    expect(mcp.mcpServers.agentboot.env.AGENTBOOT_HUB).toBe(path.resolve(tempDir));
+  });
+
+  it("overwrites corrupted .mcp.json gracefully", () => {
+    const mcpPath = path.join(tempDir, ".mcp.json");
+    fs.writeFileSync(mcpPath, "not valid json{{{");
+
+    scaffoldHub(tempDir, "test-org");
+
+    const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
+    expect(mcp.mcpServers.agentboot).toBeDefined();
+  });
+
+  it(".mcp.json ends with a trailing newline", () => {
+    scaffoldHub(tempDir, "test-org");
+    const raw = fs.readFileSync(path.join(tempDir, ".mcp.json"), "utf-8");
+    expect(raw.endsWith("\n")).toBe(true);
   });
 });
 
