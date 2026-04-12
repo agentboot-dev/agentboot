@@ -1,0 +1,51 @@
+# ab-author add intent behavioral tests
+# Validates that ab-author correctly handles artifact creation workflows
+
+tests:
+  - id: author-add-gotcha
+    description: Add gotcha with path pattern and rule creates correct frontmatter
+    prompt: "add a gotcha for TypeScript files that use type assertions — they should prefer 'as' syntax over angle brackets in TSX"
+    context:
+      paths: "**/*.tsx"
+      rule: "Prefer 'as' syntax over angle-bracket type assertions in TSX files"
+    expect:
+      - confirms_scope: true
+      - creates_gotcha_frontmatter:
+          has_paths: true
+          has_description: true
+          has_type: gotcha
+      - calls_tool: agentboot_propose_change
+      - proposed_artifact_type: gotcha
+    pass_threshold: 0.8
+
+  - id: author-add-trait
+    description: Add trait from behavior description confirms weight before proposing
+    prompt: "add a trait that makes agents always suggest error handling improvements"
+    expect:
+      - confirms_weight: true
+      - weight_options:
+          - HIGH
+          - MEDIUM
+          - LOW
+      - calls_tool: agentboot_propose_change
+      - proposed_artifact_type: trait
+    pass_threshold: 0.8
+
+  - id: author-add-persona
+    description: Add persona asks for base persona and trait list before proposing
+    prompt: "add a new persona called deployment-reviewer"
+    expect:
+      - asks_for_base_persona: true
+      - asks_for_trait_list: true
+      - calls_tool: agentboot_propose_change
+      - proposed_artifact_type: persona
+    pass_threshold: 0.8
+
+  - id: author-add-classifier-mismatch
+    description: Input classified as add but resembling promotion triggers clarification
+    prompt: "add this gotcha from the auth-team to the org scope"
+    expect:
+      - detects_promotion_intent: true
+      - asks_clarifying_question: true
+      - does_not_call_tool_before_clarification: agentboot_propose_change
+    pass_threshold: 0.8
