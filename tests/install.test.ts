@@ -490,6 +490,48 @@ describe("scaffoldHub: additional edge cases", () => {
     const raw = fs.readFileSync(path.join(tempDir, "agentboot.config.json"), "utf-8");
     expect(raw.endsWith("\n")).toBe(true);
   });
+
+  // Story 13c: scaffoldHub creates an initial git commit
+  it("creates an initial git commit with all scaffolded files", () => {
+    const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-initcommit-"));
+    try {
+      scaffoldHub(freshDir, "test-org", "Test Org");
+
+      // Verify git log shows an initial commit
+      const logResult = execSync("git log --oneline -1", {
+        cwd: freshDir,
+        encoding: "utf-8",
+      });
+      expect(logResult).toContain("initialize AgentBoot personas hub");
+
+      // Verify there are no uncommitted files (clean working tree)
+      const statusResult = execSync("git status --porcelain", {
+        cwd: freshDir,
+        encoding: "utf-8",
+      });
+      expect(statusResult.trim()).toBe("");
+    } finally {
+      fs.rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  // Story 13c: initial commit works in environments without global git config
+  it("initial commit succeeds without global git user config", () => {
+    const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-nogituser-"));
+    try {
+      // scaffoldHub sets local git config if global is missing
+      scaffoldHub(freshDir, "test-org", "Test Org");
+
+      // Should have a commit regardless of global config
+      const logResult = execSync("git log --oneline -1", {
+        cwd: freshDir,
+        encoding: "utf-8",
+      });
+      expect(logResult).toContain("initialize AgentBoot personas hub");
+    } finally {
+      fs.rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
