@@ -125,6 +125,10 @@ export const DEFAULT_SECRET_PATTERNS: RegExp[] = [
   /AIza[a-zA-Z0-9_\-]{35}/,                     // Google API keys
   /(?:mongodb|postgres|postgresql|mysql|redis):\/\/[^\s]+:[^\s]+@/i, // Connection strings with embedded credentials
   /Bearer\s+[A-Za-z0-9._~+/\-]+=*/,            // Bearer tokens
+  /DefaultEndpointsProtocol=.*AccountKey=[A-Za-z0-9+/=]{20,}/, // Azure connection strings
+  /sk_live_[a-zA-Z0-9]{20,}/,                   // Stripe secret keys
+  /npm_[A-Za-z0-9]{36}/,                        // npm tokens
+  /glpat-[A-Za-z0-9\-_]{20,}/,                  // GitLab personal access tokens
 ];
 
 export function scanForSecrets(
