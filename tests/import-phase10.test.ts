@@ -238,6 +238,34 @@ describe("Story 13f: Path-scoped files in scan", () => {
     expect(manifest.files.length).toBe(1);
     expect(manifest.files[0]!.type).toBe("rule");
   });
+
+  it("path-scoped .md files outside rules/ directory are detected as rule type", () => {
+    const parentDir = path.join(tmpDir, "parent");
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    // Create a file with paths: frontmatter that is NOT in a rules/ directory
+    const repoDir = path.join(parentDir, "myrepo");
+    writeFile(repoDir, ".claude/custom/db-safety.md", [
+      "---",
+      "paths:",
+      "  - src/db/**",
+      "description: DB safety gotcha",
+      "---",
+      "",
+      "# DB Safety",
+      "Never use raw SQL.",
+    ].join("\n"));
+
+    const manifest = scanParentForContent(parentDir, [hubPath]);
+    expect(manifest.files.length).toBe(1);
+    expect(manifest.files[0]!.type).toBe("rule");
+
+    // Should be categorized as wholeFile (gotcha) because it has paths:
+    const categorized = categorizeByStrategy(manifest);
+    expect(categorized.wholeFile.length).toBe(1);
+    expect(categorized.skipped.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
