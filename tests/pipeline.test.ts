@@ -411,7 +411,7 @@ describe("sync script", () => {
 
   it("syncs claude platform files to target repo", () => {
     const output = run("scripts/sync.ts");
-    expect(output).toContain("Synced 1 repo");
+    expect(output).toContain("Synced 1 of 1 repo");
   });
 
   it("creates .claude/ directory in target", () => {
@@ -454,9 +454,15 @@ describe("sync script", () => {
     }
   });
 
-  it("skips unchanged files on re-sync", () => {
+  it("smart sync: skips repo with no changes on re-sync", () => {
     const output = run("scripts/sync.ts");
-    expect(output).toContain("unchanged");
+    expect(output).toContain("skipped (no changes)");
+    expect(output).toContain("Synced 0 of 1");
+  });
+
+  it("smart sync: --force bypasses skip and syncs all repos", () => {
+    const output = run("scripts/sync.ts -- --force");
+    expect(output).toContain("Synced 1 of 1 repo");
   });
 
   it("supports dry-run mode", () => {
@@ -488,7 +494,7 @@ describe("sync script", () => {
 
     try {
       const output = run("scripts/sync.ts");
-      expect(output).toContain("Synced 1 repo");
+      expect(output).toContain("Synced 1 of 1 repo");
 
       // Copilot platform should have merged copilot-instructions.md in .github/
       expect(
@@ -525,7 +531,7 @@ describe("sync script", () => {
 
     try {
       const output = run("scripts/sync.ts");
-      expect(output).toContain("Synced 1 repo");
+      expect(output).toContain("Synced 1 of 1 repo");
 
       // Cursor rules should be written to .cursor/rules/
       const cursorRulesDir = path.join(cursorTarget, ".cursor", "rules");
