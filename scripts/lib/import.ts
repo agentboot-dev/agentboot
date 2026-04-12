@@ -491,12 +491,8 @@ function readHubInventory(hubPath: string): HubInventory {
 // Classification via claude -p (LLM)
 // ---------------------------------------------------------------------------
 
-function buildClassificationPrompt(
-  fileContent: string,
-  filePath: string,
-  inventory: HubInventory
-): string {
-  const hubContext = [
+function buildHubContext(inventory: HubInventory): string {
+  return [
     "## Existing hub content (avoid duplicates):",
     "",
     "### Traits:",
@@ -515,12 +511,148 @@ function buildClassificationPrompt(
     ...inventory.instructions.map(i => `- ${i.name}: ${i.firstLine}`),
     ...(inventory.instructions.length === 0 ? ["(none)"] : []),
   ].join("\n");
+}
+
+function buildClassificationPrompt(
+  fileContent: string,
+  filePath: string,
+  inventory: HubInventory
+): string {
+  const hubContext = buildHubContext(inventory);
 
   return loadPrompt("classify-content", {
     HUB_CONTEXT: hubContext,
     FILE_PATH: filePath,
     FILE_CONTENT: fileContent,
   });
+}
+
+/** Maximum number of files to include in a single batched LLM call. */
+export const BATCH_SIZE = 10;
+
+interface BatchFileEntry {
+  filePath: string;
+  absolutePath: string;
+  content: string;
+  lines: number;
+}
+
+/**
+ * Build a batched classification prompt that includes multiple files from the same repo.
+ * Each file is clearly delimited so the LLM can classify them independently.
+ */
+function buildBatchedClassificationPrompt(
+  files: BatchFileEntry[],
+  repoName: string,
+  inventory: HubInventory
+): string {
+  const hubContext = buildHubContext(inventory);
+
+  const fileBlocks = files.map((f, i) => {
+    let content = f.content;
+    if (content.length > MAX_FILE_CONTENT_CHARS) {
+      content = content.slice(0, MAX_FILE_CONTENT_CHARS) + "\n\n<!-- truncated -->";
+    }
+    return `=== FILE ${i + 1}: ${f.filePath} (${f.lines} lines) ===\n\`\`\`\n${content}\n\`\`\``;
+  }).join("\n\n");
+
+  return loadPrompt("classify-content", {
+    HUB_CONTEXT: hubContext,
+    FILE_PATH: `[BATCH: ${files.length} files from ${repoName}]`,
+    FILE_CONTENT: fileBlocks,
+  });
+}
+
+/**
+ * Classify a batch of files via a single LLM call. Returns per-file classifications
+ * keyed by the file's relative path from the batch.
+ */
+function classifyBatchViaLLM(
+  files: BatchFileEntry[],
+  repoName: string,
+  inventory: HubInventory,
+  provider?: LLMProvider
+): Map<string, Classification[]> | null {
+  const prompt = buildBatchedClassificationPrompt(files, repoName, inventory);
+  const llm = provider ?? new ClaudeCodeProvider();
+
+  // Show the prompt being sent
+  console.log(chalk.cyan("\n  ── LLM prompt (batch) ──────────────────────────────────"));
+  console.log(chalk.gray(`  Provider: ${llm.name}`));
+  console.log(chalk.gray(`  Batch: ${files.length} files from ${repoName}`));
+  for (const f of files) {
+    console.log(chalk.gray(`    - ${f.filePath} (${f.lines} lines)`));
+  }
+  console.log(chalk.cyan("  ──────────────────────────────────────────────────────\n"));
+
+  const classifyResult = llm.classify(prompt, CLASSIFICATION_SCHEMA);
+  if (!classifyResult) return null;
+
+  const parsed = typeof classifyResult.data === "string"
+    ? JSON.parse(classifyResult.data as string)
+    : classifyResult.data as Record<string, unknown>;
+  const raw = (parsed.classifications ?? []) as Array<Record<string, unknown>>;
+
+  if (raw.length === 0) {
+    console.log(chalk.yellow(`    LLM returned no classifications for this batch.`));
+    return new Map();
+  }
+
+  // Group classifications by source_file — the LLM should reference files by their path
+  const result = new Map<string, Classification[]>();
+  for (const f of files) {
+    result.set(f.filePath, []);
+  }
+
+  // Runtime validation
+  const VALID_TYPES = ["lexicon", "trait", "gotcha", "persona", "persona-rule", "instruction", "skip"];
+  const VALID_ACTIONS = ["create", "skip", "merge"];
+  const VALID_COMPOSITIONS = ["rule", "preference"];
+  let invalidCount = 0;
+
+  for (const item of raw) {
+    const lines = item["lines"] as unknown;
+    const classification = item["classification"] as string | undefined;
+    const suggestedPath = item["suggested_path"] as string | undefined;
+    const action = item["action"] as string | undefined;
+    const compType = item["composition_type"] as string | undefined;
+    const sourceFile = item["source_file"] as string | undefined;
+
+    if (!Array.isArray(lines) || lines.length !== 2) { invalidCount++; continue; }
+    if (typeof lines[0] !== "number" || typeof lines[1] !== "number") { invalidCount++; continue; }
+    if (!classification || !VALID_TYPES.includes(classification)) { invalidCount++; continue; }
+    if (typeof suggestedPath !== "string") { invalidCount++; continue; }
+    if (!action || !VALID_ACTIONS.includes(action)) item["action"] = "create";
+    if (!compType || !VALID_COMPOSITIONS.includes(compType)) {
+      item["composition_type"] = DEFAULT_COMPOSITION[classification] ?? "preference";
+    }
+    if (classification === "skip" || item["action"] === "skip") continue;
+
+    // Match classification to a file in the batch
+    // Try matching by source_file field, then fall back to first file (single-file compat)
+    let matchedFile: string | null = null;
+    if (sourceFile) {
+      for (const f of files) {
+        if (sourceFile.includes(f.filePath) || f.filePath.includes(sourceFile)) {
+          matchedFile = f.filePath;
+          break;
+        }
+      }
+    }
+    if (!matchedFile) {
+      // If only one file in batch, assign to it; otherwise try to match by suggested_path or first file
+      matchedFile = files.length === 1 ? files[0]!.filePath : (files[0]?.filePath ?? null);
+    }
+    if (matchedFile && result.has(matchedFile)) {
+      result.get(matchedFile)!.push(item as unknown as Classification);
+    }
+  }
+
+  if (invalidCount > 0) {
+    console.log(chalk.yellow(`    ${invalidCount} section(s) had invalid format and were dropped.`));
+  }
+
+  return result;
 }
 
 const CLASSIFICATION_SCHEMA = loadSchema("classify-content");
@@ -678,22 +810,47 @@ export function classifyScannedFiles(
     return { classifications: [], trustedSources };
   }
 
+  // Group files by repo for batched LLM calls
+  const byRepo = new Map<string, typeof classifiable>();
   for (const file of classifiable) {
-    console.log(chalk.cyan(`  Classifying: ${file.repoName}/${file.relativePath}...`));
-    const content = fs.readFileSync(file.absolutePath, "utf-8");
-    const rawClassifications = classifyViaLLM(content, file.relativePath, inventory, provider);
+    const list = byRepo.get(file.repoName) ?? [];
+    list.push(file);
+    byRepo.set(file.repoName, list);
+  }
 
-    if (!rawClassifications) {
-      console.log(chalk.yellow(`    Skipped (classification failed)`));
-      continue;
+  for (const [repoName, repoFiles] of byRepo) {
+    // Split into batches of BATCH_SIZE
+    for (let batchStart = 0; batchStart < repoFiles.length; batchStart += BATCH_SIZE) {
+      const batch = repoFiles.slice(batchStart, batchStart + BATCH_SIZE);
+
+      // Build batch entries
+      const batchEntries: BatchFileEntry[] = batch.map(file => ({
+        filePath: file.relativePath,
+        absolutePath: file.absolutePath,
+        content: fs.readFileSync(file.absolutePath, "utf-8"),
+        lines: file.lines,
+      }));
+
+      console.log(chalk.cyan(`  Classifying batch: ${batch.length} file(s) from ${repoName}...`));
+
+      const batchResults = classifyBatchViaLLM(batchEntries, repoName, inventory, provider);
+
+      if (!batchResults) {
+        console.log(chalk.yellow(`    Batch classification failed for ${repoName}`));
+        continue;
+      }
+
+      for (const file of batch) {
+        trustedSources.add(file.absolutePath);
+        const fileClassifications = batchResults.get(file.relativePath) ?? [];
+        for (const c of fileClassifications) {
+          allClassifications.push({ ...c, source_file: file.absolutePath });
+        }
+        if (fileClassifications.length > 0) {
+          console.log(chalk.green(`    ${file.relativePath}: ${fileClassifications.length} section(s) classified`));
+        }
+      }
     }
-
-    trustedSources.add(file.absolutePath);
-    for (const c of rawClassifications) {
-      allClassifications.push({ ...c, source_file: file.absolutePath });
-    }
-
-    console.log(chalk.green(`    ${rawClassifications.length} section(s) classified`));
   }
 
   return { classifications: allClassifications, trustedSources };
@@ -2302,7 +2459,7 @@ export function applyImportPlanV2(
 
 export {
   analyzeOverlap, normalizeContent, jaccardSimilarity, scanPath, applyPlan,
-  buildClassificationPrompt, ALLOWED_CLASSIFICATION_DIRS,
+  buildClassificationPrompt, buildBatchedClassificationPrompt, ALLOWED_CLASSIFICATION_DIRS,
   detectPlatform, slugify, parseAgentFrontmatter, stripFrontmatter, extractTraitRefs,
   writeStagingFileV2, readStagingFileV2,
 };
