@@ -761,7 +761,25 @@ program
       console.log(chalk.yellow("Note: --dry-run has no effect without --fix\n"));
     }
     if (!isJson) console.log(chalk.bold("\nAgentBoot — doctor\n"));
-    const cwd = process.cwd();
+
+    // Respect AGENTBOOT_HUB env var so doctor can run from any directory
+    const hubEnv = process.env["AGENTBOOT_HUB"];
+    const cwd = hubEnv ? path.resolve(hubEnv) : process.cwd();
+    if (hubEnv) {
+      if (!fs.existsSync(path.join(cwd, "agentboot.config.json"))) {
+        const msg = `AGENTBOOT_HUB is set but doesn't appear to be a valid hub (missing agentboot.config.json)`;
+        if (isJson) {
+          console.log(JSON.stringify({ issues: 1, issuesFound: 1, issuesFixed: 0, checks: [{ name: msg, status: "fail", message: msg }] }, null, 2));
+        } else {
+          console.log(chalk.yellow(`  ⚠ ${msg}`));
+          console.log(chalk.gray(`    AGENTBOOT_HUB=${hubEnv}\n`));
+        }
+      }
+      if (!isJson) {
+        console.log(chalk.gray(`  Hub: ${cwd} (from AGENTBOOT_HUB)\n`));
+      }
+    }
+
     let issuesFound = 0;
     let issuesFixed = 0;
 
