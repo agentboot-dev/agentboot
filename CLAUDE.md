@@ -17,13 +17,15 @@ npm run test         # Run vitest
 npm run test:watch   # Watch mode testing
 npm run typecheck    # TypeScript type checking (tsc --noEmit)
 npm run cli          # Run the agentboot CLI (e.g., npm run cli -- build)
+npm run mcp-server   # Start the AgentBoot MCP server (used by /ab skill)
 ```
 
 The CLI (`scripts/cli.ts`) wraps all pipeline commands with proper argument parsing:
 ```bash
 npx tsx scripts/cli.ts build [-c config]
 npx tsx scripts/cli.ts validate [--strict]
-npx tsx scripts/cli.ts sync [--repos-file path] [--dry-run]
+npx tsx scripts/cli.ts sync [--repos-file path] [--dry-run] [--force]
+npx tsx scripts/cli.ts import [--path dir] [--retry-failed]
 npx tsx scripts/cli.ts test [--behavioral] [--snapshot] [--regression]
 npx tsx scripts/cli.ts migrate [--path dir] [--revert] [--dry-run]
 npx tsx scripts/cli.ts dev-build
@@ -31,6 +33,17 @@ npx tsx scripts/cli.ts --help
 ```
 
 Run a single test file: `npx vitest run <path-to-test-file>`
+
+### /ab Skill (Phase 10)
+
+The `/ab` skill is the primary developer interface — invoke it from Claude Code instead of the CLI for interactive work. Five skill files in `templates/skills/` (copied to `.claude/agents/` on install):
+- `ab.md` — orchestrator: routes all intents
+- `ab-author.md` — add/import/promote artifacts
+- `ab-diagnose.md` — doctor, validate, lint, test
+- `ab-manage.md` — build, sync, install, config
+- `ab-query.md` — status, cost-estimate, search
+
+The `/ab` skill requires the AgentBoot MCP server (`npm run mcp-server`). Set `AGENTBOOT_HUB=/path/to/hub` env var when running the server from outside the hub directory.
 
 ## Architecture
 
