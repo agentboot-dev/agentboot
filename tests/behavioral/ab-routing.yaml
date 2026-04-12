@@ -1,0 +1,56 @@
+# /ab skill routing behavioral tests
+# Validates that user intent is correctly classified and routed to the right sub-agent
+
+tests:
+  - id: routing-add-gotcha
+    description: Route gotcha creation request to ab-author with add intent
+    prompt: "add a gotcha for AWS Lambda cold starts"
+    expect:
+      - routes_to: ab-author
+      - intent: add
+      - artifact_type: gotcha
+    pass_threshold: 0.8
+
+  - id: routing-doctor
+    description: Route hub health check to ab-diagnose with doctor intent
+    prompt: "check if my hub is healthy"
+    expect:
+      - routes_to: ab-diagnose
+      - intent: doctor
+    pass_threshold: 0.8
+
+  - id: routing-build-sync
+    description: Route build+sync request to ab-manage with compound intent
+    prompt: "build and sync to staging"
+    expect:
+      - routes_to: ab-manage
+      - intent: build+sync
+    pass_threshold: 0.8
+
+  - id: routing-cost-estimate
+    description: Route cost question to ab-query with cost-estimate intent
+    prompt: "how much does this cost for 50 engineers?"
+    expect:
+      - routes_to: ab-query
+      - intent: cost-estimate
+    pass_threshold: 0.8
+
+  - id: routing-list-personas
+    description: Route persona listing request to ab-query with list-personas intent
+    prompt: "what personas are available?"
+    expect:
+      - routes_to: ab-query
+      - intent: list-personas
+    pass_threshold: 0.8
+
+  - id: routing-ambiguous-clarify
+    description: Ambiguous input triggers clarifying question instead of routing
+    prompt: "I want to improve the code reviewer"
+    expect:
+      - asks_clarifying_question: true
+      - clarification_options:
+          - add trait
+          - promote
+          - modify persona
+      - does_not_route_without_clarification: true
+    pass_threshold: 0.8

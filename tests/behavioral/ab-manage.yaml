@@ -1,0 +1,38 @@
+# ab-manage behavioral tests
+# Validates build, sync, and install management workflows
+
+tests:
+  - id: manage-build-success
+    description: Build command shows output summary after successful compilation
+    prompt: "build the hub"
+    expect:
+      - calls_tool: agentboot_build
+      - shows_output_summary: true
+      - summary_includes:
+          - platform_count
+          - persona_count
+          - artifact_count
+    pass_threshold: 0.8
+
+  - id: manage-sync-subset
+    description: Sync to subset filters repos and shows sync count
+    prompt: "sync to staging only"
+    expect:
+      - calls_tool: agentboot_list_repos
+      - filters_repos_by: staging
+      - calls_tool: agentboot_sync
+      - tool_args:
+          repo_filter: staging
+      - response_matches: "Synced \\d+ of \\d+ repos"
+    pass_threshold: 0.8
+
+  - id: manage-install-reconfigure
+    description: Reconfigure detects existing install and prompts for org name
+    prompt: "reconfigure my install"
+    expect:
+      - detects_existing_install: true
+      - identifies_install_path: developer
+      - prompts_for_org_name: true
+      - calls_tool: agentboot_status
+      - verifies_configuration: true
+    pass_threshold: 0.8

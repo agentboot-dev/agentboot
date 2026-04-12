@@ -1,0 +1,50 @@
+# ab-author promote/demote intent behavioral tests
+# Validates scope promotion and demotion workflows with proper attribution
+
+tests:
+  - id: author-promote-explicit
+    description: Explicit promote request shows scope change and adds attribution
+    prompt: "promote this gotcha to org scope"
+    context:
+      artifact: "teams/platform/auth-team/gotchas/jwt-validation.md"
+      current_scope: "teams/platform/auth-team"
+    expect:
+      - shows_current_scope: "teams/platform/auth-team"
+      - shows_target_scope: "core"
+      - calls_tool: agentboot_propose_change
+      - proposed_frontmatter:
+          has_promoted_from: true
+          has_promoted_by: true
+      - attribution_preserved: true
+    pass_threshold: 0.8
+
+  - id: author-promote-personal-config
+    description: Personal gotcha flagged as org-worthy follows same flow with source attribution
+    prompt: "this personal gotcha about retry patterns should be shared org-wide"
+    context:
+      artifact: "personal/gotchas/retry-backoff.md"
+      contributor: "jane@acme.com"
+    expect:
+      - shows_current_scope: personal
+      - shows_target_scope: "core"
+      - calls_tool: agentboot_propose_change
+      - proposed_frontmatter:
+          has_promoted_from: true
+          has_promoted_by: true
+          has_contributor: true
+          has_source: true
+    pass_threshold: 0.8
+
+  - id: author-demote-with-reason
+    description: Demotion request asks for reason and adds demotion_reason frontmatter
+    prompt: "demote this gotcha back to team scope"
+    context:
+      artifact: "core/gotchas/aggressive-linting.md"
+      current_scope: "core"
+    expect:
+      - asks_for_demotion_reason: true
+      - calls_tool: agentboot_propose_change
+      - proposed_frontmatter:
+          has_demotion_reason: true
+      - does_not_demote_without_reason: true
+    pass_threshold: 0.8
