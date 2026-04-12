@@ -1653,6 +1653,187 @@ function analyzeOverlap(
 }
 
 // ---------------------------------------------------------------------------
+// Duplicate detection during import (Story 13h)
+// ---------------------------------------------------------------------------
+
+export interface DuplicateMatch {
+  scannedFile: string;
+  matchedArtifact: string;
+  similarity: number;
+  type: "DUPLICATE" | "PROMOTION_CANDIDATE";
+}
+
+/**
+ * Tokenize content for Jaccard similarity: split on whitespace/punctuation,
+ * lowercase, filter tokens <= 3 chars.
+ */
+export function tokenizeForJaccard(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase().split(/[\s\W]+/).filter(t => t.length > 3)
+  );
+}
+
+/**
+ * Compute Jaccard similarity between two token sets.
+ */
+export function jaccardSimilarityTokenized(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  const intersection = new Set([...a].filter(t => b.has(t)));
+  const union = new Set([...a, ...b]);
+  return union.size === 0 ? 0 : intersection.size / union.size;
+}
+
+/**
+ * Load all existing hub artifacts (traits, gotchas, instructions) into token sets
+ * for comparison with scanned files.
+ */
+function loadHubArtifactTokens(hubPath: string): Array<{ path: string; tokens: Set<string> }> {
+  const artifacts: Array<{ path: string; tokens: Set<string> }> = [];
+
+  function loadDir(dir: string, prefix: string): void {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith(".md")) continue;
+      try {
+        const content = fs.readFileSync(path.join(dir, entry), "utf-8");
+        artifacts.push({
+          path: `${prefix}/${entry}`,
+          tokens: tokenizeForJaccard(content),
+        });
+      } catch { /* skip unreadable */ }
+    }
+  }
+
+  loadDir(path.join(hubPath, "core", "traits"), "core/traits");
+  loadDir(path.join(hubPath, "core", "gotchas"), "core/gotchas");
+  loadDir(path.join(hubPath, "core", "instructions"), "core/instructions");
+
+  return artifacts;
+}
+
+/**
+ * Detect duplicates and promotion candidates in the scan manifest.
+ *
+ * - DUPLICATE: scanned file with >= 0.85 Jaccard similarity to an existing hub artifact.
+ * - PROMOTION_CANDIDATE: pattern appearing in 3+ different repos in the same scan.
+ */
+export function detectDuplicates(
+  manifest: ScanManifest,
+  hubPath: string,
+): DuplicateMatch[] {
+  const matches: DuplicateMatch[] = [];
+  const hubArtifacts = loadHubArtifactTokens(hubPath);
+
+  // Tokenize all scanned files
+  const scannedTokens: Array<{
+    file: typeof manifest.files[0];
+    tokens: Set<string>;
+  }> = [];
+
+  for (const file of manifest.files) {
+    try {
+      const content = fs.readFileSync(file.absolutePath, "utf-8");
+      scannedTokens.push({ file, tokens: tokenizeForJaccard(content) });
+    } catch {
+      scannedTokens.push({ file, tokens: new Set() });
+    }
+  }
+
+  // Compare scanned files against hub artifacts (DUPLICATE detection)
+  for (const scanned of scannedTokens) {
+    if (scanned.tokens.size === 0) continue;
+
+    for (const hub of hubArtifacts) {
+      const sim = jaccardSimilarityTokenized(scanned.tokens, hub.tokens);
+      if (sim >= 0.85) {
+        matches.push({
+          scannedFile: `${scanned.file.repoName}/${scanned.file.relativePath}`,
+          matchedArtifact: hub.path,
+          similarity: sim,
+          type: "DUPLICATE",
+        });
+      }
+    }
+  }
+
+  // Cross-scan comparison for PROMOTION_CANDIDATE detection
+  // Group scanned files by content similarity across different repos
+  const groups: Array<{ files: typeof scannedTokens; repos: Set<string> }> = [];
+
+  for (let i = 0; i < scannedTokens.length; i++) {
+    const a = scannedTokens[i]!;
+    if (a.tokens.size === 0) continue;
+
+    // Check if this file already belongs to a group
+    let addedToGroup = false;
+    for (const group of groups) {
+      const representative = group.files[0]!;
+      const sim = jaccardSimilarityTokenized(a.tokens, representative.tokens);
+      if (sim >= 0.85) {
+        group.files.push(a);
+        group.repos.add(a.file.repoName);
+        addedToGroup = true;
+        break;
+      }
+    }
+
+    if (!addedToGroup) {
+      groups.push({
+        files: [a],
+        repos: new Set([a.file.repoName]),
+      });
+    }
+  }
+
+  // Flag groups that span 3+ repos as promotion candidates
+  for (const group of groups) {
+    if (group.repos.size >= 3) {
+      for (const entry of group.files) {
+        matches.push({
+          scannedFile: `${entry.file.repoName}/${entry.file.relativePath}`,
+          matchedArtifact: `pattern in ${group.repos.size} repos: ${[...group.repos].join(", ")}`,
+          similarity: 1.0,
+          type: "PROMOTION_CANDIDATE",
+        });
+      }
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Print duplicate detection results to console.
+ */
+export function printDuplicateDetection(matches: DuplicateMatch[]): void {
+  const duplicates = matches.filter(m => m.type === "DUPLICATE");
+  const promotions = matches.filter(m => m.type === "PROMOTION_CANDIDATE");
+
+  if (duplicates.length > 0) {
+    console.log(chalk.bold("\n  Duplicate detection:\n"));
+    for (const d of duplicates) {
+      const pct = Math.round(d.similarity * 100);
+      console.log(chalk.yellow(
+        `    WARNING: ${d.scannedFile} is very similar to existing ${d.matchedArtifact} (${pct}% match). Import as new, update existing, or skip?`
+      ));
+    }
+  }
+
+  if (promotions.length > 0) {
+    // Deduplicate promotion messages (same pattern across repos)
+    const seen = new Set<string>();
+    console.log(chalk.bold("\n  Promotion candidates:\n"));
+    for (const p of promotions) {
+      if (seen.has(p.matchedArtifact)) continue;
+      seen.add(p.matchedArtifact);
+      console.log(chalk.cyan(
+        `    This pattern appears in ${p.matchedArtifact.replace("pattern in ", "")}. Consider promoting to core scope.`
+      ));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AB-112: Whole-file import — agents → personas, traits → traits, rules → gotchas
 // ---------------------------------------------------------------------------
 
@@ -2529,6 +2710,15 @@ export function runExpandedImport(
   hubPath: string,
   trustedSources: Set<string>,
 ): ImportPlanV2 {
+  // 0. Duplicate detection (before classification)
+  console.log(chalk.cyan("\n  Checking for duplicates..."));
+  const duplicateMatches = detectDuplicates(manifest, hubPath);
+  if (duplicateMatches.length > 0) {
+    printDuplicateDetection(duplicateMatches);
+  } else {
+    console.log(chalk.gray("    No duplicates detected"));
+  }
+
   // 1. Whole-file imports (free, instant)
   console.log(chalk.cyan("\n  Processing whole-file imports..."));
   const wholeFileImports = processWholeFileImports(categorized.wholeFile, hubPath);
