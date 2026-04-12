@@ -76,7 +76,7 @@ Keywords: status, what do I have, how much, cost, find, search, why did we, what
 
 **"check" disambiguation:** The word "check" is ambiguous. Resolve by what follows it:
 - "check health", "check what's broken", "check errors", "check if tests pass" → `ab-diagnose`
-- "check my config", "check my settings", "check what's enabled" → `ab-manage` or `ab-query`
+- "check my config", "check my settings", "check what's enabled" → `ab-query` (read-only); "change my config", "update settings" → `ab-manage` (write)
 - "check the status", "check what personas I have" → `ab-query`
 When context is still unclear after reading the full request, ask: "Are you checking for problems (I'll run diagnostics) or checking your current configuration (I'll query the hub)?"
 

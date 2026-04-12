@@ -276,6 +276,7 @@ scope: group  # promoted from: team
 contributor: jane@acme.com
 promoted_from: team
 promoted_by: mike@acme.com
+promoted_at: {today's date, e.g. 2026-04-12}
 ---
 ```
 
@@ -327,6 +328,7 @@ scope: team  # demoted from: group
 contributor: jane@acme.com
 demoted_from: group
 demoted_to: team
+demoted_at: {today's date, e.g. 2026-04-12}
 demotion_reason: "Pattern specific to Redis keyspace expiry — not applicable to in-memory or SQL session backends used by other teams"
 ---
 ```
