@@ -1551,9 +1551,17 @@ describe("AB-45: uninstall command", () => {
   let syncTarget: string;
   let originalRepos: string;
 
+  // Safety: restore repos.json even if tests crash
+  const restoreRepos = () => {
+    if (originalRepos) {
+      try { fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos); } catch { /* best effort */ }
+    }
+  };
+
   beforeAll(() => {
     // Build + sync to a temp target to have something to uninstall
     originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    process.on("exit", restoreRepos);
     syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-uninstall-"));
     fs.writeFileSync(
       path.join(ROOT, "repos.json"),
@@ -1563,6 +1571,7 @@ describe("AB-45: uninstall command", () => {
   });
 
   afterAll(() => {
+    process.removeListener("exit", restoreRepos);
     fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
     if (syncTarget) fs.rmSync(syncTarget, { recursive: true, force: true });
   });

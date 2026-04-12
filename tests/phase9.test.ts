@@ -28,7 +28,15 @@ function run(script: string, cwd = ROOT): string {
 const pathScopedGotcha = path.join(ROOT, "core", "gotchas", "test-jetbrains-lambda.md");
 const generalGotcha = path.join(ROOT, "core", "gotchas", "test-jetbrains-general.md");
 
+// Safety: clean up test gotcha fixtures even if tests crash
+const cleanupGotchas = () => {
+  try { if (fs.existsSync(pathScopedGotcha)) fs.unlinkSync(pathScopedGotcha); } catch { /* best effort */ }
+  try { if (fs.existsSync(generalGotcha)) fs.unlinkSync(generalGotcha); } catch { /* best effort */ }
+};
+
 beforeAll(() => {
+  process.on("exit", cleanupGotchas);
+
   // Create test gotcha files so JetBrains gotcha compilation can be tested
   fs.writeFileSync(
     pathScopedGotcha,
@@ -68,9 +76,8 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  // Clean up test gotcha files
-  if (fs.existsSync(pathScopedGotcha)) fs.unlinkSync(pathScopedGotcha);
-  if (fs.existsSync(generalGotcha)) fs.unlinkSync(generalGotcha);
+  process.removeListener("exit", cleanupGotchas);
+  cleanupGotchas();
 });
 
 // ---------------------------------------------------------------------------
