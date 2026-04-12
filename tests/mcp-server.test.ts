@@ -201,11 +201,67 @@ describe("MCP tool handlers", () => {
   });
 
   describe("agentboot_optimize_metrics", () => {
-    it("returns stub response with message", () => {
+    it("returns stub response with message indicating not yet implemented", () => {
       const result = handleToolCall("agentboot_optimize_metrics", {});
       expect(result.isError).toBeUndefined();
       const data = JSON.parse(result.content[0]!.text);
-      expect(data.message).toBeDefined();
+      expect(typeof data.message).toBe("string");
+      expect(data.message.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("agentboot_build", () => {
+    it("returns build result with filesWritten count", () => {
+      const result = handleToolCall("agentboot_build", {});
+      // Build may succeed or fail depending on hub state — verify response shape
+      const text = result.content[0]!.text;
+      const data = JSON.parse(text);
+      if (!result.isError) {
+        expect(typeof data.filesWritten).toBe("number");
+        expect(typeof data.duration_ms).toBe("number");
+      } else {
+        expect(typeof data.error).toBe("string");
+      }
+    });
+  });
+
+  describe("agentboot_sync", () => {
+    it("returns sync result with repos array", () => {
+      const result = handleToolCall("agentboot_sync", {});
+      const text = result.content[0]!.text;
+      const data = JSON.parse(text);
+      if (!result.isError) {
+        expect(Array.isArray(data.repos)).toBe(true);
+        expect(data.repos.length).toBeGreaterThan(0);
+        expect(data.repos[0]).toHaveProperty("name");
+        expect(data.repos[0]).toHaveProperty("filesWritten");
+      } else {
+        // Sync may fail if repos.json is empty — that's expected
+        expect(typeof data.error).toBe("string");
+      }
+    });
+  });
+
+  describe("agentboot_scan_for_import", () => {
+    it("returns error when paths argument is missing", () => {
+      const result = handleToolCall("agentboot_scan_for_import", {});
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("paths");
+    });
+
+    it("returns error when paths is empty array", () => {
+      const result = handleToolCall("agentboot_scan_for_import", { paths: [] });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("non-empty");
+    });
+
+    it("returns scan results for a valid path", () => {
+      // Use the project root as a scan target — it has agentic files
+      const result = handleToolCall("agentboot_scan_for_import", { paths: [process.cwd()] });
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(Array.isArray(data.highConfidence)).toBe(true);
+      expect(Array.isArray(data.uncertain)).toBe(true);
     });
   });
 

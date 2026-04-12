@@ -321,15 +321,16 @@ describe("Story 13e: Import timeout tracking", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("ClassifyResult includes timedOutFiles array", () => {
-    // Verify the interface shape by type
-    const result = {
-      classifications: [],
-      trustedSources: new Set<string>(),
-      timedOutFiles: [{ file: "/path", repoName: "repo", timedOutAt: "2026-04-11T00:00:00.000Z" }],
+  it("ClassifyResult timedOutFiles interface includes fileType from Phase 10", () => {
+    // Verify the TimedOutFile interface includes fileType for retry preservation
+    const timedOut: import("../scripts/lib/import.js").TimedOutFile = {
+      file: "/path",
+      repoName: "repo",
+      timedOutAt: "2026-04-11T00:00:00.000Z",
+      fileType: "claude-md",
     };
-    expect(result.timedOutFiles).toHaveLength(1);
-    expect(result.timedOutFiles[0]!.file).toBe("/path");
+    expect(timedOut.fileType).toBe("claude-md");
+    expect(timedOut.file).toBe("/path");
   });
 });
 

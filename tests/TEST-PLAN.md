@@ -1,6 +1,6 @@
 # AgentBoot Test Plan
 
-Last updated: 2026-04-05. Total: 24 test files, 980 tests passing.
+Last updated: 2026-04-12. Total: 25 test files, 1040+ tests passing.
 
 ## Test Suite Overview
 
@@ -18,8 +18,18 @@ Last updated: 2026-04-05. Total: 24 test files, 980 tests passing.
 | `cost-estimate.test.ts` | ~18 | Unit + CLI: pricing calculation, CLI output format, human-readable table, model cost ordering | ~5s |
 | `optimize.test.ts` | ~35 | Unit + CLI: optimize scoring, HTML report generation written to disk, escapeHtml | ~5s |
 | `dev-sync.test.ts` | 6 | Integration: dev-sync writes to .claude/, idempotency, restart warning | ~15s |
-| *(other test files)* | ~524 | export, import, migrate, marketplace, ADR, behavioral, regression, etc. | ~5s |
-| **Total** | **980** | | ~52s |
+| `mcp-server.test.ts` | ~45 | Unit: MCP tool handlers — read tools, execute tools, propose_change validation, isContainedIn security | <500ms |
+| `import-phase10.test.ts` | ~20 | Unit + integration: import batching, prompt structure, retry manifest, source attribution | <300ms |
+| `phase4.test.ts` | ~25 | Integration: Phase 4 features — install wizard, import system, composition manifests | ~3s |
+| `phase6.test.ts` | ~30 | Integration: Phase 6 — composition consistency, override detection, behavioral test runner | ~3s |
+| `phase9.test.ts` | ~15 | Integration: Phase 9 — JetBrains output, windsurf gotchas, AGENTS.md gotchas | ~5s |
+| `import-expanded.test.ts` | ~40 | Integration: expanded import — whole-file, config merge, skill import, dedup, secrets | ~3s |
+| `marketplace.test.ts` | ~20 | Unit: marketplace registry, search, SHA verification, license validation | <300ms |
+| `contribution.test.ts` | ~15 | Unit: contribution review, duplicate detection, Jaccard similarity | <200ms |
+| `export.test.ts` | ~10 | Integration: agentskills.io export, skills-index.json schema | ~3s |
+| `monorepo.test.ts` | ~10 | Integration: monorepo detection, per-package sync | ~3s |
+| *(other test files)* | ~100 | intelligence, judge, optimize-weights, etc. | ~5s |
+| **Total** | **1040+** | | ~52s |
 
 ## Coverage by Feature
 
@@ -155,7 +165,7 @@ tests. All 15 opportunities from that table are now covered.
 | JSONC block comments (`/* */`) | Only `//` comments supported — documented |
 | Concurrent builds | Single-user build tool, no locking needed |
 | sync.ts pure functions (mergeScopes, detectDrift, etc.) | Not exported — only tested via integration. Export to lib for unit testing |
-| validate.ts isUnsafeRegex/buildSecretPatterns | Not exported — only exercised indirectly via integration tests |
+| validate.ts isUnsafeRegex/buildSecretPatterns | Exported and tested in validate.test.ts |
 | import.ts scanPath/classifyFile | Deterministic but untested — only normalizeContent and jaccardSimilarity have coverage |
 | dev-sync.ts copyRecursive/cleanMatchingFiles | Not exported — only tested via integration |
 | compile.ts pure functions | Not exported — only tested via CLI integration |
