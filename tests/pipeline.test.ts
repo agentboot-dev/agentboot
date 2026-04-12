@@ -62,14 +62,10 @@ describe("validate script", () => {
 
 describe("compile script", () => {
   beforeAll(() => {
-    // Clean dist/ before compile tests, but handle contention with parallel test files
+    // Clean dist/ before compile tests so we run against a fresh build.
     const distPath = path.join(ROOT, "dist");
-    try {
-      if (fs.existsSync(distPath)) {
-        fs.rmSync(distPath, { recursive: true });
-      }
-    } catch {
-      // Another test may be using dist/ concurrently — safe to continue
+    if (fs.existsSync(distPath)) {
+      fs.rmSync(distPath, { recursive: true });
     }
   });
 
@@ -154,6 +150,19 @@ describe("compile script", () => {
       // Verify body content contains injected traits
       expect(content).toContain("<!-- traits:start -->");
       expect(content).toContain("<!-- traits:end -->");
+    }
+  });
+
+  // --- Story 12: /ab skill files in dist/claude/core/agents/ ---
+
+  it("claude: copies all 5 /ab skill files to dist/claude/core/agents/", () => {
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const skillPath = path.join(ROOT, "dist", "claude", "core", "agents", file);
+      expect(fs.existsSync(skillPath), `agents/${file} should exist`).toBe(true);
+      const content = fs.readFileSync(skillPath, "utf-8");
+      expect(content).toMatch(/^---\n/);
+      expect(content).toContain("description:");
     }
   });
 
@@ -411,7 +420,7 @@ describe("sync script", () => {
 
   it("syncs claude platform files to target repo", () => {
     const output = run("scripts/sync.ts");
-    expect(output).toContain("Synced 1 repo");
+    expect(output).toContain("Synced 1 of 1 repo");
   });
 
   it("creates .claude/ directory in target", () => {
@@ -454,9 +463,36 @@ describe("sync script", () => {
     }
   });
 
-  it("skips unchanged files on re-sync", () => {
+  // --- Story 12: /ab skill files synced to spoke repos ---
+
+  it("syncs /ab skill files to .claude/agents/ in target repo", () => {
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const skillPath = path.join(syncTarget, ".claude", "agents", file);
+      expect(fs.existsSync(skillPath), `.claude/agents/${file} should be synced`).toBe(true);
+    }
+  });
+
+  it("includes /ab skill files in .agentboot-manifest.json hashes", () => {
+    const manifestPath = path.join(syncTarget, ".claude", ".agentboot-manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const filePaths = manifest.files.map((f: { path: string }) => f.path);
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const expectedPath = `.claude/agents/${file}`;
+      expect(filePaths, `manifest should include ${expectedPath}`).toContain(expectedPath);
+    }
+  });
+
+  it("smart sync: skips repo with no changes on re-sync", () => {
     const output = run("scripts/sync.ts");
-    expect(output).toContain("unchanged");
+    expect(output).toContain("skipped (no changes)");
+    expect(output).toContain("Synced 0 of 1");
+  });
+
+  it("smart sync: --force bypasses skip and syncs all repos", () => {
+    const output = run("scripts/sync.ts -- --force");
+    expect(output).toContain("Synced 1 of 1 repo");
   });
 
   it("supports dry-run mode", () => {
@@ -488,7 +524,7 @@ describe("sync script", () => {
 
     try {
       const output = run("scripts/sync.ts");
-      expect(output).toContain("Synced 1 repo");
+      expect(output).toContain("Synced 1 of 1 repo");
 
       // Copilot platform should have merged copilot-instructions.md in .github/
       expect(
@@ -525,7 +561,7 @@ describe("sync script", () => {
 
     try {
       const output = run("scripts/sync.ts");
-      expect(output).toContain("Synced 1 repo");
+      expect(output).toContain("Synced 1 of 1 repo");
 
       // Cursor rules should be written to .cursor/rules/
       const cursorRulesDir = path.join(cursorTarget, ".cursor", "rules");
@@ -587,6 +623,75 @@ describe("sync script", () => {
     }
     // Ensure we actually tested something — if run() succeeded, no assertions ran
     expect(caught).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 14b: Multi-platform repos
+// ---------------------------------------------------------------------------
+
+describe("multi-platform repo support", () => {
+  let multiTarget: string;
+  let originalRepos: string;
+
+  beforeAll(() => {
+    originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    multiTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-multi-"));
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([{
+        path: multiTarget,
+        label: "multi-platform-test",
+        platforms: ["claude", "copilot"],
+      }])
+    );
+  });
+
+  afterAll(() => {
+    fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+    if (multiTarget) {
+      fs.rmSync(multiTarget, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs both claude and copilot platforms to the same repo", () => {
+    const output = run("scripts/sync.ts");
+    // Should produce 2 results (one per platform)
+    expect(output).toContain("Synced 2 of 2 repo");
+  });
+
+  it("creates .claude/ directory for claude platform", () => {
+    expect(fs.existsSync(path.join(multiTarget, ".claude"))).toBe(true);
+    expect(fs.existsSync(path.join(multiTarget, ".claude", "skills"))).toBe(true);
+  });
+
+  it("creates copilot-instructions.md for copilot platform", () => {
+    expect(
+      fs.existsSync(path.join(multiTarget, ".github", "copilot-instructions.md"))
+    ).toBe(true);
+  });
+
+  it("backward compatible: singular platform field still works", () => {
+    const singleTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-single-"));
+    fs.writeFileSync(
+      path.join(ROOT, "repos.json"),
+      JSON.stringify([{ path: singleTarget, label: "single-platform", platform: "claude" }])
+    );
+    try {
+      const output = run("scripts/sync.ts");
+      expect(output).toContain("Synced 1 of 1 repo");
+      expect(fs.existsSync(path.join(singleTarget, ".claude"))).toBe(true);
+    } finally {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{
+          path: multiTarget,
+          label: "multi-platform-test",
+          platforms: ["claude", "copilot"],
+        }])
+      );
+      fs.rmSync(singleTarget, { recursive: true, force: true });
+    }
   });
 });
 

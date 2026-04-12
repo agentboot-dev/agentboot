@@ -1,0 +1,49 @@
+# ab-author import intent behavioral tests
+# Validates that ab-author correctly handles scanning and importing from spoke repos
+
+tests:
+  - id: author-import-single-repo
+    description: Single repo scan shows findings grouped by confidence tier
+    prompt: "scan the auth-service repo for importable gotchas"
+    context:
+      repo_path: "/path/to/auth-service"
+    expect:
+      - calls_tool: agentboot_scan_for_import
+      - tool_args:
+          repo_path: "/path/to/auth-service"
+      - groups_by_confidence_tier: true
+      - confidence_tiers:
+          - high
+          - uncertain
+      - asks_for_confirmation_before_import: true
+    pass_threshold: 0.8
+
+  - id: author-import-duplicate-detection
+    description: Scan result with high similarity surfaces duplicate for resolution
+    prompt: "import gotchas from the payments repo"
+    context:
+      scan_results:
+        - name: "sql-injection-guard"
+          similarity: 0.92
+          existing_match: "core/gotchas/sql-injection.md"
+    expect:
+      - surfaces_duplicate: true
+      - shows_similarity_score: true
+      - asks_user_to_resolve_duplicate: true
+      - does_not_auto_import_duplicate: true
+    pass_threshold: 0.8
+
+  - id: author-import-promotion-suggestion
+    description: Item appearing in 3+ repos triggers promotion suggestion
+    prompt: "scan all repos for common patterns"
+    context:
+      scan_results:
+        - name: "retry-with-backoff"
+          found_in_repos: ["auth-service", "payments", "notifications", "gateway"]
+          current_scope: "teams/platform/auth-team"
+    expect:
+      - suggests_promotion: true
+      - promotion_target_scope: group or org
+      - shows_repo_count: true
+      - rationale_mentions_cross_repo_pattern: true
+    pass_threshold: 0.8

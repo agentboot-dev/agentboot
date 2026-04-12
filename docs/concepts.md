@@ -1147,6 +1147,135 @@ action is needed. No silent state changes.
 
 ---
 
+## Claude as the UX layer
+
+AgentBoot's CLI is the build tool for architects. Claude is the interface for
+everyone else. The design principle that follows from this:
+
+**Move UX into Claude wherever possible. Teach through clarification, not docs.**
+
+Instead of requiring users to learn CLI flags, subcommands, and taxonomy upfront,
+AgentBoot skills ask clarifying questions that teach the model as a side effect.
+A developer who has never heard of "group scope" learns it exists because `/ab`
+asked: *"Should this apply to the whole org or just one team?"* The question is
+the lesson. The user absorbs the mental model by answering, not by reading.
+
+This applies to any concept the user needs to understand to use AgentBoot
+effectively: scope hierarchy, artifact types, trait weights, persona composition.
+The right place to teach all of these is inside a skill clarification loop —
+not a getting-started guide.
+
+**Practical rules that follow from this principle:**
+
+- When intent is ambiguous, ask — never guess and silently proceed
+- When a concept needs to be introduced (scope, artifact type, weight), name it
+  in the clarifying question so the user learns the vocabulary
+- Present a concrete plan before executing — the plan is itself a teaching moment
+  showing what AgentBoot does and where it puts things
+- Prefer fewer, more capable skills over many narrow ones — the user should need
+  to remember as little as possible
+- The CLI remains the CI and scripting interface; `/ab` is the human interface — most CLI subcommands are soft-deprecated once `/ab` covers the same ground. No new CLI features or enhancements once a `/ab` alternative exists; bug fixes only
+- **Infer artifact type from description, not from the word the user used.** When
+  the inferred type differs from what the user said, surface the mismatch as a
+  teaching moment before proceeding. Example: a user who says "add a rule that
+  when I say GTD you know it means Getting Things Done" used the word "rule" but
+  described a lexicon entry. The right response is: *"This looks like a lexicon
+  entry — a domain term definition that teaches Claude vocabulary without using up
+  rule space. Want me to create it as a lexicon entry instead?"* The correction
+  teaches the distinction between lexicon, gotcha, trait, instruction, and persona
+  without the user having to read about them first.
+
+This is the same philosophy behind great CLI tools that also ship a good REPL:
+the underlying primitives don't change, but the interaction layer meets the user
+where they think, not where the implementation lives.
+
+## Promotion pathways
+
+AgentBoot is often described top-down: the org architects behavior, the hub distributes
+it, developers receive it. That model is real and important. But it is only half the
+system. The other half flows the opposite direction — and this is where orgs actually
+win or lose with agentic tooling.
+
+**The problem with personal scope as a dead end:**
+Developers naturally collect useful prompts, gotchas, and patterns. Claude Code's
+`~/.claude/` is where most of them live — personal, unjournaled, unjournalled,
+invisible to the org. Each developer ends up with 30 individually optimized setups
+that evaporate when they leave and never compound into shared knowledge. The org
+has AgentBoot installed and a sea of isolated solo users.
+
+**The core insight: the PR is the permission system.**
+In a git-based model, "writing" at org scope does not mean directly modifying the
+hub. It means opening a pull request on the hub. That PR can be rejected, questioned,
+or improved by reviewers. The approval mechanism is already present in the workflow.
+A separate per-scope ACL layer — "developers can only write at team scope" — is
+redundant, paternalistic, and cuts off the contribution signal the org needs.
+
+The implication: `/ab` and the wider AgentBoot toolchain should never block a
+contribution attempt based on scope. Anyone can propose anything at any scope. Scope
+is guidance ("this probably belongs at team level first"), not a gate. Hub owners
+control what merges — not what gets proposed.
+
+**What promotion pathways are:**
+
+The four-level scope hierarchy (org → group → team → repo) is not only a distribution
+model — it is a career path for an artifact. A new gotcha might earn its place at team
+scope after one sprint. If it proves universal, a team member or org admin promotes
+it to group or org scope. Promotion is incremental. No artifact has to justify org-wide
+scope from day one.
+
+The three promotion mechanisms:
+
+1. **Direct contribution** — a developer opens a PR to the hub at any scope, via
+   `/ab add a gotcha [at org scope]`. No permission gate. The PR is the gate.
+
+2. **Explicit promote flow** — a developer has something working in their personal
+   config and wants to share it. `/ab promote [artifact]` walks scope selection and
+   opens a PR on the hub with full attribution.
+
+3. **Import as discovery trigger** — when `/ab import` scans repos and finds the same
+   pattern in multiple places, it surfaces a promotion suggestion: *"This gotcha appears
+   in 4 repos independently. It may be worth promoting to core so everyone benefits from
+   one maintained version."* Duplicate detection becomes a contribution signal, not just
+   deduplication.
+
+**Demotion is a learning event, not a failure:**
+Promotion goes both directions. An artifact that was promoted to org scope but turns
+out to be too narrow gets demoted — scoped down to the team or group where it actually
+applies. This is framed as root-cause analysis, never criticism. The demotion trail
+records why the scope was narrowed ("pattern specific to Redis keyspace expiry, not
+general cache behavior") so the next person who encounters the same edge case finds
+the explanation rather than a gap.
+
+**Source attribution:**
+Every artifact in the hub carries provenance: who created it, what repo it came from
+if imported, who promoted it and when, and its full scope history. This is not a
+trophy case — it is institutional memory. When a developer asks the Second Brain
+*"why does this rule exist?"*, attribution is what makes the answer meaningful: *"This
+gotcha was contributed by the auth team after the 2025-11 session expiry incident.
+Promoted to org scope in Q1 2026."*
+
+Recognition without gamification: the value is not a badge or a leaderboard. An
+engineer's insight becomes visible in the PERSONAS.md that ships to every developer
+in the org, surfaces in Second Brain answers, and is queryable. That is meaningful
+recognition for engineers who care about craft. No gift cards, no points, no rankings.
+
+**The evaluation lens:**
+Every design decision in AgentBoot — new features, workflow changes, architectural
+choices — should be evaluated against:
+
+> *Does this make it easier or harder for developer discoveries to flow upward and
+> become org knowledge?*
+
+| Verdict | Examples |
+|---|---|
+| Supports promotion | PR-mediated writes at any scope; import duplicate detection as promotion trigger; source attribution in frontmatter; Second Brain surfacing provenance |
+| Neutral | Read-only query operations; build/sync pipeline internals |
+| Detracts from promotion | Hard scope permission gates; personal config with no path to sharing; org-only import sources; anonymous contributions |
+
+This lens applies to new features, workflow choices, and product positioning. A feature
+that makes individual developers more effective but siloes that effectiveness is net
+neutral at best and net negative if it displaces time from contributing up the chain.
+
 ## Anti-patterns
 
 These patterns were tried in AgentBoot's origin implementations and should be

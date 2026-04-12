@@ -339,13 +339,12 @@ delivery — that's what the plugin and sync are for.
 
 ### Model E: Self-Service Install
 
-The developer has AgentBoot installed (generic or org plugin) and runs `agentboot install`
-to connect to their org.
+The developer uses `/ab` (the conversational interface to AgentBoot) to connect their
+repo to the org's hub. No CLI commands required.
 
 **Developer workflow:**
-```bash
-# Has generic agentboot installed
-/agentboot:connect
+```
+/ab connect
 
 # Interactive:
 # > What organization are you with?
@@ -355,6 +354,8 @@ to connect to their org.
 # > Connected! You now have 12 personas, 8 traits, 3 compliance hooks.
 # > Run /acme:review-code to try a code review.
 ```
+
+> **CLI equivalent (for CI/scripting only):** `agentboot install --connect acme-corp`
 
 **How it works under the hood:**
 1. Skill asks for org name (or reads from git remote, or env var)
@@ -392,7 +393,7 @@ New developer joins Acme Corp
          │   └── .claude/ already has personas from sync. Done.
          │
          └── Path 3: Developer working on new/unsynced repo
-             └── /acme:connect or manual plugin install
+             └── /ab connect or manual plugin install
 ```
 
 ### Path 1: Managed Settings (Compliance + Plugin Auto-Install)
@@ -410,7 +411,7 @@ New developer joins Acme Corp
 ### Path 3: Self-Service (Catch-All)
 
 **Who:** Contractors, new hires before MDM, developers on new repos.
-**What they do:** `/agentboot:connect acme-corp` or manual marketplace add.
+**What they do:** `/ab connect` or manual marketplace add.
 **Result:** Plugin installed, ready to go.
 
 ### How They Layer
@@ -565,11 +566,40 @@ Plugin                 .claude/
         └────────────┘
 ```
 
-The developer never runs `agentboot`. They either:
+The developer never runs the `agentboot` CLI. They either:
 1. Get the plugin automatically (managed settings)
 2. Get .claude/ by cloning a repo (sync)
-3. Install the plugin manually (self-service)
+3. Use `/ab connect` for self-service setup
 4. Some combination of all three
 
 AgentBoot is invisible to the end developer. They see personas, skills, and hooks —
-not a framework.
+not a framework. When they do interact with AgentBoot directly, `/ab` is the
+conversational interface — the CLI is for platform teams and CI pipelines.
+
+---
+
+## The Developer Experience
+
+For the individual developer, the day-to-day interaction with AgentBoot is through
+`/ab` — a conversational skill inside Claude Code. There is no CLI to learn, no
+config files to edit, no build commands to run.
+
+**Initial setup:** `/ab connect` detects the org from git remotes (or asks), installs
+the org plugin, and confirms what personas are available. One conversation, done.
+
+**Ongoing use:** Developers invoke personas directly (`/review-code`, `/gen-tests`).
+When they want to contribute back — propose a new gotcha, suggest a trait improvement,
+promote a personal pattern to the team — they use `/ab`:
+
+```
+/ab propose gotcha "Lambda functions in src/lambdas/ must use structured logging"
+/ab promote trait my-error-handling --to team
+/ab status
+```
+
+Every `/ab` action that modifies hub content creates a pull request on the `ab/*`
+branch. The developer never touches the hub repo directly.
+
+**The CLI (`agentboot`) is for platform teams and CI.** It handles `validate`, `build`,
+`sync`, `export`, and other pipeline operations that run in automated environments.
+Developers do not need it installed.

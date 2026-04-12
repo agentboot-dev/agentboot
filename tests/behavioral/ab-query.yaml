@@ -1,0 +1,43 @@
+# ab-query behavioral tests
+# Validates status reporting and cost estimation workflows
+
+tests:
+  - id: query-status-format
+    description: Status command formats org info, personas table, and build time
+    prompt: "show me hub status"
+    expect:
+      - calls_tool: agentboot_status
+      - response_includes:
+          - org_name
+          - version
+          - enabled_personas_table
+          - last_build_time
+      - table_format: true
+    pass_threshold: 0.8
+
+  - id: query-attribution
+    description: Attribution query returns contributor and provenance information
+    prompt: "who contributed the critical-thinking trait?"
+    expect:
+      - calls_tool: agentboot_get_trait
+      - tool_args:
+          name: critical-thinking
+      - response_includes:
+          - contributor
+          - scope
+    pass_threshold: 0.8
+
+  - id: query-cost-estimate-params
+    description: Cost estimate with model and team size returns formatted cost table
+    prompt: "cost estimate for opus, 25 engineers"
+    expect:
+      - calls_tool: agentboot_cost_estimate
+      - tool_args:
+          model: opus
+          teamSize: 25
+      - returns_cost_table: true
+      - table_includes:
+          - per_engineer_cost
+          - total_monthly_cost
+          - model_name
+    pass_threshold: 0.8

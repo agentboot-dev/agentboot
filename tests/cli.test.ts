@@ -314,10 +314,12 @@ describe("AB-33.2: install command", () => {
     expect(output).toContain("--hub-path");
   });
 
-  it("detects existing agentboot.config.json and redirects to doctor", () => {
-    // Run from the project root which has agentboot.config.json
+  it("detects existing agentboot.config.json and enters reconfigure mode", () => {
+    // Run from the project root which has agentboot.config.json.
+    // The reconfigure flow is interactive (checkbox prompt), so --non-interactive
+    // exits before prompting — confirm it at least reaches the hub detection step.
     const output = run("install --hub");
-    expect(output).toContain("already exists");
+    expect(output).toContain("Personas repo found");
   });
 
   it("setup command shows deprecation notice", () => {
@@ -1549,9 +1551,17 @@ describe("AB-45: uninstall command", () => {
   let syncTarget: string;
   let originalRepos: string;
 
+  // Safety: restore repos.json even if tests crash
+  const restoreRepos = () => {
+    if (originalRepos) {
+      try { fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos); } catch { /* best effort */ }
+    }
+  };
+
   beforeAll(() => {
     // Build + sync to a temp target to have something to uninstall
     originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    process.on("exit", restoreRepos);
     syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-uninstall-"));
     fs.writeFileSync(
       path.join(ROOT, "repos.json"),
@@ -1561,6 +1571,7 @@ describe("AB-45: uninstall command", () => {
   });
 
   afterAll(() => {
+    process.removeListener("exit", restoreRepos);
     fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
     if (syncTarget) fs.rmSync(syncTarget, { recursive: true, force: true });
   });
@@ -2374,6 +2385,45 @@ describe("AB-36: agentboot doctor command", () => {
     const parsed = JSON.parse(output);
     const okChecks = parsed.checks.filter((c: any) => c.status === "ok");
     expect(okChecks.length).toBeGreaterThan(0);
+  });
+
+  // Story 13a: doctor respects AGENTBOOT_HUB env var
+  it("doctor: respects AGENTBOOT_HUB env var to run from any directory", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-doctor-hub-"));
+    try {
+      // Run doctor from a temp directory but with AGENTBOOT_HUB pointing to the real hub
+      const output = execSync(`${TSX} ${CLI} doctor --format json`, {
+        cwd: tempDir,
+        env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0", AGENTBOOT_HUB: ROOT },
+        timeout: 30_000,
+      }).toString();
+      const parsed = JSON.parse(output);
+      expect(parsed.issues).toBe(0);
+      expect(parsed.checks.length).toBeGreaterThan(0);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // Story 13a: doctor warns when AGENTBOOT_HUB points to invalid directory
+  it("doctor: warns when AGENTBOOT_HUB points to non-hub directory", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-doctor-badhub-"));
+    try {
+      // AGENTBOOT_HUB points to a directory without agentboot.config.json
+      const output = execSync(`${TSX} ${CLI} doctor`, {
+        cwd: tempDir,
+        env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0", AGENTBOOT_HUB: tempDir },
+        timeout: 30_000,
+      }).toString();
+      expect(output).toContain("doesn't appear to be a valid hub");
+    } catch (err: any) {
+      // May exit non-zero — that's fine, check the output
+      const stdout = err.stdout?.toString() ?? "";
+      const stderr = err.stderr?.toString() ?? "";
+      expect(stdout + stderr).toContain("doesn't appear to be a valid hub");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
