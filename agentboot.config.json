@@ -116,8 +116,9 @@
     // "enabled": list of filenames (without .md) to distribute.
     // Default: all files in core/instructions/ are enabled.
     "enabled": [
-      "baseline.instructions",  // code quality principles, review mindset, scope discipline
-      "security.instructions"   // credential/secret/injection/crypto guardrails
+      "baseline.instructions",           // code quality principles, review mindset, scope discipline
+      "security.instructions",           // credential/secret/injection/crypto guardrails
+      "agentboot-authoring.instructions" // hub editing conventions for traits, gotchas, personas, lexicons
     ]
   },
 
