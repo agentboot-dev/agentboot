@@ -23,10 +23,14 @@ import {
   readFailedFile,
   resolveAttribution,
   injectAttribution,
+  tokenizeForJaccard,
+  jaccardSimilarityTokenized,
+  detectDuplicates,
   type ScanManifest,
   type CategorizedScan,
   type TimedOutFile,
   type Attribution,
+  type DuplicateMatch,
 } from "../scripts/lib/import.js";
 
 // ---------------------------------------------------------------------------
@@ -405,5 +409,156 @@ describe("Story 13g: Source attribution", () => {
     const attr = resolveAttribution(filePath, repoDir, "git-repo");
     expect(attr.source).toBe("git-repo");
     expect(attr.contributor).toBe("test@example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 13h: Duplicate detection during import
+// ---------------------------------------------------------------------------
+
+describe("Story 13h: Duplicate detection", () => {
+  it("tokenizeForJaccard splits on whitespace/punctuation, filters short tokens", () => {
+    const tokens = tokenizeForJaccard("Hello world! This is a test of tokenization.");
+    expect(tokens.has("hello")).toBe(true);
+    expect(tokens.has("world")).toBe(true);
+    expect(tokens.has("this")).toBe(true);
+    expect(tokens.has("test")).toBe(true);
+    expect(tokens.has("tokenization")).toBe(true);
+    // Short tokens should be filtered
+    expect(tokens.has("is")).toBe(false);
+    expect(tokens.has("a")).toBe(false);
+    expect(tokens.has("of")).toBe(false);
+  });
+
+  it("jaccardSimilarityTokenized returns 1.0 for identical sets", () => {
+    const a = new Set(["hello", "world", "test"]);
+    const b = new Set(["hello", "world", "test"]);
+    expect(jaccardSimilarityTokenized(a, b)).toBe(1.0);
+  });
+
+  it("jaccardSimilarityTokenized returns 0 for disjoint sets", () => {
+    const a = new Set(["hello", "world"]);
+    const b = new Set(["goodbye", "universe"]);
+    expect(jaccardSimilarityTokenized(a, b)).toBe(0);
+  });
+
+  it("jaccardSimilarityTokenized returns 0 for two empty sets", () => {
+    expect(jaccardSimilarityTokenized(new Set(), new Set())).toBe(0);
+  });
+
+  it("jaccardSimilarityTokenized computes correct value for partial overlap", () => {
+    const a = new Set(["alpha", "beta", "gamma"]);
+    const b = new Set(["beta", "gamma", "delta"]);
+    // intersection: {beta, gamma} = 2, union: {alpha, beta, gamma, delta} = 4
+    expect(jaccardSimilarityTokenized(a, b)).toBe(0.5);
+  });
+
+  it("detectDuplicates flags DUPLICATE for similar hub artifacts", () => {
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    // Write an existing trait in the hub
+    writeFile(hubPath, "core/traits/critical-thinking.md",
+      "# Critical Thinking\nAlways verify assumptions before acting. " +
+      "Question the obvious. Look for edge cases and failure modes. " +
+      "Consider alternative explanations for every finding."
+    );
+
+    // Create a scanned file with very similar content
+    const parentDir = path.join(tmpDir, "parent");
+    const repoDir = path.join(parentDir, "myrepo");
+    writeFile(repoDir, ".claude/traits/careful-thinking.md",
+      "# Careful Thinking\nAlways verify assumptions before acting. " +
+      "Question the obvious. Look for edge cases and failure modes. " +
+      "Consider alternative explanations for every finding."
+    );
+
+    const manifest: ScanManifest = {
+      parentDir,
+      scannedAt: new Date().toISOString(),
+      files: [{
+        absolutePath: path.join(repoDir, ".claude/traits/careful-thinking.md"),
+        relativePath: ".claude/traits/careful-thinking.md",
+        repoDir,
+        repoName: "myrepo",
+        lines: 5,
+        type: "trait",
+      }],
+    };
+
+    const matches = detectDuplicates(manifest, hubPath);
+    const dups = matches.filter(m => m.type === "DUPLICATE");
+    expect(dups.length).toBeGreaterThan(0);
+    expect(dups[0]!.matchedArtifact).toContain("critical-thinking");
+    expect(dups[0]!.similarity).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it("detectDuplicates flags PROMOTION_CANDIDATE for 3+ repos with same pattern", () => {
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    const parentDir = path.join(tmpDir, "parent");
+    const sharedContent = "# Safety Rule\nAlways validate user input before processing. " +
+      "Check authentication before authorization. Reject invalid data early. " +
+      "Use parameterized queries for all database operations.";
+
+    // Create the same content in 4 different repos
+    const repos = ["repo-a", "repo-b", "repo-c", "repo-d"];
+    const files: ScanManifest["files"] = [];
+    for (const repo of repos) {
+      const repoDir = path.join(parentDir, repo);
+      writeFile(repoDir, ".claude/rules/safety.md", sharedContent);
+      files.push({
+        absolutePath: path.join(repoDir, ".claude/rules/safety.md"),
+        relativePath: ".claude/rules/safety.md",
+        repoDir,
+        repoName: repo,
+        lines: 4,
+        type: "rule",
+      });
+    }
+
+    const manifest: ScanManifest = {
+      parentDir,
+      scannedAt: new Date().toISOString(),
+      files,
+    };
+
+    const matches = detectDuplicates(manifest, hubPath);
+    const promotions = matches.filter(m => m.type === "PROMOTION_CANDIDATE");
+    expect(promotions.length).toBeGreaterThanOrEqual(4); // One per file in the group
+    expect(promotions[0]!.matchedArtifact).toContain("4 repos");
+  });
+
+  it("detectDuplicates does not flag unrelated content", () => {
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    writeFile(hubPath, "core/traits/critical-thinking.md",
+      "# Critical Thinking\nAlways verify assumptions. Question the obvious."
+    );
+
+    const parentDir = path.join(tmpDir, "parent");
+    const repoDir = path.join(parentDir, "myrepo");
+    writeFile(repoDir, ".claude/rules/database-safety.md",
+      "# Database Safety\nUse connection pooling. Set query timeouts. " +
+      "Enable RLS on all Postgres tables. Never expose admin endpoints."
+    );
+
+    const manifest: ScanManifest = {
+      parentDir,
+      scannedAt: new Date().toISOString(),
+      files: [{
+        absolutePath: path.join(repoDir, ".claude/rules/database-safety.md"),
+        relativePath: ".claude/rules/database-safety.md",
+        repoDir,
+        repoName: "myrepo",
+        lines: 4,
+        type: "rule",
+      }],
+    };
+
+    const matches = detectDuplicates(manifest, hubPath);
+    expect(matches.filter(m => m.type === "DUPLICATE")).toHaveLength(0);
   });
 });

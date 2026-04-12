@@ -241,12 +241,13 @@ describe("AB-112: applyWholeFileImports", () => {
     expect(result.created).toBe(1);
     expect(result.errors).toHaveLength(0);
 
-    // Verify SKILL.md written (body only, no frontmatter)
+    // Verify SKILL.md written (body content present, attribution frontmatter added)
     const skillContent = fs.readFileSync(
       path.join(hubPath, "core/personas/test-agent/SKILL.md"), "utf-8"
     );
     expect(skillContent).toContain("You are a test agent.");
-    expect(skillContent).not.toContain("---");
+    // Attribution frontmatter is now injected by applyWholeFileImports
+    expect(skillContent).toContain("source:");
 
     // Verify persona.config.json written
     const config = JSON.parse(fs.readFileSync(
