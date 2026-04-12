@@ -62,14 +62,10 @@ describe("validate script", () => {
 
 describe("compile script", () => {
   beforeAll(() => {
-    // Clean dist/ before compile tests, but handle contention with parallel test files
+    // Clean dist/ before compile tests so we run against a fresh build.
     const distPath = path.join(ROOT, "dist");
-    try {
-      if (fs.existsSync(distPath)) {
-        fs.rmSync(distPath, { recursive: true });
-      }
-    } catch {
-      // Another test may be using dist/ concurrently — safe to continue
+    if (fs.existsSync(distPath)) {
+      fs.rmSync(distPath, { recursive: true });
     }
   });
 

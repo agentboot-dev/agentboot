@@ -1266,9 +1266,17 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
   const prBody = args["prBody"] as string;
   const contributor = args["contributor"] as string | undefined;
 
-  // Validate required args
+  // Type and presence validation — catch non-string types before any string operations
+  if (typeof relativePath !== "string" || typeof content !== "string" ||
+      typeof commitMessage !== "string" || typeof prTitle !== "string" ||
+      typeof prBody !== "string") {
+    return toolError("Invalid argument types: path, content, commitMessage, prTitle, prBody must all be strings");
+  }
   if (!relativePath || !content || !commitMessage || !prTitle || !prBody) {
     return toolError("Missing required arguments: path, content, commitMessage, prTitle, prBody");
+  }
+  if (contributor !== undefined && typeof contributor !== "string") {
+    return toolError("Invalid argument type: contributor must be a string if provided");
   }
 
   // Path traversal check

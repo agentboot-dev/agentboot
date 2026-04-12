@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { handleToolCall, handleMessage } from "../scripts/mcp-server.js";
+import { handleToolCall, handleMessage, isContainedIn } from "../scripts/mcp-server.js";
 
 // ---------------------------------------------------------------------------
 // Tool handler tests
@@ -129,12 +129,159 @@ describe("MCP tool handlers", () => {
     });
   });
 
+  // --- Phase 10 read tools ---
+
+  describe("agentboot_status", () => {
+    it("returns hub info, personas, and repos", () => {
+      const result = handleToolCall("agentboot_status", {});
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(data.hub).toBeDefined();
+      expect(data.hub.org).toBeDefined();
+      expect(data.hub.version).toBeDefined();
+      expect(Array.isArray(data.personas)).toBe(true);
+      expect(Array.isArray(data.repos)).toBe(true);
+    });
+  });
+
+  describe("agentboot_list_repos", () => {
+    it("returns repos array", () => {
+      const result = handleToolCall("agentboot_list_repos", {});
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(Array.isArray(data.repos)).toBe(true);
+    });
+  });
+
+  describe("agentboot_cost_estimate", () => {
+    it("returns cost table for default params", () => {
+      const result = handleToolCall("agentboot_cost_estimate", { model: "sonnet", teamSize: 10 });
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(data.model).toBe("sonnet");
+      expect(data.teamSize).toBe(10);
+      expect(Array.isArray(data.personas)).toBe(true);
+    });
+
+    it("returns error for invalid model", () => {
+      const result = handleToolCall("agentboot_cost_estimate", { model: "gpt-9000", teamSize: 5 });
+      expect(result.isError).toBe(true);
+    });
+  });
+
+  // --- Phase 10 execute tools (error path / response shape) ---
+
+  describe("agentboot_validate", () => {
+    it("returns passed boolean and checks array", () => {
+      const result = handleToolCall("agentboot_validate", {});
+      // May pass or fail depending on hub state — just verify response shape
+      const data = JSON.parse(result.content[0]!.text);
+      expect(typeof data.passed).toBe("boolean");
+      expect(Array.isArray(data.checks)).toBe(true);
+    });
+  });
+
+  describe("agentboot_lint", () => {
+    it("returns findings array", () => {
+      const result = handleToolCall("agentboot_lint", {});
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(Array.isArray(data.findings)).toBe(true);
+    });
+  });
+
+  describe("agentboot_doctor", () => {
+    it("returns allClear boolean and issues array", () => {
+      const result = handleToolCall("agentboot_doctor", {});
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(typeof data.allClear).toBe("boolean");
+      expect(Array.isArray(data.issues)).toBe(true);
+    });
+  });
+
+  describe("agentboot_optimize_metrics", () => {
+    it("returns stub response with message", () => {
+      const result = handleToolCall("agentboot_optimize_metrics", {});
+      expect(result.isError).toBeUndefined();
+      const data = JSON.parse(result.content[0]!.text);
+      expect(data.message).toBeDefined();
+    });
+  });
+
+  // --- Phase 10 write tool (input validation only — no git operations) ---
+
+  describe("agentboot_propose_change", () => {
+    it("returns error when required args are missing", () => {
+      const result = handleToolCall("agentboot_propose_change", {});
+      expect(result.isError).toBe(true);
+    });
+
+    it("returns error when path is not a string", () => {
+      const result = handleToolCall("agentboot_propose_change", {
+        path: 42,
+        content: "content",
+        commitMessage: "msg",
+        prTitle: "title",
+        prBody: "body",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain("Invalid argument types");
+    });
+
+    it("returns error for path traversal attempt", () => {
+      const result = handleToolCall("agentboot_propose_change", {
+        path: "../../.ssh/authorized_keys",
+        content: "malicious",
+        commitMessage: "msg",
+        prTitle: "title",
+        prBody: "body",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toMatch(/traversal|outside/i);
+    });
+  });
+
   describe("unknown tool", () => {
     it("returns error for unknown tool name", () => {
       const result = handleToolCall("nonexistent_tool", {});
       expect(result.isError).toBe(true);
       expect(result.content[0]!.text).toContain("unknown tool");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isContainedIn security tests
+// ---------------------------------------------------------------------------
+
+describe("isContainedIn (path traversal prevention)", () => {
+  const base = "/hub/root";
+
+  it("accepts a path within the base directory", () => {
+    expect(isContainedIn("/hub/root/core/traits/foo.md", base)).toBe(true);
+  });
+
+  it("accepts a deeply nested path", () => {
+    expect(isContainedIn("/hub/root/a/b/c/d.md", base)).toBe(true);
+  });
+
+  it("rejects a path traversal via ..", () => {
+    expect(isContainedIn("/hub/root/../../../etc/passwd", base)).toBe(false);
+  });
+
+  it("rejects a path that shares a prefix but is not a child", () => {
+    // /hub/root-malicious should NOT be considered inside /hub/root
+    expect(isContainedIn("/hub/root-malicious/file.md", base)).toBe(false);
+  });
+
+  it("rejects the base directory itself (not a child)", () => {
+    // Exact match — not inside, it IS the base
+    expect(isContainedIn("/hub/root", base)).toBe(false);
+  });
+
+  it("rejects a completely unrelated path", () => {
+    expect(isContainedIn("/etc/passwd", base)).toBe(false);
   });
 });
 

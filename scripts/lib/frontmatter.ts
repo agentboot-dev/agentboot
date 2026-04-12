@@ -120,6 +120,11 @@ export const DEFAULT_SECRET_PATTERNS: RegExp[] = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
   /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}/,  // GitHub tokens
   /xox[baprs]-[0-9A-Za-z-]+/,                   // Slack tokens
+  /sk-ant-api[a-zA-Z0-9\-_]{20,}/,              // Anthropic API keys
+  /sk-[a-zA-Z0-9]{20,}/,                        // OpenAI API keys
+  /AIza[a-zA-Z0-9_\-]{35}/,                     // Google API keys
+  /(?:mongodb|postgres|postgresql|mysql|redis):\/\/[^\s]+:[^\s]+@/i, // Connection strings with embedded credentials
+  /Bearer\s+[A-Za-z0-9._~+/\-]+=*/,            // Bearer tokens
 ];
 
 export function scanForSecrets(

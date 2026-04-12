@@ -25,6 +25,8 @@ If the artifact type was resolved by the orchestrator's handoff block, use it. O
 
 If classification is uncertain, state your best guess and ask for confirmation.
 
+> **Note:** `domain`, `hook`, and `prompt` artifact types are on the roadmap but not yet supported by the build pipeline. If the user requests one of these, explain that and suggest the closest supported type (e.g., domain → instruction at org scope; hook → gotcha or instruction; prompt → trait or persona).
+
 ### Step 2: Gather Required Fields
 
 Ask for only the fields that are missing. If the orchestrator's handoff already resolved some, skip those. Ask all remaining questions in a single message. Never ask more than 3 questions.
@@ -58,6 +60,7 @@ Frontmatter:
 ```yaml
 ---
 type: trait
+weight: "{HIGH|MEDIUM|LOW}"
 id: "{kebab-case-name}"
 category: "{inferred-category}"
 scope: "{resolved-scope}"
