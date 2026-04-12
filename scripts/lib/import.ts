@@ -142,6 +142,13 @@ function scanPath(targetPath: string): ScanResult {
     else if (basename === ".mcp.json") type = "mcp";
     else if (basename === ".cursorrules") type = "cursorrules";
     else if (basename === "copilot-instructions.md") type = "copilot-instructions";
+
+    // Promote "other" markdown files with paths: frontmatter to "rule" type.
+    // These are path-scoped rules that may not live in a rules/ directory
+    // but should still be importable as gotchas.
+    if (type === "other" && ext === ".md" && content.startsWith("---") && content.includes("paths:")) {
+      type = "rule";
+    }
     else if (dir.includes("prompts") && basename.endsWith(".prompt.md")) type = "copilot-prompt";
 
     return { path: filePath, relativePath: relPath, lines, type };
