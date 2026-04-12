@@ -589,6 +589,35 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
       fs.mkdirSync(fullPath, { recursive: true });
     }
   }
+
+  // Create initial commit with all scaffolded files — but only on first scaffold.
+  // If the repo already has commits (re-scaffold), leave git history alone.
+  const gitOpts = { cwd: targetDir, encoding: "utf-8" as const, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
+
+  // Check if there are any commits already
+  const hasCommits = spawnSync("git", ["rev-parse", "HEAD"], gitOpts).status === 0;
+  if (!hasCommits) {
+    // Use --local git config to avoid requiring global user.name/user.email
+    // in fresh environments (CI, containers, new developer machines).
+    const hasName = spawnSync("git", ["config", "user.name"], gitOpts).status === 0;
+    const hasEmail = spawnSync("git", ["config", "user.email"], gitOpts).status === 0;
+
+    if (!hasName) {
+      spawnSync("git", ["config", "--local", "user.name", "AgentBoot"], gitOpts);
+    }
+    if (!hasEmail) {
+      spawnSync("git", ["config", "--local", "user.email", "agentboot@localhost"], gitOpts);
+    }
+
+    spawnSync("git", ["add", "."], gitOpts);
+    const commitResult = spawnSync(
+      "git", ["commit", "-m", "chore: initialize AgentBoot personas hub"],
+      gitOpts,
+    );
+    if (commitResult.status === 0) {
+      console.log(chalk.gray("  Created initial commit."));
+    }
+  }
 }
 
 function runBuild(hubDir: string): boolean {
