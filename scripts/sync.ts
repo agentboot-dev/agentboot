@@ -44,9 +44,13 @@ const ROOT = path.resolve(__dirname, "..");
 interface RepoEntry {
   // Absolute or relative path to the repo root.
   path: string;
-  // Platform distribution to sync: "claude", "copilot", "cursor", "skill", "gemini".
+  // Platform distribution to sync (singular, deprecated — use `platforms`).
   // Defaults to "claude".
   platform?: string;
+  // Multiple platform distributions to sync to this repo.
+  // e.g., ["claude", "copilot"] — repo receives both platform outputs.
+  // Takes precedence over `platform` if both are set.
+  platforms?: string[];
   // Group this repo belongs to (must match a key in config.groups).
   group?: string;
   // Team this repo belongs to (must be a member of the group's teams).
@@ -59,6 +63,17 @@ interface RepoEntry {
   // When specified, each package path (relative to repo root) gets its own persona deployment.
   // e.g., ["packages/api", "packages/web"]
   packages?: string[];
+}
+
+/**
+ * Normalize platform(s) for a repo entry. Handles both the old singular
+ * `platform` field and the new `platforms` array. Returns an array.
+ */
+function getRepoPlatforms(entry: RepoEntry): string[] {
+  if (entry.platforms && entry.platforms.length > 0) {
+    return entry.platforms;
+  }
+  return [entry.platform ?? "claude"];
 }
 
 interface SyncResult {
@@ -623,12 +638,14 @@ function syncRepoTarget(
   dryRun: boolean,
   force: boolean,
   /** If set, sync to this subdirectory instead of repo root. */
-  packagePath?: string
+  packagePath?: string,
+  /** Explicit platform override (for multi-platform repos). */
+  platformOverride?: string,
 ): SyncResult {
   const repoPath = path.resolve(entry.path);
   // AB-142: When syncing to a monorepo package, effectivePath is the package root.
   const effectivePath = packagePath ? path.join(repoPath, packagePath) : repoPath;
-  const platform = entry.platform ?? "claude";
+  const platform = platformOverride ?? entry.platform ?? "claude";
   // AB-129: Cursor uses .cursor/ as its target directory
   const targetDir = platform === "cursor" ? ".cursor" : (config.sync?.targetDir ?? ".claude");
   const writePersonasIndex = config.sync?.writePersonasIndex !== false;
@@ -638,7 +655,7 @@ function syncRepoTarget(
   const result: SyncResult = {
     repo: effectivePath,
     ...(entry.label != null ? { label: `${entry.label}${labelSuffix}` } : (packagePath ? { label: `${path.basename(repoPath)}${labelSuffix}` } : {})),
-    ...(entry.platform != null ? { platform: entry.platform } : { platform: "claude" }),
+    platform,
     ...(entry.group != null ? { group: entry.group } : {}),
     ...(entry.team != null ? { team: entry.team } : {}),
     filesWritten: [],
@@ -887,51 +904,57 @@ function syncRepo(
   force: boolean
 ): SyncResult[] {
   const repoPath = path.resolve(entry.path);
+  const platforms = getRepoPlatforms(entry);
 
-  if (entry.packages && entry.packages.length > 0) {
-    // Monorepo mode: sync to each package independently.
-    const results: SyncResult[] = [];
-    for (const pkg of entry.packages) {
-      const pkgPath = path.join(repoPath, pkg);
-      // Post-resolution containment check — prevents path traversal even if validation is bypassed
-      if (!path.resolve(pkgPath).startsWith(path.resolve(repoPath) + path.sep)) {
-        console.log(chalk.red(`  ✗ Package "${pkg}" escapes repo boundary — skipping`));
-        continue;
+  // Multi-platform: iterate over each platform for this repo entry.
+  const allResults: SyncResult[] = [];
+
+  for (const platform of platforms) {
+    if (entry.packages && entry.packages.length > 0) {
+      // Monorepo mode: sync to each package independently.
+      for (const pkg of entry.packages) {
+        const pkgPath = path.join(repoPath, pkg);
+        // Post-resolution containment check — prevents path traversal even if validation is bypassed
+        if (!path.resolve(pkgPath).startsWith(path.resolve(repoPath) + path.sep)) {
+          console.log(chalk.red(`  ✗ Package "${pkg}" escapes repo boundary — skipping`));
+          continue;
+        }
+        if (!fs.existsSync(pkgPath)) {
+          // Warn and skip non-existent packages.
+          console.log(chalk.yellow(`  ⚠ Package "${pkg}" does not exist at ${pkgPath} — skipping`));
+          const skipResult: SyncResult = {
+            repo: pkgPath,
+            label: `${entry.label ?? path.basename(repoPath)} [${pkg}]`,
+            platform,
+            filesWritten: [],
+            filesSkipped: [],
+            errors: [`Package path does not exist: ${pkgPath}`],
+            dryRun,
+          };
+          allResults.push(skipResult);
+          continue;
+        }
+        allResults.push(syncRepoTarget(entry, distPath, config, dryRun, force, pkg, platform));
       }
-      if (!fs.existsSync(pkgPath)) {
-        // Warn and skip non-existent packages.
-        console.log(chalk.yellow(`  ⚠ Package "${pkg}" does not exist at ${pkgPath} — skipping`));
-        const skipResult: SyncResult = {
-          repo: pkgPath,
-          label: `${entry.label ?? path.basename(repoPath)} [${pkg}]`,
-          platform: entry.platform ?? "claude",
-          filesWritten: [],
-          filesSkipped: [],
-          errors: [`Package path does not exist: ${pkgPath}`],
-          dryRun,
-        };
-        results.push(skipResult);
-        continue;
+    } else {
+      // Single-target mode (backward compatible).
+      // AB-142: Warn if monorepo structure detected but not configured.
+      if (platform === platforms[0] && fs.existsSync(repoPath)) {
+        const detected = detectMonorepo(repoPath);
+        if (detected.length > 0) {
+          console.log(chalk.yellow(
+            `  ⚠ Monorepo structure detected in ${entry.label ?? path.basename(repoPath)} ` +
+            `(${detected.length} package(s): ${detected.slice(0, 3).join(", ")}${detected.length > 3 ? ", ..." : ""}) ` +
+            `but no "packages" configured. Add "packages" to repos.json for per-package deployment.`
+          ));
+        }
       }
-      results.push(syncRepoTarget(entry, distPath, config, dryRun, force, pkg));
+
+      allResults.push(syncRepoTarget(entry, distPath, config, dryRun, force, undefined, platform));
     }
-    return results;
   }
 
-  // Single-target mode (backward compatible).
-  // AB-142: Warn if monorepo structure detected but not configured.
-  if (fs.existsSync(repoPath)) {
-    const detected = detectMonorepo(repoPath);
-    if (detected.length > 0) {
-      console.log(chalk.yellow(
-        `  ⚠ Monorepo structure detected in ${entry.label ?? path.basename(repoPath)} ` +
-        `(${detected.length} package(s): ${detected.slice(0, 3).join(", ")}${detected.length > 3 ? ", ..." : ""}) ` +
-        `but no "packages" configured. Add "packages" to repos.json for per-package deployment.`
-      ));
-    }
-  }
-
-  return [syncRepoTarget(entry, distPath, config, dryRun, force)];
+  return allResults;
 }
 
 // ---------------------------------------------------------------------------
@@ -981,13 +1004,28 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
     }
   }
 
-  // Validate platform
+  // Validate platform(s)
   const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"];
-  const platform = entry.platform ?? "claude";
-  if (!validPlatforms.includes(platform)) {
-    errors.push(
-      `[${label}] Platform "${platform}" is not supported. Valid: ${validPlatforms.join(", ")}`
-    );
+  const platforms = getRepoPlatforms(entry);
+  for (const platform of platforms) {
+    if (!validPlatforms.includes(platform)) {
+      errors.push(
+        `[${label}] Platform "${platform}" is not supported. Valid: ${validPlatforms.join(", ")}`
+      );
+    }
+  }
+
+  // Validate platforms array format if specified
+  if (entry.platforms !== undefined) {
+    if (!Array.isArray(entry.platforms)) {
+      errors.push(`[${label}] "platforms" must be an array of strings`);
+    } else {
+      for (const p of entry.platforms) {
+        if (typeof p !== "string" || p.length === 0) {
+          errors.push(`[${label}] Each platform must be a non-empty string`);
+        }
+      }
+    }
   }
 
   // Validate repo path safety — resolve symlinks to check the real target
