@@ -42,6 +42,11 @@ export const HUB_ROOT = process.env["AGENTBOOT_HUB"]
   ? path.resolve(process.env["AGENTBOOT_HUB"])
   : DEFAULT_ROOT;
 
+/** Sanitize error messages by replacing absolute paths with relative ones. */
+function sanitizeErrorOutput(msg: string): string {
+  return msg.replaceAll(HUB_ROOT, "<hub>").slice(0, 2000);
+}
+
 const DIST_SKILL_CORE = path.join(HUB_ROOT, "dist", "skill", "core");
 const CORE_PERSONAS = path.join(HUB_ROOT, "core", "personas");
 const CORE_TRAITS = path.join(HUB_ROOT, "core", "traits");
@@ -87,8 +92,23 @@ function listPersonaDirs(): string[] {
  * Prevents path traversal attacks via names like "../../.env".
  */
 export function isContainedIn(resolved: string, baseDir: string): boolean {
-  const normalizedBase = path.resolve(baseDir) + path.sep;
-  return path.resolve(resolved).startsWith(normalizedBase);
+  // Use realpathSync to canonicalize case (macOS HFS+) and resolve symlinks
+  let realResolved: string;
+  let realBase: string;
+  try {
+    // For new files, the file may not exist yet — resolve the parent dir instead
+    const resolvedPath = path.resolve(resolved);
+    const parentDir = path.dirname(resolvedPath);
+    const realParent = fs.existsSync(parentDir)
+      ? fs.realpathSync(parentDir)
+      : path.resolve(parentDir);
+    realResolved = path.join(realParent, path.basename(resolvedPath));
+    realBase = fs.existsSync(baseDir) ? fs.realpathSync(baseDir) : path.resolve(baseDir);
+  } catch {
+    return false; // If we can't resolve paths, reject
+  }
+  const normalizedBase = realBase + path.sep;
+  return realResolved === realBase || realResolved.startsWith(normalizedBase);
 }
 
 /** Load persona config from dist or core. */
@@ -833,9 +853,17 @@ function handleScanForImport(args: Record<string, unknown>): ToolResult {
     "settings", "mcp", "cursorrules", "copilot-instructions", "copilot-prompt",
   ]);
 
+  // Reject system directories to prevent scanning sensitive locations
+  const BLOCKED_PREFIXES = ["/etc", "/usr", "/var", "/root", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys"];
+
   for (const scanPath of paths) {
     const resolved = path.resolve(scanPath);
     if (!fs.existsSync(resolved)) continue;
+
+    // Boundary check: reject system directories
+    if (BLOCKED_PREFIXES.some((prefix) => resolved === prefix || resolved.startsWith(prefix + "/"))) {
+      return toolError(`Rejected path "${scanPath}": scanning system directories is not allowed`);
+    }
 
     // Use scanParentForContent if the path is a parent directory of repos,
     // otherwise scan the single directory.
@@ -903,7 +931,7 @@ function handleValidate(): ToolResult {
     });
   } catch (err: unknown) {
     const error = err as { status?: number; stdout?: string; stderr?: string; message?: string };
-    const output = error.stdout ?? error.stderr ?? error.message ?? "Validation failed";
+    const output = sanitizeErrorOutput(error.stdout ?? error.stderr ?? error.message ?? "Validation failed");
 
     // Parse failures from output
     const checks: Array<{ name: string; status: string; message: string }> = [];
@@ -1154,7 +1182,7 @@ function handleBuild(): ToolResult {
   } catch (err: unknown) {
     const duration_ms = Date.now() - startTime;
     const error = err as { stdout?: string; stderr?: string; message?: string };
-    const errorMsg = error.stdout ?? error.stderr ?? error.message ?? "Build failed";
+    const errorMsg = sanitizeErrorOutput(error.stdout ?? error.stderr ?? error.message ?? "Build failed");
     return toolOk({
       success: false,
       filesWritten: 0,
@@ -1242,7 +1270,7 @@ function handleSync(args: Record<string, unknown>): ToolResult {
     });
   } catch (err: unknown) {
     const error = err as { stdout?: string; stderr?: string; message?: string };
-    const errorMsg = error.stdout ?? error.stderr ?? error.message ?? "Sync failed";
+    const errorMsg = sanitizeErrorOutput(error.stdout ?? error.stderr ?? error.message ?? "Sync failed");
     return toolError(`Sync failed: ${String(errorMsg).trim()}`);
   }
 }
@@ -1369,6 +1397,11 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
     const checkoutBranch = gitRun(["checkout", "-b", branchName]);
     if (!checkoutBranch.ok) throw new Error(`git checkout -b ${branchName}: ${checkoutBranch.err}`);
 
+    // Re-validate path containment after checkout/pull (TOCTOU defense)
+    if (!isContainedIn(fullPath, HUB_ROOT)) {
+      throw new Error(`Path validation failed after checkout: "${relativePath}" resolves outside hub root`);
+    }
+
     // Write the file
     const dir = path.dirname(fullPath);
     fs.mkdirSync(dir, { recursive: true });
@@ -1381,6 +1414,10 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
     // Commit — pass message and author as separate args (no shell interpolation)
     const commitArgs = ["commit", "-m", commitMessage];
     if (contributor) {
+      // Validate contributor format: reject control characters, newlines, backticks
+      if (/[\x00-\x1f\x7f`]/.test(contributor)) {
+        throw new Error("Invalid contributor: must not contain control characters or backticks");
+      }
       commitArgs.push(`--author=${contributor} <${contributor}>`);
     }
     const commitResult = gitRun(commitArgs);

@@ -1163,8 +1163,9 @@ function applyPlan(
       }
 
       // Defense in depth: only allow writes to known classification directories
-      const normalizedPath = item.suggested_path.replace(/\\/g, "/");
-      if (!ALLOWED_CLASSIFICATION_DIRS.some(dir => normalizedPath.startsWith(dir))) {
+      // Normalize the path to prevent traversal via segments like "core/personas/../../gotchas/evil.md"
+      const normalizedPath = path.posix.normalize(item.suggested_path.replace(/\\/g, "/"));
+      if (normalizedPath.includes("..") || !ALLOWED_CLASSIFICATION_DIRS.some(dir => normalizedPath.startsWith(dir))) {
         result.errors.push(`Rejected ${item.suggested_path} (not in allowed directory: ${ALLOWED_CLASSIFICATION_DIRS.join(", ")})`);
         continue;
       }

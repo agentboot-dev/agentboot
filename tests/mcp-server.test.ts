@@ -331,9 +331,10 @@ describe("isContainedIn (path traversal prevention)", () => {
     expect(isContainedIn("/hub/root-malicious/file.md", base)).toBe(false);
   });
 
-  it("rejects the base directory itself (not a child)", () => {
-    // Exact match — not inside, it IS the base
-    expect(isContainedIn("/hub/root", base)).toBe(false);
+  it("accepts the base directory itself (equality check)", () => {
+    // The base directory itself is considered contained — needed for operations
+    // that target the hub root directly (e.g., writing agentboot.config.json)
+    expect(isContainedIn(base, base)).toBe(true);
   });
 
   it("rejects a completely unrelated path", () => {
