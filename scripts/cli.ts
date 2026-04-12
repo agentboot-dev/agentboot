@@ -1268,7 +1268,7 @@ program
 
     // Load repos
     const reposPath = path.resolve(path.dirname(configPath), config.sync?.repos ?? "./repos.json");
-    let repos: Array<{ path: string; platform?: string; group?: string; team?: string; label?: string }> = [];
+    let repos: Array<{ path: string; platform?: string; platforms?: string[]; group?: string; team?: string; label?: string }> = [];
     if (fs.existsSync(reposPath)) {
       try { repos = JSON.parse(fs.readFileSync(reposPath, "utf-8")); } catch { /* empty */ }
     }
@@ -1320,7 +1320,12 @@ program
         }
 
         const scope = repo.team ? `${repo.group}/${repo.team}` : repo.group ?? "core";
-        console.log(`    ${label} [${scope}] — ${syncInfo}`);
+        // Show platforms (supports both singular and array format)
+        const repoPlatforms = repo.platforms && repo.platforms.length > 0
+          ? repo.platforms
+          : [repo.platform ?? "claude"];
+        const platformsStr = repoPlatforms.join(", ");
+        console.log(`    ${label} [${scope}] [${platformsStr}] — ${syncInfo}`);
       }
       console.log("");
     }
