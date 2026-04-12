@@ -12,8 +12,12 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { select, input, confirm, checkbox } from "@inquirer/prompts";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = path.resolve(__dirname, "..", "..");
 
 export class AgentBootError extends Error {
   constructor(public readonly exitCode: number) {
@@ -589,6 +593,50 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
       fs.mkdirSync(fullPath, { recursive: true });
     }
   }
+
+  // Copy /ab skill files from templates/skills/ into .claude/agents/
+  const skillsTemplateDir = path.join(PACKAGE_ROOT, "templates", "skills");
+  const agentsDir = path.join(targetDir, ".claude", "agents");
+  const skillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+  if (fs.existsSync(skillsTemplateDir)) {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    for (const file of skillFiles) {
+      const src = path.join(skillsTemplateDir, file);
+      const dest = path.join(agentsDir, file);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest);
+      }
+    }
+    console.log(chalk.green("  \u2713 /ab skill files written to .claude/agents/"));
+  }
+
+  // Write .mcp.json with AgentBoot MCP server entry
+  const mcpConfig = {
+    mcpServers: {
+      agentboot: {
+        command: "npx",
+        args: ["agentboot", "mcp-server"],
+        env: {
+          AGENTBOOT_HUB: path.resolve(targetDir),
+        },
+      },
+    },
+  };
+  const mcpPath = path.join(targetDir, ".mcp.json");
+  if (fs.existsSync(mcpPath)) {
+    // Merge: preserve existing servers, add/update agentboot entry
+    try {
+      const existing = JSON.parse(fs.readFileSync(mcpPath, "utf-8"));
+      existing.mcpServers = existing.mcpServers ?? {};
+      existing.mcpServers.agentboot = mcpConfig.mcpServers.agentboot;
+      fs.writeFileSync(mcpPath, JSON.stringify(existing, null, 2) + "\n");
+    } catch {
+      fs.writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n");
+    }
+  } else {
+    fs.writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n");
+  }
+  console.log(chalk.green("  \u2713 .mcp.json configured with AgentBoot MCP server"));
 }
 
 function runBuild(hubDir: string): boolean {
