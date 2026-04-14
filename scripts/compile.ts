@@ -51,7 +51,22 @@ import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 // ---------------------------------------------------------------------------
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ROOT is the installed agentboot package directory. Use this ONLY for
+// package-internal assets (templates/skills, package.json).
 const ROOT = path.resolve(__dirname, "..");
+
+// HUB_ROOT is the loaded config file's directory — the hub repo being
+// built. Use this for all hub content (core/traits, core/personas,
+// core/instructions, core/gotchas, nodes/, groups/, teams/). Set by main()
+// after configDir is computed. Defaults to ROOT so scripts that bypass
+// main() still work against the package's own core.
+//
+// This decoupling fixes a bug where compile.ts and validate.ts looked for
+// hub content inside the installed package directory instead of in the
+// hub being built. Paths to hub content must go through HUB_ROOT; paths
+// to package-internal assets stay on ROOT.
+let HUB_ROOT: string = ROOT;
 
 interface TraitContent {
   name: string;
@@ -1163,12 +1178,19 @@ function generateGeminiMd(
   }
 
   // Instructions (inline content for Gemini since it doesn't support @imports)
+  // Look in the hub's instructions first, then the package bundle as fallback.
+  // Hub files win on name conflict.
   if (instructionFileNames.length > 0) {
     lines.push("## Instructions", "");
-    const coreInstructionsDir = path.join(ROOT, "core", "instructions");
+    const hubInstructionsDir = path.join(HUB_ROOT, "core", "instructions");
+    const packageInstructionsDir = path.join(ROOT, "core", "instructions");
     for (const instrName of instructionFileNames) {
-      const instrPath = path.join(coreInstructionsDir, `${instrName}.md`);
-      if (fs.existsSync(instrPath)) {
+      const candidatePaths = [
+        path.join(hubInstructionsDir, `${instrName}.md`),
+        path.join(packageInstructionsDir, `${instrName}.md`),
+      ];
+      const instrPath = candidatePaths.find((p) => fs.existsSync(p));
+      if (instrPath) {
         const content = fs.readFileSync(instrPath, "utf-8")
           .replace(/^---\n[\s\S]*?\n---\n*/, "")
           .replace(/<!--[\s\S]*?-->/g, "")
@@ -2004,7 +2026,7 @@ function generatePersonaHooks(
 
   // AB-147: Compile gotcha path patterns into PreToolUse validation
   // Gotchas with paths: frontmatter can generate hooks that warn on edits to sensitive paths
-  const gotchasDir = path.join(ROOT, "core", "gotchas");
+  const gotchasDir = path.join(HUB_ROOT, "core", "gotchas");
   if (fs.existsSync(gotchasDir)) {
     const gotchaFiles = fs.readdirSync(gotchasDir).filter(f => f.endsWith(".md") && f !== "README.md");
     const sensitiveGlobs: string[] = [];
@@ -2198,6 +2220,12 @@ function main(): void {
   const config = loadConfig(configPath);
   const configDir = path.dirname(configPath);
 
+  // Point HUB_ROOT at the hub being built so module-level helpers that
+  // read core/* and nodes/groups/teams/* resolve against the hub, not the
+  // installed agentboot package. This is the companion to the HUB_ROOT
+  // declaration at the top of the file.
+  HUB_ROOT = configDir;
+
   const distPath = path.resolve(
     configDir,
     config.output?.distPath ?? "./dist"
@@ -2215,11 +2243,31 @@ function main(): void {
 
   ensureDir(distPath);
 
-  const coreDir = path.join(ROOT, "core");
+  // Core content is sourced from two locations and merged at compile time:
+  //   1. Package bundle (ROOT/core/*) — defaults shipped with AgentBoot
+  //   2. Hub directory (HUB_ROOT/core/*) — organization additions and overrides
+  // Hub content wins on name conflicts. This lets a hub enable package
+  // defaults without copying files locally, while still being able to
+  // author hub-specific additions or override a default by name.
+  const packageCoreDir = path.join(ROOT, "core");
+  const hubCoreDir = path.join(HUB_ROOT, "core");
+
+  // coreDir / coreLexiconDir / coreTraitsDir remain pointing at the hub
+  // for backward compatibility with downstream code that expects a single
+  // directory (gotchas, scope nodes). The package-merge logic below
+  // augments the hub content where it matters (traits, personas,
+  // instructions, lexicon).
+  const coreDir = hubCoreDir;
   const coreLexiconDir = path.join(coreDir, "lexicon");
   const corePersonasDir = path.join(coreDir, "personas");
   const coreTraitsDir = path.join(coreDir, "traits");
   const coreInstructionsDir = path.join(coreDir, "instructions");
+
+  // Package-side equivalents used for the merge.
+  const packageLexiconDir = path.join(packageCoreDir, "lexicon");
+  const packagePersonasDir = path.join(packageCoreDir, "personas");
+  const packageTraitsDir = path.join(packageCoreDir, "traits");
+  const packageInstructionsDir = path.join(packageCoreDir, "instructions");
 
   const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
@@ -2240,8 +2288,12 @@ function main(): void {
       ? groupsToNodes(config.groups)
       : undefined;
 
-  // Load lexicon (first — other artifacts reference lexicon terms).
-  const lexiconEntries = loadLexicon(coreLexiconDir);
+  // Load lexicon from both package and hub, hub entries appended last so
+  // they take precedence at usage time where duplicates occur.
+  const lexiconEntries = [
+    ...loadLexicon(packageLexiconDir),
+    ...loadLexicon(coreLexiconDir),
+  ];
   if (lexiconEntries.length > 0) {
     log(chalk.cyan(`Lexicon loaded: ${lexiconEntries.length} term(s)`));
     for (const entry of lexiconEntries) {
@@ -2249,9 +2301,17 @@ function main(): void {
     }
   }
 
-  // Load traits.
+  // Load traits from both package and hub. Map.set on the same key lets
+  // the hub override a package trait of the same name.
   const enabledTraits = config.traits?.enabled;
-  const traits = loadTraits(coreTraitsDir, enabledTraits);
+  const traits = loadTraits(packageTraitsDir, enabledTraits);
+  const hubTraits = loadTraits(coreTraitsDir, enabledTraits);
+  for (const [name, trait] of hubTraits) {
+    if (traits.has(name)) {
+      log(chalk.gray(`  ~ hub overrides package trait: ${name}`));
+    }
+    traits.set(name, trait);
+  }
 
   log(chalk.cyan(`Traits loaded: ${traits.size}`));
   for (const name of traits.keys()) {
@@ -2262,13 +2322,27 @@ function main(): void {
 
   const enabledPersonas = config.personas?.enabled;
 
-  // Discover persona directories.
+  // Discover persona directories. Package first, then hub, then customDir.
+  // Later sources override earlier ones on name conflict (hub overrides
+  // package; customDir overrides both).
   const personaDirs = new Map<string, string>();
+
+  if (fs.existsSync(packagePersonasDir)) {
+    for (const entry of fs.readdirSync(packagePersonasDir)) {
+      const dir = path.join(packagePersonasDir, entry);
+      if (fs.statSync(dir).isDirectory()) {
+        personaDirs.set(entry, dir);
+      }
+    }
+  }
 
   if (fs.existsSync(corePersonasDir)) {
     for (const entry of fs.readdirSync(corePersonasDir)) {
       const dir = path.join(corePersonasDir, entry);
       if (fs.statSync(dir).isDirectory()) {
+        if (personaDirs.has(entry)) {
+          log(chalk.yellow(`  ⚠ Hub persona overrides package: ${entry}`));
+        }
         personaDirs.set(entry, dir);
       }
     }
@@ -2323,7 +2397,17 @@ function main(): void {
     log(`  ${chalk.green("✓")} ${personaName}${traitsNote}`);
   }
 
-  // Compile always-on instructions.
+  // Compile always-on instructions from both package and hub. Package
+  // defaults are written first; hub-level instructions are written
+  // second so any same-named hub file overwrites the package copy.
+  compileInstructions(
+    packageInstructionsDir,
+    config.instructions?.enabled,
+    distPath,
+    "core",
+    config,
+    outputFormats
+  );
   compileInstructions(
     coreInstructionsDir,
     config.instructions?.enabled,
@@ -2461,15 +2545,15 @@ function main(): void {
 
     for (const { path: nodePath } of flatNodes) {
       // Look for personas at nodes/{path}/personas/
-      const nodePersonasDir = path.join(ROOT, "nodes", nodePath, "personas");
+      const nodePersonasDir = path.join(HUB_ROOT, "nodes", nodePath, "personas");
 
       // Also check legacy paths: groups/{name}/personas/ and teams/{group}/{team}/personas/
       const parts = nodePath.split("/");
       const legacyGroupDir = parts.length === 1
-        ? path.join(ROOT, "groups", parts[0]!, "personas")
+        ? path.join(HUB_ROOT, "groups", parts[0]!, "personas")
         : undefined;
       const legacyTeamDir = parts.length === 2
-        ? path.join(ROOT, "teams", parts[0]!, parts[1]!, "personas")
+        ? path.join(HUB_ROOT, "teams", parts[0]!, parts[1]!, "personas")
         : undefined;
 
       const personasDir = fs.existsSync(nodePersonasDir)
@@ -2521,9 +2605,9 @@ function main(): void {
       for (const { path: nodePath } of flatNodes) {
         // Collect personas that exist at this node
         const parts = nodePath.split("/");
-        const nodePersonasDir = path.join(ROOT, "nodes", nodePath, "personas");
-        const legacyGroupDir = parts.length === 1 ? path.join(ROOT, "groups", parts[0]!, "personas") : undefined;
-        const legacyTeamDir = parts.length === 2 ? path.join(ROOT, "teams", parts[0]!, parts[1]!, "personas") : undefined;
+        const nodePersonasDir = path.join(HUB_ROOT, "nodes", nodePath, "personas");
+        const legacyGroupDir = parts.length === 1 ? path.join(HUB_ROOT, "groups", parts[0]!, "personas") : undefined;
+        const legacyTeamDir = parts.length === 2 ? path.join(HUB_ROOT, "teams", parts[0]!, parts[1]!, "personas") : undefined;
         const personasDir = fs.existsSync(nodePersonasDir) ? nodePersonasDir
           : legacyGroupDir && fs.existsSync(legacyGroupDir) ? legacyGroupDir
           : legacyTeamDir && fs.existsSync(legacyTeamDir) ? legacyTeamDir
