@@ -212,6 +212,33 @@ function scanPath(targetPath: string): ScanResult {
     }
   }
 
+  // Top-level skills/ directory (Agent Skills spec — agentskills.io).
+  // Convention: skills/<skill-name>/SKILL.md. AgentBoot already lists
+  // "skill" as one of its output formats and classifyFile() already
+  // recognizes SKILL.md as type "skill", but until this block was added
+  // the discovery side never walked the convention's directory layout —
+  // so SKILL.md files outside .claude/ were invisible to the scanner.
+  // This block makes AgentBoot a two-way participant in the Agent Skills
+  // spec ecosystem (it both produces and consumes SKILL.md files).
+  const topLevelSkills = path.join(resolved, "skills");
+  if (fs.existsSync(topLevelSkills)) {
+    try {
+      if (fs.statSync(topLevelSkills).isDirectory()) {
+        for (const entry of fs.readdirSync(topLevelSkills)) {
+          const skillDir = path.join(topLevelSkills, entry);
+          try {
+            if (!fs.statSync(skillDir).isDirectory()) continue;
+          } catch { continue; }
+          const skillMd = path.join(skillDir, "SKILL.md");
+          if (fs.existsSync(skillMd)) {
+            const scanned = classifyFile(skillMd, `skills/${entry}/SKILL.md`);
+            if (scanned) files.push(scanned);
+          }
+        }
+      }
+    } catch { /* ignore stat errors on skills/ */ }
+  }
+
   return {
     scannedAt: new Date().toISOString(),
     targetPath: resolved,
