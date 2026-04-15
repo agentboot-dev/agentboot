@@ -102,7 +102,7 @@ function Hero() {
           }}
         >
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block' }} />
-          v{pkgVersion} — Apache-2.0 · Open Source
+          <span style={{ textTransform: 'none' }}>v{pkgVersion}</span> — Apache-2.0 · Open Source
         </div>
 
         <h1
