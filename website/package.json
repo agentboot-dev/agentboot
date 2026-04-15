@@ -4,7 +4,10 @@
   "private": true,
   "scripts": {
     "docusaurus": "docusaurus",
+    "gen-stats": "cd .. && npx tsx scripts/gen-stats.ts",
+    "prestart": "npm run gen-stats",
     "start": "docusaurus start",
+    "prebuild": "npm run gen-stats",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",

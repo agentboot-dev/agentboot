@@ -2,6 +2,15 @@ import React, { useState } from 'react';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { version: pkgVersion } = require('../../../package.json') as { version: string };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const siteStats = require('../generated/stats.json') as {
+  outputPlatforms: number;
+  corePersonas: number;
+  testsPassing: number;
+  tsErrors: number;
+};
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -19,6 +28,7 @@ const C = {
   greenGlow: 'rgba(16, 185, 129, 0.12)',
   amber: '#f59e0b',
   purple: '#8b5cf6',
+  slash: '#818cf8',
 };
 
 // ─── Shared style helpers ─────────────────────────────────────────────────────
@@ -100,7 +110,7 @@ function Hero() {
           }}
         >
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block' }} />
-          v0.9.0 — Apache-2.0 · Open Source
+          <span style={{ textTransform: 'none' }}>v{pkgVersion}</span> — Apache-2.0 · Open Source
         </div>
 
         <h1
@@ -113,7 +123,8 @@ function Hero() {
             marginBottom: '1.5rem',
           }}
         >
-          Program Your{' '}
+          The AI Work Harness
+          <br />
           <span
             style={{
               background: `linear-gradient(135deg, ${C.primary} 0%, ${C.purple} 100%)`,
@@ -122,7 +133,7 @@ function Hero() {
               backgroundClip: 'text',
             }}
           >
-            AI Coding Assistants
+            That Keeps Getting Better
           </span>
         </h1>
 
@@ -135,8 +146,7 @@ function Hero() {
             lineHeight: 1.7,
           }}
         >
-          AgentBoot compiles traits and personas into native output for 8 AI platforms.
-          Deploy consistent, org-aware AI behavior to every repo — compiled once, running everywhere.
+          Capture your best AI behavior, refine it as a team, and deploy it to every repo automatically.
         </p>
 
         {/* CTAs */}
@@ -235,22 +245,48 @@ function HeroCodeBlock() {
         <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#f59e0b', display: 'inline-block' }} />
         <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
         <span style={{ marginLeft: '0.75rem', color: C.muted, fontSize: '0.78rem', fontFamily: 'monospace' }}>
-          ~/my-org/personas
+          ~/code/my-org
         </span>
       </div>
 
       <div style={{ padding: '1.5rem 1.75rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.88rem', lineHeight: 1.9 }}>
-        <CodeLine prompt="$" command="agentboot install" comment="# scaffold personas hub" />
-        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.5rem', fontSize: '0.82rem' }}>
-          ✓ Created core/traits/, core/personas/, agentboot.config.json
+        <CodeLine prompt="$" command="agentboot install" comment="# creates hub, builds &amp; syncs" />
+        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.75rem', fontSize: '0.82rem' }}>
+          ✓ Scaffolded personas/ &nbsp;✓ Built 4 personas × 8 platforms<br />
+          ✓ Synced → 6 repos across 2 teams
         </div>
-        <CodeLine prompt="$" command="agentboot build" comment="# compile to 8 platforms" />
-        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.5rem', fontSize: '0.82rem' }}>
-          ✓ dist/claude/ &nbsp;✓ dist/copilot/ &nbsp;✓ dist/cursor/ &nbsp;+5 more
+        <CodeLine prompt="$" command="cd acme-widget-service &amp;&amp; claude" comment="" />
+        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.75rem', fontSize: '0.82rem' }}>
+          Claude Code started
         </div>
-        <CodeLine prompt="$" command="agentboot sync" comment="# deploy to all repos" />
-        <div style={{ color: C.green, paddingLeft: '1.2rem', fontSize: '0.82rem' }}>
-          ✓ Synced 4 personas → 12 repos across 3 teams
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+          <span style={{ color: C.purple, userSelect: 'none', fontWeight: 700 }}>✦</span>
+          <span style={{ color: C.text }}>
+            <span style={{ color: C.slash }}>/ab</span> How do I import all of our company's awesome prompts,<br />
+            <span style={{ paddingLeft: '1.2rem' }}>skills, and personas all in one fell swoop?</span>
+          </span>
+        </div>
+        {/* Claude's response */}
+        <div style={{ marginTop: '0.75rem', fontSize: '0.82rem', lineHeight: 1.8, color: C.muted }}>
+          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'flex-start' }}>
+            <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+            <span>
+              That's an import — pulling your existing agentic content into the hub.
+              Let me scan first so you know exactly what would be imported before anything changes.
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'baseline', marginTop: '0.4rem' }}>
+            <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+            <span>
+              <span style={{ color: C.amber }}>agentboot</span>
+              <span style={{ color: C.muted }}> — </span>
+              <span style={{ color: C.text }}>agentboot_scan_for_import</span>
+              <span style={{ color: C.green, fontSize: '0.78rem' }}> (MCP)</span>
+            </span>
+          </div>
+          <div style={{ marginLeft: '1.1rem', color: C.muted, fontSize: '0.78rem' }}>
+            ⎿ &nbsp;&#123; "highConfidence": 12, "needsReview": 3, ... &#125;
+          </div>
         </div>
       </div>
     </div>
@@ -270,11 +306,11 @@ function CodeLine({ prompt, command, comment }: { prompt: string; command: strin
 // ─── Stats bar ────────────────────────────────────────────────────────────────
 function StatsBar() {
   const stats = [
-    { value: '8', label: 'Output Platforms' },
-    { value: '4', label: 'Core Personas' },
-    { value: '944', label: 'Tests Passing' },
-    { value: 'Apache-2.0', label: 'Licensed' },
-    { value: '0', label: 'TypeScript Errors' },
+    { value: String(siteStats.outputPlatforms), label: 'Output Platforms' },
+    { value: String(siteStats.corePersonas), label: 'Core Personas' },
+    { value: siteStats.testsPassing.toLocaleString(), label: 'Tests Passing' },
+    { value: 'Apache-2.0', label: 'Licensed', noWrap: true },
+    { value: String(siteStats.tsErrors), label: 'TypeScript Errors' },
   ];
 
   return (
@@ -301,6 +337,7 @@ function StatsBar() {
               textAlign: 'center',
               borderRight: i < stats.length - 1 ? `1px solid ${C.border}` : 'none',
               flex: '1 1 140px',
+              ...(s.noWrap ? { minWidth: 'max-content' } : {}),
             }}
           >
             <div
@@ -710,13 +747,6 @@ function AudienceCard({
 
 // ─── Quick Start ──────────────────────────────────────────────────────────────
 function QuickStart() {
-  const commands = [
-    { cmd: 'npm install -g agentboot', comment: '# install globally' },
-    { cmd: 'agentboot install', comment: '# scaffold your personas hub' },
-    { cmd: 'agentboot build', comment: '# compile to 8 platforms' },
-    { cmd: 'agentboot sync', comment: '# deploy to all repos' },
-  ];
-
   return (
     <section
       style={{
@@ -763,7 +793,7 @@ function QuickStart() {
                 fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
               }}
             >
-              Terminal
+              ~/code/my-org
             </span>
           </div>
 
@@ -775,13 +805,60 @@ function QuickStart() {
               lineHeight: 2,
             }}
           >
-            {commands.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
-                <span style={{ color: C.green, userSelect: 'none' }}>$</span>
-                <span style={{ color: C.text, fontWeight: 500 }}>{c.cmd}</span>
-                <span style={{ color: C.muted }}>{c.comment}</span>
+            {/* Step 1: Install package */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
+              <span style={{ color: C.green, userSelect: 'none' }}>$</span>
+              <span style={{ color: C.text, fontWeight: 500 }}>npm install -g agentboot</span>
+              <span style={{ color: C.muted }}># install globally</span>
+            </div>
+            {/* Step 2: Run install wizard — builds + syncs automatically */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
+              <span style={{ color: C.green, userSelect: 'none' }}>$</span>
+              <span style={{ color: C.text, fontWeight: 500 }}>agentboot install</span>
+              <span style={{ color: C.muted }}># creates hub, builds &amp; syncs — done</span>
+            </div>
+            <div style={{ color: C.muted, paddingLeft: '1.2rem', fontSize: '0.82rem', lineHeight: 1.7, marginBottom: '0.5rem' }}>
+              ✓ Scaffolded personas/ &nbsp;✓ Built 4 personas × 8 platforms &nbsp;✓ Synced → all repos
+            </div>
+            {/* Step 3: Go to a work repo and open Claude */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
+              <span style={{ color: C.green, userSelect: 'none' }}>$</span>
+              <span style={{ color: C.text, fontWeight: 500 }}>cd acme-widget-service &amp;&amp; claude</span>
+            </div>
+            {/* Step 4: Use /ab */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', marginTop: '0.25rem' }}>
+              <span style={{ color: C.purple, userSelect: 'none', fontWeight: 700, lineHeight: 2 }}>✦</span>
+              <span style={{ color: C.text, fontWeight: 500, lineHeight: 2 }}>
+                <span style={{ color: C.slash }}>/ab</span> How do I import all of our company's awesome prompts, skills, and personas all in one fell swoop?
+              </span>
+            </div>
+            {/* Claude's response — real /ab output pattern */}
+            <div style={{ marginTop: '0.4rem', fontSize: '0.83rem', lineHeight: 1.85, color: C.muted }}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+                <span>
+                  That's an import — pulling your existing agentic content into the hub.
+                  Let me scan first so you know exactly what would be imported before anything changes.
+                </span>
               </div>
-            ))}
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', marginTop: '0.5rem' }}>
+                <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+                <span>
+                  <span style={{ color: C.amber }}>agentboot</span>
+                  <span style={{ color: C.muted }}> — </span>
+                  <span style={{ color: C.text }}>agentboot_scan_for_import</span>
+                  <span style={{ color: C.green, fontSize: '0.78rem' }}> (MCP)</span>
+                  <span style={{ color: C.muted }}>(paths: [</span>
+                  <span style={{ color: C.text }}>"~/code/api-service"</span>
+                  <span style={{ color: C.muted }}>, </span>
+                  <span style={{ color: C.text }}>"~/code/frontend"</span>
+                  <span style={{ color: C.muted }}>, ...])</span>
+                </span>
+              </div>
+              <div style={{ marginLeft: '1.2rem', fontSize: '0.78rem', color: C.muted, marginTop: '0.1rem' }}>
+                ⎿ &nbsp;&#123; "highConfidence": 12, "needsReview": 3, "skipped": 1 &#125;
+              </div>
+            </div>
           </div>
         </div>
 
