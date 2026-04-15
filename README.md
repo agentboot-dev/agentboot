@@ -26,32 +26,32 @@ Source files              Build step              Distributed artifacts
 
 The output works without AgentBoot installed. Any platform that reads Markdown can consume it.
 
+The `/ab` skill inside Claude Code is the human interface for all of this. The CLI is for CI pipelines.
+
 ## Quickstart
 
 ```bash
-# Install
+# 1. Install
 npm install -g agentboot
 
-# Or via Homebrew (macOS Sequoia and earlier)
-brew tap agentboot-dev/agentboot && brew install agentboot
-
-# Set up a new personas repo
+# 2. Set up your personas hub
 agentboot install
-
-# Configure your org
-# Edit agentboot.config.json with your org name, groups, and teams
-
-# Build and sync
-agentboot build
-agentboot sync --dry-run   # preview first
-agentboot sync             # deploy to repos
 ```
 
-Your repos now have:
-- Always-on code review and security instructions
-- `/review-code`, `/review-security`, `/gen-tests`, `/gen-testdata` slash commands
-- Agent skills deployable in Claude Code agent mode
-- Platform-native output for Claude Code, GitHub Copilot, and agentskills.io
+The installer creates your personas repo, builds the personas, and syncs them to any repos you register.
+
+**3. Restart Claude Code, then go to any repo and type `/ab`**
+
+That's it. `/ab` is the interface — ask it anything:
+
+```
+/ab how do I add a persona for my data team?
+/ab show me what's registered
+/ab sync
+```
+
+**For CI and scripting:** `agentboot build`, `agentboot sync`, `agentboot validate --strict`
+See [CLI Reference](docs/cli-reference.md).
 
 ## What You Get
 
@@ -122,21 +122,7 @@ Everything is driven by `agentboot.config.json`:
 
 ## CLI Commands
 
-```bash
-agentboot build          # Compile personas from traits
-agentboot validate       # Pre-build validation checks
-agentboot sync           # Distribute to target repos
-agentboot dev-build      # clean → validate → build → dev-sync pipeline
-agentboot install        # Interactive onboarding wizard
-agentboot add <type>     # Create a new persona, trait, or gotcha
-agentboot doctor         # Diagnose configuration issues
-agentboot status         # Show deployment status
-agentboot lint           # Static analysis for prompt quality
-agentboot uninstall      # Remove AgentBoot from a repo
-agentboot config         # View configuration
-```
-
-Run `agentboot --help` for full usage.
+Full CLI reference (for CI/scripting): [docs/cli-reference.md](docs/cli-reference.md)
 
 ## Extending
 
