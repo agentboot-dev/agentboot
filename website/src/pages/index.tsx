@@ -259,24 +259,25 @@ function HeroCodeBlock() {
           </span>
         </div>
         {/* Claude's response */}
-        <div
-          style={{
-            marginTop: '0.75rem',
-            marginLeft: '1.2rem',
-            borderLeft: `2px solid ${C.primary}`,
-            paddingLeft: '0.85rem',
-            fontSize: '0.82rem',
-            lineHeight: 1.8,
-            color: C.muted,
-          }}
-        >
-          <span style={{ color: C.primary, fontWeight: 700 }}>◆ /ab</span>
-          {' '}Run <span style={{ color: C.text }}>/ab import</span> — I'll scan your repos and Claude
-          classifies each file into traits, personas, and gotchas.
-          Everything lands in your hub, built and synced automatically.
-          <div style={{ marginTop: '0.25rem' }}>
-            <span style={{ color: C.green }}>✓</span>{' '}
-            <span style={{ color: C.text }}>/ab import --path ~/code/my-org</span>
+        <div style={{ marginTop: '0.75rem', fontSize: '0.82rem', lineHeight: 1.8, color: C.muted }}>
+          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'flex-start' }}>
+            <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+            <span>
+              That's an import — pulling your existing agentic content into the hub.
+              Let me scan first so you know exactly what would be imported before anything changes.
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'baseline', marginTop: '0.4rem' }}>
+            <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+            <span>
+              <span style={{ color: C.amber }}>agentboot</span>
+              <span style={{ color: C.muted }}> — </span>
+              <span style={{ color: C.text }}>agentboot_scan_for_import</span>
+              <span style={{ color: C.green, fontSize: '0.78rem' }}> (MCP)</span>
+            </span>
+          </div>
+          <div style={{ marginLeft: '1.1rem', color: C.muted, fontSize: '0.78rem' }}>
+            ⎿ &nbsp;&#123; "highConfidence": 12, "needsReview": 3, ... &#125;
           </div>
         </div>
       </div>
@@ -822,34 +823,31 @@ function QuickStart() {
                 /ab How do I import all of our company's awesome prompts, skills, and personas all in one fell swoop?
               </span>
             </div>
-            {/* Claude's response */}
-            <div
-              style={{
-                marginTop: '0.5rem',
-                marginLeft: '1.5rem',
-                borderLeft: `2px solid ${C.primary}`,
-                paddingLeft: '1rem',
-                fontSize: '0.85rem',
-                lineHeight: 1.9,
-                color: C.muted,
-              }}
-            >
-              <div>
-                <span style={{ color: C.primary, fontWeight: 700 }}>◆ /ab → ab-author</span>
+            {/* Claude's response — real /ab output pattern */}
+            <div style={{ marginTop: '0.4rem', fontSize: '0.83rem', lineHeight: 1.85, color: C.muted }}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+                <span>
+                  That's an import — pulling your existing agentic content into the hub.
+                  Let me scan first so you know exactly what would be imported before anything changes.
+                </span>
               </div>
-              <div>
-                Great question! Run{' '}
-                <span style={{ color: C.text, fontWeight: 600 }}>/ab import</span> and point it at your codebase.
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', marginTop: '0.5rem' }}>
+                <span style={{ color: C.primary, flexShrink: 0 }}>⏺</span>
+                <span>
+                  <span style={{ color: C.amber }}>agentboot</span>
+                  <span style={{ color: C.muted }}> — </span>
+                  <span style={{ color: C.text }}>agentboot_scan_for_import</span>
+                  <span style={{ color: C.green, fontSize: '0.78rem' }}> (MCP)</span>
+                  <span style={{ color: C.muted }}>(paths: [</span>
+                  <span style={{ color: C.text }}>"~/code/api-service"</span>
+                  <span style={{ color: C.muted }}>, </span>
+                  <span style={{ color: C.text }}>"~/code/frontend"</span>
+                  <span style={{ color: C.muted }}>, ...])</span>
+                </span>
               </div>
-              <div>
-                Claude reads every prompt file — CLAUDE.md, Copilot instructions, Cursor rules —
-                and classifies each one into a trait, persona, or gotcha.
-                Everything lands in your hub, then builds and syncs to all your repos automatically.
-              </div>
-              <div style={{ marginTop: '0.25rem' }}>
-                <span style={{ color: C.green }}>✓</span>{' '}
-                <span style={{ color: C.text }}>/ab import --path ~/code/my-org</span>
-                <span style={{ color: C.muted }}> &nbsp;# or just: /ab import</span>
+              <div style={{ marginLeft: '1.2rem', fontSize: '0.78rem', color: C.muted, marginTop: '0.1rem' }}>
+                ⎿ &nbsp;&#123; "highConfidence": 12, "needsReview": 3, "skipped": 1 &#125;
               </div>
             </div>
           </div>
