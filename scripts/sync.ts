@@ -824,21 +824,57 @@ function syncRepoTarget(
 
   // Write root-level files (CC reads .mcp.json and CLAUDE.md from project root, not .claude/).
   if (platform !== "copilot" && platform !== "cursor") {
-    const rootFiles = [".mcp.json", "CLAUDE.md"];
-    for (const rootFile of rootFiles) {
-      const file = merged.get(rootFile);
-      if (file) {
-        const destPath = path.join(effectivePath, rootFile);
-        const content = fs.readFileSync(file.absolutePath, "utf-8");
-        const status = writeFile(destPath, content, dryRun);
-        const relDest = path.relative(effectivePath, destPath);
-        if (status === "written") {
-          result.filesWritten.push(relDest);
-        } else {
-          result.filesSkipped.push(relDest);
-        }
-      }
+    // CLAUDE.md — write as-is from dist
+    const claudeMdFile = merged.get("CLAUDE.md");
+    if (claudeMdFile) {
+      const destPath = path.join(effectivePath, "CLAUDE.md");
+      const content = fs.readFileSync(claudeMdFile.absolutePath, "utf-8");
+      const status = writeFile(destPath, content, dryRun);
+      const relDest = path.relative(effectivePath, destPath);
+      if (status === "written") result.filesWritten.push(relDest);
+      else result.filesSkipped.push(relDest);
     }
+
+    // .mcp.json — always inject the AgentBoot MCP server entry, merged with any
+    // org-configured servers from dist and any servers already in the spoke.
+    // No AGENTBOOT_HUB in the entry — the MCP server resolves the hub at runtime
+    // from ~/.agentboot/config.json (written by `agentboot install`). This makes
+    // /ab available in every spoke repo without hardcoding a machine-specific path.
+    const mcpDestPath = path.join(effectivePath, ".mcp.json");
+    const agentbootEntry = {
+      command: "npx",
+      args: ["agentboot", "mcp-server"],
+    };
+
+    // Start from org-configured servers in dist (if any)
+    let mcpServers: Record<string, unknown> = {};
+    const mcpDistFile = merged.get(".mcp.json");
+    if (mcpDistFile) {
+      try {
+        const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
+          mcpServers?: Record<string, unknown>;
+        };
+        if (distContent.mcpServers) mcpServers = { ...distContent.mcpServers };
+      } catch { /* malformed dist .mcp.json — ignore */ }
+    }
+
+    // Preserve extra servers already in the spoke that aren't ours
+    if (fs.existsSync(mcpDestPath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(mcpDestPath, "utf-8")) as {
+          mcpServers?: Record<string, unknown>;
+        };
+        if (existing.mcpServers) mcpServers = { ...existing.mcpServers, ...mcpServers };
+      } catch { /* malformed existing .mcp.json — overwrite */ }
+    }
+
+    // AgentBoot entry always wins (ensures it's present and up to date)
+    mcpServers["agentboot"] = agentbootEntry;
+
+    const mcpContent = JSON.stringify({ mcpServers }, null, 2) + "\n";
+    const mcpStatus = writeFile(mcpDestPath, mcpContent, dryRun);
+    if (mcpStatus === "written") result.filesWritten.push(".mcp.json");
+    else result.filesSkipped.push(".mcp.json");
   }
 
   // Sync AGENTS.md to repo root (universal cross-tool standard).

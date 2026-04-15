@@ -622,8 +622,8 @@ subscription), produce non-deterministic output, and require an active Claude Co
 
 `import`, `test --behavioral`, `review`, `cost-estimate`
 
-The same features are also available as **interactive skills** (`/agentboot import`,
-`/agentboot test`) inside Claude Code sessions, using AgentBoot's MCP server as a bridge.
+The same features are also available as **interactive skills** (`/ab import`,
+`/ab test`) inside Claude Code sessions, using AgentBoot's MCP server as a bridge.
 The CLI versions are batch-oriented; the skill versions are conversational. Both use the
 same personas repo and the same non-destructive guarantees.
 

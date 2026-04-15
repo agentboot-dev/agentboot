@@ -7,6 +7,9 @@ sidebar_position: 2
 
 Common issues and solutions when using AgentBoot.
 
+> **Upgrading from an earlier version?** See [`docs/migration.md`](migration.md) for
+> step-by-step upgrade instructions, including the v0.9 → v0.10 `/ab` skill migration.
+
 ## Installation Issues
 
 ### Homebrew install fails on macOS Tahoe

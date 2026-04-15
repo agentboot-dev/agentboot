@@ -2479,7 +2479,11 @@ function main(): void {
       }
     }
 
-    // Story 12: Copy /ab skill files from templates/skills/ into dist/claude/core/agents/
+    // Story 12: Write /ab agents to dist/claude/core/agents/ (sub-agents Claude spawns)
+    // and a user-invocable SKILL.md to dist/claude/core/skills/ab/ (what /ab resolves to).
+    // The five agent files go to agents/ as-is. The ab.md content is also emitted as
+    // a skill-format SKILL.md with context:fork + agent:ab frontmatter so that typing
+    // /ab in Claude Code resolves correctly — Claude Code looks in skills/, not agents/.
     const skillsTemplateDir = path.join(ROOT, "templates", "skills");
     const distAgentsDir = path.join(distPath, "claude", "core", "agents");
     ensureDir(distAgentsDir);
@@ -2491,7 +2495,30 @@ function main(): void {
         fs.copyFileSync(src, dest);
       }
     }
-    log(chalk.gray(`  → /ab skill files copied to dist/claude/core/agents/`));
+
+    // Write skills/ab/SKILL.md — the user entry point for /ab.
+    // No context:fork — /ab is an interactive orchestrator, not a one-shot skill.
+    // context:fork collapses output to "command completed" at the end, swallowing
+    // all specialist output. Running inline keeps output in the conversation.
+    const abSrc = path.join(skillsTemplateDir, "ab.md");
+    if (fs.existsSync(abSrc)) {
+      const abContent = fs.readFileSync(abSrc, "utf-8");
+      // Strip the agent-format frontmatter block and replace with skill-format
+      const bodyStart = abContent.indexOf("\n---\n", 4) + 5; // skip opening ---\n...---\n
+      const body = bodyStart > 4 ? abContent.slice(bodyStart) : abContent;
+      const skillContent = [
+        "---",
+        `description: "AgentBoot orchestrator — routes persona, trait, gotcha, and hub management requests to the right specialist"`,
+        `agent: "ab"`,
+        "---",
+        "",
+        body.trimStart(),
+      ].join("\n");
+      const distSkillDir = path.join(distPath, "claude", "core", "skills", "ab");
+      ensureDir(distSkillDir);
+      fs.writeFileSync(path.join(distSkillDir, "SKILL.md"), skillContent, "utf-8");
+    }
+    log(chalk.gray(`  → /ab agents written to dist/claude/core/agents/, skill entry at dist/claude/core/skills/ab/SKILL.md`));
   }
 
   // AB-144: Gemini-specific output (GEMINI.md with persona index)
