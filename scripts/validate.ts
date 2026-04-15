@@ -115,7 +115,12 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
     return result;
   }
 
-  const corePersonasDir = path.join(ROOT, "core", "personas");
+  // Personas can come from three sources, merged into one set. Hub content
+  // augments package content; hub names with the same id as a package
+  // persona override (since both end up in the set, the compile step
+  // resolves the override when it actually reads files).
+  const packagePersonasDir = path.join(ROOT, "core", "personas");       // bundled defaults
+  const hubPersonasDir = path.join(configDir, "core", "personas");      // hub-local additions
   const extendDir = config.personas?.customDir
     ? path.resolve(configDir, config.personas.customDir)
     : null;
@@ -123,17 +128,10 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
   // Collect all available persona directories.
   const available = new Set<string>();
 
-  if (fs.existsSync(corePersonasDir)) {
-    for (const entry of fs.readdirSync(corePersonasDir)) {
-      if (fs.statSync(path.join(corePersonasDir, entry)).isDirectory()) {
-        available.add(entry);
-      }
-    }
-  }
-
-  if (extendDir && fs.existsSync(extendDir)) {
-    for (const entry of fs.readdirSync(extendDir)) {
-      if (fs.statSync(path.join(extendDir, entry)).isDirectory()) {
+  for (const dir of [packagePersonasDir, hubPersonasDir, extendDir]) {
+    if (!dir || !fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir)) {
+      if (fs.statSync(path.join(dir, entry)).isDirectory()) {
         available.add(entry);
       }
     }
@@ -169,13 +167,18 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
     "Trait references — all persona.config.json trait entries exist in core/traits/"
   );
 
-  const coreTraitsDir = path.join(ROOT, "core", "traits");
+  // Traits come from both the package bundle (defaults) and the hub's
+  // own core/traits (additions / overrides). Hub files with the same
+  // name as a package trait win because they are added last to the map.
+  const packageTraitsDir = path.join(ROOT, "core", "traits");
+  const hubTraitsDir = path.join(configDir, "core", "traits");
   const enabledTraits = config.traits?.enabled;
 
-  // Collect available trait names.
+  // Collect available trait names from both sources.
   const availableTraits = new Set<string>();
-  if (fs.existsSync(coreTraitsDir)) {
-    for (const file of fs.readdirSync(coreTraitsDir)) {
+  for (const dir of [packageTraitsDir, hubTraitsDir]) {
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir)) {
       if (file.endsWith(".md")) {
         availableTraits.add(path.basename(file, ".md"));
       }
@@ -187,8 +190,12 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
     return result;
   }
 
-  // Scan all persona.config.json files.
-  const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
+  // Scan all persona.config.json files in the merged persona directories
+  // (package defaults + hub additions + optional customDir).
+  const personaRoots: string[] = [
+    path.join(ROOT, "core", "personas"),
+    path.join(configDir, "core", "personas"),
+  ];
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
@@ -307,7 +314,10 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
 function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): CheckResult {
   const result = check("SKILL.md frontmatter — required fields present (name, description)");
 
-  const personaRoots: string[] = [path.join(ROOT, "core", "personas")];
+  const personaRoots: string[] = [
+    path.join(ROOT, "core", "personas"),
+    path.join(configDir, "core", "personas"),
+  ];
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
@@ -395,8 +405,8 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
   const patterns = buildSecretPatterns(config);
 
   const scanRoots: string[] = [
-    path.join(ROOT, "core", "traits"),
-    path.join(ROOT, "core", "personas"),
+    path.join(configDir, "core", "traits"),
+    path.join(configDir, "core", "personas"),
   ];
 
   if (config.personas?.customDir) {

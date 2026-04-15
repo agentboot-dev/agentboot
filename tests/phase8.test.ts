@@ -141,8 +141,10 @@ describe("AB-145: AGENTS.md scope awareness", () => {
 
   it("scope-specific AGENTS.md with custom config", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-agents-scope-"));
-    // Create a node-level persona directory
-    const nodePersonaDir = path.join(ROOT, "nodes", "test-group", "personas", "code-reviewer");
+    // Create a node-level persona directory inside the temp hub (next to the
+    // config), not inside the agentboot package. Hub content must be resolved
+    // relative to the config file's directory.
+    const nodePersonaDir = path.join(tempDir, "nodes", "test-group", "personas", "code-reviewer");
     fs.mkdirSync(nodePersonaDir, { recursive: true });
     fs.writeFileSync(path.join(nodePersonaDir, "persona.config.json"), JSON.stringify({
       name: "Code Reviewer (Test Group)",
@@ -177,7 +179,6 @@ describe("AB-145: AGENTS.md scope awareness", () => {
       expect(content).toContain("code-reviewer");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
-      fs.rmSync(path.join(ROOT, "nodes"), { recursive: true, force: true });
     }
   });
 });
