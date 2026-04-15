@@ -115,7 +115,8 @@ function Hero() {
             marginBottom: '1.5rem',
           }}
         >
-          The AI Work Harness{' '}
+          The AI Work Harness
+          <br />
           <span
             style={{
               background: `linear-gradient(135deg, ${C.primary} 0%, ${C.purple} 100%)`,
