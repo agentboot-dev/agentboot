@@ -88,7 +88,7 @@ function runScript({ script, args, verbose, quiet }: RunOptions): never {
   }
 
   const result = spawnSync("npx", ["tsx", scriptPath, ...args], {
-    cwd: ROOT,
+    cwd: process.cwd(),
     stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit",
     env: { ...process.env },
   });
