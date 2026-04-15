@@ -17,6 +17,11 @@ direct CLI usage for interactive work. It also introduces the AgentBoot MCP serv
 the skill requires. Neither existed in v0.9, so a fresh `agentboot install` is needed
 to write the new files into your hub.
 
+**`/ab` is available in every repo, not just the hub.** After installing and syncing,
+developers can use `/ab` from any spoke repo without switching to the hub directory.
+The MCP server resolves the hub automatically from a global registry written during
+`agentboot install`.
+
 ### Migration steps
 
 **1. Update the package**
@@ -44,23 +49,44 @@ This is safe to run on an existing hub. It will:
   `ab.md`, `ab-author.md`, `ab-diagnose.md`, `ab-manage.md`, `ab-query.md`
 - Create or update `.mcp.json` with the AgentBoot MCP server entry. Existing MCP
   server entries are preserved — only the `agentboot` entry is added or updated.
+- Register the hub in `~/.agentboot/config.json` so the MCP server can resolve it
+  from any repo on this machine.
 - Leave all other hub content (traits, personas, gotchas, `repos.json`,
   `agentboot.config.json`) untouched.
 
-**3. Restart Claude Code**
+**3. Build and sync**
 
-Claude Code reads `.mcp.json` at startup. Restart it to pick up the new MCP server:
+Rebuild your personas and sync to all registered repos. This updates the `/ab` agents
+and writes the AgentBoot MCP server entry to every spoke's `.mcp.json`:
 
 ```bash
-# In your hub directory
+cd /path/to/your-personas-hub
+agentboot build
+agentboot sync
+```
+
+**4. Restart Claude Code**
+
+Claude Code reads `.mcp.json` at startup. Restart it in any repo to pick up the MCP
+server — the hub, a spoke, or any other directory:
+
+```bash
 claude
 ```
 
-**4. Verify**
+**5. Verify**
 
 Type `/ab` in Claude Code. The orchestrator should respond and offer to route your
 request to the right specialist. If it doesn't, see [Troubleshooting](#troubleshooting)
 below.
+
+You can verify from any spoke repo, not just the hub:
+
+```bash
+cd /path/to/any-spoke-repo
+claude
+# then type /ab
+```
 
 ---
 
@@ -83,23 +109,29 @@ scripts.
 
 ### If you have multiple hubs
 
-Run `agentboot install` separately in each hub directory. Each hub gets its own
-`.mcp.json` with `AGENTBOOT_HUB` set to that hub's path.
+Run `agentboot install` separately in each hub directory. Each hub is registered
+in `~/.agentboot/config.json`. The first one registered becomes the default — the
+hub the MCP server uses when `/ab` is invoked from a spoke repo.
 
 ```bash
 cd ~/work/acme-personas && agentboot install
 cd ~/work/sideproject-personas && agentboot install
 ```
 
+To change the default hub, edit `~/.agentboot/config.json` and update the
+`"defaultHub"` field to the path you want. `agentboot hubs` (coming in a future
+release) will make this interactive.
+
 ---
 
 ### If you moved your hub after the v0.9 install
 
-The `.mcp.json` written during install hardcodes `AGENTBOOT_HUB` to the hub's
-absolute path at install time. If you moved the hub directory since then, the path
-will be wrong and the MCP server will fail to find your config.
+The hub's `.mcp.json` and the global registry (`~/.agentboot/config.json`) both
+record the hub's absolute path at install time. If you moved the hub directory,
+both will point to the old location and the MCP server will fail to find your config.
 
-Fix: re-run `agentboot install` from the hub's current location.
+Fix: re-run `agentboot install` from the hub's new location. This updates both
+`.mcp.json` and the registry entry.
 
 ```bash
 cd /new/location/personas
@@ -124,29 +156,35 @@ If the files are present, restart Claude Code.
 
 **`/ab` responds but MCP tools fail**
 
-The MCP server is not running or is misconfigured. Check `.mcp.json` in your hub:
+The MCP server is not running or is resolving the wrong hub. Check in order:
 
+1. Confirm the global registry points to your hub:
 ```bash
-cat /path/to/your-hub/.mcp.json
+cat ~/.agentboot/config.json
+# "defaultHub" should be your hub's absolute path
 ```
 
-It should contain an `agentboot` entry with `AGENTBOOT_HUB` set to your hub's
-absolute path. If it is missing or the path is wrong, re-run `agentboot install`.
-
-To confirm the MCP server starts correctly, run it manually:
-
+2. Confirm `.mcp.json` exists in the repo where you're running Claude Code:
 ```bash
-cd /path/to/your-hub
-AGENTBOOT_HUB=$(pwd) agentboot mcp-server
+cat /path/to/repo/.mcp.json
+# Should contain an "agentboot" entry
 ```
 
-You should see `AgentBoot MCP server listening` with no errors. `Ctrl+C` to stop.
+3. If either is missing or wrong, re-run `agentboot install` from your hub directory.
+
+To confirm the MCP server starts and resolves the right hub, run it manually:
+
+```bash
+agentboot mcp-server
+```
+
+You should see `AgentBoot MCP server listening` with the hub path shown. `Ctrl+C` to stop.
 
 **MCP server starts but reports wrong hub**
 
-Your `AGENTBOOT_HUB` in `.mcp.json` points to a different directory. Open `.mcp.json`,
-find the `env.AGENTBOOT_HUB` field, and confirm it matches your hub's current absolute
-path. Re-run `agentboot install` to regenerate it automatically.
+The global registry (`~/.agentboot/config.json`) has a stale `defaultHub` path.
+Open it and update `"defaultHub"` to your hub's current absolute path, or re-run
+`agentboot install` from the hub to regenerate it automatically.
 
 **AgentBoot defaults are over the 8,000-token persona budget**
 
