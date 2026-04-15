@@ -258,6 +258,27 @@ function HeroCodeBlock() {
             <span style={{ paddingLeft: '1.2rem' }}>skills, and personas all in one fell swoop?</span>
           </span>
         </div>
+        {/* Claude's response */}
+        <div
+          style={{
+            marginTop: '0.75rem',
+            marginLeft: '1.2rem',
+            borderLeft: `2px solid ${C.primary}`,
+            paddingLeft: '0.85rem',
+            fontSize: '0.82rem',
+            lineHeight: 1.8,
+            color: C.muted,
+          }}
+        >
+          <span style={{ color: C.primary, fontWeight: 700 }}>◆ /ab</span>
+          {' '}Run <span style={{ color: C.text }}>/ab import</span> — I'll scan your repos and Claude
+          classifies each file into traits, personas, and gotchas.
+          Everything lands in your hub, built and synced automatically.
+          <div style={{ marginTop: '0.25rem' }}>
+            <span style={{ color: C.green }}>✓</span>{' '}
+            <span style={{ color: C.text }}>/ab import --path ~/code/my-org</span>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -800,6 +821,36 @@ function QuickStart() {
               <span style={{ color: C.text, fontWeight: 500, lineHeight: 2 }}>
                 /ab How do I import all of our company's awesome prompts, skills, and personas all in one fell swoop?
               </span>
+            </div>
+            {/* Claude's response */}
+            <div
+              style={{
+                marginTop: '0.5rem',
+                marginLeft: '1.5rem',
+                borderLeft: `2px solid ${C.primary}`,
+                paddingLeft: '1rem',
+                fontSize: '0.85rem',
+                lineHeight: 1.9,
+                color: C.muted,
+              }}
+            >
+              <div>
+                <span style={{ color: C.primary, fontWeight: 700 }}>◆ /ab → ab-author</span>
+              </div>
+              <div>
+                Great question! Run{' '}
+                <span style={{ color: C.text, fontWeight: 600 }}>/ab import</span> and point it at your codebase.
+              </div>
+              <div>
+                Claude reads every prompt file — CLAUDE.md, Copilot instructions, Cursor rules —
+                and classifies each one into a trait, persona, or gotcha.
+                Everything lands in your hub, then builds and syncs to all your repos automatically.
+              </div>
+              <div style={{ marginTop: '0.25rem' }}>
+                <span style={{ color: C.green }}>✓</span>{' '}
+                <span style={{ color: C.text }}>/ab import --path ~/code/my-org</span>
+                <span style={{ color: C.muted }}> &nbsp;# or just: /ab import</span>
+              </div>
             </div>
           </div>
         </div>
