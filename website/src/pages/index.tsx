@@ -4,6 +4,13 @@ import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: pkgVersion } = require('../../../package.json') as { version: string };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const siteStats = require('../generated/stats.json') as {
+  outputPlatforms: number;
+  corePersonas: number;
+  testsPassing: number;
+  tsErrors: number;
+};
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -299,11 +306,11 @@ function CodeLine({ prompt, command, comment }: { prompt: string; command: strin
 // ─── Stats bar ────────────────────────────────────────────────────────────────
 function StatsBar() {
   const stats = [
-    { value: '8', label: 'Output Platforms' },
-    { value: '4', label: 'Core Personas' },
-    { value: '944', label: 'Tests Passing' },
-    { value: 'Apache-2.0', label: 'Licensed' },
-    { value: '0', label: 'TypeScript Errors' },
+    { value: String(siteStats.outputPlatforms), label: 'Output Platforms' },
+    { value: String(siteStats.corePersonas), label: 'Core Personas' },
+    { value: siteStats.testsPassing.toLocaleString(), label: 'Tests Passing' },
+    { value: 'Apache-2.0', label: 'Licensed', noWrap: true },
+    { value: String(siteStats.tsErrors), label: 'TypeScript Errors' },
   ];
 
   return (
@@ -330,6 +337,7 @@ function StatsBar() {
               textAlign: 'center',
               borderRight: i < stats.length - 1 ? `1px solid ${C.border}` : 'none',
               flex: '1 1 140px',
+              ...(s.noWrap ? { minWidth: 'max-content' } : {}),
             }}
           >
             <div
