@@ -1218,123 +1218,11 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
     }
   }
 
-  // Step 1.6: Import AI agent content from registered repos
-  //
-  // Scoped to registered repos only — the user has already opted in to each
-  // one. Uses scanRepoDirs() instead of scanParentForContent() so unrelated
-  // sibling directories are never touched.
-
-  let importedAny = false;
-
-  if (registeredRepoPaths.length > 0) {
-    const claudeReady = (() => {
-      try {
-        const v = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-        if (v.status !== 0) return false;
-        return spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).status === 0;
-      } catch { return false; }
-    })();
-
-    if (!claudeReady) {
-      console.log(chalk.gray(
-        "\n  Import uses your Claude account to classify agent content. You'll need\n" +
-        "  to be logged in.\n"
-      ));
-      const shouldLogin = await confirm({ message: "Log in to Claude now?", default: true });
-      if (shouldLogin) spawnSync("claude", ["auth", "login"], { stdio: "inherit" });
-    }
-
-    const canClassify = (() => {
-      try {
-        return spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).status === 0;
-      } catch { return false; }
-    })();
-
-    const shouldScan = await confirm({
-      message: `Scan ${registeredRepoPaths.length} registered repo(s) for existing AI agent content to import?`,
-      default: true,
-    });
-
-    if (shouldScan) {
-      const { scanRepoDirs, printScanManifest, classifyScannedFiles, printClassificationResults, finalizeImport } =
-        await import("./import.js");
-
-      const manifest = scanRepoDirs(registeredRepoPaths);
-      printScanManifest(manifest);
-
-      if (manifest.files.length === 0) {
-        console.log(chalk.gray("  No AI agent content found in registered repos.\n"));
-      } else if (!canClassify) {
-        console.log(chalk.gray(
-          "  Classification requires Claude. Run `agentboot import` later to\n" +
-          "  classify and import this content.\n"
-        ));
-      } else {
-        console.log(chalk.gray(
-          "  AgentBoot will use your Claude account to classify each file into\n" +
-          "  the right category (trait, gotcha, instruction, etc.). This uses\n" +
-          "  one LLM call per file — typically a few cents total.\n\n" +
-          "  No existing files will be modified. New files will be created in\n" +
-          `  your personas repo at ${hubDir}.\n`
-        ));
-
-        const continueImport = await confirm({ message: "Classify and import now?", default: true });
-
-        if (continueImport) {
-          const { classifications, trustedSources } = classifyScannedFiles(manifest, hubDir);
-
-          if (classifications.length > 0) {
-            printClassificationResults(classifications);
-            const applyNow = await confirm({ message: "Import these artifacts into your personas repo?", default: true });
-            const result = finalizeImport(classifications, trustedSources, hubDir, applyNow);
-            if (applyNow && result.created > 0) importedAny = true;
-          } else {
-            console.log(chalk.gray("  No content classified.\n"));
-          }
-        } else {
-          console.log(chalk.gray(
-            "  You can import later by running:\n\n" +
-            `    cd ${hubDir}\n` +
-            `    agentboot import --path <repo>\n`
-          ));
-        }
-      }
-    }
-  } else {
-    console.log(chalk.gray(
-      "  No repos registered — skipping import scan.\n" +
-      "  Run `agentboot import --path <dir>` later to import agent content.\n"
-    ));
-  }
-
-  // Rebuild if imports added new content
-  if (importedAny) {
-    console.log(chalk.cyan("\n  Rebuilding with imported content..."));
-    buildSucceeded = runBuild(hubDir);
-  }
-
-  // Offer to sync now that repos are registered and build is current
-  const firstRepoPath = registeredRepoPaths[0] ?? "";
+  // Sync automatically — no confirmation prompt
   if (registeredRepoPaths.length > 0 && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
-    console.log(chalk.gray(
-      "\n  Sync deploys the compiled personas to registered repos' .claude/ directories.\n" +
-      "  This writes files locally — it does not commit or push.\n"
-    ));
-    const shouldSync = await confirm({ message: "Deploy personas now?", default: true });
-    if (shouldSync) {
-      console.log(chalk.cyan("\n  Syncing..."));
-      if (runSync(hubDir)) {
-        console.log(chalk.green("\n  Personas deployed."));
-        if (firstRepoPath) {
-          console.log(chalk.gray(
-            "\n  To activate them, commit the .claude/ directory in each repo:\n\n" +
-            `    cd ${firstRepoPath}\n` +
-            `    git add .claude/\n` +
-            `    git commit -m "chore: deploy AgentBoot personas"\n\n` +
-            `  Then open Claude Code in that repo and try: /review-code`
-          ));
-        }
-      }
+    console.log(chalk.cyan("\n  Syncing..."));
+    if (runSync(hubDir)) {
+      console.log(chalk.green("\n  Personas deployed to all registered repos."));
     }
   } else if (registeredRepoPaths.length > 0 && !buildSucceeded) {
     console.log(chalk.gray(
@@ -1365,38 +1253,22 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   }
 
   console.log(chalk.cyan("\n  What to do next:\n"));
-  let step = 1;
-
-  if (!buildSucceeded) {
-    console.log(chalk.gray(`    ${step}. Build personas:    cd ${hubDir} && agentboot build`));
-    step++;
-  }
-
-  if (registeredRepoPaths.length === 0) {
-    console.log(chalk.gray(`    ${step}. Register a repo:   agentboot install (from your code repo)`));
-    console.log(chalk.gray(`       Or edit:            ${hubDir}/repos.json`));
-    step++;
-  } else if (buildSucceeded && firstRepoPath && !fs.existsSync(path.join(firstRepoPath, ".claude", ".agentboot-manifest.json"))) {
-    console.log(chalk.gray(`    ${step}. Deploy personas:   cd ${hubDir} && agentboot sync`));
-    step++;
-  }
-
-  console.log(chalk.gray(`    ${step}. Try it out:        Open your repo in Claude Code and run /review-code`));
-  step++;
-  console.log(chalk.gray(`    ${step}. Customize:         Edit personas in ${hubDir}/core/personas/`));
-  step++;
-  console.log(chalk.gray(`    ${step}. Import existing:   agentboot import --path <dir>`));
-  step++;
+  console.log(chalk.bold(chalk.white("    1. Restart Claude Code")));
+  console.log(chalk.gray("       The /ab skill is now deployed. Restart Claude to pick it up.\n"));
+  console.log(chalk.bold(chalk.white("    2. Go to any repo and type /ab")));
+  console.log(chalk.gray("       Works from the hub or from any registered spoke repo.\n"));
+  console.log(chalk.gray("       Examples:"));
+  console.log(chalk.gray("         /ab how do I add a new persona?"));
+  console.log(chalk.gray("         /ab show me what's registered"));
+  console.log(chalk.gray("         /ab sync"));
+  console.log(chalk.gray("         /ab import\n"));
+  console.log(chalk.gray("    CI/scripting: agentboot build && agentboot sync"));
+  console.log(chalk.gray(`    Import existing prompts later: /ab import (or agentboot import --path <dir>)\n`));
 
   if (!hubHasRemote) {
-    console.log(chalk.gray(`    ${step}. Push when ready:   gh repo create ${orgSlug}/personas --source . --private --push`));
-    step++;
+    console.log(chalk.gray(`    Push when ready: gh repo create ${orgSlug}/personas --source . --private --push\n`));
   }
 
-  console.log(chalk.cyan("\n  Governance tips:\n"));
-  console.log(chalk.gray("    - Enable branch protection on main (persona changes deserve review)"));
-  console.log(chalk.gray("    - Add `agentboot validate --strict` to CI"));
-  console.log(chalk.gray("    - Encourage developers to contribute — they know the prompts best"));
   console.log("");
 }
 
@@ -1601,16 +1473,9 @@ async function path1Reconfigure(hubDir: string, opts: InstallOptions): Promise<v
   // ── Build + sync ───────────────────────────────────────────────────────────
 
   if ((importedAny || reposAdded) && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
-    console.log(chalk.gray(
-      "\n  Sync deploys the compiled personas to registered repos' .claude/ directories.\n" +
-      "  This writes files locally — it does not commit or push.\n"
-    ));
-    const shouldSync = await confirm({ message: "Deploy personas now?", default: true });
-    if (shouldSync) {
-      console.log(chalk.cyan("\n  Syncing..."));
-      if (runSync(hubDir)) {
-        console.log(chalk.green("\n  Personas deployed."));
-      }
+    console.log(chalk.cyan("\n  Syncing..."));
+    if (runSync(hubDir)) {
+      console.log(chalk.green("\n  Personas deployed to all registered repos."));
     }
   } else if (importedAny || reposAdded) {
     console.log(chalk.gray(
