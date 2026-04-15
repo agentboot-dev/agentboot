@@ -21,6 +21,7 @@ const C = {
   greenGlow: 'rgba(16, 185, 129, 0.12)',
   amber: '#f59e0b',
   purple: '#8b5cf6',
+  slash: '#818cf8',
 };
 
 // ─── Shared style helpers ─────────────────────────────────────────────────────
@@ -254,7 +255,7 @@ function HeroCodeBlock() {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
           <span style={{ color: C.purple, userSelect: 'none', fontWeight: 700 }}>✦</span>
           <span style={{ color: C.text }}>
-            /ab How do I import all of our company's awesome prompts,<br />
+            <span style={{ color: C.slash }}>/ab</span> How do I import all of our company's awesome prompts,<br />
             <span style={{ paddingLeft: '1.2rem' }}>skills, and personas all in one fell swoop?</span>
           </span>
         </div>
@@ -820,7 +821,7 @@ function QuickStart() {
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', marginTop: '0.25rem' }}>
               <span style={{ color: C.purple, userSelect: 'none', fontWeight: 700, lineHeight: 2 }}>✦</span>
               <span style={{ color: C.text, fontWeight: 500, lineHeight: 2 }}>
-                /ab How do I import all of our company's awesome prompts, skills, and personas all in one fell swoop?
+                <span style={{ color: C.slash }}>/ab</span> How do I import all of our company's awesome prompts, skills, and personas all in one fell swoop?
               </span>
             </div>
             {/* Claude's response — real /ab output pattern */}
