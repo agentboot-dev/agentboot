@@ -2497,8 +2497,9 @@ function main(): void {
     }
 
     // Write skills/ab/SKILL.md — the user entry point for /ab.
-    // Re-header ab.md with skill frontmatter (context:fork, agent:ab) so Claude Code
-    // can find it when the user types /ab. Content after the frontmatter is unchanged.
+    // No context:fork — /ab is an interactive orchestrator, not a one-shot skill.
+    // context:fork collapses output to "command completed" at the end, swallowing
+    // all specialist output. Running inline keeps output in the conversation.
     const abSrc = path.join(skillsTemplateDir, "ab.md");
     if (fs.existsSync(abSrc)) {
       const abContent = fs.readFileSync(abSrc, "utf-8");
@@ -2508,7 +2509,6 @@ function main(): void {
       const skillContent = [
         "---",
         `description: "AgentBoot orchestrator — routes persona, trait, gotcha, and hub management requests to the right specialist"`,
-        `context: fork`,
         `agent: "ab"`,
         "---",
         "",
