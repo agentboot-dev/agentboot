@@ -325,7 +325,7 @@ describe("compile script", () => {
 
     // claude uses skills/ directory with subdirectories
     const claudeSkills = fs.readdirSync(path.join(ROOT, "dist", "claude", "core", "skills")).sort();
-    expect(claudeSkills).toEqual(["gen-testdata", "gen-tests", "review-code", "review-security"]);
+    expect(claudeSkills).toEqual(["ab", "gen-testdata", "gen-tests", "review-code", "review-security"]);
   });
 
   // --- AB-26: settings.json ---

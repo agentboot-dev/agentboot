@@ -530,6 +530,38 @@ function loadManifestHashes(
 }
 
 /**
+ * Compute the merged .mcp.json content that sync would write to a spoke.
+ * Mirrors the merge logic in syncRepoTarget so isRepoUpToDate can hash
+ * the same bytes that the manifest recorded on the previous sync.
+ */
+function buildMcpContent(
+  mergedFiles: Map<string, ScopedFile>,
+  existingMcpPath: string,
+): string {
+  const agentbootEntry = { command: "npx", args: ["agentboot", "mcp-server"] };
+  let mcpServers: Record<string, unknown> = {};
+  const mcpDistFile = mergedFiles.get(".mcp.json");
+  if (mcpDistFile) {
+    try {
+      const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      if (distContent.mcpServers) mcpServers = { ...distContent.mcpServers };
+    } catch { /* ignore */ }
+  }
+  if (fs.existsSync(existingMcpPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(existingMcpPath, "utf-8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      if (existing.mcpServers) mcpServers = { ...existing.mcpServers, ...mcpServers };
+    } catch { /* ignore */ }
+  }
+  mcpServers["agentboot"] = agentbootEntry;
+  return JSON.stringify({ mcpServers }, null, 2) + "\n";
+}
+
+/**
  * Check if all files that would be synced to a repo match the existing manifest.
  * Returns true if the repo is up-to-date and can be skipped.
  */
@@ -582,13 +614,17 @@ function isRepoUpToDate(
 
   // Handle root-level files
   if (platform !== "copilot" && platform !== "cursor") {
-    for (const rootFile of [".mcp.json", "CLAUDE.md"]) {
-      const file = mergedFiles.get(rootFile);
-      if (file) {
-        const content = fs.readFileSync(file.absolutePath);
-        const hash = createHash("sha256").update(content).digest("hex");
-        wouldWrite.set(rootFile, hash);
-      }
+    // .mcp.json: hash the merged content (dist + existing spoke + agentboot entry)
+    // because that's what sync writes and what the manifest recorded.
+    const mcpDestPath = path.join(repoPath, ".mcp.json");
+    const mcpContent = buildMcpContent(mergedFiles, mcpDestPath);
+    wouldWrite.set(".mcp.json", createHash("sha256").update(mcpContent).digest("hex"));
+
+    // CLAUDE.md: plain file, hash the dist source directly.
+    const claudeMdFile = mergedFiles.get("CLAUDE.md");
+    if (claudeMdFile) {
+      const content = fs.readFileSync(claudeMdFile.absolutePath);
+      wouldWrite.set("CLAUDE.md", createHash("sha256").update(content).digest("hex"));
     }
   }
 
@@ -841,37 +877,7 @@ function syncRepoTarget(
     // from ~/.agentboot/config.json (written by `agentboot install`). This makes
     // /ab available in every spoke repo without hardcoding a machine-specific path.
     const mcpDestPath = path.join(effectivePath, ".mcp.json");
-    const agentbootEntry = {
-      command: "npx",
-      args: ["agentboot", "mcp-server"],
-    };
-
-    // Start from org-configured servers in dist (if any)
-    let mcpServers: Record<string, unknown> = {};
-    const mcpDistFile = merged.get(".mcp.json");
-    if (mcpDistFile) {
-      try {
-        const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
-          mcpServers?: Record<string, unknown>;
-        };
-        if (distContent.mcpServers) mcpServers = { ...distContent.mcpServers };
-      } catch { /* malformed dist .mcp.json — ignore */ }
-    }
-
-    // Preserve extra servers already in the spoke that aren't ours
-    if (fs.existsSync(mcpDestPath)) {
-      try {
-        const existing = JSON.parse(fs.readFileSync(mcpDestPath, "utf-8")) as {
-          mcpServers?: Record<string, unknown>;
-        };
-        if (existing.mcpServers) mcpServers = { ...existing.mcpServers, ...mcpServers };
-      } catch { /* malformed existing .mcp.json — overwrite */ }
-    }
-
-    // AgentBoot entry always wins (ensures it's present and up to date)
-    mcpServers["agentboot"] = agentbootEntry;
-
-    const mcpContent = JSON.stringify({ mcpServers }, null, 2) + "\n";
+    const mcpContent = buildMcpContent(merged, mcpDestPath);
     const mcpStatus = writeFile(mcpDestPath, mcpContent, dryRun);
     if (mcpStatus === "written") result.filesWritten.push(".mcp.json");
     else result.filesSkipped.push(".mcp.json");
