@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { version: pkgVersion } = require('../../../package.json') as { version: string };
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -100,7 +102,7 @@ function Hero() {
           }}
         >
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block' }} />
-          v0.9.0 — Apache-2.0 · Open Source
+          v{pkgVersion} — Apache-2.0 · Open Source
         </div>
 
         <h1
@@ -235,22 +237,26 @@ function HeroCodeBlock() {
         <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#f59e0b', display: 'inline-block' }} />
         <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
         <span style={{ marginLeft: '0.75rem', color: C.muted, fontSize: '0.78rem', fontFamily: 'monospace' }}>
-          ~/my-org/personas
+          ~/code/my-org
         </span>
       </div>
 
       <div style={{ padding: '1.5rem 1.75rem', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.88rem', lineHeight: 1.9 }}>
-        <CodeLine prompt="$" command="agentboot install" comment="# scaffold personas hub" />
-        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.5rem', fontSize: '0.82rem' }}>
-          ✓ Created core/traits/, core/personas/, agentboot.config.json
+        <CodeLine prompt="$" command="agentboot install" comment="# creates hub, builds &amp; syncs" />
+        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.75rem', fontSize: '0.82rem' }}>
+          ✓ Scaffolded personas/ &nbsp;✓ Built 4 personas × 8 platforms<br />
+          ✓ Synced → 6 repos across 2 teams
         </div>
-        <CodeLine prompt="$" command="agentboot build" comment="# compile to 8 platforms" />
-        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.5rem', fontSize: '0.82rem' }}>
-          ✓ dist/claude/ &nbsp;✓ dist/copilot/ &nbsp;✓ dist/cursor/ &nbsp;+5 more
+        <CodeLine prompt="$" command="cd acme-widget-service &amp;&amp; claude" comment="" />
+        <div style={{ color: C.muted, paddingLeft: '1.2rem', marginBottom: '0.75rem', fontSize: '0.82rem' }}>
+          Claude Code started
         </div>
-        <CodeLine prompt="$" command="agentboot sync" comment="# deploy to all repos" />
-        <div style={{ color: C.green, paddingLeft: '1.2rem', fontSize: '0.82rem' }}>
-          ✓ Synced 4 personas → 12 repos across 3 teams
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+          <span style={{ color: C.purple, userSelect: 'none', fontWeight: 700 }}>✦</span>
+          <span style={{ color: C.text }}>
+            /ab How do I import all of our company's awesome prompts,<br />
+            <span style={{ paddingLeft: '1.2rem' }}>skills, and personas all in one fell swoop?</span>
+          </span>
         </div>
       </div>
     </div>
@@ -710,13 +716,6 @@ function AudienceCard({
 
 // ─── Quick Start ──────────────────────────────────────────────────────────────
 function QuickStart() {
-  const commands = [
-    { cmd: 'npm install -g agentboot', comment: '# install globally' },
-    { cmd: 'agentboot install', comment: '# scaffold your personas hub' },
-    { cmd: 'agentboot build', comment: '# compile to 8 platforms' },
-    { cmd: 'agentboot sync', comment: '# deploy to all repos' },
-  ];
-
   return (
     <section
       style={{
@@ -763,7 +762,7 @@ function QuickStart() {
                 fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
               }}
             >
-              Terminal
+              ~/code/my-org
             </span>
           </div>
 
@@ -775,13 +774,33 @@ function QuickStart() {
               lineHeight: 2,
             }}
           >
-            {commands.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
-                <span style={{ color: C.green, userSelect: 'none' }}>$</span>
-                <span style={{ color: C.text, fontWeight: 500 }}>{c.cmd}</span>
-                <span style={{ color: C.muted }}>{c.comment}</span>
-              </div>
-            ))}
+            {/* Step 1: Install package */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
+              <span style={{ color: C.green, userSelect: 'none' }}>$</span>
+              <span style={{ color: C.text, fontWeight: 500 }}>npm install -g agentboot</span>
+              <span style={{ color: C.muted }}># install globally</span>
+            </div>
+            {/* Step 2: Run install wizard — builds + syncs automatically */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
+              <span style={{ color: C.green, userSelect: 'none' }}>$</span>
+              <span style={{ color: C.text, fontWeight: 500 }}>agentboot install</span>
+              <span style={{ color: C.muted }}># creates hub, builds &amp; syncs — done</span>
+            </div>
+            <div style={{ color: C.muted, paddingLeft: '1.2rem', fontSize: '0.82rem', lineHeight: 1.7, marginBottom: '0.5rem' }}>
+              ✓ Scaffolded personas/ &nbsp;✓ Built 4 personas × 8 platforms &nbsp;✓ Synced → all repos
+            </div>
+            {/* Step 3: Go to a work repo and open Claude */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem' }}>
+              <span style={{ color: C.green, userSelect: 'none' }}>$</span>
+              <span style={{ color: C.text, fontWeight: 500 }}>cd acme-widget-service &amp;&amp; claude</span>
+            </div>
+            {/* Step 4: Use /ab */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', marginTop: '0.25rem' }}>
+              <span style={{ color: C.purple, userSelect: 'none', fontWeight: 700, lineHeight: 2 }}>✦</span>
+              <span style={{ color: C.text, fontWeight: 500, lineHeight: 2 }}>
+                /ab How do I import all of our company's awesome prompts, skills, and personas all in one fell swoop?
+              </span>
+            </div>
           </div>
         </div>
 
