@@ -115,7 +115,7 @@ function Hero() {
             marginBottom: '1.5rem',
           }}
         >
-          Program Your{' '}
+          The AI Work Harness{' '}
           <span
             style={{
               background: `linear-gradient(135deg, ${C.primary} 0%, ${C.purple} 100%)`,
@@ -124,7 +124,7 @@ function Hero() {
               backgroundClip: 'text',
             }}
           >
-            AI Coding Assistants
+            That Keeps Getting Better
           </span>
         </h1>
 
@@ -137,8 +137,7 @@ function Hero() {
             lineHeight: 1.7,
           }}
         >
-          AgentBoot compiles traits and personas into native output for 8 AI platforms.
-          Deploy consistent, org-aware AI behavior to every repo — compiled once, running everywhere.
+          Capture your best AI behavior, refine it as a team, and deploy it to every repo automatically.
         </p>
 
         {/* CTAs */}
