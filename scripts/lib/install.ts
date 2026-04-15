@@ -9,6 +9,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
@@ -70,6 +71,57 @@ export function shellQuote(p: string): string {
   if (/^[a-zA-Z0-9_./:~-]+$/.test(p)) return p;
   // Otherwise wrap in single quotes, escaping any embedded single quotes
   return "'" + p.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Register a hub in the global registry (~/.agentboot/config.json).
+ * Sets it as the default hub if none is registered yet.
+ * Called after every successful `agentboot install` scaffold so the MCP server
+ * can resolve the hub from any repo without AGENTBOOT_HUB being set.
+ */
+export function registerHub(hubPath: string): void {
+  const registryDir = path.join(os.homedir(), ".agentboot");
+  const registryPath = path.join(registryDir, "config.json");
+  fs.mkdirSync(registryDir, { recursive: true });
+
+  type RegistryHub = { path: string; org?: string; registeredAt: string };
+  type Registry = { defaultHub: string; hubs: RegistryHub[] };
+
+  let registry: Registry = { defaultHub: hubPath, hubs: [] };
+  if (fs.existsSync(registryPath)) {
+    try {
+      registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as Registry;
+    } catch {
+      // malformed — reset
+    }
+  }
+
+  const resolved = path.resolve(hubPath);
+  const existing = registry.hubs.findIndex((h) => path.resolve(h.path) === resolved);
+  const entry: RegistryHub = { path: resolved, registeredAt: new Date().toISOString() };
+
+  // Read org name from config if available
+  const configPath = path.join(resolved, "agentboot.config.json");
+  if (fs.existsSync(configPath)) {
+    try {
+      const raw = fs.readFileSync(configPath, "utf-8");
+      const parsed = JSON.parse(raw.replace(/\/\/[^\n]*/g, "")) as { org?: string };
+      if (parsed.org) entry.org = parsed.org;
+    } catch { /* ignore */ }
+  }
+
+  if (existing >= 0) {
+    registry.hubs[existing] = entry;
+  } else {
+    registry.hubs.push(entry);
+  }
+
+  // First hub registered becomes the default
+  if (!registry.defaultHub || existing < 0) {
+    registry.defaultHub = resolved;
+  }
+
+  fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n", "utf-8");
 }
 
 /**
@@ -637,6 +689,9 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
     fs.writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n");
   }
   console.log(chalk.green("  ✓ .mcp.json configured with AgentBoot MCP server"));
+
+  // Register hub in global registry so MCP server can resolve it from any repo.
+  registerHub(targetDir);
 
   // Create initial commit with all scaffolded files — but only on first scaffold.
   // If the repo already has commits (re-scaffold), leave git history alone.

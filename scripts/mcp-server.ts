@@ -22,6 +22,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { execSync, spawnSync } from "node:child_process";
@@ -30,17 +31,51 @@ import { scanParentForContent } from "./lib/import.js";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
-// Paths — AGENTBOOT_HUB env var overrides cwd as hub root
+// Paths — hub root resolution (in priority order):
+//   1. AGENTBOOT_HUB env var       — explicit override, CI/scripting, hub sessions
+//   2. process.cwd()               — user is in their hub directory
+//   3. ~/.agentboot/config.json    — global registry (default hub, works from any repo)
+//   4. Package install dir          — fallback for running the build tool itself
 // ---------------------------------------------------------------------------
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 
-/** Hub root path. AGENTBOOT_HUB env var overrides the default. */
-export const HUB_ROOT = process.env["AGENTBOOT_HUB"]
-  ? path.resolve(process.env["AGENTBOOT_HUB"])
-  : DEFAULT_ROOT;
+function resolveHubRoot(): string {
+  // 1. Explicit env var
+  if (process.env["AGENTBOOT_HUB"]) {
+    return path.resolve(process.env["AGENTBOOT_HUB"]);
+  }
+  // 2. cwd is a hub
+  const cwdConfig = path.join(process.cwd(), "agentboot.config.json");
+  if (fs.existsSync(cwdConfig)) {
+    return process.cwd();
+  }
+  // 3. Global registry
+  const registryPath = path.join(os.homedir(), ".agentboot", "config.json");
+  if (fs.existsSync(registryPath)) {
+    try {
+      const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as {
+        defaultHub?: string;
+        hubs?: Array<{ path: string }>;
+      };
+      const candidate =
+        registry.defaultHub ??
+        (registry.hubs?.length === 1 ? registry.hubs[0]?.path : undefined);
+      if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
+        return candidate;
+      }
+    } catch {
+      // malformed registry — fall through
+    }
+  }
+  // 4. Package install dir (running the build tool itself)
+  return DEFAULT_ROOT;
+}
+
+/** Hub root path resolved from env var, cwd, global registry, or package root. */
+export const HUB_ROOT = resolveHubRoot();
 
 /** Sanitize error messages by replacing absolute paths with relative ones. */
 function sanitizeErrorOutput(msg: string): string {
