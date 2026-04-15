@@ -444,3 +444,5 @@ This is an LLM-powered command that requires an active Claude Code session. See
   CI foundation you can extend.
 - **Read the concepts doc:** [`docs/concepts.md`](concepts.md) explains the trait system,
   scope hierarchy, and distribution model in depth.
+- **Upgrading from an earlier version?** See [`docs/migration.md`](migration.md) for
+  step-by-step upgrade instructions.
