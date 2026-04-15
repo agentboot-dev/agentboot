@@ -2479,9 +2479,19 @@ function main(): void {
       }
     }
 
-    // Note: /ab hub-management agents (ab.md, ab-author.md, etc.) are NOT included in dist.
-    // They are hub-only tools written by `agentboot install` to the hub's .claude/agents/.
-    // Spoke repos receive the reviewer/generator personas only — not the hub management agents.
+    // Story 12: Copy /ab skill files from templates/skills/ into dist/claude/core/agents/
+    const skillsTemplateDir = path.join(ROOT, "templates", "skills");
+    const distAgentsDir = path.join(distPath, "claude", "core", "agents");
+    ensureDir(distAgentsDir);
+    const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
+    for (const file of abSkillFiles) {
+      const src = path.join(skillsTemplateDir, file);
+      const dest = path.join(distAgentsDir, file);
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest);
+      }
+    }
+    log(chalk.gray(`  → /ab skill files copied to dist/claude/core/agents/`));
   }
 
   // AB-144: Gemini-specific output (GEMINI.md with persona index)
