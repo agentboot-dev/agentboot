@@ -126,6 +126,10 @@ function writeFile(filePath: string, content: string, dryRun: boolean): "written
 
   ensureDir(path.dirname(filePath), false);
   fs.writeFileSync(filePath, content, "utf-8");
+  // Shell hook scripts must be executable so Claude Code hooks can invoke them.
+  if (filePath.endsWith(".sh")) {
+    fs.chmodSync(filePath, 0o755);
+  }
   return "written";
 }
 
