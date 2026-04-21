@@ -205,6 +205,27 @@ describe("AB-147: Compliance hook compilation", () => {
     expect(settings.hooks.Stop).toBeDefined();
   });
 
+  it("repeated builds do not duplicate compliance hooks in settings.json", () => {
+    // Run compile a second time on top of the already-built dist — hooks must not double up.
+    run("scripts/compile.ts");
+    const settingsPath = path.join(ROOT, "dist", "claude", "core", "settings.json");
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    // Each compliance event should have exactly one entry after multiple builds.
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    expect(settings.hooks.Stop).toHaveLength(1);
+  });
+
+  it("sync writes shell hook scripts with execute permission", () => {
+    // Verify that .sh files written by sync have the executable bit set.
+    const hooksDir = path.join(ROOT, "dist", "claude", "core", "hooks");
+    const inputScan = path.join(hooksDir, "agentboot-input-scan.sh");
+    if (fs.existsSync(inputScan)) {
+      const mode = fs.statSync(inputScan).mode;
+      // 0o111 = owner/group/other execute bits
+      expect(mode & 0o111).toBeGreaterThan(0);
+    }
+  });
+
   it("persona-specific hooks compile when persona has hooks config", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-hooks-"));
     const customPersonaDir = path.join(tempDir, "custom-personas", "hook-test");
