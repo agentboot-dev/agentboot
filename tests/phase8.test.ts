@@ -216,13 +216,47 @@ describe("AB-147: Compliance hook compilation", () => {
   });
 
   it("sync writes shell hook scripts with execute permission", () => {
-    // Verify that .sh files written by sync have the executable bit set.
-    const hooksDir = path.join(ROOT, "dist", "claude", "core", "hooks");
-    const inputScan = path.join(hooksDir, "agentboot-input-scan.sh");
-    if (fs.existsSync(inputScan)) {
-      const mode = fs.statSync(inputScan).mode;
-      // 0o111 = owner/group/other execute bits
-      expect(mode & 0o111).toBeGreaterThan(0);
+    // Set up a temp target repo and sync to it.
+    const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-"));
+    const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    try {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{ path: syncTarget, label: "chmod-test", platform: "claude" }])
+      );
+      run("scripts/sync.ts");
+      const inputScan = path.join(syncTarget, ".claude", "hooks", "agentboot-input-scan.sh");
+      expect(fs.existsSync(inputScan)).toBe(true);
+      expect(fs.statSync(inputScan).mode & 0o111).toBeGreaterThan(0);
+    } finally {
+      fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+      fs.rmSync(syncTarget, { recursive: true, force: true });
+    }
+  });
+
+  it("sync restores execute permission even when file content is unchanged", () => {
+    // Simulates a fresh clone or manual chmod 644 — the next sync must fix the perms.
+    const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-rerun-"));
+    const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    try {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{ path: syncTarget, label: "chmod-rerun-test", platform: "claude" }])
+      );
+      // First sync: file written and chmod'd.
+      run("scripts/sync.ts");
+      const inputScan = path.join(syncTarget, ".claude", "hooks", "agentboot-input-scan.sh");
+      expect(fs.existsSync(inputScan)).toBe(true);
+      // Strip execute bit to simulate the problem (fresh clone / manual chmod 644).
+      fs.chmodSync(inputScan, 0o644);
+      expect(fs.statSync(inputScan).mode & 0o111).toBe(0);
+      // Second sync: content unchanged → writeFile takes the early-return path.
+      run("scripts/sync.ts");
+      // Execute bit must be restored even though the file was "skipped".
+      expect(fs.statSync(inputScan).mode & 0o111).toBeGreaterThan(0);
+    } finally {
+      fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+      fs.rmSync(syncTarget, { recursive: true, force: true });
     }
   });
 
