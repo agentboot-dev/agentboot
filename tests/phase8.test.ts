@@ -205,6 +205,61 @@ describe("AB-147: Compliance hook compilation", () => {
     expect(settings.hooks.Stop).toBeDefined();
   });
 
+  it("repeated builds do not duplicate compliance hooks in settings.json", () => {
+    // Run compile a second time on top of the already-built dist — hooks must not double up.
+    run("scripts/compile.ts");
+    const settingsPath = path.join(ROOT, "dist", "claude", "core", "settings.json");
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    // Each compliance event should have exactly one entry after multiple builds.
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    expect(settings.hooks.Stop).toHaveLength(1);
+  });
+
+  it("sync writes shell hook scripts with execute permission", () => {
+    // Set up a temp target repo and sync to it.
+    const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-"));
+    const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    try {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{ path: syncTarget, label: "chmod-test", platform: "claude" }])
+      );
+      run("scripts/sync.ts");
+      const inputScan = path.join(syncTarget, ".claude", "hooks", "agentboot-input-scan.sh");
+      expect(fs.existsSync(inputScan)).toBe(true);
+      expect(fs.statSync(inputScan).mode & 0o111).toBeGreaterThan(0);
+    } finally {
+      fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+      fs.rmSync(syncTarget, { recursive: true, force: true });
+    }
+  });
+
+  it("sync restores execute permission even when file content is unchanged", () => {
+    // Simulates a fresh clone or manual chmod 644 — the next sync must fix the perms.
+    const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-rerun-"));
+    const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
+    try {
+      fs.writeFileSync(
+        path.join(ROOT, "repos.json"),
+        JSON.stringify([{ path: syncTarget, label: "chmod-rerun-test", platform: "claude" }])
+      );
+      // First sync: file written and chmod'd.
+      run("scripts/sync.ts");
+      const inputScan = path.join(syncTarget, ".claude", "hooks", "agentboot-input-scan.sh");
+      expect(fs.existsSync(inputScan)).toBe(true);
+      // Strip execute bit to simulate the problem (fresh clone / manual chmod 644).
+      fs.chmodSync(inputScan, 0o644);
+      expect(fs.statSync(inputScan).mode & 0o111).toBe(0);
+      // Second sync: content unchanged → writeFile takes the early-return path.
+      run("scripts/sync.ts");
+      // Execute bit must be restored even though the file was "skipped".
+      expect(fs.statSync(inputScan).mode & 0o111).toBeGreaterThan(0);
+    } finally {
+      fs.writeFileSync(path.join(ROOT, "repos.json"), originalRepos);
+      fs.rmSync(syncTarget, { recursive: true, force: true });
+    }
+  });
+
   it("persona-specific hooks compile when persona has hooks config", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-hooks-"));
     const customPersonaDir = path.join(tempDir, "custom-personas", "hook-test");

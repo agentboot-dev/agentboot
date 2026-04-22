@@ -1925,7 +1925,22 @@ function generateComplianceSettingsJson(
     } catch { /* start fresh */ }
   }
 
-  const hooks = (settings["hooks"] ?? {}) as Record<string, unknown>;
+  // Strip any previously compiled compliance hooks so each build starts clean.
+  // This prevents hook entries from accumulating across repeated agentboot build
+  // runs (each run would otherwise append a new copy of every compliance hook).
+  // User-defined hooks (those without an agentboot-*.sh command) are preserved.
+  const AGENTBOOT_HOOK_PATTERN = /agentboot-[a-z-]+\.sh$/;
+  const rawHooks = (settings["hooks"] ?? {}) as Record<string, unknown[]>;
+  const hooks: Record<string, unknown[]> = {};
+  for (const [event, entries] of Object.entries(rawHooks)) {
+    const userEntries = (Array.isArray(entries) ? entries : []).filter((e) => {
+      const eHooks = (e as Record<string, unknown[]>)?.hooks;
+      if (!Array.isArray(eHooks) || eHooks.length === 0) return true;
+      const cmd = String((eHooks[0] as Record<string, unknown>)?.command ?? "");
+      return !AGENTBOOT_HOOK_PATTERN.test(cmd);
+    });
+    if (userEntries.length > 0) hooks[event] = userEntries;
+  }
 
   // B1 fix: append compliance hooks instead of overwriting user-defined hooks
   const appendHook = (event: string, entry: unknown) => {
