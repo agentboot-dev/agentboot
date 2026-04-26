@@ -13,7 +13,7 @@ Key terms used throughout AgentBoot documentation.
 
 **Agent-Agnostic** — Content that works across multiple AI agent platforms without modification. Traits, personas (SKILL.md), and gotchas are agent-agnostic. Hooks, managed settings, and agent frontmatter are platform-specific.
 
-**AGENTS.md** — The emerging universal standard for cross-tool agent configuration. Supported by Codex, Cursor, Copilot, Gemini CLI, and 60K+ projects. AgentBoot generates AGENTS.md as an output format alongside platform-native formats.
+**AGENTS.md** — The universal standard for cross-tool agent configuration, stewarded by the Agentic AI Foundation (Linux Foundation). Natively consumed by Codex, Copilot, Cursor, Windsurf, Gemini CLI, Junie, and 60K+ projects. AgentBoot generates AGENTS.md as an output format alongside platform-native formats.
 
 **agentskills.io** — An open standard for AI agent skill definitions using SKILL.md format (Markdown with YAML frontmatter). Supported by 26+ agent platforms. AgentBoot uses agentskills.io as its cross-platform persona format.
 

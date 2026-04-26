@@ -90,6 +90,11 @@ export interface AgentBootConfig {
   // AB-143: MCP connection governance
   mcp?: McpGovernanceConfig;
 
+  // Phase 11 B1.5: /ab skill model and tool configuration
+  ab?: {
+    modelOverrides?: Record<string, string>;
+  };
+
   validation?: {
     secretPatterns?: string[];
     strictMode?: boolean;

@@ -47,7 +47,7 @@ The `/ab` skill requires the AgentBoot MCP server (`npm run mcp-server`). Set `A
 
 ## Architecture
 
-AgentBoot is a **harness engineering build tool** that compiles agentic personas for multi-platform distribution to target repos. The pipeline is: validate → compile → sync. It generates platform-native output for Claude Code, Copilot, Cursor, and the universal AGENTS.md standard.
+AgentBoot is a **harness engineering build tool** that compiles agentic personas for multi-platform distribution to target repos. The pipeline is: validate → compile → sync. It generates platform-native output for 9 platforms: Claude Code, Copilot, Cursor, Gemini, Windsurf, JetBrains, Codex, the universal AGENTS.md standard, and cross-platform SKILL.md.
 
 ### Core Concepts
 
@@ -74,7 +74,8 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
    - **`dist/cursor/`** — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
    - **`dist/gemini/`** — GEMINI.md project instructions + `.gemini/` rules
    - **`dist/windsurf/`** — `.windsurfrules` flat text (all personas concatenated)
-   - **`dist/jetbrains/`** — `.junie/guidelines.md` (Junie) + `.aiassistant/rules/*.md` (AI Assistant)
+   - **`dist/jetbrains/`** — `.junie/AGENTS.md` (Junie) + `.aiassistant/rules/*.md` (AI Assistant)
+   - **`dist/codex/`** — AGENTS.md + `.codex/config.toml` (MCP) + `.codex/hooks.json` + `.agents/skills/`
 3. **`scripts/sync.ts`** — reads `repos.json`, reads from `dist/{platform}/`, merges scopes (core → group → team, team wins on conflicts), writes to target repos in platform-native locations, generates `.agentboot-manifest.json` with file hashes
 4. **`scripts/dev-sync.ts`** — copies `dist/{platform}/core/` to platform-native locations in the current repo for local dogfooding (gitignored output only, not the production sync)
 
@@ -94,7 +95,8 @@ Compiled artifacts go to `dist/`, organized by platform first, then by scope:
 - `dist/cursor/` — `.cursor/rules/*.mdc` flat rules with `alwaysApply`/`globs` frontmatter
 - `dist/gemini/` — GEMINI.md project instructions + `.gemini/` rules directory
 - `dist/windsurf/` — `.windsurfrules` flat text file (all personas concatenated)
-- `dist/jetbrains/` — `.junie/guidelines.md` (Junie) + `.aiassistant/rules/*.md` (AI Assistant)
+- `dist/jetbrains/` — `.junie/AGENTS.md` (Junie) + `.aiassistant/rules/*.md` (AI Assistant)
+- `dist/codex/` — AGENTS.md + `.codex/config.toml` (MCP) + `.codex/hooks.json` + `.agents/skills/`
 
 Within each platform folder, scope hierarchy is preserved:
 - `dist/{platform}/core/` — org-level personas

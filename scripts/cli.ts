@@ -27,6 +27,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
@@ -361,8 +362,28 @@ program
   .option("--non-interactive", "run without prompts (auto-apply high-confidence matches)")
   .option("--retry-failed", "retry previously timed-out files from .agentboot-import-failed.json")
   .option("--isolated", "test prompts without user Claude settings (uses temp config)")
+  .option("--url <github-url>", "import from a GitHub URL (repo or raw file)")
   .action(async (opts) => {
     const parentDir = opts["parent"] as string | undefined;
+    const urlOpt = opts["url"] as string | undefined;
+
+    // Phase 11 B2: Handle --url flag
+    if (urlOpt) {
+      const { importFromUrl, AgentBootError } = await import("./lib/import.js");
+      const hubPath = opts["hubPath"] as string | undefined ?? process.cwd();
+      console.log(chalk.cyan(`\n  Importing from URL: ${urlOpt}\n`));
+      try {
+        const result = await importFromUrl(urlOpt, hubPath);
+        console.log(chalk.green(`  ✓ Downloaded ${result.type} to ${result.tempDir}`));
+        console.log(chalk.gray(`    Run 'agentboot import --path ${result.tempDir}' to classify content.\n`));
+      } catch (err) {
+        if (err instanceof AgentBootError) process.exit(err.exitCode);
+        console.error(chalk.red(`  ✗ ${(err as Error).message}\n`));
+        process.exit(1);
+      }
+      return;
+    }
+
     const run = async () => {
       if (parentDir) {
         // Expanded import: scan all subdirs, categorize by strategy, 3-strategy pipeline
@@ -1216,7 +1237,7 @@ program
           }
         } else {
           console.log(chalk.yellow("  LLM provider required. Test cases loaded and validated."));
-          const resultsDir = path.join(process.env["HOME"] ?? "~", ".agentboot", "judge-results");
+          const resultsDir = path.join(process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir(), ".agentboot", "judge-results");
           fs.mkdirSync(resultsDir, { recursive: true });
           fs.writeFileSync(path.join(resultsDir, "last-run-summary.json"),
             JSON.stringify({ timestamp: new Date().toISOString(), testCases: testCases.length, status: "pending_provider" }, null, 2) + "\n", "utf-8");
@@ -1773,6 +1794,148 @@ program
       console.log(chalk.bold(`\n  Restored ${restored} file(s) to pre-AgentBoot state.\n`));
     } else {
       console.log("");
+    }
+  });
+
+// ---- Phase 11: governance commands ----------------------------------------
+
+program
+  .command("drift-check")
+  .description("Check spoke repos for drift against their manifest")
+  .option("--repo <path>", "Check a specific repo (defaults to all repos in repos.json)")
+  .option("--format <type>", "Output format: text or json", "text")
+  .action(async (opts, cmd) => {
+    const { checkDrift, generateComplianceReport } = await import("./lib/drift.js");
+    const globalOpts = cmd.optsWithGlobals();
+    const cwd = process.cwd();
+
+    if (opts.repo) {
+      const report = checkDrift(path.resolve(opts.repo));
+      if (!report.manifestFound) {
+        console.log(chalk.yellow("  No AgentBoot manifest found."));
+        process.exit(2);
+      }
+      if (opts.format === "json") {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(chalk.bold(`\n  Drift check: ${path.basename(report.repoPath)}\n`));
+        for (const entry of report.entries) {
+          const icon = entry.status === "clean" ? chalk.green("✓") : entry.status === "unmanaged" ? chalk.yellow("?") : chalk.red("✗");
+          console.log(`    ${icon} ${entry.file} — ${entry.status}`);
+        }
+        console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.cleanCount} clean\n`);
+      }
+      process.exit(report.clean ? 0 : 1);
+    } else {
+      // Check all repos from repos.json
+      const configPath = globalOpts.config
+        ? path.resolve(globalOpts.config)
+        : path.join(cwd, "agentboot.config.json");
+      const config = loadConfig(configPath);
+      const reposPath = config.sync?.repos ? path.resolve(path.dirname(configPath), config.sync.repos) : path.join(path.dirname(configPath), "repos.json");
+      let repos: Array<{ path: string; label?: string }> = [];
+      try {
+        repos = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+      } catch { /* empty or missing */ }
+      const report = generateComplianceReport(repos, path.dirname(configPath));
+      if (opts.format === "json") {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(chalk.bold(`\n  Compliance Report — ${report.generatedAt}\n`));
+        for (const r of report.repos) {
+          const icon = r.clean ? chalk.green("✓") : r.manifestFound ? chalk.red("✗") : chalk.yellow("?");
+          const label = path.basename(r.repoPath);
+          const detail = !r.manifestFound ? "(no manifest)" : r.clean ? "clean" : `${r.summary.modifiedCount} modified`;
+          console.log(`    ${icon} ${label} — ${detail}`);
+        }
+        console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${report.summary.noManifestRepos} no manifest\n`);
+      }
+      process.exit(report.summary.driftedRepos > 0 ? 1 : 0);
+    }
+  });
+
+program
+  .command("audit")
+  .description("Audit the hub for health issues (orphaned traits, dead gotchas, scope shadows)")
+  .option("--format <type>", "Output format: text or json", "text")
+  .action(async (opts, cmd) => {
+    const { runAudit } = await import("./lib/audit.js");
+    const globalOpts = cmd.optsWithGlobals();
+    const cwd = process.cwd();
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config)
+      : path.join(cwd, "agentboot.config.json");
+    const hubRoot = path.dirname(configPath);
+
+    const report = runAudit(hubRoot);
+
+    if (opts.format === "json") {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(chalk.bold(`\n  Hub Audit\n`));
+      if (report.findings.length === 0) {
+        console.log(chalk.green("  ✓ No issues found\n"));
+      } else {
+        for (const f of report.findings) {
+          const icon = f.severity === "error" ? chalk.red("✗") : f.severity === "warn" ? chalk.yellow("⚠") : chalk.gray("ℹ");
+          console.log(`    ${icon} [${f.type}] ${f.message}${f.file ? ` (${f.file})` : ""}`);
+        }
+        console.log(`\n  Summary: ${report.summary.errors} errors, ${report.summary.warnings} warnings, ${report.summary.info} info\n`);
+      }
+    }
+    process.exit(report.summary.errors > 0 ? 1 : 0);
+  });
+
+program
+  .command("hubs")
+  .description("List registered hubs")
+  .action(async () => {
+    const { listHubs, getDefaultHub } = await import("./lib/registry.js");
+    const hubs = listHubs();
+    const defaultHub = getDefaultHub();
+
+    if (hubs.length === 0) {
+      console.log(chalk.yellow("  No hubs registered. Run 'agentboot connect <path>' to register one."));
+    } else {
+      console.log(chalk.bold("\n  Registered hubs:\n"));
+      for (const hub of hubs) {
+        const marker = hub.path === defaultHub ? chalk.green(" (default)") : "";
+        console.log(`    ${hub.org ?? "(no org)"} → ${hub.path}${marker}`);
+      }
+      console.log("");
+    }
+  });
+
+program
+  .command("connect")
+  .description("Register a hub and set it as default")
+  .argument("[path]", "Path to the hub directory", ".")
+  .action(async (hubPath: string) => {
+    const { registerHub } = await import("./lib/registry.js");
+    const absPath = path.resolve(hubPath);
+    const configPath = path.join(absPath, "agentboot.config.json");
+    if (!fs.existsSync(configPath)) {
+      console.error(chalk.red(`  No agentboot.config.json found at ${absPath}`));
+      process.exit(1);
+    }
+    const config = loadConfig(configPath);
+    registerHub(absPath, config.org);
+    console.log(chalk.green(`  ✓ Hub registered: ${config.org ?? absPath}`));
+    console.log(chalk.gray(`    Path: ${absPath}`));
+  });
+
+program
+  .command("use")
+  .description("Switch the default hub")
+  .argument("<path>", "Path to the hub to set as default")
+  .action(async (hubPath: string) => {
+    const { setDefaultHub } = await import("./lib/registry.js");
+    try {
+      setDefaultHub(path.resolve(hubPath));
+      console.log(chalk.green(`  ✓ Default hub set to: ${path.resolve(hubPath)}`));
+    } catch (err) {
+      console.error(chalk.red(`  ✗ ${(err as Error).message}`));
+      process.exit(1);
     }
   });
 

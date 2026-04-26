@@ -684,6 +684,100 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 11 C1.4: HARD guardrail override detection
+// ---------------------------------------------------------------------------
+
+function checkHardGuardrails(_config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("HARD guardrails — lower scopes cannot override HARD artifacts");
+
+  // Scan instruction and trait files for guardrail: hard frontmatter
+  const hardArtifacts = new Map<string, string>(); // name → scope
+
+  // Check core instructions
+  const instructionsDir = path.join(configDir, "core", "instructions");
+  if (fs.existsSync(instructionsDir)) {
+    for (const file of fs.readdirSync(instructionsDir).filter(f => f.endsWith(".md"))) {
+      const content = fs.readFileSync(path.join(instructionsDir, file), "utf-8");
+      const fm = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+        hardArtifacts.set(path.basename(file, ".md"), "core");
+      }
+    }
+  }
+
+  // Check core traits
+  const traitsDir = path.join(configDir, "core", "traits");
+  if (fs.existsSync(traitsDir)) {
+    for (const file of fs.readdirSync(traitsDir).filter(f => f.endsWith(".md"))) {
+      const content = fs.readFileSync(path.join(traitsDir, file), "utf-8");
+      const fm = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+        hardArtifacts.set(path.basename(file, ".md"), "core");
+      }
+    }
+  }
+
+  if (hardArtifacts.size === 0) return result; // No HARD artifacts — nothing to check
+
+  // Scan scope nodes for overrides of HARD artifacts
+  const checkScopeDir = (scopeDir: string, scopeLabel: string): void => {
+    // Check persona configs for trait weight overrides
+    const personasDir = path.join(scopeDir, "personas");
+    if (fs.existsSync(personasDir)) {
+      for (const dir of fs.readdirSync(personasDir)) {
+        const configPath = path.join(personasDir, dir, "persona.config.json");
+        if (!fs.existsSync(configPath)) continue;
+        try {
+          const pc = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          const traits = pc.traits;
+          if (traits && typeof traits === "object" && !Array.isArray(traits)) {
+            for (const [traitName, weight] of Object.entries(traits)) {
+              if (hardArtifacts.has(traitName) && (weight === "OFF" || weight === 0 || weight === "0")) {
+                fail(result,
+                  `${scopeLabel} persona "${dir}" sets HARD trait "${traitName}" to OFF — ` +
+                  `HARD guardrails cannot be disabled at lower scopes`
+                );
+              }
+            }
+          }
+        } catch { /* ignore malformed configs */ }
+      }
+    }
+  };
+
+  // Check groups/teams directories
+  const groupsDir = path.join(configDir, "groups");
+  if (fs.existsSync(groupsDir)) {
+    for (const group of fs.readdirSync(groupsDir)) {
+      checkScopeDir(path.join(groupsDir, group), `group/${group}`);
+      const teamsDir = path.join(groupsDir, group, "teams");
+      if (fs.existsSync(teamsDir)) {
+        for (const team of fs.readdirSync(teamsDir)) {
+          checkScopeDir(path.join(teamsDir, team), `team/${group}/${team}`);
+        }
+      }
+    }
+  }
+
+  // Check nodes directories
+  const nodesDir = path.join(configDir, "nodes");
+  if (fs.existsSync(nodesDir)) {
+    const walkNodes = (dir: string, label: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const childLabel = `${label}/${entry.name}`;
+          checkScopeDir(path.join(dir, entry.name), childLabel);
+          walkNodes(path.join(dir, entry.name), childLabel);
+        }
+      }
+    };
+    walkNodes(nodesDir, "nodes");
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -712,6 +806,7 @@ async function main(): Promise<void> {
     checkCompositionConsistency(config, configDir),
     checkRuleOverrides(config, configDir),
     checkMcpGovernance(config),
+    checkHardGuardrails(config, configDir),
   ];
 
   // Print results.

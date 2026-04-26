@@ -84,7 +84,7 @@ export function generateSkillsIndex(
       author: config.orgDisplayName ?? config.org,
       invocation: (personaConfig["invocation"] as string) ?? `/${personaName}`,
       platforms:
-        (personaConfig["outputFormat"] as string[]) ??
+        (personaConfig["outputFormats"] as string[]) ??
         ["claude", "copilot", "cursor", "gemini", "windsurf", "agents"],
       source: `https://github.com/${config.org}/personas`,
       skillPath: `skill/core/${personaName}/SKILL.md`,

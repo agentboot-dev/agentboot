@@ -81,17 +81,17 @@ afterAll(() => {
 });
 
 // ---------------------------------------------------------------------------
-// AB-158: JetBrains Junie output — .junie/guidelines.md
+// AB-158: JetBrains Junie output — .junie/AGENTS.md
 // ---------------------------------------------------------------------------
 
 describe("AB-158: JetBrains Junie output", () => {
-  it("generates .junie/guidelines.md in dist/jetbrains/core/", () => {
-    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "guidelines.md");
+  it("generates .junie/AGENTS.md in dist/jetbrains/core/", () => {
+    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "AGENTS.md");
     expect(fs.existsSync(guidelinesPath)).toBe(true);
   });
 
-  it("guidelines.md contains all persona names", () => {
-    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "guidelines.md");
+  it("AGENTS.md contains all persona names", () => {
+    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "AGENTS.md");
     const content = fs.readFileSync(guidelinesPath, "utf-8");
     expect(content).toContain("Code Reviewer");
     expect(content).toContain("Security Reviewer");
@@ -99,22 +99,22 @@ describe("AB-158: JetBrains Junie output", () => {
     expect(content).toContain("Test Data Expert");
   });
 
-  it("guidelines.md has no trait injection markers", () => {
-    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "guidelines.md");
+  it("AGENTS.md has no trait injection markers", () => {
+    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "AGENTS.md");
     const content = fs.readFileSync(guidelinesPath, "utf-8");
     expect(content).not.toContain("<!-- traits:");
   });
 
-  it("guidelines.md has persona sections separated by ---", () => {
-    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "guidelines.md");
+  it("AGENTS.md has persona sections separated by ---", () => {
+    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "AGENTS.md");
     const content = fs.readFileSync(guidelinesPath, "utf-8");
     // Multiple personas should be separated by --- dividers
     const separators = content.split("\n---\n").length - 1;
     expect(separators).toBeGreaterThanOrEqual(3); // At least 3 separators for 4 personas
   });
 
-  it("guidelines.md starts with AgentBoot header", () => {
-    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "guidelines.md");
+  it("AGENTS.md starts with AgentBoot header", () => {
+    const guidelinesPath = path.join(ROOT, "dist", "jetbrains", "core", ".junie", "AGENTS.md");
     const content = fs.readFileSync(guidelinesPath, "utf-8");
     expect(content).toContain("# AgentBoot Personas");
   });
@@ -197,9 +197,9 @@ describe("AB-158: Multi-platform output includes JetBrains", () => {
     expect(fs.existsSync(platformDir)).toBe(true);
   });
 
-  it("compile output mentions 8 platforms", () => {
+  it("compile output mentions 9 platforms", () => {
     const output = run("scripts/compile.ts");
-    expect(output).toContain("8 platform(s)");
+    expect(output).toContain("9 platform(s)");
     expect(output).toContain("dist/jetbrains/");
   });
 });

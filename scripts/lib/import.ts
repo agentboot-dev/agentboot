@@ -2546,6 +2546,135 @@ export function processSkillImports(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 11 B2: GitHub URL import
+// ---------------------------------------------------------------------------
+
+export interface ParsedGitHubUrl {
+  type: "repo" | "raw-file" | "blob-file";
+  owner: string;
+  repo: string;
+  branch?: string | undefined;
+  filePath?: string | undefined;
+}
+
+/**
+ * Parse a GitHub URL into its components.
+ * Returns null for non-GitHub URLs, malformed URLs, or URLs with path traversal.
+ */
+export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
+  try {
+    const parsed = new URL(url);
+
+    // Require HTTPS (audit: prevent MITM on plaintext HTTP)
+    if (parsed.protocol !== "https:") return null;
+
+    // Reject path traversal (including percent-encoded variants)
+    if (parsed.pathname.includes("..") || decodeURIComponent(parsed.pathname).includes("..")) return null;
+
+    // Raw file: raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}
+    if (parsed.hostname === "raw.githubusercontent.com") {
+      const parts = parsed.pathname.replace(/^\//, "").split("/");
+      if (parts.length < 4) return null;
+      return {
+        type: "raw-file",
+        owner: parts[0]!,
+        repo: parts[1]!,
+        branch: parts[2],
+        filePath: parts.slice(3).join("/"),
+      };
+    }
+
+    // Must be github.com
+    if (parsed.hostname !== "github.com" && parsed.hostname !== "www.github.com") return null;
+
+    const parts = parsed.pathname.replace(/^\//, "").replace(/\/$/, "").split("/");
+    if (parts.length < 2) return null;
+    const owner = parts[0]!;
+    const repo = parts[1]!.replace(/\.git$/, "");
+
+    // Blob file: github.com/{owner}/{repo}/blob/{branch}/{path}
+    if (parts.length >= 5 && parts[2] === "blob") {
+      return {
+        type: "blob-file",
+        owner,
+        repo,
+        branch: parts[3],
+        filePath: parts.slice(4).join("/"),
+      };
+    }
+
+    // Tree (directory): github.com/{owner}/{repo}/tree/{branch}/{path} — treat as repo
+    // Plain repo: github.com/{owner}/{repo}
+    return { type: "repo", owner, repo };
+  } catch {
+    return null; // Invalid URL
+  }
+}
+
+/**
+ * Convert a parsed GitHub URL to a raw content URL for fetching.
+ */
+function toRawUrl(parsed: ParsedGitHubUrl): string {
+  const branch = parsed.branch ?? "main";
+  return `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${branch}/${parsed.filePath}`;
+}
+
+const MAX_FETCH_SIZE = 1_048_576; // 1MB cap on fetched content
+
+/**
+ * Import content from a GitHub URL.
+ * - For single files: fetches content and pipes to existing import pipeline.
+ * - For repos: shallow clones and scans.
+ *
+ * SECURITY: Uses execFileSync (not execSync) to prevent command injection.
+ */
+export async function importFromUrl(
+  url: string,
+  _hubRoot: string,
+): Promise<{ tempDir: string; type: string }> {
+  const parsed = parseGitHubUrl(url);
+  if (!parsed) throw new Error(`Invalid GitHub URL: ${url}`);
+
+  const os = await import("node:os");
+  const { execFileSync } = await import("node:child_process");
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-import-url-"));
+
+  try {
+    if (parsed.type === "raw-file" || parsed.type === "blob-file") {
+      const rawUrl = toRawUrl(parsed);
+      // Phase 11 audit: check response.ok, enforce redirect:"error", cap size
+      const response = await fetch(rawUrl, { redirect: "error" });
+      if (!response.ok) {
+        throw new Error(`Fetch failed: ${response.status} ${response.statusText} for ${rawUrl}`);
+      }
+      const contentLength = Number(response.headers.get("content-length") ?? 0);
+      if (contentLength > MAX_FETCH_SIZE) {
+        throw new Error(`Content too large: ${contentLength} bytes (max ${MAX_FETCH_SIZE})`);
+      }
+      const content = await response.text();
+      if (content.length > MAX_FETCH_SIZE) {
+        throw new Error(`Content too large: ${content.length} chars (max ${MAX_FETCH_SIZE})`);
+      }
+      const fileName = parsed.filePath ? path.basename(parsed.filePath) : "imported.md";
+      fs.writeFileSync(path.join(tempDir, fileName), content);
+      return { tempDir, type: "file" };
+    } else {
+      // SECURITY: Use execFileSync with args array — NEVER string interpolation.
+      // (Phase 11 audit finding: CRITICAL severity)
+      execFileSync("git", ["clone", "--depth", "1", "--single-branch", url, tempDir], {
+        stdio: "pipe",
+        timeout: 30_000,
+      });
+      return { tempDir, type: "repo" };
+    }
+  } catch (err) {
+    // Cleanup temp dir on error
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AB-115: Cross-platform deduplication
 // ---------------------------------------------------------------------------
 
@@ -2569,7 +2698,8 @@ const PLATFORM_PRIORITY: Record<Platform, number> = {
 function detectPlatform(relPath: string): Platform {
   if (relPath.startsWith(".claude/") || relPath === "CLAUDE.md") return "claude";
   if (relPath === ".cursorrules" || relPath.startsWith(".cursor/")) return "cursor";
-  if (relPath.startsWith(".github/copilot") || relPath.startsWith(".github/prompts/")) return "copilot";
+  if (relPath.startsWith(".github/copilot") || relPath.startsWith(".github/prompts/")
+    || relPath.startsWith(".github/agents/") || relPath.startsWith(".github/instructions/")) return "copilot";
   return "unknown";
 }
 
