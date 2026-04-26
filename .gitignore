@@ -12,6 +12,7 @@ website/.docusaurus/
 .agentboot/skill/
 .gemini/agentboot/
 .windsurfrules
+.windsurf/
 /personas/
 
 # Internal — never commit to public repo (see CLAUDE.md Git Safety Rules)
