@@ -682,8 +682,14 @@ function syncRepoTarget(
   // AB-142: When syncing to a monorepo package, effectivePath is the package root.
   const effectivePath = packagePath ? path.join(repoPath, packagePath) : repoPath;
   const platform = platformOverride ?? entry.platform ?? "claude";
-  // AB-129: Cursor uses .cursor/ as its target directory
-  const targetDir = platform === "cursor" ? ".cursor" : (config.sync?.targetDir ?? ".claude");
+  // AB-129: Platform-specific target directories
+  const targetDir = platform === "cursor" ? ".cursor"
+    : platform === "gemini" ? ".gemini"
+    : platform === "windsurf" ? ".windsurf"
+    : platform === "jetbrains" ? ".junie"
+    : platform === "agents" ? ".agents"
+    : platform === "codex" ? ".codex"
+    : (config.sync?.targetDir ?? ".claude");
   const writePersonasIndex = config.sync?.writePersonasIndex !== false;
   const org = config.orgDisplayName ?? config.org;
 
@@ -774,32 +780,108 @@ function syncRepoTarget(
   }
 
   // Write all merged files to the target directory.
-  // Platform-specific routing:
-  //   - copilot: merged copilot-instructions.md → .github/, scoped instructions → .github/instructions/
-  //   - cursor: rules/*.mdc → .cursor/rules/
-  //   - claude/skill: everything → {targetDir}/
+  // Platform-specific routing determines where files land in the spoke repo.
   const targetBase = path.join(effectivePath, targetDir);
+
+  // Helper: write a single merged file to the correct destination.
+  const writeMergedFile = (destPath: string, file: ScopedFile): void => {
+    const content = fs.readFileSync(file.absolutePath, "utf-8");
+    ensureDir(path.dirname(destPath), dryRun);
+    const status = writeFile(destPath, content, dryRun);
+    const relDest = path.relative(effectivePath, destPath);
+    if (status === "written") {
+      result.filesWritten.push(relDest);
+    } else {
+      result.filesSkipped.push(relDest);
+    }
+  };
 
   if (platform === "cursor") {
     // AB-129: Cursor platform — write rules/*.mdc to .cursor/rules/
     const cursorBase = path.join(effectivePath, ".cursor");
     for (const [relPath, file] of merged) {
       if (relPath === "PERSONAS.md") continue;
-
-      // Map rules/*.mdc to .cursor/rules/*.mdc
-      const destPath = path.join(cursorBase, relPath);
-      const content = fs.readFileSync(file.absolutePath, "utf-8");
-      ensureDir(path.dirname(destPath), dryRun);
-      const status = writeFile(destPath, content, dryRun);
-
-      const relDest = path.relative(effectivePath, destPath);
-      if (status === "written") {
-        result.filesWritten.push(relDest);
+      writeMergedFile(path.join(cursorBase, relPath), file);
+    }
+  } else if (platform === "gemini") {
+    // Phase 11 A0: Gemini platform routing
+    // GEMINI.md → repo root; .gemini/ subdirectory files → .gemini/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === "GEMINI.md") {
+        // Root-level GEMINI.md goes to repo root
+        writeMergedFile(path.join(effectivePath, "GEMINI.md"), file);
       } else {
-        result.filesSkipped.push(relDest);
+        // Everything else goes under .gemini/ (persona files, rules, etc.)
+        writeMergedFile(path.join(effectivePath, ".gemini", relPath), file);
+      }
+    }
+    // Phase 11 A1c migration: clean up orphaned .gemini/rules/ from old format
+    const orphanedRulesDir = path.join(effectivePath, ".gemini", "rules");
+    if (!dryRun && fs.existsSync(orphanedRulesDir)) {
+      fs.rmSync(orphanedRulesDir, { recursive: true, force: true });
+      console.log(chalk.yellow(`    Removed orphaned .gemini/rules/ directory (replaced by subdirectory GEMINI.md files)`));
+    }
+  } else if (platform === "windsurf") {
+    // Phase 11 A0: Windsurf platform routing
+    // .windsurfrules → repo root; .windsurf/ files → .windsurf/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === ".windsurfrules") {
+        writeMergedFile(path.join(effectivePath, ".windsurfrules"), file);
+      } else if (relPath.startsWith(".windsurf/") || relPath.startsWith("rules/")) {
+        writeMergedFile(path.join(effectivePath, ".windsurf", relPath.replace(/^\.windsurf\//, "")), file);
+      } else {
+        writeMergedFile(path.join(effectivePath, ".windsurf", relPath), file);
+      }
+    }
+  } else if (platform === "jetbrains") {
+    // Phase 11 A0: JetBrains platform routing
+    // .junie/ files → .junie/; .aiassistant/ files → .aiassistant/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath.startsWith(".junie/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else if (relPath.startsWith(".aiassistant/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else {
+        // Default: write under .junie/
+        writeMergedFile(path.join(effectivePath, ".junie", relPath), file);
+      }
+    }
+  } else if (platform === "codex") {
+    // Phase 11 A1.7: Codex platform routing
+    // AGENTS.md → repo root (handled by AGENTS.md sync block below)
+    // .codex/ files → .codex/ (config.toml, hooks.json, hooks/)
+    // .agents/skills/ → .agents/skills/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === "AGENTS.md") continue; // handled by AGENTS.md sync block below
+      if (relPath.startsWith(".codex/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else if (relPath.startsWith(".agents/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else {
+        // Other files go under .codex/
+        writeMergedFile(path.join(effectivePath, ".codex", relPath), file);
+      }
+    }
+  } else if (platform === "agents") {
+    // Phase 11 A0 + A1.7-3: Agents platform routing
+    // AGENTS.md → repo root (handled later in AGENTS.md sync block)
+    // .agents/ files → .agents/ (strip prefix if already present in relPath)
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === "AGENTS.md") continue; // handled by AGENTS.md sync block below
+      if (relPath.startsWith(".agents/")) {
+        // Already has .agents/ prefix — write directly
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else {
+        writeMergedFile(path.join(effectivePath, ".agents", relPath), file);
       }
     }
   } else if (platform !== "copilot") {
+    // Claude/skill and other platforms: write to targetDir (default .claude/)
     ensureDir(targetBase, dryRun);
 
     for (const [relPath, file] of merged) {
@@ -858,6 +940,25 @@ function syncRepoTarget(
     }
   }
 
+  // Phase 11 B1: Write copilot .agent.md files to .github/agents/
+  if (platform === "copilot") {
+    for (const [relPath, file] of merged) {
+      if (relPath.startsWith("agents/") && relPath.endsWith(".agent.md")) {
+        const fileName = path.basename(relPath);
+        const destPath = path.join(effectivePath, ".github", "agents", fileName);
+        const content = fs.readFileSync(file.absolutePath, "utf-8");
+        ensureDir(path.dirname(destPath), dryRun);
+        const status = writeFile(destPath, content, dryRun);
+        const relDest = path.relative(effectivePath, destPath);
+        if (status === "written") {
+          result.filesWritten.push(relDest);
+        } else {
+          result.filesSkipped.push(relDest);
+        }
+      }
+    }
+  }
+
   // Write root-level files (CC reads .mcp.json and CLAUDE.md from project root, not .claude/).
   if (platform !== "copilot" && platform !== "cursor") {
     // CLAUDE.md — write as-is from dist
@@ -895,6 +996,27 @@ function syncRepoTarget(
     } else {
       result.filesSkipped.push(relDest);
     }
+  }
+
+  // Phase 11 B11: Sync scope-specific AGENTS.md files
+  const agentsNodesDir = path.join(distPath, "agents", "nodes");
+  if (fs.existsSync(agentsNodesDir)) {
+    const walkAgentsNodes = (dir: string, relBase: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          walkAgentsNodes(path.join(dir, entry.name), path.join(relBase, entry.name));
+        } else if (entry.name === "AGENTS.md") {
+          const destPath = path.join(effectivePath, ".agents", "nodes", relBase, "AGENTS.md");
+          const content = fs.readFileSync(path.join(dir, entry.name), "utf-8");
+          ensureDir(path.dirname(destPath), dryRun);
+          const status = writeFile(destPath, content, dryRun);
+          const relDest = path.relative(effectivePath, destPath);
+          if (status === "written") result.filesWritten.push(relDest);
+          else result.filesSkipped.push(relDest);
+        }
+      }
+    };
+    walkAgentsNodes(agentsNodesDir, "");
   }
 
   // Optionally write PERSONAS.md to the target directory.
@@ -1047,7 +1169,7 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
   }
 
   // Validate platform(s)
-  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"];
+  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"];
   const platforms = getRepoPlatforms(entry);
   for (const platform of platforms) {
     if (!validPlatforms.includes(platform)) {

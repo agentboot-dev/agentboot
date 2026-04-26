@@ -22,7 +22,6 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { execSync, spawnSync } from "node:child_process";
@@ -52,23 +51,15 @@ function resolveHubRoot(): string {
   if (fs.existsSync(cwdConfig)) {
     return process.cwd();
   }
-  // 3. Global registry
-  const registryPath = path.join(os.homedir(), ".agentboot", "config.json");
-  if (fs.existsSync(registryPath)) {
-    try {
-      const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as {
-        defaultHub?: string;
-        hubs?: Array<{ path: string }>;
-      };
-      const candidate =
-        registry.defaultHub ??
-        (registry.hubs?.length === 1 ? registry.hubs[0]?.path : undefined);
-      if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
-        return candidate;
-      }
-    } catch {
-      // malformed registry — fall through
+  // 3. Global registry (Phase 11 A3: uses registry module)
+  try {
+    const { getDefaultHub } = require("./lib/registry.js") as typeof import("./lib/registry.js");
+    const candidate = getDefaultHub();
+    if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
+      return candidate;
     }
+  } catch {
+    // Registry module not available or malformed — fall through
   }
   // 4. Package install dir (running the build tool itself)
   return DEFAULT_ROOT;
@@ -278,6 +269,7 @@ function loadHubConfig(): AgentBootConfig | null {
 interface RepoEntry {
   path: string;
   platform?: string;
+  platforms?: string[];
   group?: string;
   team?: string;
   label?: string;
@@ -751,7 +743,7 @@ function handleStatus(): ToolResult {
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
-      platforms: [r.platform ?? "claude"],
+      platforms: r.platforms ?? (r.platform ? [r.platform] : ["claude"]),
       lastSyncAt,
       hasDrift,
     };
@@ -760,8 +752,46 @@ function handleStatus(): ToolResult {
   // Platforms
   const platformSet = new Set<string>();
   for (const r of repoEntries) {
-    platformSet.add(r.platform ?? "claude");
+    const plats = r.platforms ?? (r.platform ? [r.platform] : ["claude"]);
+    for (const p of plats) platformSet.add(p);
   }
+
+  // Phase 11 B1.1: Artifact counts and maturity label
+  const countDir = (dir: string): number => {
+    try {
+      return fs.readdirSync(path.join(HUB_ROOT, dir)).filter(f => f.endsWith(".md") && f !== "README.md").length;
+    } catch { return 0; }
+  };
+  const countDirAll = (dir: string): number => {
+    try {
+      return fs.readdirSync(path.join(HUB_ROOT, dir)).filter(f => !f.startsWith(".")).length;
+    } catch { return 0; }
+  };
+
+  // Package-bundled = core personas shipped with AgentBoot
+  const packagePersonaCount = 4; // code-reviewer, security-reviewer, test-generator, test-data-expert
+  const packageTraitCount = 6;
+  const coreTraitCount = countDir("core/traits");
+  const coreGotchaCount = countDir("core/gotchas");
+  const coreLexiconCount = countDirAll("core/lexicon");
+
+  // Gotchas with paths: frontmatter
+  let gotchaPathPatternCount = 0;
+  try {
+    const gotchaDir = path.join(HUB_ROOT, "core", "gotchas");
+    if (fs.existsSync(gotchaDir)) {
+      for (const f of fs.readdirSync(gotchaDir).filter(f => f.endsWith(".md") && f !== "README.md")) {
+        const content = fs.readFileSync(path.join(gotchaDir, f), "utf-8");
+        if (content.match(/^paths:/m)) gotchaPathPatternCount++;
+      }
+    }
+  } catch { /* ignore */ }
+
+  const orgSpecificPersonas = Math.max(0, personas.length - packagePersonaCount);
+  const orgSpecificTraits = Math.max(0, coreTraitCount - packageTraitCount);
+
+  // Maturity label
+  const maturityLabel = computeMaturityLabel(orgSpecificPersonas, orgSpecificTraits, coreGotchaCount, repos.length, lastBuiltAt);
 
   return toolOk({
     hub: {
@@ -777,7 +807,34 @@ function handleStatus(): ToolResult {
     personas,
     repos,
     platforms: [...platformSet],
+    artifactCounts: {
+      personas: { core: packagePersonaCount, orgSpecific: orgSpecificPersonas },
+      traits: { core: packageTraitCount, orgSpecific: orgSpecificTraits },
+      gotchas: { total: coreGotchaCount, withPaths: gotchaPathPatternCount },
+      lexicons: coreLexiconCount,
+    },
+    maturityLabel,
   });
+}
+
+function computeMaturityLabel(
+  orgPersonas: number,
+  orgTraits: number,
+  gotchaCount: number,
+  repoCount: number,
+  lastBuiltAt: string | null,
+): string {
+  // "early": only default personas, no org-specific content
+  if (orgPersonas === 0 && orgTraits === 0 && gotchaCount === 0) return "early";
+  // "mature": 20+ gotchas, multiple repos, recent build
+  if (gotchaCount >= 20 && repoCount >= 3 && lastBuiltAt) {
+    const daysSinceBuild = (Date.now() - new Date(lastBuiltAt).getTime()) / 86_400_000;
+    if (daysSinceBuild <= 30) return "mature";
+  }
+  // "established": some org content + gotchas with paths
+  if (gotchaCount >= 10 || (orgPersonas >= 1 && orgTraits >= 2)) return "established";
+  // "growing": any org-specific content
+  return "growing";
 }
 
 function handleListRepos(): ToolResult {
@@ -796,7 +853,7 @@ function handleListRepos(): ToolResult {
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
-      platforms: [r.platform ?? "claude"],
+      platforms: r.platforms ?? (r.platform ? [r.platform] : ["claude"]),
       lastSyncAt,
       hasDrift,
     };
@@ -889,7 +946,13 @@ function handleScanForImport(args: Record<string, unknown>): ToolResult {
   ]);
 
   // Reject system directories to prevent scanning sensitive locations
-  const BLOCKED_PREFIXES = ["/etc", "/usr", "/var", "/root", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys"];
+  const homeDir = process.env["HOME"] ?? process.env["USERPROFILE"] ?? require("os").homedir();
+  const BLOCKED_PREFIXES = [
+    "/etc", "/usr", "/var", "/root", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys",
+    // Sensitive user directories — scan is for git repos, not credentials/config
+    path.join(homeDir, ".ssh"), path.join(homeDir, ".gnupg"), path.join(homeDir, ".aws"),
+    path.join(homeDir, ".config"), path.join(homeDir, ".kube"),
+  ];
 
   for (const scanPath of paths) {
     const resolved = path.resolve(scanPath);
@@ -1449,9 +1512,9 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
     // Commit — pass message and author as separate args (no shell interpolation)
     const commitArgs = ["commit", "-m", commitMessage];
     if (contributor) {
-      // Validate contributor format: reject control characters, newlines, backticks
-      if (/[\x00-\x1f\x7f`]/.test(contributor)) {
-        throw new Error("Invalid contributor: must not contain control characters or backticks");
+      // Validate contributor format: reject control chars, backticks, and git author special chars
+      if (/[\x00-\x1f\x7f`<>"']/.test(contributor)) {
+        throw new Error("Invalid contributor: must not contain control characters, backticks, or angle brackets");
       }
       commitArgs.push(`--author=${contributor} <${contributor}>`);
     }
