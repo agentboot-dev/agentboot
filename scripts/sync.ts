@@ -120,12 +120,23 @@ function writeFile(filePath: string, content: string, dryRun: boolean): "written
   if (fs.existsSync(filePath)) {
     const existing = fs.readFileSync(filePath, "utf-8");
     if (existing === content) {
+      // Even when content is unchanged, ensure .sh files have the execute bit.
+      // Without this, a fresh clone (git doesn't preserve 0o755 on all platforms)
+      // or a manual chmod 644 would never be corrected by subsequent syncs.
+      if (filePath.endsWith(".sh")) {
+        const mode = fs.statSync(filePath).mode;
+        if ((mode & 0o111) === 0) fs.chmodSync(filePath, 0o755);
+      }
       return "skipped";
     }
   }
 
   ensureDir(path.dirname(filePath), false);
   fs.writeFileSync(filePath, content, "utf-8");
+  // Shell hook scripts must be executable so Claude Code hooks can invoke them.
+  if (filePath.endsWith(".sh")) {
+    fs.chmodSync(filePath, 0o755);
+  }
   return "written";
 }
 
@@ -774,6 +785,21 @@ function syncRepoTarget(
       entry.public, writePersonasIndex,
     );
     if (upToDate) {
+      // Content is current, but still ensure .sh hook scripts have the execute bit.
+      // Git doesn't preserve 0o755 on all platforms, and a manual chmod 644 would
+      // otherwise survive undetected until the next content-changing sync.
+      if (!dryRun) {
+        const hooksDir = path.join(effectivePath, targetDir, "hooks");
+        if (fs.existsSync(hooksDir)) {
+          for (const entry of fs.readdirSync(hooksDir)) {
+            if (entry.endsWith(".sh")) {
+              const hookPath = path.join(hooksDir, entry);
+              const mode = fs.statSync(hookPath).mode;
+              if ((mode & 0o111) === 0) fs.chmodSync(hookPath, 0o755);
+            }
+          }
+        }
+      }
       result.skippedNoChanges = true;
       return result;
     }
