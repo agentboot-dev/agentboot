@@ -2425,6 +2425,50 @@ describe("AB-36: agentboot doctor command", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  // B.1: doctor is a standing gitignore-conflict check across synced repos.
+  it("doctor: fails when a synced repo gitignores managed files", () => {
+    const hub = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-doctor-gi-hub-")));
+    const spoke = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-doctor-gi-spoke-")));
+    try {
+      fs.writeFileSync(
+        path.join(hub, "agentboot.config.json"),
+        JSON.stringify({ org: "test-org", personas: { enabled: [] }, traits: { enabled: [] }, instructions: { enabled: [] } }),
+      );
+      fs.writeFileSync(path.join(hub, "repos.json"), JSON.stringify([{ path: spoke, label: "spoke" }]));
+      // Spoke: a git repo that gitignores .claude/, with a manifest listing a file under it.
+      execSync("git init -q", { cwd: spoke });
+      fs.writeFileSync(path.join(spoke, ".gitignore"), ".claude/\n");
+      fs.mkdirSync(path.join(spoke, ".claude"), { recursive: true });
+      fs.writeFileSync(
+        path.join(spoke, ".claude", ".agentboot-manifest.json"),
+        JSON.stringify({ files: [{ path: ".claude/agents/code-reviewer.md", hash: "x" }] }),
+      );
+
+      let output = "";
+      let exitCode = 0;
+      try {
+        output = execSync(`${TSX} ${CLI} doctor --format json`, {
+          cwd: hub,
+          env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0", AGENTBOOT_HUB: hub },
+          timeout: 30_000,
+        }).toString();
+      } catch (err: any) {
+        output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+        exitCode = err.status ?? 1;
+      }
+      const parsed = JSON.parse(output);
+      // A gitignore conflict is a blocker → non-zero exit + a failing check.
+      expect(exitCode).toBe(1);
+      expect(parsed.issues).toBeGreaterThan(0);
+      const giCheck = parsed.checks.find((c: any) => /gitignored/i.test(c.message));
+      expect(giCheck).toBeDefined();
+      expect(giCheck.status).toBe("fail");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+      fs.rmSync(spoke, { recursive: true, force: true });
+    }
+  });
 });
 
 // ===========================================================================
