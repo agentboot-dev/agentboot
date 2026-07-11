@@ -143,6 +143,14 @@ defines the behavior at each weight level, and the persona that composes it sets
 weight. Traits that have meaningful axes of variation should expose them in frontmatter
 rather than hardcoding a single behavior.
 
+**Weight-tier sections (optional, keeps personas lean).** If a trait's guidance genuinely
+differs by weight, split the weight-sensitive parts into per-tier sections whose `###`
+headings match the named weights: `### LOW`, `### MEDIUM`, `### HIGH`, `### MAX`. Everything
+outside those sections (Overview, Anti-Patterns, Interaction, etc.) is weight-independent and
+always included. The compiler injects only the tier nearest the persona's weight, so a persona
+carries just the guidance for the weight it uses instead of every tier's prose at once. A
+trait with no tier sections is injected whole, so this is entirely opt-in.
+
 **Negative space matters.** Every trait must include a "what not to do" section. Personas
 that lack this section tend to produce output that is exhaustive but not useful.
 

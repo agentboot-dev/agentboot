@@ -43,6 +43,7 @@ import {
   groupsToNodes,
   normalizeTraitRefs,
   DEFAULT_WEIGHT,
+  WEIGHT_MAP,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 
@@ -368,6 +369,70 @@ export function buildWeightPreamble(traitName: string, weight: number): string {
   return calibrations[closest.toFixed(1)] ?? "";
 }
 
+/**
+ * Weight-tier section convention for trait files.
+ *
+ * A trait MAY split weight-sensitive guidance into per-tier sections whose `###`
+ * heading text matches a named weight: `### LOW`, `### MEDIUM`, `### HIGH`, `### MAX`
+ * (case-insensitive; the non-OFF entries of WEIGHT_MAP). Everything else — content
+ * before the first tier heading and any non-tier `###`/`##`/`#` section — is
+ * WEIGHT-INDEPENDENT and always included (e.g. Overview, Anti-Patterns, Interaction).
+ *
+ * At a given weight, selectTraitTier keeps all weight-independent content plus ONLY the
+ * single nearest-matching tier section, in document order. A trait with no tier sections
+ * is returned unchanged, so existing (untiered) traits compile byte-identically. This is
+ * what lets a persona carry just the guidance for the weight it uses instead of inlining
+ * every tier's prose at every weight (the token-budget bloat).
+ */
+const TRAIT_TIER_NAMES = Object.keys(WEIGHT_MAP).filter((n) => n !== "OFF");
+const TRAIT_TIER_HEADING = new RegExp(`^###\\s+(${TRAIT_TIER_NAMES.join("|")})\\s*$`, "i");
+
+/** Map a numeric weight to the nearest named tier section (OFF excluded). */
+export function weightToTier(weight: number): string {
+  let best = TRAIT_TIER_NAMES[0]!;
+  let bestDist = Infinity;
+  for (const name of TRAIT_TIER_NAMES) {
+    const dist = Math.abs(weight - (WEIGHT_MAP[name] ?? DEFAULT_WEIGHT));
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = name;
+    }
+  }
+  return best;
+}
+
+/**
+ * Return the weight-appropriate slice of a trait's content per the tier convention.
+ * Untiered content is returned unchanged (backward compatible).
+ */
+export function selectTraitTier(content: string, weight: number): string {
+  const sectionHeading = /^#{1,3}\s/; // any h1–h3 heading closes an open tier section
+  const lines = content.split("\n");
+
+  // Backward compatible: no tier sections → inject the whole trait unchanged.
+  if (!lines.some((l) => TRAIT_TIER_HEADING.test(l))) return content;
+
+  const selected = weightToTier(weight);
+  const kept: string[] = [];
+  let currentTier: string | null = null;
+  for (const line of lines) {
+    const tierMatch = line.match(TRAIT_TIER_HEADING);
+    if (tierMatch) {
+      currentTier = tierMatch[1]!.toUpperCase();
+      if (currentTier === selected) kept.push(line);
+      continue;
+    }
+    if (sectionHeading.test(line)) {
+      // A non-tier h1–h3 heading is weight-independent and closes any open tier section.
+      currentTier = null;
+      kept.push(line);
+      continue;
+    }
+    if (currentTier === null || currentTier === selected) kept.push(line);
+  }
+  return kept.join("\n");
+}
+
 function injectTraits(
   skillContent: string,
   resolvedTraits: ResolvedTrait[],
@@ -396,8 +461,13 @@ function injectTraits(
     const preamble = buildWeightPreamble(traitName, weight);
     const preambleBlock = preamble ? `${preamble}\n\n` : "";
 
+    // Inject only the weight-appropriate slice of the trait (untiered traits are
+    // returned whole — see selectTraitTier). Keeps personas from carrying every
+    // tier's prose at every weight.
+    const tierContent = selectTraitTier(trait.content, weight);
+
     blocks.push(
-      `<!-- trait: ${traitName}${weightLabel} -->\n${preambleBlock}${trait.content}\n<!-- /trait: ${traitName} -->`
+      `<!-- trait: ${traitName}${weightLabel} -->\n${preambleBlock}${tierContent}\n<!-- /trait: ${traitName} -->`
     );
   }
 
