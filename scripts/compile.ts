@@ -2261,9 +2261,9 @@ function generateComplianceSettingsJson(
   const hooks: Record<string, unknown[]> = {};
   for (const [event, entries] of Object.entries(rawHooks)) {
     const userEntries = (Array.isArray(entries) ? entries : []).filter((e) => {
-      const eHooks = (e as Record<string, unknown[]>)?.hooks;
+      const eHooks = (e as Record<string, unknown[]>)?.["hooks"];
       if (!Array.isArray(eHooks) || eHooks.length === 0) return true;
-      const cmd = String((eHooks[0] as Record<string, unknown>)?.command ?? "");
+      const cmd = String((eHooks[0] as Record<string, unknown>)?.["command"] ?? "");
       return !AGENTBOOT_HOOK_PATTERN.test(cmd);
     });
     if (userEntries.length > 0) hooks[event] = userEntries;
