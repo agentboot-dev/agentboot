@@ -23,10 +23,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { createInterface } from "node:readline";
 import { execSync, spawnSync } from "node:child_process";
 import { stripJsoncComments, type PersonaConfig, type AgentBootConfig, loadConfig } from "./lib/config.js";
 import { scanParentForContent } from "./lib/import.js";
+import { getDefaultHub } from "./lib/registry.js";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -42,26 +44,49 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 
 function resolveHubRoot(): string {
+  // Diagnostics go to stderr only — stdout is the JSON-RPC channel and must not
+  // be polluted, or the MCP handshake breaks.
   // 1. Explicit env var
-  if (process.env["AGENTBOOT_HUB"]) {
-    return path.resolve(process.env["AGENTBOOT_HUB"]);
+  const envHub = process.env["AGENTBOOT_HUB"];
+  if (envHub) {
+    const resolved = path.resolve(envHub);
+    // Dual-source clarity: if a registry default also exists and differs, the
+    // env var wins — surface that so the operator isn't confused about which SSOT applies.
+    try {
+      const regDefault = getDefaultHub();
+      if (regDefault && path.resolve(regDefault) !== resolved) {
+        console.error(
+          `[agentboot] AGENTBOOT_HUB (${resolved}) overrides the registry default hub (${regDefault}).`
+        );
+      }
+    } catch {
+      // registry unavailable — nothing to compare against
+    }
+    return resolved;
   }
   // 2. cwd is a hub
   const cwdConfig = path.join(process.cwd(), "agentboot.config.json");
   if (fs.existsSync(cwdConfig)) {
     return process.cwd();
   }
-  // 3. Global registry (Phase 11 A3: uses registry module)
+  // 3. Global registry (Phase 11 A3): default hub, or the only hub for single-hub orgs
   try {
-    const { getDefaultHub } = require("./lib/registry.js") as typeof import("./lib/registry.js");
     const candidate = getDefaultHub();
     if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
       return candidate;
     }
   } catch {
-    // Registry module not available or malformed — fall through
+    // Registry file missing/corrupt — fall through (getDefaultHub self-heals a corrupt file)
   }
-  // 4. Package install dir (running the build tool itself)
+  // 4. Package install dir — no hub resolved from env, cwd, or registry. Fall back
+  //    to AgentBoot's own bundled content so the server still starts, but make the
+  //    fallback VISIBLE: a spoke that silently serves the package's demo personas is
+  //    the confusing failure mode the registry was built to prevent.
+  console.error(
+    "[agentboot] No hub resolved from AGENTBOOT_HUB, the current directory, or the " +
+      "global registry — falling back to AgentBoot's bundled content. Run " +
+      "'agentboot connect <hub-path>' to register your hub, or set AGENTBOOT_HUB."
+  );
   return DEFAULT_ROOT;
 }
 
@@ -768,9 +793,28 @@ function handleStatus(): ToolResult {
     } catch { return 0; }
   };
 
-  // Package-bundled = core personas shipped with AgentBoot
-  const packagePersonaCount = 4; // code-reviewer, security-reviewer, test-generator, test-data-expert
-  const packageTraitCount = 6;
+  // Package-bundled counts = the personas/traits AgentBoot itself ships, read from
+  // the package's own core/ dir (DEFAULT_ROOT). Derived, not hardcoded, so the
+  // org-specific math stays correct as the bundled set changes over releases.
+  const countPackageDir = (rel: string, dirsOnly: boolean): number => {
+    try {
+      const dir = path.join(DEFAULT_ROOT, rel);
+      return fs.readdirSync(dir).filter((e) => {
+        if (dirsOnly) {
+          try {
+            return fs.statSync(path.join(dir, e)).isDirectory();
+          } catch {
+            return false;
+          }
+        }
+        return e.endsWith(".md") && e !== "README.md";
+      }).length;
+    } catch {
+      return 0;
+    }
+  };
+  const packagePersonaCount = countPackageDir(path.join("core", "personas"), true);
+  const packageTraitCount = countPackageDir(path.join("core", "traits"), false);
   const coreTraitCount = countDir("core/traits");
   const coreGotchaCount = countDir("core/gotchas");
   const coreLexiconCount = countDirAll("core/lexicon");
@@ -946,7 +990,7 @@ function handleScanForImport(args: Record<string, unknown>): ToolResult {
   ]);
 
   // Reject system directories to prevent scanning sensitive locations
-  const homeDir = process.env["HOME"] ?? process.env["USERPROFILE"] ?? require("os").homedir();
+  const homeDir = process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir();
   const BLOCKED_PREFIXES = [
     "/etc", "/usr", "/var", "/root", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys",
     // Sensitive user directories — scan is for git repos, not credentials/config
