@@ -62,7 +62,7 @@ describe("MCP config expansion: gemini", () => {
 // dotclaude writeDirectly
 // ---------------------------------------------------------------------------
 
-import { writeDirectly, detectExistingContent, removeUserContent } from "../scripts/lib/dotclaude.js";
+import { writeDirectly, detectExistingContent, removeUserContent, findTemplateVars } from "../scripts/lib/dotclaude.js";
 
 describe("B3: dotclaude writeDirectly", () => {
   let tempHome: string;
@@ -133,6 +133,56 @@ describe("B3: dotclaude writeDirectly", () => {
     // Manifest should be removed too
     const detection = detectExistingContent();
     expect(detection.hasManifest).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dotclaude template-var guard (cross-system audit RISK #2)
+// ---------------------------------------------------------------------------
+
+describe("dotclaude template-var guard", () => {
+  it("findTemplateVars detects {{ vars }} and dedupes, ignoring clean content", () => {
+    expect(findTemplateVars("no vars here")).toEqual([]);
+    expect(
+      findTemplateVars("hello {{ HUB_NAME }} and {{ORG}} and {{ HUB_NAME }} again")
+    ).toEqual(["{{ HUB_NAME }}", "{{ORG}}"]);
+  });
+
+  it("writeDirectly skips files with unresolved template vars, writes clean ones", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-tmplguard-"));
+    const origHome = process.env["HOME"];
+    process.env["HOME"] = tmp;
+    try {
+      fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
+      const distCore = path.join(tmp, "dist-core");
+      const skillsDir = path.join(distCore, "skills");
+      fs.mkdirSync(path.join(skillsDir, "poisoned"), { recursive: true });
+      fs.mkdirSync(path.join(skillsDir, "clean"), { recursive: true });
+      fs.writeFileSync(
+        path.join(skillsDir, "poisoned", "SKILL.md"),
+        "---\nname: poisoned\n---\n\nHub is {{ HUB_NAME }}.\n"
+      );
+      fs.writeFileSync(
+        path.join(skillsDir, "clean", "SKILL.md"),
+        "---\nname: clean\n---\n\nFully resolved content.\n"
+      );
+
+      const result = writeDirectly(distCore);
+
+      // Poisoned file is reported and NOT delivered to ~/.claude/
+      expect(result.errors.some((e) => e.includes("{{ HUB_NAME }}"))).toBe(true);
+      expect(
+        fs.existsSync(path.join(tmp, ".claude", "skills", "poisoned", "SKILL.md"))
+      ).toBe(false);
+      // Clean file is still delivered
+      expect(
+        fs.existsSync(path.join(tmp, ".claude", "skills", "clean", "SKILL.md"))
+      ).toBe(true);
+    } finally {
+      if (origHome !== undefined) process.env["HOME"] = origHome;
+      else delete process.env["HOME"];
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

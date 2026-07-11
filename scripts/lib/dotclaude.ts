@@ -20,6 +20,19 @@ function getClaudeDir(): string {
   return path.join(process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir(), ".claude");
 }
 
+/**
+ * Match `{{ template_var }}` placeholders. AgentBoot content delivered to a
+ * user-level config manager MUST be fully resolved: one unresolved var fails the
+ * manager's all-or-nothing template resolution, taking every other tool's content
+ * down with it (cross-system audit RISK #2). This guard catches them at write time.
+ */
+const TEMPLATE_VAR_PATTERN = /\{\{\s*[\w.\-]+\s*\}\}/g;
+
+export function findTemplateVars(content: string): string[] {
+  const matches = content.match(TEMPLATE_VAR_PATTERN);
+  return matches ? [...new Set(matches)] : [];
+}
+
 export interface WriteDirectlyResult {
   skillsWritten: string[];
   rulesWritten: string[];
@@ -70,14 +83,14 @@ export function writeDirectly(
   const skillsSrc = path.join(distClaudeCorePath, "skills");
   if (fs.existsSync(skillsSrc)) {
     const skillsDest = path.join(claudeDir, "skills");
-    copyDirContents(skillsSrc, skillsDest, result.skillsWritten, options?.dryRun);
+    copyDirContents(skillsSrc, skillsDest, result.skillsWritten, result.errors, options?.dryRun);
   }
 
   // Write rules (instructions compiled as rules)
   const rulesSrc = path.join(distClaudeCorePath, "rules");
   if (fs.existsSync(rulesSrc)) {
     const rulesDest = path.join(claudeDir, "rules");
-    copyDirContents(rulesSrc, rulesDest, result.rulesWritten, options?.dryRun);
+    copyDirContents(rulesSrc, rulesDest, result.rulesWritten, result.errors, options?.dryRun);
   }
 
   // Explicitly skip CLAUDE.md and settings.json (cross-system audit RISK #1 and #3)
@@ -94,14 +107,38 @@ export function writeDirectly(
   return result;
 }
 
-function copyDirContents(src: string, dest: string, written: string[], dryRun?: boolean): void {
+function copyDirContents(
+  src: string,
+  dest: string,
+  written: string[],
+  errors: string[],
+  dryRun?: boolean,
+): void {
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
       if (!dryRun) fs.mkdirSync(destPath, { recursive: true });
-      copyDirContents(srcPath, destPath, written, dryRun);
+      copyDirContents(srcPath, destPath, written, errors, dryRun);
     } else {
+      // Guard (scanned even in dry-run so it surfaces): never deliver content with
+      // unresolved {{ template vars }} to ~/.claude/.
+      let content: string | null = null;
+      try {
+        content = fs.readFileSync(srcPath, "utf-8");
+      } catch {
+        content = null;
+      }
+      if (content !== null) {
+        const vars = findTemplateVars(content);
+        if (vars.length > 0) {
+          errors.push(
+            `Skipped ${path.relative(src, srcPath)} — unresolved template var(s) ${vars.join(", ")}; ` +
+              "AgentBoot content must be fully resolved before it reaches ~/.claude/.",
+          );
+          continue;
+        }
+      }
       if (!dryRun) {
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         fs.copyFileSync(srcPath, destPath);
