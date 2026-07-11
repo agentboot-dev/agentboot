@@ -366,7 +366,9 @@ describe("hasPrompts: additional edge cases", () => {
     expect(result.files.filter((f) => f.startsWith(".claude/"))).toEqual([]);
   });
 
-  it("gracefully handles unreadable directories (permission errors)", () => {
+  // POSIX permission semantics: chmod 0o000 does not restrict access on Windows,
+  // so the unreadable-directory scenario this test exercises can't be set up there.
+  it.skipIf(process.platform === "win32")("gracefully handles unreadable directories (permission errors)", () => {
     // Create a directory that will cause a permission error on read
     const restrictedDir = path.join(testDir, ".claude");
     fs.mkdirSync(restrictedDir);

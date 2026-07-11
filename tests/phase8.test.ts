@@ -234,7 +234,9 @@ describe("AB-147: Compliance hook compilation", () => {
     }
   });
 
-  it("sync restores execute permission even when file content is unchanged", () => {
+  // The execute bit (mode & 0o111) is a POSIX concept — Windows has no exec permission,
+  // so there is nothing to strip or restore there.
+  it.skipIf(process.platform === "win32")("sync restores execute permission even when file content is unchanged", () => {
     // Simulates a fresh clone or manual chmod 644 — the next sync must fix the perms.
     const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-rerun-"));
     const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");

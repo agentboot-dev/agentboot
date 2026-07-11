@@ -9,8 +9,22 @@ on:
 
 jobs:
   validate:
-    name: Validate and build
-    runs-on: ubuntu-latest
+    name: Validate and build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Windows support is required for v1.0 (a key adopter is Windows-only), but the
+    # Windows leg is non-blocking for now: it surfaces real Windows/git-bash issues
+    # without gating the pipeline while that support is hardened. Promote to required
+    # once it is green.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        # AgentBoot targets git-bash on Windows (bash is available on the runner),
+        # so run every step in bash for parity with Linux/macOS.
+        shell: bash
 
     steps:
       - name: Checkout

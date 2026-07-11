@@ -708,12 +708,14 @@ Add to \`agentboot.config.json\`:
 #   }
 
 INPUT=$(cat)
-EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty')
+# Parse JSON with node (guaranteed present wherever the harness runs) rather than
+# jq, which is not installed on Windows/git-bash — keeps this hook portable.
+EVENT_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(d).hook_event_name||''))}catch{process.stdout.write('')}})")
 
 # TODO: Add your compliance logic here
 # Example: block a tool if a condition is met
 # if [ "$EVENT_NAME" = "PreToolUse" ]; then
-#   TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
+#   TOOL=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(d).tool_name||''))}catch{process.stdout.write('')}})")
 #   if [ "$TOOL" = "Bash" ]; then
 #     echo '{"decision":"block","reason":"Bash tool is restricted by policy"}' >&2
 #     exit 2
