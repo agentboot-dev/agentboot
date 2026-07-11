@@ -84,7 +84,7 @@ describe("B2: parseGitHubUrl", () => {
 // B2: importFromUrl error handling (no network mocking — structural tests)
 // ---------------------------------------------------------------------------
 
-import { importFromUrl } from "../scripts/lib/import.js";
+import { importFromUrl, readCappedText } from "../scripts/lib/import.js";
 
 describe("B2: importFromUrl structural tests", () => {
   it("rejects invalid GitHub URL", async () => {
@@ -97,6 +97,31 @@ describe("B2: importFromUrl structural tests", () => {
 
   it("rejects empty URL", async () => {
     await expect(importFromUrl("", "/tmp")).rejects.toThrow();
+  });
+});
+
+// F.1: streamed size cap — a chunked-encoding body (no content-length) must be
+// capped DURING the read, not buffered whole and checked after.
+describe("F.1: readCappedText streamed size cap", () => {
+  it("returns content that is under the cap", async () => {
+    await expect(readCappedText(new Response("small"), 1024)).resolves.toBe("small");
+  });
+
+  it("throws once the streamed body exceeds the cap (does not buffer it all first)", async () => {
+    const big = "x".repeat(5000);
+    await expect(readCappedText(new Response(big), 1024)).rejects.toThrow(/too large/i);
+  });
+
+  it("enforces the cap regardless of a missing/lying content-length header", async () => {
+    // A ReadableStream body with no content-length (the chunked-encoding case).
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("y".repeat(2000)));
+        controller.close();
+      },
+    });
+    const resp = new Response(stream);
+    await expect(readCappedText(resp, 1024)).rejects.toThrow(/too large/i);
   });
 });
 

@@ -2622,6 +2622,42 @@ function toRawUrl(parsed: ParsedGitHubUrl): string {
 const MAX_FETCH_SIZE = 1_048_576; // 1MB cap on fetched content
 
 /**
+ * Read a fetch Response body as text while enforcing a byte cap DURING the read.
+ *
+ * `response.text()` buffers the entire body before you can check its size, so a
+ * chunked-encoding response (which carries no content-length header) could stream an
+ * arbitrarily large body into memory before any post-hoc length check fires. Reading
+ * the stream chunk-by-chunk and aborting once the cap is exceeded bounds memory to
+ * ~maxBytes + one chunk.
+ */
+export async function readCappedText(response: Response, maxBytes: number): Promise<string> {
+  const body = response.body;
+  if (!body) {
+    // No stream available — fall back to text() with a post-read check.
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBytes) {
+      throw new Error(`Content too large (max ${maxBytes} bytes)`);
+    }
+    return text;
+  }
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel(); // stop the download
+      throw new Error(`Content too large: exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+/**
  * Import content from a GitHub URL.
  * - For single files: fetches content and pipes to existing import pipeline.
  * - For repos: shallow clones and scans.
@@ -2647,14 +2683,14 @@ export async function importFromUrl(
       if (!response.ok) {
         throw new Error(`Fetch failed: ${response.status} ${response.statusText} for ${rawUrl}`);
       }
+      // Cheap early reject when the server declares an oversized length...
       const contentLength = Number(response.headers.get("content-length") ?? 0);
       if (contentLength > MAX_FETCH_SIZE) {
         throw new Error(`Content too large: ${contentLength} bytes (max ${MAX_FETCH_SIZE})`);
       }
-      const content = await response.text();
-      if (content.length > MAX_FETCH_SIZE) {
-        throw new Error(`Content too large: ${content.length} chars (max ${MAX_FETCH_SIZE})`);
-      }
+      // ...but enforce the real cap DURING the streamed read, so a chunked-encoding
+      // response (no content-length) can't buffer an oversized body into memory first.
+      const content = await readCappedText(response, MAX_FETCH_SIZE);
       const fileName = parsed.filePath ? path.basename(parsed.filePath) : "imported.md";
       fs.writeFileSync(path.join(tempDir, fileName), content);
       return { tempDir, type: "file" };
