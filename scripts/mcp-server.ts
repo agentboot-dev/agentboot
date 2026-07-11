@@ -12,7 +12,7 @@
  * Phase 10 additions:
  *   - AGENTBOOT_HUB env var support (override cwd as hub root)
  *   - Read tools: agentboot_status, agentboot_list_repos, agentboot_cost_estimate, agentboot_scan_for_import
- *   - Execute tools: agentboot_validate, agentboot_lint, agentboot_doctor, agentboot_build, agentboot_sync, agentboot_optimize_metrics
+ *   - Execute tools: agentboot_validate, agentboot_lint, agentboot_doctor, agentboot_build, agentboot_sync
  *   - Write tool: agentboot_propose_change (always opens a PR, never pushes to main)
  *
  * Usage:
@@ -514,22 +514,6 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
-  {
-    name: "agentboot_optimize_metrics",
-    description:
-      "Retrieve optimization metrics for personas (telemetry-driven). Currently a stub — telemetry collection not yet implemented.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        persona: {
-          type: "string",
-          description: "Optional persona ID to get metrics for.",
-        },
-      },
-      required: [],
-    },
-  },
-
   // --- Story 3: Write tool ---
   {
     name: "agentboot_propose_change",
@@ -709,8 +693,6 @@ export function handleToolCall(
       return handleBuild();
     case "agentboot_sync":
       return handleSync(args);
-    case "agentboot_optimize_metrics":
-      return handleOptimizeMetrics(args);
 
     // ----- Story 3: Write tool -----
     case "agentboot_propose_change":
@@ -1438,12 +1420,6 @@ function handleSync(args: Record<string, unknown>): ToolResult {
   }
 }
 
-function handleOptimizeMetrics(_args: Record<string, unknown>): ToolResult {
-  return toolOk({
-    message: "Telemetry data not yet available. Run agentboot optimize after configuring telemetry collection.",
-    personas: [],
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Story 3: Write Tool Implementation — agentboot_propose_change

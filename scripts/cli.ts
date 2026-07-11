@@ -22,7 +22,7 @@
  *   agentboot <command> --help
  */
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -1184,9 +1184,11 @@ program
   .option("--snapshot", "create or update snapshot baseline from current dist/")
   .option("--regression", "compare current dist/ against saved snapshot")
   .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
-  .option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)")
-  .option("--verbose", "show detailed rationale per dimension (for --judge)")
-  .option("--min-score <score>", "minimum passing score for --judge (default: 3.0)", parseFloat)
+  // GA surface-pruning (R.2): the LLM-as-Judge evaluation folds into GSD (6-27
+  // decision) — its flags are hidden in v1.0 (still functional, not advertised).
+  .addOption(new Option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)").hideHelp())
+  .addOption(new Option("--verbose", "show detailed rationale per dimension (for --judge)").hideHelp())
+  .addOption(new Option("--min-score <score>", "minimum passing score for --judge (default: 3.0)").argParser(parseFloat).hideHelp())
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
   .action(async (opts) => {
     const {
@@ -1295,8 +1297,7 @@ program
       console.log(chalk.gray("  Specify a test type:\n"));
       console.log(chalk.gray("    --behavioral   Run behavioral tests (LLM-powered, costs money)"));
       console.log(chalk.gray("    --snapshot     Create/update snapshot baseline from dist/"));
-      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot"));
-      console.log(chalk.gray("    --judge        Run LLM-as-Judge evaluation tests\n"));
+      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot\n"));
     }
 
     process.exit(exitCode);
@@ -2247,9 +2248,11 @@ program
   });
 
 // ---- publish (AB-41) ------------------------------------------------------
+// GA surface-pruning (R.2): the marketplace/publish subsystem is not advertised
+// in v1.0 — hidden (not deleted) so it stays reversible for a post-GA decision.
 
 program
-  .command("publish")
+  .command("publish", { hidden: true })
   .description("Publish compiled plugin to marketplace")
   .option("--marketplace <path>", "path to marketplace.json", "marketplace.json")
   .option("--bump <level>", "version bump: major, minor, patch")
@@ -2544,7 +2547,9 @@ program
 // ---------------------------------------------------------------------------
 
 const marketplaceCmd = program
-  .command("marketplace")
+  // GA surface-pruning (R.2): hidden in v1.0 (the marketplace was cut) — kept for
+  // a post-GA decision, not advertised in top-level help.
+  .command("marketplace", { hidden: true })
   .description("Marketplace: search, pull, and publish components");
 
 marketplaceCmd
@@ -2653,7 +2658,8 @@ marketplaceCmd
 // ---------------------------------------------------------------------------
 
 const registryCmd = program
-  .command("registry")
+  // GA surface-pruning (R.2): part of the hidden marketplace subsystem.
+  .command("registry", { hidden: true })
   .description("Manage marketplace registry channels");
 
 registryCmd

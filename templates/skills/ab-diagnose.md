@@ -159,7 +159,9 @@ Example:
 
 When the user asks to optimize, improve efficiency, or reduce costs:
 
-1. Call `agentboot_optimize_metrics`.
+1. Run `agentboot optimize` (reads persona telemetry; add `--json` for raw metrics
+   or `--report` for an HTML report). Optimization needs telemetry — if none has
+   been collected yet, tell the user to enable telemetry first, then re-run.
 2. Present the top recommendations with reasoning:
 
 ```
