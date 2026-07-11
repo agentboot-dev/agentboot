@@ -32,6 +32,8 @@ import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { detectGitignoreConflicts } from "./lib/gitignore.js";
+import { findManifestPath } from "./lib/drift.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -956,6 +958,48 @@ program
           fixed(`Created empty repos.json`);
         } else {
           warn(`repos.json not found at ${reposPath}`, true);
+        }
+
+        // B.1: gitignore conflicts across synced repos. A managed file that a repo's
+        // .gitignore excludes is invisible to the team AND to drift-check, silently
+        // defeating governance. Blocker (fail → exit 1); not auto-fixable because
+        // editing a repo's .gitignore needs human intent (why was the pattern there?).
+        if (fs.existsSync(fullReposPath)) {
+          try {
+            const reposArr = JSON.parse(
+              stripJsoncComments(fs.readFileSync(fullReposPath, "utf-8")),
+            ) as Array<{ path?: string; label?: string }>;
+            let anyConflict = false;
+            let checkedAnyRepo = false;
+            for (const r of Array.isArray(reposArr) ? reposArr : []) {
+              if (!r?.path) continue;
+              const repoPath = path.resolve(path.dirname(configPath), r.path);
+              if (!fs.existsSync(repoPath)) continue;
+              const manifestPath = findManifestPath(repoPath);
+              if (!manifestPath) continue; // never synced — nothing managed to check
+              let managed: string[] = [];
+              try {
+                const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+                  files?: Array<{ path: string }>;
+                };
+                managed = (manifest.files ?? []).map((f) => f.path).filter(Boolean);
+              } catch {
+                continue;
+              }
+              checkedAnyRepo = true;
+              const conflicts = detectGitignoreConflicts(repoPath, managed);
+              if (conflicts.length > 0) {
+                anyConflict = true;
+                const label = r.label ?? path.basename(r.path);
+                fail(
+                  `${conflicts.length} managed file(s) gitignored in ${label} — synced but not committed (e.g. ${conflicts[0]!.file}); remove or anchor the .gitignore pattern`,
+                );
+              }
+            }
+            if (checkedAnyRepo && !anyConflict) ok("No gitignore conflicts in synced repos");
+          } catch {
+            // repos.json unparseable — the check above already surfaced that.
+          }
         }
 
         // Check dist/
