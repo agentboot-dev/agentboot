@@ -162,21 +162,65 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
 // Check 2: Trait references
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve config-referenced domain layers to their `traits/` and `personas/`
+ * directories, mirroring the discovery + boundary check in compile.ts
+ * (`compileDomains`). Only domains listed in `config.domains` are validated —
+ * matching exactly what the compiler builds, so an unreferenced draft domain on
+ * disk (e.g. one not yet added to config) never affects validation.
+ */
+function resolveDomainDirs(
+  config: AgentBootConfig,
+  configDir: string
+): { name: string; traitsDir: string | null; personasDir: string | null }[] {
+  const out: { name: string; traitsDir: string | null; personasDir: string | null }[] = [];
+  const boundary = path.resolve(configDir);
+  for (const domainRef of config.domains ?? []) {
+    const domainPath =
+      typeof domainRef === "string"
+        ? path.resolve(configDir, domainRef)
+        : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    if (!fs.existsSync(domainPath)) continue;
+    // Path-traversal protection: resolve symlinks then check the project boundary.
+    let realDomainPath: string;
+    try {
+      realDomainPath = fs.realpathSync(domainPath);
+    } catch {
+      continue;
+    }
+    if (!realDomainPath.startsWith(boundary + path.sep) && realDomainPath !== boundary) continue;
+    const name = typeof domainRef === "string" ? path.basename(realDomainPath) : domainRef.name;
+    const traitsDir = path.join(realDomainPath, "traits");
+    const personasDir = path.join(realDomainPath, "personas");
+    out.push({
+      name,
+      traitsDir: fs.existsSync(traitsDir) ? traitsDir : null,
+      personasDir: fs.existsSync(personasDir) ? personasDir : null,
+    });
+  }
+  return out;
+}
+
 function checkTraitReferences(config: AgentBootConfig, configDir: string): CheckResult {
   const result = check(
-    "Trait references — all persona.config.json trait entries exist in core/traits/"
+    "Trait references — all persona.config.json trait entries exist in core/traits/ or configured domains"
   );
 
-  // Traits come from both the package bundle (defaults) and the hub's
-  // own core/traits (additions / overrides). Hub files with the same
-  // name as a package trait win because they are added last to the map.
+  // Traits come from the package bundle (defaults), the hub's own core/traits
+  // (additions / overrides), and any config-referenced domain layers. Files
+  // added later win by name (hub over package, domain over hub).
   const packageTraitsDir = path.join(ROOT, "core", "traits");
   const hubTraitsDir = path.join(configDir, "core", "traits");
   const enabledTraits = config.traits?.enabled;
+  const domainDirs = resolveDomainDirs(config, configDir);
 
-  // Collect available trait names from both sources.
+  // Collect available trait names from all sources.
   const availableTraits = new Set<string>();
-  for (const dir of [packageTraitsDir, hubTraitsDir]) {
+  const traitDirs = [packageTraitsDir, hubTraitsDir];
+  for (const d of domainDirs) {
+    if (d.traitsDir) traitDirs.push(d.traitsDir);
+  }
+  for (const dir of traitDirs) {
     if (!fs.existsSync(dir)) continue;
     for (const file of fs.readdirSync(dir)) {
       if (file.endsWith(".md")) {
@@ -191,7 +235,7 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
   }
 
   // Scan all persona.config.json files in the merged persona directories
-  // (package defaults + hub additions + optional customDir).
+  // (package defaults + hub additions + optional customDir + domain layers).
   const personaRoots: string[] = [
     path.join(ROOT, "core", "personas"),
     path.join(configDir, "core", "personas"),
@@ -199,6 +243,9 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
+  }
+  for (const d of domainDirs) {
+    if (d.personasDir) personaRoots.push(d.personasDir);
   }
 
   for (const root of personaRoots) {
@@ -292,7 +339,7 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
         if (!availableTraits.has(traitRef)) {
           fail(
             result,
-            `[${personaName}] References trait "${traitRef}" which does not exist in core/traits/`
+            `[${personaName}] References trait "${traitRef}" which does not exist in core/traits/ or any configured domain`
           );
         } else if (enabledTraits && !enabledTraits.includes(traitRef)) {
           warn(
@@ -321,6 +368,9 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
+  }
+  for (const d of resolveDomainDirs(config, configDir)) {
+    if (d.personasDir) personaRoots.push(d.personasDir);
   }
 
   let skillsChecked = 0;
@@ -412,6 +462,10 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) scanRoots.push(ext);
+  }
+  for (const d of resolveDomainDirs(config, configDir)) {
+    if (d.traitsDir) scanRoots.push(d.traitsDir);
+    if (d.personasDir) scanRoots.push(d.personasDir);
   }
 
   for (const root of scanRoots) {
