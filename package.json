@@ -39,6 +39,7 @@
     "core/",
     "templates/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "NOTICE"
   ],
