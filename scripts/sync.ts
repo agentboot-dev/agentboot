@@ -33,6 +33,7 @@ import {
   resolveConfigPath,
   loadConfig,
 } from "./lib/config.js";
+import { detectGitignoreConflicts } from "./lib/gitignore.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -89,6 +90,8 @@ interface SyncResult {
   prUrl?: string;
   /** True when smart sync determined the repo is already up-to-date. */
   skippedNoChanges?: boolean;
+  /** B.1: managed files that this repo's .gitignore would exclude (repo-relative). */
+  gitignoreConflicts?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,6 +1077,14 @@ function syncRepoTarget(
     result.filesWritten.push(manifestRelPath);
   }
 
+  // B.1: flag managed files this repo's .gitignore would exclude. A synced file that
+  // git ignores is invisible to the team AND to drift-check — it silently defeats the
+  // whole governance loop (the client rollout had .claude/ gitignored in 5 of 6 repos).
+  const conflicts = detectGitignoreConflicts(effectivePath, result.filesWritten);
+  if (conflicts.length > 0) {
+    result.gitignoreConflicts = conflicts.map((c) => c.file);
+  }
+
   return result;
 }
 
@@ -1413,6 +1424,22 @@ function printSyncResult(result: SyncResult): void {
       console.log(chalk.gray(`      + ${f}`));
     }
     console.log(chalk.gray(`      ... and ${written - 5} more`));
+  }
+
+  if (result.gitignoreConflicts && result.gitignoreConflicts.length > 0) {
+    console.log(
+      chalk.yellow(
+        `      ⚠ ${result.gitignoreConflicts.length} synced file(s) are gitignored here — they won't be committed, so the team won't see them and drift-check can't verify them:`,
+      ),
+    );
+    for (const f of result.gitignoreConflicts) {
+      console.log(chalk.yellow(`          ${f}`));
+    }
+    console.log(
+      chalk.yellow(
+        "        Fix: remove or anchor the offending .gitignore pattern (or move internal-only excludes to .claude/.gitignore).",
+      ),
+    );
   }
 
   if (result.prUrl) {
