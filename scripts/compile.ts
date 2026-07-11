@@ -1775,59 +1775,99 @@ function generateCodexConfig(distPath: string, scopePath: string): void {
  * Codex hook format is identical to Claude Code — same event names, same JSON structure.
  */
 function generateCodexHooks(
-  _config: AgentBootConfig,
+  config: AgentBootConfig,
   distPath: string,
   scopePath: string,
+  scripts: HookScript[],
 ): void {
+  if (scripts.length === 0) return;
+
   const codexDir = path.join(distPath, "codex", scopePath, ".codex");
   ensureDir(codexDir);
 
-  // Reuse Claude hooks scripts — Codex uses identical event names and JSON format
-  const hooksDir = path.join(distPath, "claude", scopePath, "hooks");
+  // Codex consumes the same portable scripts — write our own copy so this does
+  // not depend on the Claude Code emitter having run first (clean-build safe).
   const codexHooksDir = path.join(codexDir, "hooks");
+  writeHookScripts(scripts, codexHooksDir);
 
-  if (fs.existsSync(hooksDir)) {
-    ensureDir(codexHooksDir);
-    for (const file of fs.readdirSync(hooksDir)) {
-      fs.copyFileSync(path.join(hooksDir, file), path.join(codexHooksDir, file));
-    }
-  }
+  const scriptNames = new Set(scripts.map((s) => s.name));
+  const denyOn = denyToolsActive(config);
 
-  // Generate hooks.json config (same format as CC settings.json hooks block)
+  // Derive the wiring from the canonical bindings. Codex uses CC-format event
+  // names but honors only a subset (see CODEX_SUPPORTED_EVENTS); timeouts are in
+  // seconds. Caveats (snake_case in / camelCase out; partial tool coverage;
+  // trust-review-unless-managed) are documented at COMPLIANCE_HOOK_BINDINGS.
   const hooksConfig: Record<string, unknown[]> = {};
-  const hookScripts = fs.existsSync(codexHooksDir) ? fs.readdirSync(codexHooksDir) : [];
-
-  for (const script of hookScripts) {
-    const scriptPath = `.codex/hooks/${script}`;
-    if (script.includes("input-scan")) {
-      hooksConfig["UserPromptSubmit"] = hooksConfig["UserPromptSubmit"] ?? [];
-      (hooksConfig["UserPromptSubmit"] as unknown[]).push({
-        matcher: "", hooks: [{ type: "command", command: scriptPath, timeout: 10 }],
-      });
-    } else if (script.includes("output-scan")) {
-      hooksConfig["Stop"] = hooksConfig["Stop"] ?? [];
-      (hooksConfig["Stop"] as unknown[]).push({
-        matcher: "", hooks: [{ type: "command", command: scriptPath, timeout: 10 }],
-      });
-    } else if (script.includes("telemetry")) {
-      for (const event of ["PostToolUse", "Stop"]) {
-        hooksConfig[event] = hooksConfig[event] ?? [];
-        (hooksConfig[event] as unknown[]).push({
-          matcher: "", hooks: [{ type: "command", command: scriptPath, timeout: 10 }],
-        });
-      }
-    } else if (script.includes("pretooluse")) {
-      hooksConfig["PreToolUse"] = hooksConfig["PreToolUse"] ?? [];
-      (hooksConfig["PreToolUse"] as unknown[]).push({
-        matcher: "", hooks: [{ type: "command", command: scriptPath, timeout: 10 }],
-      });
-    }
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyOn) continue;
+    if (!scriptNames.has(b.script)) continue;
+    if (!CODEX_SUPPORTED_EVENTS.has(b.ccEvent)) continue;
+    hooksConfig[b.ccEvent] = hooksConfig[b.ccEvent] ?? [];
+    (hooksConfig[b.ccEvent] as unknown[]).push({
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        command: `.codex/hooks/${b.script}`,
+        timeout: Math.max(1, Math.ceil(b.timeoutMs / 1000)),
+      }],
+    });
   }
 
   if (Object.keys(hooksConfig).length > 0) {
     fs.writeFileSync(
       path.join(codexDir, "hooks.json"),
       JSON.stringify({ hooks: hooksConfig }, null, 2) + "\n",
+      "utf-8",
+    );
+  }
+}
+
+/**
+ * A1.5: Generate GitHub Copilot governance hooks — `.github/hooks/agentboot.json`
+ * plus the portable hook scripts under `.github/hooks/`. One committed file
+ * governs both the Copilot CLI and the cloud agent. Copilot accepts Claude-format
+ * plugin hooks, so the structure mirrors CC's with Copilot's camelCase event names
+ * (COPILOT_EVENT_MAP). Blocking is via the scripts' exit code 2. NOTE: Copilot
+ * command-hook timeouts FAIL OPEN — see the caveat block at COMPLIANCE_HOOK_BINDINGS.
+ * (Copilot emission is documented-but-not-yet-empirically-verified for GA; see the
+ * platform-refresh research doc and the pending exit-2-deny mini-test.)
+ */
+function generateCopilotHooks(
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string,
+  scripts: HookScript[],
+): void {
+  if (scripts.length === 0) return;
+
+  const githubDir = path.join(distPath, "copilot", scopePath, ".github");
+  const hooksDir = path.join(githubDir, "hooks");
+  writeHookScripts(scripts, hooksDir);
+
+  const scriptNames = new Set(scripts.map((s) => s.name));
+  const denyOn = denyToolsActive(config);
+
+  const hooksConfig: Record<string, unknown[]> = {};
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyOn) continue;
+    if (!scriptNames.has(b.script)) continue;
+    const copilotEvent = COPILOT_EVENT_MAP[b.ccEvent];
+    if (!copilotEvent) continue;
+    hooksConfig[copilotEvent] = hooksConfig[copilotEvent] ?? [];
+    (hooksConfig[copilotEvent] as unknown[]).push({
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        command: `.github/hooks/${b.script}`,
+        timeout: b.timeoutMs,
+      }],
+    });
+  }
+
+  if (Object.keys(hooksConfig).length > 0) {
+    fs.writeFileSync(
+      path.join(hooksDir, "agentboot.json"),
+      JSON.stringify({ version: 1, hooks: hooksConfig }, null, 2) + "\n",
       "utf-8",
     );
   }
@@ -2085,17 +2125,99 @@ function generatePluginOutput(
 }
 
 // ---------------------------------------------------------------------------
+// A1.5: Canonical compliance-hook layer (Claude Code format = the source schema)
+//
+// One source of truth for the portable hook SCRIPTS (buildComplianceHookScripts)
+// and for their lifecycle WIRING (COMPLIANCE_HOOK_BINDINGS). Every platform
+// emitter — Claude Code settings.json, Codex .codex/hooks.json, Copilot
+// .github/hooks/*.json — derives from these two so the three stay in lock-step.
+// Claude Code event names are canonical; each emitter translates as needed.
+//
+// Cross-platform enforcement caveats (docs/research/platform-refresh-2026-07-11.md):
+//   - Claude Code : matcher is EXACT-match (no substring); exit 2 blocks a tool.
+//   - Codex       : same event names as CC, but stdin is snake_case while the
+//                   output envelope is camelCase (hookSpecificOutput /
+//                   permissionDecision); tool coverage is partial (shell + patch
+//                   + MCP, not WebSearch); hooks require a trust review unless
+//                   deployed as managed. exit 2 blocks.
+//   - Copilot     : command-hook TIMEOUTS FAIL OPEN (hook *errors* fail closed);
+//                   a single committed .github/hooks/*.json governs BOTH the CLI
+//                   and the cloud agent. exit 2 = deny.
+// The generated scripts signal a block via exit code 2 — the one blocking
+// primitive all three platforms honor regardless of stdout shape.
+// ---------------------------------------------------------------------------
+
+interface HookScript {
+  /** Filename, e.g. "agentboot-input-scan.sh". */
+  name: string;
+  content: string;
+}
+
+interface ComplianceHookBinding {
+  /** Generated script filename (lives in the platform's hooks dir). */
+  script: string;
+  /** Canonical Claude Code event name. */
+  ccEvent: string;
+  /** CC matcher (exact-match). "" = all events/tools. */
+  matcher: string;
+  /** Timeout in milliseconds. CC/Copilot use ms; the Codex emitter converts to seconds. */
+  timeoutMs: number;
+  /** Run asynchronously (Claude Code settings.json only). */
+  async?: boolean;
+  /** Only emit when managed.guardrails.denyTools is non-empty. */
+  requiresDenyTools?: boolean;
+}
+
+const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
+  { script: "agentboot-input-scan.sh",  ccEvent: "UserPromptSubmit", matcher: "",                timeoutMs: 5000 },
+  { script: "agentboot-output-scan.sh", ccEvent: "Stop",             matcher: "",                timeoutMs: 5000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "SubagentStart",    matcher: "",                timeoutMs: 3000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "SubagentStop",     matcher: "",                timeoutMs: 3000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "PostToolUse",      matcher: "Edit|Write|Bash", timeoutMs: 3000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "SessionEnd",       matcher: "",                timeoutMs: 3000, async: true },
+  { script: "agentboot-pretooluse.sh",  ccEvent: "PreToolUse",       matcher: "",                timeoutMs: 5000, requiresDenyTools: true },
+];
+
+/** Codex honors these CC-named events (research §3b). SessionEnd is NOT supported. */
+const CODEX_SUPPORTED_EVENTS = new Set([
+  "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact",
+  "SessionStart", "SubagentStart", "SubagentStop", "UserPromptSubmit", "Stop",
+]);
+
+/** CC event name → Copilot event name. Events absent from the map are not emitted for Copilot. */
+const COPILOT_EVENT_MAP: Record<string, string> = {
+  UserPromptSubmit: "userPromptSubmitted",
+  PreToolUse: "preToolUse",
+  PostToolUse: "postToolUse",
+  Stop: "agentStop",
+  SubagentStop: "subagentStop",
+  SessionEnd: "sessionEnd",
+  // SubagentStart intentionally omitted — not in Copilot's lifecycle event set.
+};
+
+/** True when managed guardrails configure a PreToolUse deny-list. */
+function denyToolsActive(config: AgentBootConfig): boolean {
+  return (config.managed?.guardrails?.denyTools ?? []).length > 0;
+}
+
+/** Write hook scripts into `dir` with the execute bit set. */
+function writeHookScripts(scripts: HookScript[], dir: string): void {
+  ensureDir(dir);
+  for (const s of scripts) {
+    fs.writeFileSync(path.join(dir, s.name), s.content, { mode: 0o755 });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AB-59/60/63: Compliance & audit trail hook generation
 // ---------------------------------------------------------------------------
 
-function generateComplianceHooks(
-  config: AgentBootConfig,
-  distPath: string,
-  scopePath: string
-): void {
-  const hooksDir = path.join(distPath, "claude", scopePath, "hooks");
-  ensureDir(hooksDir);
-
+/**
+ * Build the portable compliance hook scripts (the CC-format source). Pure w.r.t.
+ * the filesystem except for build-time validation of telemetry.logPath. Returned
+ * scripts are consumed by every platform emitter (Claude Code, Codex, Copilot).
+ */
+function buildComplianceHookScripts(config: AgentBootConfig): HookScript[] {
   // AB-59: Input scanning hook (UserPromptSubmit)
   // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   // Note: -e intentionally omitted because grep -q returns 1 on no-match
@@ -2292,29 +2414,37 @@ done
 
 exit 0
 `;
-    fs.writeFileSync(path.join(hooksDir, "agentboot-pretooluse.sh"), preToolUseHook, { mode: 0o755 });
   }
 
-  fs.writeFileSync(path.join(hooksDir, "agentboot-input-scan.sh"), inputScanHook, { mode: 0o755 });
-  fs.writeFileSync(path.join(hooksDir, "agentboot-output-scan.sh"), outputScanHook, { mode: 0o755 });
-  fs.writeFileSync(path.join(hooksDir, "agentboot-telemetry.sh"), auditTrailHook, { mode: 0o755 });
+  const scripts: HookScript[] = [
+    { name: "agentboot-input-scan.sh", content: inputScanHook },
+    { name: "agentboot-output-scan.sh", content: outputScanHook },
+    { name: "agentboot-telemetry.sh", content: auditTrailHook },
+  ];
+  if (preToolUseHook) {
+    scripts.push({ name: "agentboot-pretooluse.sh", content: preToolUseHook });
+  }
+  return scripts;
+}
+
+/**
+ * Write the compliance hook scripts into Claude Code's dist tree (and the plugin
+ * tree). Codex and Copilot generate their own copies from the same scripts.
+ */
+function generateComplianceHooks(
+  distPath: string,
+  scopePath: string,
+  scripts: HookScript[],
+): void {
+  writeHookScripts(scripts, path.join(distPath, "claude", scopePath, "hooks"));
 
   // Also generate the plugin hooks
-  const pluginHooksDir = path.join(distPath, "plugin", "hooks");
   if (fs.existsSync(path.join(distPath, "plugin"))) {
-    ensureDir(pluginHooksDir);
-    fs.writeFileSync(path.join(pluginHooksDir, "agentboot-input-scan.sh"), inputScanHook, { mode: 0o755 });
-    fs.writeFileSync(path.join(pluginHooksDir, "agentboot-output-scan.sh"), outputScanHook, { mode: 0o755 });
-    fs.writeFileSync(path.join(pluginHooksDir, "agentboot-telemetry.sh"), auditTrailHook, { mode: 0o755 });
-    if (preToolUseHook) {
-      fs.writeFileSync(path.join(pluginHooksDir, "agentboot-pretooluse.sh"), preToolUseHook, { mode: 0o755 });
-    }
+    writeHookScripts(scripts, path.join(distPath, "plugin", "hooks"));
   }
 
-  const hookList = denyTools.length > 0
-    ? "input-scan, output-scan, telemetry, pretooluse"
-    : "input-scan, output-scan, telemetry";
-  log(chalk.gray(`  → Compliance hooks written (${hookList})`));
+  const names = scripts.map((s) => s.name.replace(/^agentboot-|\.sh$/g, "")).join(", ");
+  log(chalk.gray(`  → Compliance hooks written (${names})`));
 }
 
 // ---------------------------------------------------------------------------
@@ -2360,42 +2490,21 @@ function generateComplianceSettingsJson(
     ];
   };
 
-  // AB-59: Input scanning
-  appendHook("UserPromptSubmit", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-input-scan.sh", timeout: 5000 }],
-  });
-
-  // AB-60: Output scanning
-  appendHook("Stop", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-output-scan.sh", timeout: 5000, async: true }],
-  });
-
-  // AB-63: Audit trail
-  appendHook("SubagentStart", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-  appendHook("SubagentStop", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-  appendHook("PostToolUse", {
-    matcher: "Edit|Write|Bash",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-  // B3 fix: register SessionEnd (matches the case in telemetry hook script)
-  appendHook("SessionEnd", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-
-  // AB-122: PreToolUse compliance hook (only if denyTools configured)
-  if ((_config.managed?.guardrails?.denyTools ?? []).length > 0) {
-    appendHook("PreToolUse", {
-      matcher: "",
-      hooks: [{ type: "command", command: ".claude/hooks/agentboot-pretooluse.sh", timeout: 5000 }],
+  // Derive the CC wiring from the canonical bindings (input-scan → UserPromptSubmit,
+  // output-scan → Stop, telemetry → SubagentStart/Stop + PostToolUse + SessionEnd,
+  // pretooluse → PreToolUse only when denyTools is configured). CC event names are
+  // canonical, timeouts in ms, matcher exact-match.
+  const denyOn = (_config.managed?.guardrails?.denyTools ?? []).length > 0;
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyOn) continue;
+    appendHook(b.ccEvent, {
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        command: `.claude/hooks/${b.script}`,
+        timeout: b.timeoutMs,
+        ...(b.async ? { async: true } : {}),
+      }],
     });
   }
 
@@ -3040,6 +3149,11 @@ function main(): void {
     log(chalk.green("  .agents/skills/ generated (cross-tool)"));
   }
 
+  // A1.5: build the portable compliance hook scripts ONCE. Every platform emitter
+  // (Claude Code, Codex, Copilot) writes its own copy from this single source, so
+  // Codex/Copilot no longer depend on the Claude Code emitter having run first.
+  const complianceHookScripts = buildComplianceHookScripts(config);
+
   // Phase 11 A1.7: Codex platform output
   if (outputFormats.includes("codex")) {
     log(chalk.cyan("\nGenerating Codex output..."));
@@ -3062,10 +3176,16 @@ function main(): void {
     }
     // .codex/config.toml — already generated by generateCrossPlatformMcpConfigs
     // .codex/hooks.json — compliance hooks in Codex format
-    generateCodexHooks(config, distPath, "core");
+    generateCodexHooks(config, distPath, "core", complianceHookScripts);
     // .agents/skills/ — cross-tool skills
     generateCrossToolSkills(distPath, "core", "codex");
     log(chalk.green("  → dist/codex/"));
+  }
+
+  // A1.5: GitHub Copilot governance hooks — .github/hooks/agentboot.json + scripts.
+  if (outputFormats.includes("copilot")) {
+    generateCopilotHooks(config, distPath, "core", complianceHookScripts);
+    log(chalk.green("  → dist/copilot/.github/hooks/"));
   }
 
   // Phase 11 C1.4: Write HARD guardrail artifacts to dist/managed/
@@ -3294,7 +3414,7 @@ function main(): void {
   // ---------------------------------------------------------------------------
 
   if (outputFormats.includes("claude")) {
-    generateComplianceHooks(config, distPath, "core");
+    generateComplianceHooks(distPath, "core", complianceHookScripts);
     generateComplianceSettingsJson(config, distPath, "core");
 
     // AB-147: Per-persona hook compilation — merge persona-level hooks into settings

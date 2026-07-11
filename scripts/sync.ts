@@ -610,6 +610,9 @@ function isRepoUpToDate(
     } else if (platform === "copilot") {
       if (relPath.startsWith("instructions/") && relPath.endsWith(".instructions.md")) {
         destRelPath = path.join(".github", "instructions", path.basename(relPath));
+      } else if (relPath.startsWith(".github/")) {
+        // A1.5: governance hooks (.github/hooks/agentboot.json + scripts) land as-is.
+        destRelPath = relPath;
       } else {
         continue;
       }
@@ -965,6 +968,28 @@ function syncRepoTarget(
         } else {
           result.filesSkipped.push(relDest);
         }
+      }
+    }
+  }
+
+  // A1.5: Write copilot governance hooks (.github/hooks/agentboot.json + scripts).
+  // One committed .github/hooks file governs both the Copilot CLI and cloud agent.
+  if (platform === "copilot") {
+    for (const [relPath, file] of merged) {
+      if (!relPath.startsWith(".github/")) continue;
+      const destPath = path.join(effectivePath, relPath);
+      const content = fs.readFileSync(file.absolutePath, "utf-8");
+      ensureDir(path.dirname(destPath), dryRun);
+      const status = writeFile(destPath, content, dryRun);
+      // Preserve the execute bit on hook scripts (git/checkout may drop 0o755).
+      if (status === "written" && !dryRun && relPath.endsWith(".sh")) {
+        fs.chmodSync(destPath, 0o755);
+      }
+      const relDest = path.relative(effectivePath, destPath);
+      if (status === "written") {
+        result.filesWritten.push(relDest);
+      } else {
+        result.filesSkipped.push(relDest);
       }
     }
   }
