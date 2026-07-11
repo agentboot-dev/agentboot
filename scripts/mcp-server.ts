@@ -29,6 +29,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { stripJsoncComments, type PersonaConfig, type AgentBootConfig, loadConfig } from "./lib/config.js";
 import { scanParentForContent } from "./lib/import.js";
 import { getDefaultHub } from "./lib/registry.js";
+import { checkDrift, findManifestPath } from "./lib/drift.js";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -727,6 +728,38 @@ export function handleToolCall(
 // Story 1: Read Tool Implementations
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-repo sync/drift state for status reporting. Uses the real drift checker
+ * (content-hash comparison), so a synced repo whose managed files were modified
+ * correctly reports drift — the previous check only asked "does a manifest exist",
+ * which reported hasDrift=false for any drifted-but-synced repo. "Never synced"
+ * (no manifest) is a distinct state (synced=false), not drift.
+ */
+export function computeRepoDrift(repoPath: string): {
+  synced: boolean;
+  hasDrift: boolean;
+  driftCount: number;
+  lastSyncAt: string | null;
+} {
+  const manifestPath = findManifestPath(repoPath);
+  let lastSyncAt: string | null = null;
+  if (manifestPath) {
+    try {
+      lastSyncAt = fs.statSync(manifestPath).mtime.toISOString();
+    } catch { /* ignore */ }
+  }
+  let synced = false;
+  let hasDrift = false;
+  let driftCount = 0;
+  try {
+    const report = checkDrift(repoPath);
+    synced = report.manifestFound;
+    driftCount = report.summary.modifiedCount + report.summary.missingCount;
+    hasDrift = report.manifestFound && driftCount > 0;
+  } catch { /* drift check is best-effort for status; keep defaults */ }
+  return { synced, hasDrift, driftCount, lastSyncAt };
+}
+
 function handleStatus(): ToolResult {
   const config = loadHubConfig();
 
@@ -756,21 +789,15 @@ function handleStatus(): ToolResult {
   const repoEntries = loadReposJson();
   const repos = repoEntries.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const manifestPath = path.join(repoPath, ".agentboot-manifest.json");
-    const hasDrift = !fs.existsSync(manifestPath);
-    let lastSyncAt: string | null = null;
-    if (fs.existsSync(manifestPath)) {
-      try {
-        const stat = fs.statSync(manifestPath);
-        lastSyncAt = stat.mtime.toISOString();
-      } catch { /* ignore */ }
-    }
+    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
       platforms: r.platforms ?? (r.platform ? [r.platform] : ["claude"]),
       lastSyncAt,
+      synced,
       hasDrift,
+      driftCount,
     };
   });
 
@@ -885,21 +912,15 @@ function handleListRepos(): ToolResult {
   const repoEntries = loadReposJson();
   const repos = repoEntries.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const manifestPath = path.join(repoPath, ".agentboot-manifest.json");
-    const hasDrift = !fs.existsSync(manifestPath);
-    let lastSyncAt: string | null = null;
-    if (fs.existsSync(manifestPath)) {
-      try {
-        const stat = fs.statSync(manifestPath);
-        lastSyncAt = stat.mtime.toISOString();
-      } catch { /* ignore */ }
-    }
+    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
       platforms: r.platforms ?? (r.platform ? [r.platform] : ["claude"]),
       lastSyncAt,
+      synced,
       hasDrift,
+      driftCount,
     };
   });
   return toolOk({ repos });

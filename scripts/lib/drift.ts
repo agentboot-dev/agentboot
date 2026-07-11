@@ -59,9 +59,9 @@ function sha256(content: string): string {
 /**
  * Find the manifest file in a repo. Checks multiple platform-specific locations.
  */
-function findManifest(repoPath: string): Manifest | null {
-  // Check all known manifest locations (different platforms may use different targetDirs)
-  const candidates = [
+// All known manifest locations — different platforms write to different targetDirs.
+function manifestCandidates(repoPath: string): string[] {
+  return [
     path.join(repoPath, ".claude", ".agentboot-manifest.json"),
     path.join(repoPath, ".agentboot-manifest.json"),
     path.join(repoPath, ".cursor", ".agentboot-manifest.json"),
@@ -71,8 +71,22 @@ function findManifest(repoPath: string): Manifest | null {
     path.join(repoPath, ".agents", ".agentboot-manifest.json"),
     path.join(repoPath, ".codex", ".agentboot-manifest.json"),
   ];
+}
 
-  for (const candidate of candidates) {
+/**
+ * Return the path to the repo's AgentBoot manifest (first existing candidate), or
+ * null if unsynced. Exposed so callers can stat the real manifest (e.g. for a
+ * last-synced timestamp) instead of guessing a single location.
+ */
+export function findManifestPath(repoPath: string): string | null {
+  for (const candidate of manifestCandidates(repoPath)) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function findManifest(repoPath: string): Manifest | null {
+  for (const candidate of manifestCandidates(repoPath)) {
     if (fs.existsSync(candidate)) {
       try {
         return JSON.parse(fs.readFileSync(candidate, "utf-8")) as Manifest;
@@ -147,6 +161,11 @@ export function checkDrift(repoPath: string): DriftReport {
     repoPath: absPath,
     manifestFound: true,
     entries,
+    // "clean" = AgentBoot-managed content is intact (nothing modified or missing).
+    // Unmanaged files (a dev's own .claude/ additions) are reported in the summary
+    // and entries but deliberately do NOT flip `clean` — they are user content, not
+    // drift of managed artifacts, and treating them as violations would flag almost
+    // every real repo. Callers that care about unmanaged files read summary.unmanagedCount.
     clean: summary.modifiedCount === 0 && summary.missingCount === 0,
     summary,
   };

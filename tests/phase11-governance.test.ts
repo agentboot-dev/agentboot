@@ -24,6 +24,7 @@ function run(script: string, cwd = ROOT): string {
 }
 
 import { checkDrift, generateComplianceReport } from "../scripts/lib/drift.js";
+import { computeRepoDrift } from "../scripts/mcp-server.js";
 import { runAudit } from "../scripts/lib/audit.js";
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,43 @@ describe("C1.1: drift detection", () => {
       expect(report.summary.missingCount).toBeGreaterThan(0);
       // Restore
       fs.writeFileSync(filePath, backup);
+    }
+  });
+
+  // B.3: MCP status must report REAL drift (via checkDrift), not just "does a manifest exist".
+  it("computeRepoDrift: clean synced repo → synced=true, hasDrift=false", () => {
+    const d = computeRepoDrift(syncTarget);
+    expect(d.synced).toBe(true);
+    expect(d.hasDrift).toBe(false);
+    expect(d.driftCount).toBe(0);
+    expect(d.lastSyncAt).not.toBeNull();
+  });
+
+  it("computeRepoDrift: modified managed file → hasDrift=true (the bug: was false when a manifest existed)", () => {
+    const rulesDir = path.join(syncTarget, ".claude", "rules");
+    const files = fs.readdirSync(rulesDir);
+    expect(files.length).toBeGreaterThan(0);
+    const filePath = path.join(rulesDir, files[0]!);
+    fs.appendFileSync(filePath, "\n# Modified by test\n");
+    try {
+      const d = computeRepoDrift(syncTarget);
+      expect(d.synced).toBe(true);
+      expect(d.hasDrift).toBe(true);
+      expect(d.driftCount).toBeGreaterThan(0);
+    } finally {
+      const original = fs.readFileSync(filePath, "utf-8").replace("\n# Modified by test\n", "");
+      fs.writeFileSync(filePath, original);
+    }
+  });
+
+  it("computeRepoDrift: never-synced repo → synced=false, hasDrift=false (not conflated)", () => {
+    const noManifestDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-crd-nomani-"));
+    try {
+      const d = computeRepoDrift(noManifestDir);
+      expect(d.synced).toBe(false);
+      expect(d.hasDrift).toBe(false);
+    } finally {
+      fs.rmSync(noManifestDir, { recursive: true, force: true });
     }
   });
 
