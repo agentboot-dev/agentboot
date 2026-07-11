@@ -122,6 +122,20 @@ describe("A3: Global hub registry", () => {
     expect(getDefaultHub()).toBe(hub2);
   });
 
+  it("removeHub clears the default to undefined (not '') when the last hub is removed", () => {
+    const hub = path.join(tempDir, "solo-hub");
+    fs.mkdirSync(hub);
+    registerHub(hub);
+    expect(getDefaultHub()).toBe(hub);
+    removeHub(hub);
+    expect(listHubs()).toHaveLength(0);
+    expect(getDefaultHub()).toBeNull();
+    // Explicit: defaultHub must be undefined, never "" — an empty-string default is a
+    // truthy/falsy footgun in getDefaultHub()/resolveHubRoot() (it is falsy, so behavior
+    // happens to be correct, but the value should stay undefined per the type).
+    expect(loadRegistry().defaultHub).toBeUndefined();
+  });
+
   it("corrupt file is backed up and fresh registry returned", () => {
     const registryDir = path.join(tempDir, ".agentboot");
     fs.mkdirSync(registryDir, { recursive: true });
