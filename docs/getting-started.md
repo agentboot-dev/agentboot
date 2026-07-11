@@ -7,8 +7,10 @@ sidebar_position: 1
 
 AgentBoot is a harness engineering build tool that manages your AI agent behavior
 as source code — versioned, reviewed, tested, and deployed from a central personas
-repo to every project in your org. It compiles personas into platform-native formats
-for Claude Code, Copilot, Cursor, Gemini, Windsurf, JetBrains AI, and the universal AGENTS.md standard (8 platforms total).
+repo to every project in your org. It compiles personas into platform-native formats.
+Official support targets the **CLI surfaces of Claude Code, Codex, and GitHub Copilot**;
+AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the universal
+`AGENTS.md` standard on a community-supported basis.
 
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
