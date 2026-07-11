@@ -619,3 +619,28 @@ describe("selectTraitTier", () => {
     expect(out).toContain("## Anti-Patterns");
   });
 });
+
+// ---------------------------------------------------------------------------
+// G.1: ab.modelOverrides validation
+// ---------------------------------------------------------------------------
+
+import { isValidAbModel } from "../scripts/compile.js";
+
+describe("isValidAbModel", () => {
+  it("accepts the Agent SDK model aliases (case-insensitive)", () => {
+    for (const m of ["opus", "sonnet", "haiku", "inherit", "Sonnet", "HAIKU"]) {
+      expect(isValidAbModel(m)).toBe(true);
+    }
+  });
+
+  it("accepts explicit claude-* model ids", () => {
+    expect(isValidAbModel("claude-sonnet-5")).toBe(true);
+    expect(isValidAbModel("claude-opus-4-8")).toBe(true);
+  });
+
+  it("rejects typos and foreign models", () => {
+    for (const m of ["sonet", "opus-4", "gpt-4", "gemini", "", "  "]) {
+      expect(isValidAbModel(m)).toBe(false);
+    }
+  });
+});

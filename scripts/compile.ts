@@ -433,6 +433,19 @@ export function selectTraitTier(content: string, weight: number): string {
   return kept.join("\n");
 }
 
+/**
+ * Valid values for `ab.modelOverrides` — the Claude Code Agent SDK model aliases,
+ * plus any explicit `claude-*` model id. An invalid override (a typo like "sonet"
+ * or a foreign model) would otherwise be injected verbatim into agent frontmatter
+ * and silently ignored (or error) at runtime; catch it at build time instead.
+ */
+const VALID_AB_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku", "inherit"]);
+export function isValidAbModel(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (VALID_AB_MODEL_ALIASES.has(v)) return true;
+  return /^claude-[a-z0-9.-]+$/.test(v);
+}
+
 function injectTraits(
   skillContent: string,
   resolvedTraits: ResolvedTrait[],
@@ -2928,7 +2941,21 @@ function main(): void {
       if (fs.existsSync(src)) {
         let content = fs.readFileSync(src, "utf-8");
         const fileName = path.basename(file, ".md");
-        const model = config.ab?.modelOverrides?.[fileName] ?? defaultModels[fileName];
+        const override = config.ab?.modelOverrides?.[fileName];
+        let model = defaultModels[fileName];
+        if (override !== undefined) {
+          if (isValidAbModel(override)) {
+            model = override;
+          } else {
+            log(
+              chalk.yellow(
+                `  ⚠ Ignoring invalid ab.modelOverrides["${fileName}"] = "${override}" — ` +
+                  `expected opus | sonnet | haiku | inherit or a claude-* model id; ` +
+                  `using default "${defaultModels[fileName]}".`,
+              ),
+            );
+          }
+        }
         const disallowed = defaultDisallowedTools[fileName];
 
         // Inject model: and disallowedTools: into frontmatter if it has one
