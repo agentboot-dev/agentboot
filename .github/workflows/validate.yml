@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "release/**"
   pull_request:
 
 jobs:
@@ -28,6 +29,9 @@ jobs:
         run: |
           git config --global user.name "CI"
           git config --global user.email "ci@agentboot.dev"
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Validate personas and traits
         run: npm run validate
