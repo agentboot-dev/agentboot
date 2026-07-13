@@ -1278,6 +1278,29 @@ describe("AB-34/35/55: add command", () => {
     expect(() => run("add persona has_underscore", tempDir)).toThrow();
   });
 
+  it("add template installs the sdlc-orchestrator bundle into the hub (§L)", () => {
+    const output = run("add template sdlc-orchestrator", tempDir);
+    expect(output).toContain("sdlc-orchestrator");
+    const personaDir = path.join(tempDir, "core", "personas", "sdlc-orchestrator");
+    expect(fs.existsSync(path.join(personaDir, "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(personaDir, "persona.config.json"))).toBe(true);
+    const skill = fs.readFileSync(path.join(personaDir, "SKILL.md"), "utf-8");
+    expect(skill).toContain("SDLC Orchestrator");
+    expect(skill).toContain("QA gates");
+  });
+
+  it("add template errors on an unknown template and lists available ones", () => {
+    const output = runExpectFail("add template does-not-exist", tempDir);
+    expect(output).toContain("Unknown template");
+    expect(output).toContain("sdlc-orchestrator");
+  });
+
+  it("add template refuses to overwrite existing files", () => {
+    run("add template sdlc-orchestrator", tempDir);
+    const output = runExpectFail("add template sdlc-orchestrator", tempDir);
+    expect(output).toContain("Refusing to overwrite");
+  });
+
   it("scaffolds a trait with correct sections", () => {
     run("add trait error-handling", tempDir);
     const traitPath = path.join(tempDir, "core", "traits", "error-handling.md");

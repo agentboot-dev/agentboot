@@ -1,0 +1,10 @@
+{
+  "name": "sdlc-orchestrator",
+  "version": "1.0.0",
+  "description": "A phase-gated software delivery workflow persona: spec (PRD) -> architecture -> parallel implementation -> QA gates -> review, with configurable rigor via trait weights.",
+  "adds": [
+    "core/personas/sdlc-orchestrator/SKILL.md",
+    "core/personas/sdlc-orchestrator/persona.config.json"
+  ],
+  "activation": "Add \"sdlc-orchestrator\" to personas.enabled in agentboot.config.json, then run: agentboot validate && agentboot build"
+}
