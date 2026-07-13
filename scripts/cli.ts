@@ -2091,7 +2091,7 @@ program
 program
   .command("export")
   .description("Export compiled output in a specific format")
-  .option("--format <fmt>", "export format: plugin, marketplace, managed, agentskills", "plugin")
+  .option("--format <fmt>", "export format: plugin, managed, agentskills", "plugin")
   .option("--output <dir>", "output directory")
   .action(async (opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
@@ -2178,7 +2178,6 @@ program
 
       console.log(chalk.green(`  ✓ Exported plugin to ${path.relative(cwd, outputDir)}/`));
       console.log(chalk.gray(`    ${fileCount} files (plugin.json + agents, skills, traits, hooks, rules)`));
-      console.log(chalk.gray(`\n  Next: agentboot publish\n`));
 
     } else if (format === "managed") {
       const managedDir = path.join(distPath, "managed");
@@ -2224,7 +2223,6 @@ program
 
       fs.writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2) + "\n", "utf-8");
       console.log(chalk.green(`  ✓ Created marketplace.json`));
-      console.log(chalk.gray(`\n  Next: agentboot publish to add entries\n`));
 
     } else if (format === "agentskills") {
       // AB-162: agentskills.io listing export
@@ -2242,7 +2240,7 @@ program
       console.log(chalk.gray("  Submit this file to agentskills.io for directory listing."));
 
     } else {
-      console.error(chalk.red(`Unknown export format: '${format}'. Use: plugin, marketplace, managed, agentskills`));
+      console.error(chalk.red(`Unknown export format: '${format}'. Use: plugin, managed, agentskills`));
       process.exit(1);
     }
   });
@@ -2764,7 +2762,6 @@ program
   .option("--json", "Output raw JSON metrics")
   .action(async (opts) => {
     const { loadTelemetry, aggregateMetrics, generateModelRecommendations, analyzeCoverage, printOptimizeReport, generateHtmlReport } = await import("./lib/optimize.js");
-    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
     const events = loadTelemetry({ since: opts.since, until: opts.until, scope: opts.scope });
     if (events.length === 0) {
       console.log(chalk.yellow("\nNo telemetry found. Run some personas first, or check ~/.agentboot/telemetry/"));
@@ -2772,7 +2769,12 @@ program
     }
     const metrics = aggregateMetrics(events);
     const recommendations = generateModelRecommendations(metrics);
-    const enabledPersonas = config.personas?.enabled ?? [];
+    // Config is optional and only feeds coverage-gap analysis. Resolve from the
+    // user's hub (cwd), never the package dir (ROOT has no config in a published
+    // install), and tolerate its absence rather than crashing.
+    const cwdConfigPath = path.join(process.cwd(), "agentboot.config.json");
+    const config = fs.existsSync(cwdConfigPath) ? loadConfig(cwdConfigPath) : null;
+    const enabledPersonas = config?.personas?.enabled ?? [];
     const knownScopes = metrics.map((m: any) => m.scope).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
     const gaps = analyzeCoverage(metrics, enabledPersonas, knownScopes);
     if (opts.json) { console.log(JSON.stringify({ metrics, recommendations, gaps }, null, 2)); return; }

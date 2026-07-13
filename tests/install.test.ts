@@ -811,7 +811,10 @@ describe("scaffoldHub: writes .mcp.json with AgentBoot MCP server", () => {
     expect(mcp.mcpServers.agentboot).toBeDefined();
     expect(mcp.mcpServers.agentboot.command).toBe("npx");
     expect(mcp.mcpServers.agentboot.args).toEqual(["agentboot", "mcp-server"]);
-    expect(mcp.mcpServers.agentboot.env.AGENTBOOT_HUB).toBe(path.resolve(tempDir));
+    // L4: no absolute AGENTBOOT_HUB is baked into this committed file — it would
+    // leak the author's home path and break the hub for teammates. Hub resolution
+    // uses cwd + the machine-local registry instead.
+    expect(mcp.mcpServers.agentboot.env?.AGENTBOOT_HUB).toBeUndefined();
   });
 
   it("merges into existing .mcp.json without overwriting other servers", () => {
@@ -834,7 +837,8 @@ describe("scaffoldHub: writes .mcp.json with AgentBoot MCP server", () => {
     expect(mcp.mcpServers["other-server"].command).toBe("node");
     // AgentBoot server added
     expect(mcp.mcpServers.agentboot).toBeDefined();
-    expect(mcp.mcpServers.agentboot.env.AGENTBOOT_HUB).toBe(path.resolve(tempDir));
+    // L4: no baked absolute AGENTBOOT_HUB path (see above).
+    expect(mcp.mcpServers.agentboot.env?.AGENTBOOT_HUB).toBeUndefined();
   });
 
   it("overwrites corrupted .mcp.json gracefully", () => {

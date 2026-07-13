@@ -128,4 +128,29 @@ describe("A1.5 cross-platform compliance hooks", () => {
       fs.rmSync(noDeny, { recursive: true, force: true });
     }
   });
+
+  it("denyTools glob patterns compile to a glob-capable match, not a literal one (H1)", () => {
+    // Regression: the deny hook quoted the RHS ([[ "$TOOL_NAME" == "$pattern" ]]),
+    // forcing literal comparison — so a glob like "mcp__*" (which validation allows)
+    // matched nothing and the guardrail failed OPEN. The RHS must be unquoted.
+    const tempDir = compileInto({
+      org: "test",
+      personas: { enabled: ["code-reviewer"], outputFormats: ["claude"] },
+      traits: { enabled: BASE_TRAITS },
+      instructions: { enabled: [] },
+      managed: { guardrails: { denyTools: ["mcp__*", "Bash*"] } },
+    });
+    try {
+      const hook = fs.readFileSync(
+        path.join(tempDir, "dist", "claude", "core", "hooks", "agentboot-pretooluse.sh"), "utf-8");
+      // The glob patterns must reach the script...
+      expect(hook).toContain("mcp__*");
+      expect(hook).toContain("Bash*");
+      // ...and the comparison must be glob-enabled (unquoted RHS), not literal.
+      expect(hook).toContain("== $pattern");
+      expect(hook).not.toContain('== "$pattern"');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

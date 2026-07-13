@@ -782,11 +782,13 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
         const configPath = path.join(personasDir, dir, "persona.config.json");
         if (!fs.existsSync(configPath)) continue;
         try {
-          const pc = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          const pc = JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8")));
           const traits = pc.traits;
           if (traits && typeof traits === "object" && !Array.isArray(traits)) {
             for (const [traitName, weight] of Object.entries(traits)) {
-              if (hardArtifacts.has(traitName) && (weight === "OFF" || weight === 0 || weight === "0")) {
+              const isOff = weight === 0 || weight === "0" ||
+                (typeof weight === "string" && weight.toUpperCase() === "OFF");
+              if (hardArtifacts.has(traitName) && isOff) {
                 fail(result,
                   `${scopeLabel} persona "${dir}" sets HARD trait "${traitName}" to OFF — ` +
                   `HARD guardrails cannot be disabled at lower scopes`

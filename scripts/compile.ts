@@ -2406,7 +2406,10 @@ ${patterns}
 )
 
 for pattern in "\${DENY_PATTERNS[@]}"; do
-  if [[ "$TOOL_NAME" == "$pattern" ]]; then
+  # RHS is intentionally UNQUOTED so bash treats it as a glob — denyTools patterns
+  # may contain * and ? (e.g. "mcp__*", "Bash*"). Values are validated at compile
+  # time to [a-zA-Z0-9._*?-]+, so there is nothing unsafe to word-split here.
+  if [[ "$TOOL_NAME" == $pattern ]]; then
     echo "{\\"decision\\":\\"block\\",\\"reason\\":\\"AgentBoot: Tool \\\\\\"$TOOL_NAME\\\\\\" is blocked by organization policy.\\"}"
     exit 2
   fi
