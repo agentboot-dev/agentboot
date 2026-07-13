@@ -36,6 +36,7 @@
   "files": [
     "bin/",
     "scripts/",
+    "!scripts/intelligence/",
     "core/",
     "templates/",
     "README.md",
