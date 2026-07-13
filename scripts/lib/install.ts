@@ -411,8 +411,8 @@ async function promptForPath(message: string, defaultPath?: string): Promise<str
       const typed = answer.trim() || effectiveDefault;
       const expanded = expandPath(typed);
       // Resolve relative paths against the displayed default, not cwd —
-      // the user sees the default as their context, so "client/" should
-      // mean a child of the default, not a child of the current working dir.
+      // the user sees the default as their context, so a relative "subdir/"
+      // should mean a child of the default, not of the current working dir.
       const resolved = path.isAbsolute(expanded)
         ? path.resolve(expanded)
         : path.resolve(effectiveDefault, expanded);
