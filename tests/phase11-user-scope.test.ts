@@ -1,10 +1,8 @@
 /**
- * Phase 11 Batch 8: MCP expansion + dotclaude writeDirectly
- *
- * Tests for cross-platform MCP configs and user-level content delivery.
+ * Cross-platform MCP configs + the user-level (~/.claude) write SPI.
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -59,17 +57,20 @@ describe("MCP config expansion: gemini", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dotclaude writeDirectly
+// user-level writeDirectly
 // ---------------------------------------------------------------------------
 
-import { writeDirectly, detectExistingContent, removeUserContent, findTemplateVars } from "../scripts/lib/dotclaude.js";
+import {
+  writeDirectly, detectExistingContent, removeUserContent, findTemplateVars,
+  isExternallyManaged, resolveUserLevelMode, stageForHandoff, installUserLevel,
+} from "../scripts/lib/user-scope.js";
 
-describe("B3: dotclaude writeDirectly", () => {
+describe("user-level writeDirectly", () => {
   let tempHome: string;
   let origHome: string | undefined;
 
   beforeAll(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-dotclaude-"));
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-userscope-"));
     origHome = process.env["HOME"];
     process.env["HOME"] = tempHome;
     // Create a minimal .claude dir
@@ -96,19 +97,19 @@ describe("B3: dotclaude writeDirectly", () => {
     expect(result.skillsWritten.length).toBeGreaterThan(0);
   });
 
-  it("does NOT write CLAUDE.md (requires dotclaude markers)", () => {
+  it("does NOT write CLAUDE.md (composed file)", () => {
     const claudeMdPath = path.join(tempHome, ".claude", "CLAUDE.md");
     // writeDirectly should not create or modify CLAUDE.md
     // (it's listed in skipped)
     const distPath = path.join(ROOT, "dist", "claude", "core");
     const result = writeDirectly(distPath);
-    expect(result.skipped).toContain("CLAUDE.md (requires dotclaude markers for safe append)");
+    expect(result.skipped).toContain("CLAUDE.md (composed file — left to the external provider)");
   });
 
-  it("does NOT write settings.json (requires dotclaude merge)", () => {
+  it("does NOT write settings.json (composed file)", () => {
     const distPath = path.join(ROOT, "dist", "claude", "core");
     const result = writeDirectly(distPath);
-    expect(result.skipped).toContain("settings.json (requires dotclaude for safe merge)");
+    expect(result.skipped).toContain("settings.json (composed file — left to the external provider)");
   });
 
   it("generates user manifest tracking written files", () => {
@@ -137,10 +138,10 @@ describe("B3: dotclaude writeDirectly", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dotclaude template-var guard (cross-system audit RISK #2)
+// user-level template-var guard (cross-system audit RISK #2)
 // ---------------------------------------------------------------------------
 
-describe("dotclaude template-var guard", () => {
+describe("user-level template-var guard", () => {
   it("findTemplateVars detects {{ vars }} and dedupes, ignoring clean content", () => {
     expect(findTemplateVars("no vars here")).toEqual([]);
     expect(
@@ -187,11 +188,69 @@ describe("dotclaude template-var guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dotclaude module existence
+// user-scope module existence
 // ---------------------------------------------------------------------------
 
-describe("dotclaude module", () => {
-  it("scripts/lib/dotclaude.ts exists", () => {
-    expect(fs.existsSync(path.join(ROOT, "scripts", "lib", "dotclaude.ts"))).toBe(true);
+describe("user-scope module", () => {
+  it("scripts/lib/user-scope.ts exists", () => {
+    expect(fs.existsSync(path.join(ROOT, "scripts", "lib", "user-scope.ts"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §I: user-level write SPI (mode resolution + sentinel + staging/handoff)
+// ---------------------------------------------------------------------------
+
+describe("user-level write SPI (§I)", () => {
+  let tmp: string;
+  let claudeDir: string;
+  let distCore: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-spi-"));
+    claudeDir = path.join(tmp, ".claude");
+    fs.mkdirSync(claudeDir, { recursive: true });
+    // A minimal compiled slot to deliver.
+    distCore = path.join(tmp, "dist", "claude", "core");
+    fs.mkdirSync(path.join(distCore, "skills", "demo"), { recursive: true });
+    fs.writeFileSync(path.join(distCore, "skills", "demo", "SKILL.md"), "# Demo\nresolved content.");
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("auto mode writes directly when the slot is NOT externally managed", () => {
+    expect(isExternallyManaged(claudeDir)).toBe(false);
+    expect(resolveUserLevelMode(undefined, claudeDir)).toBe("direct");
+    const res = installUserLevel(distCore, undefined, { claudeDir, stagingDir: path.join(tmp, "stage") });
+    expect(res.mode).toBe("direct");
+  });
+
+  it("auto mode defers to manifest when the ~/.claude/.managed sentinel is present", () => {
+    fs.writeFileSync(path.join(claudeDir, ".managed"), "");
+    expect(isExternallyManaged(claudeDir)).toBe(true);
+    expect(resolveUserLevelMode(undefined, claudeDir)).toBe("manifest");
+    const stagingDir = path.join(tmp, "stage");
+    const res = installUserLevel(distCore, undefined, { claudeDir, stagingDir });
+    expect(res.mode).toBe("manifest");
+    // Staged, with a handoff manifest — and ~/.claude was NOT written.
+    expect(fs.existsSync(path.join(stagingDir, "skills", "demo", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(stagingDir, ".agentboot-handoff.json"))).toBe(true);
+    expect(fs.existsSync(path.join(claudeDir, "skills", "demo", "SKILL.md"))).toBe(false);
+  });
+
+  it("explicit mode overrides the sentinel (direct even when managed; manifest even when not)", () => {
+    fs.writeFileSync(path.join(claudeDir, ".managed"), "");
+    expect(resolveUserLevelMode({ userLevel: { mode: "direct" } } as never, claudeDir)).toBe("direct");
+    fs.rmSync(path.join(claudeDir, ".managed"));
+    expect(resolveUserLevelMode({ userLevel: { mode: "manifest" } } as never, claudeDir)).toBe("manifest");
+  });
+
+  it("stageForHandoff enforces the template-var guard", () => {
+    fs.writeFileSync(path.join(distCore, "skills", "demo", "SKILL.md"), "# Demo\n{{ unresolved_var }}");
+    const stagingDir = path.join(tmp, "stage");
+    const res = stageForHandoff(distCore, stagingDir);
+    expect(res.errors.some(e => e.includes("unresolved_var") || e.includes("template var"))).toBe(true);
   });
 });

@@ -194,7 +194,7 @@ describe("runAudit() edge cases", () => {
 
 describe("removeUserContent() path traversal prevention", () => {
   it("rejects manifest paths that traverse outside ~/.claude/", async () => {
-    const { removeUserContent, detectExistingContent } = await import("../scripts/lib/dotclaude.js");
+    const { removeUserContent, detectExistingContent } = await import("../scripts/lib/user-scope.js");
 
     // Create a fake ~/.claude/ with a tampered manifest
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-dotclaude-sec-"));

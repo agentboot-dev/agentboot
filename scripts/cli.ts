@@ -31,7 +31,7 @@ import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 
@@ -349,6 +349,53 @@ program
   .action(async () => {
     console.log(chalk.yellow("\n  `agentboot setup` is deprecated. Use `agentboot install` instead.\n"));
     await installAction({});
+  });
+
+// §I: user-level (~/.claude) install. AgentBoot is the default provider for the
+// user-level slot; if another tool manages ~/.claude (a ~/.claude/.managed
+// sentinel, or userLevel.mode: "manifest"), it stages for handoff instead.
+program
+  .command("install-user")
+  .description("Install compiled skills/rules to ~/.claude (or stage for an external manager)")
+  .option("--dry-run", "show what would be written/staged without changing anything")
+  .option("--mode <mode>", "override the write mode: auto (default), direct, or manifest")
+  .action(async (opts) => {
+    if (opts.mode && !["auto", "direct", "manifest"].includes(opts.mode)) {
+      console.error(chalk.red("--mode must be one of: auto, direct, manifest"));
+      process.exit(1);
+    }
+    const { installUserLevel } = await import("./lib/user-scope.js");
+    const cwd = process.cwd();
+    const configPath = path.join(cwd, "agentboot.config.json");
+    const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
+    const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
+    if (!fs.existsSync(distCore)) {
+      console.error(chalk.red("dist/claude/core not found — run `agentboot build` first."));
+      process.exit(1);
+    }
+
+    const effectiveConfig = opts.mode
+      ? { ...(config ?? {}), userLevel: { mode: opts.mode } }
+      : config;
+
+    console.log(chalk.bold("\nAgentBoot — install-user\n"));
+    const res = installUserLevel(distCore, effectiveConfig as AgentBootConfig, { dryRun: opts.dryRun });
+
+    if (res.mode === "direct") {
+      const r = res.direct!;
+      for (const e of r.errors) console.log(chalk.red(`  ✗ ${e}`));
+      console.log(chalk.green(`  ✓ ${opts.dryRun ? "Would write" : "Wrote"} ${r.skillsWritten.length} skill file(s) + ${r.rulesWritten.length} rule file(s) to ~/.claude/`));
+      for (const s of r.skipped) console.log(chalk.gray(`  – skipped ${s}`));
+      if (r.errors.length) process.exit(1);
+    } else {
+      const s = res.staged!;
+      for (const e of s.errors) console.log(chalk.red(`  ✗ ${e}`));
+      console.log(chalk.yellow(`  ~/.claude is externally managed — ${opts.dryRun ? "would stage" : "staged"} ${s.staged.length} file(s) for handoff.`));
+      console.log(chalk.gray(`  Staging dir: ${s.stagingDir}`));
+      console.log(chalk.gray(`  Manifest:    ${s.manifestPath}`));
+      if (s.errors.length) process.exit(1);
+    }
+    console.log("");
   });
 
 // ---- import (AB-43) — LLM-powered content classification -----------------
