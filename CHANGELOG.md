@@ -12,6 +12,10 @@ full PR-level detail; this file is the curated, human-readable summary.
 Work on the `release/v0.11` branch toward the v1.0 line.
 
 ### Added
+- `agentboot install-user` — user-level (`~/.claude`) write SPI. AgentBoot is the default
+  provider for the user-level slot and writes compiled skills/rules there directly; if another
+  tool manages `~/.claude` (a `~/.claude/.managed` sentinel, or `userLevel.mode: "manifest"`),
+  AgentBoot stages its resolved output plus a handoff manifest for that tool to apply instead.
 - `agentboot add template <name>` installs a pre-packaged harness bundle into a hub, and the
   first template ships: **`sdlc-orchestrator`** — a phase-gated delivery persona (spec/PRD →
   architecture → parallel-worktree implementation → QA gates → review) whose rigor is tunable

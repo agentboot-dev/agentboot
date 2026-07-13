@@ -28,7 +28,7 @@ Last updated: 2026-07-12. Total: 37 test files, 1198 tests passing.
 | `contribution.test.ts` | ~15 | Unit: contribution review, duplicate detection, Jaccard similarity | <200ms |
 | `export.test.ts` | ~10 | Integration: agentskills.io export, skills-index.json schema | ~3s |
 | `monorepo.test.ts` | ~10 | Integration: monorepo detection, per-package sync | ~3s |
-| *(other test files)* | remainder | intelligence, judge, optimize-weights, trait-weights, crossplatform-hooks, phase11-* (codex, hooks, registry, guardrails, compile, governance, audit-coverage, foundation, ab-import, mcp-dotclaude), gitignore, install, contribution, cost-estimate, etc. | ~5s |
+| *(other test files)* | remainder | intelligence, judge, optimize-weights, trait-weights, crossplatform-hooks, phase11-* (codex, hooks, registry, guardrails, compile, governance, audit-coverage, foundation, ab-import, user-scope), gitignore, install, contribution, cost-estimate, etc. | ~5s |
 | **Total** | **1040+** | | ~52s |
 
 ## Coverage by Feature

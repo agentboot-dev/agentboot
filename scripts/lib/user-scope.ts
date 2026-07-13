@@ -1,23 +1,58 @@
 /**
- * dotclaude integration — user-level content delivery.
+ * User-level (~/.claude) write SPI.
  *
- * Phase 11 B3: writeDirectly path only (dotclaude path deferred).
- * Writes AgentBoot skills and rules directly to ~/.claude/.
+ * AgentBoot is the DEFAULT provider for the user-level config slot: it writes
+ * compiled skills and rules straight to ~/.claude/. If another tool manages that
+ * directory, AgentBoot detects it (a ~/.claude/.managed sentinel, or an explicit
+ * userLevel.mode) and switches to MANIFEST mode — staging the resolved content plus
+ * a manifest for that external provider to apply, and never touching ~/.claude
+ * itself. This keeps AgentBoot useful out of the box for solo users while yielding
+ * cleanly to a dedicated user-config manager when one is present.
  *
- * Per cross-system audit:
- * - MUST NOT use {{ TEMPLATE_VARS }} in any content
- * - MUST NOT touch CLAUDE.md (requires dotclaude markers)
- * - MUST NOT touch settings.json (requires dotclaude deep merge)
- * - Settings must be additive only (no hooks, no permissions.deny)
+ * Direct-write constraints (an external provider owns the composed slots):
+ * - MUST NOT use {{ TEMPLATE_VARS }} in any content (unresolved vars are rejected).
+ * - MUST NOT touch CLAUDE.md (safe append needs the external provider's markers).
+ * - MUST NOT touch settings.json (safe merge needs the external provider's deep merge).
+ * - Direct writes are additive only (no hooks, no permissions.deny) into slot dirs.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
+import type { AgentBootConfig } from "./config.js";
 
 function getClaudeDir(): string {
   return path.join(process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir(), ".claude");
+}
+
+/** Filename of the sentinel an external provider drops in ~/.claude to claim the slot. */
+const MANAGED_SENTINEL = ".managed";
+
+export type UserLevelMode = "direct" | "manifest";
+
+/**
+ * True when an external tool has claimed the user-level slot (a ~/.claude/.managed
+ * sentinel is present). In that case AgentBoot must not write ~/.claude directly.
+ */
+export function isExternallyManaged(claudeDir: string = getClaudeDir()): boolean {
+  return fs.existsSync(path.join(claudeDir, MANAGED_SENTINEL));
+}
+
+/**
+ * Resolve the effective write mode from config + the sentinel.
+ * - "direct"  → always write ~/.claude directly.
+ * - "manifest"→ always stage for handoff, never write ~/.claude.
+ * - "auto" (default) → manifest if the slot is externally managed, else direct.
+ */
+export function resolveUserLevelMode(
+  config?: AgentBootConfig,
+  claudeDir: string = getClaudeDir(),
+): UserLevelMode {
+  const configured = config?.userLevel?.mode ?? "auto";
+  if (configured === "direct") return "direct";
+  if (configured === "manifest") return "manifest";
+  return isExternallyManaged(claudeDir) ? "manifest" : "direct";
 }
 
 /**
@@ -60,7 +95,7 @@ export function detectExistingContent(): {
 /**
  * Write compiled skills and rules directly to ~/.claude/.
  * Only writes directory-slot files (skills/, rules/).
- * Skips CLAUDE.md and settings.json (requires dotclaude for safe composition).
+ * Skips CLAUDE.md and settings.json (safe composition needs the external provider).
  */
 export function writeDirectly(
   distClaudeCorePath: string,
@@ -93,9 +128,10 @@ export function writeDirectly(
     copyDirContents(rulesSrc, rulesDest, result.rulesWritten, result.errors, options?.dryRun);
   }
 
-  // Explicitly skip CLAUDE.md and settings.json (cross-system audit RISK #1 and #3)
-  result.skipped.push("CLAUDE.md (requires dotclaude markers for safe append)");
-  result.skipped.push("settings.json (requires dotclaude for safe merge)");
+  // Explicitly skip CLAUDE.md and settings.json — safe append/merge into those
+  // composed files is the external provider's job (cross-system audit RISK #1 and #3).
+  result.skipped.push("CLAUDE.md (composed file — left to the external provider)");
+  result.skipped.push("settings.json (composed file — left to the external provider)");
 
   // Write user manifest to track what we wrote
   if (!options?.dryRun) {
@@ -215,4 +251,94 @@ export function removeUserContent(): { removed: string[]; errors: string[] } {
   }
 
   return { removed, errors };
+}
+
+export interface StageResult {
+  staged: string[];
+  errors: string[];
+  manifestPath: string;
+  stagingDir: string;
+}
+
+/**
+ * MANIFEST mode: stage the resolved slot content (skills/, rules/) into a staging
+ * directory and write a handoff manifest, WITHOUT touching ~/.claude. An external
+ * provider that owns ~/.claude applies the staged content. Same all-or-nothing
+ * template-var guard as a direct write.
+ */
+export function stageForHandoff(
+  distClaudeCorePath: string,
+  stagingDir: string,
+  options?: { dryRun?: boolean },
+): StageResult {
+  const result: StageResult = { staged: [], errors: [], manifestPath: "", stagingDir };
+
+  if (!fs.existsSync(distClaudeCorePath)) {
+    result.errors.push(`dist path does not exist: ${distClaudeCorePath}`);
+    return result;
+  }
+
+  for (const slot of ["skills", "rules"]) {
+    const src = path.join(distClaudeCorePath, slot);
+    if (fs.existsSync(src)) {
+      copyDirContents(src, path.join(stagingDir, slot), result.staged, result.errors, options?.dryRun);
+    }
+  }
+
+  // The handoff manifest tells the external provider what to apply into ~/.claude;
+  // paths are relative to the staging root.
+  const manifest = {
+    managed_by: "agentboot",
+    scope: "user",
+    mode: "manifest",
+    apply_target: "~/.claude",
+    written_at: new Date().toISOString(),
+    files: result.staged.map((f) => {
+      const rel = path.relative(stagingDir, f);
+      let hash = "";
+      try {
+        hash = createHash("sha256").update(fs.readFileSync(f)).digest("hex");
+      } catch { /* not present in dry-run */ }
+      return { path: rel, hash };
+    }),
+  };
+
+  const manifestPath = path.join(stagingDir, ".agentboot-handoff.json");
+  if (!options?.dryRun) {
+    fs.mkdirSync(stagingDir, { recursive: true });
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  }
+  result.manifestPath = manifestPath;
+  return result;
+}
+
+export interface InstallUserLevelResult {
+  mode: UserLevelMode;
+  /** Present when mode === "direct". */
+  direct?: WriteDirectlyResult;
+  /** Present when mode === "manifest". */
+  staged?: StageResult;
+}
+
+/**
+ * Top-level user-level install (the SPI entry point). Resolves direct vs manifest
+ * from config + the ~/.claude/.managed sentinel, then either writes ~/.claude
+ * directly (AgentBoot as the provider) or stages the content + a manifest for an
+ * external provider to apply.
+ */
+export function installUserLevel(
+  distClaudeCorePath: string,
+  config?: AgentBootConfig,
+  options?: { dryRun?: boolean; stagingDir?: string; claudeDir?: string },
+): InstallUserLevelResult {
+  const claudeDir = options?.claudeDir ?? getClaudeDir();
+  const mode = resolveUserLevelMode(config, claudeDir);
+
+  if (mode === "direct") {
+    return { mode, direct: writeDirectly(distClaudeCorePath, options) };
+  }
+
+  const stagingDir = options?.stagingDir
+    ?? path.join(path.resolve(distClaudeCorePath, "..", ".."), "claude-user");
+  return { mode, staged: stageForHandoff(distClaudeCorePath, stagingDir, options) };
 }
