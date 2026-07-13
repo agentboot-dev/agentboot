@@ -64,8 +64,8 @@ agentboot install --hub --org acme-corp
 # Edit agentboot.config.json, add custom personas, traits, hooks, domain layers
 agentboot build
 agentboot export --format plugin --name acme
-# Publish to private marketplace
-agentboot publish --marketplace acme-corp/acme-personas
+# Commit the exported plugin + marketplace.json to your private marketplace repo
+# (a marketplace is just a Git repo — see "Private Marketplace Hosting" below)
 ```
 
 **Developer workflow:**
@@ -205,7 +205,7 @@ repo in your terminal, it works in Claude Code. For background auto-updates, set
 # In the personas repo CI
 agentboot upgrade     # Pull latest core traits/personas
 agentboot build       # Rebuild with org customizations
-agentboot publish     # Push to marketplace
+# Commit the rebuilt plugin to your private marketplace repo (a Git repo)
 # Developers get updates via /reload-plugins or next session
 ```
 
@@ -523,7 +523,6 @@ is: instruction-based refusal + CI-based review (PR bots) + organizational polic
 | Component | Purpose | Phase |
 |-----------|---------|-------|
 | `agentboot export --format plugin` | Generate CC plugin from personas repo | V1 |
-| `agentboot publish` | Push plugin to private marketplace | V1 |
 | Private marketplace template | Scaffold a marketplace.json repo for the org | V1 |
 | `/agentboot:connect` skill | Self-service org connection | V1.5 |
 | Managed settings generator | Generate managed-settings.json for IT deployment | V1.5 |
@@ -566,7 +565,7 @@ Plugin                 .claude/
         └────────────┘
 ```
 
-The developer never runs the `agentboot` CLI. They either:
+Most developers rarely run the raw `agentboot` CLI directly — `/ab` is their interface. They either:
 1. Get the plugin automatically (managed settings)
 2. Get .claude/ by cloning a repo (sync)
 3. Use `/ab connect` for self-service setup

@@ -737,10 +737,12 @@ AgentBoot generalizes this from healthcare PHI to any sensitive data pattern —
 credentials, internal API keys, production URLs, customer data. The hook templates are
 configurable per organization through the domain layer.
 
-**Honest limitation:** Not all agent platforms support hooks. Claude Code has full
-hook support (PreToolUse, PostToolUse, Stop). GitHub Copilot CLI has limited pre-prompt
-hooks. IDE-based agents generally have no hook mechanism. AgentBoot documents these gaps
-per platform rather than promising universal enforcement.
+**Honest limitation:** Hook support varies by platform. AgentBoot emits compliance hooks
+for Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), and GitHub Copilot
+(`.github/hooks/agentboot.json`), all of which block on exit code 2. IDE-based
+community-tier platforms (Cursor, JetBrains) generally have no hook mechanism, so
+enforcement there is advisory only. AgentBoot documents these gaps per platform rather
+than promising universal enforcement.
 
 ---
 
@@ -1249,15 +1251,15 @@ the explanation rather than a gap.
 **Source attribution:**
 Every artifact in the hub carries provenance: who created it, what repo it came from
 if imported, who promoted it and when, and its full scope history. This is not a
-trophy case — it is institutional memory. When a developer asks the Second Brain
+trophy case — it is institutional memory. When a developer asks `/ab`
 *"why does this rule exist?"*, attribution is what makes the answer meaningful: *"This
 gotcha was contributed by the auth team after the 2025-11 session expiry incident.
 Promoted to org scope in Q1 2026."*
 
 Recognition without gamification: the value is not a badge or a leaderboard. An
 engineer's insight becomes visible in the PERSONAS.md that ships to every developer
-in the org, surfaces in Second Brain answers, and is queryable. That is meaningful
-recognition for engineers who care about craft. No gift cards, no points, no rankings.
+in the org, and surfaces when developers ask `/ab` about an artifact's provenance. That is
+meaningful recognition for engineers who care about craft. No gift cards, no points, no rankings.
 
 **The evaluation lens:**
 Every design decision in AgentBoot — new features, workflow changes, architectural
@@ -1268,7 +1270,7 @@ choices — should be evaluated against:
 
 | Verdict | Examples |
 |---|---|
-| Supports promotion | PR-mediated writes at any scope; import duplicate detection as promotion trigger; source attribution in frontmatter; Second Brain surfacing provenance |
+| Supports promotion | PR-mediated writes at any scope; import duplicate detection as promotion trigger; source attribution in frontmatter; `/ab` surfacing provenance |
 | Neutral | Read-only query operations; build/sync pipeline internals |
 | Detracts from promotion | Hard scope permission gates; personal config with no path to sharing; org-only import sources; anonymous contributions |
 
@@ -1348,55 +1350,36 @@ personas share behavior, that behavior belongs in a trait that both compose.
 
 ---
 
-## Monorepo design considerations
+## Monorepo support
 
-> **Status:** Future consideration (Phase 5+). Not currently supported.
-
-AgentBoot's distribution model assumes one repo = one sync target. Each entry in
-`repos.json` is a repo with its own `.git/` directory, and sync writes a single
-`.claude/` directory to the repo root. This works well for multi-repo organizations,
-which is the primary target.
-
-Monorepos pose a different challenge:
+AgentBoot supports monorepos through per-package deployment. A single repo entry in
+`repos.json` can declare a `packages[]` array, and sync writes a scoped `.claude/`
+directory into each listed package path in addition to (or instead of) the repo root.
 
 ```
 monorepo/                  ← single .git/
 ├── packages/
-│   ├── api-service/       ← wants API-specific personas
-│   ├── web-app/           ← wants frontend-specific personas
-│   └── shared-lib/        ← wants library-specific personas
+│   ├── api-service/       ← gets API-specific personas
+│   ├── web-app/           ← gets frontend-specific personas
+│   └── shared-lib/        ← gets library-specific personas
 ```
 
-In this layout, there is one repo but multiple teams with different persona needs.
-Claude Code scopes to the repo root — it reads `.claude/` from the top level, not
-from subdirectories. This means:
+In this layout there is one repo but multiple teams with different persona needs. Each
+package maps to a node in the scope hierarchy, so a package can receive its own persona
+set and trait composition layered on top of the org defaults.
 
-**What works today:**
-- One set of personas for the entire monorepo (deploy to `.claude/` at root)
-- Gotchas with `paths:` frontmatter can target specific packages (e.g.,
-  `paths: ["packages/api-service/**"]`) — this gives per-package rules without
-  per-package personas
+Two patterns are available, and they can be combined:
 
-**What does not work today:**
-- Per-package persona sets (e.g., API team gets `api-contract-reviewer` but
-  web team does not)
-- Per-package trait composition (same persona behaves differently per package)
-- Treating subdirectories as independent sync targets
+- **Per-package personas** — declare `packages[]` in the repo's `repos.json` entry to
+  give each package directory its own scoped `.claude/` output. This lets the API team
+  get `api-contract-reviewer` while the web team does not.
+- **Path-scoped gotchas** — gotchas with `paths:` frontmatter (e.g.,
+  `paths: ["packages/api-service/**"]`) activate only for matching files, giving
+  per-package rules without per-package personas. This is the lightest-weight approach
+  and is often sufficient on its own.
 
-**Design questions for future phases:**
-- Should `repos.json` support a `scope` field that maps a subdirectory within a
-  repo to a specific group/team in the hierarchy?
-- Should AgentBoot generate a single merged `.claude/` that contains all
-  package-specific personas, relying on `paths:` frontmatter to activate them
-  contextually?
-- Or should monorepo support be a documentation-only concern — recommend that
-  monorepo teams use gotchas for package-specific rules and share a single
-  persona set?
-
-The gotchas-based approach (path-scoped rules, shared personas) covers most
-monorepo needs without new infrastructure. Per-package personas may not be
-necessary if the persona is well-designed and the path-scoped gotchas carry the
-domain knowledge.
+The gotchas-based approach covers many monorepo needs without per-package configuration;
+`packages[]` is there when a monorepo genuinely needs distinct persona sets per package.
 
 ---
 

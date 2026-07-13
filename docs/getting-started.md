@@ -101,7 +101,7 @@ If you prefer to set up manually, the AgentBoot repo is a GitHub template:
 
 ```bash
 gh repo create my-org/personas \
-  --template agentboot/agentboot \
+  --template agentboot-dev/agentboot \
   --private \
   --clone
 cd personas
@@ -109,7 +109,7 @@ npm install
 ```
 
 Or use the GitHub web UI: go to
-[github.com/agentboot/agentboot](https://github.com/agentboot/agentboot), click
+[github.com/agentboot-dev/agentboot](https://github.com/agentboot-dev/agentboot), click
 "Use this template", choose "Create a new repository", and clone the result.
 
 ### Local evaluation (no GitHub repo required)

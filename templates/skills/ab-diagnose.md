@@ -119,16 +119,14 @@ When the user asks to run tests:
 1. Determine the test mode. If not specified, ask:
    "Which test mode?
    - **Snapshot** — compares output against baselines (free, fast)
-   - **Behavioral** — runs personas against test scenarios using an LLM (~$5/run, a few minutes)
-   - **LLM-as-Judge** — Opus evaluates persona quality on 5 dimensions (~$20/run)"
+   - **Behavioral** — runs personas against test scenarios using an LLM (~$5/run, a few minutes)"
 
-2. For LLM-powered modes (behavioral, judge), always warn on cost before proceeding:
+2. For LLM-powered modes (behavioral), always warn on cost before proceeding:
    "Behavioral tests cost ~$5 and take a few minutes. Proceed?"
-   "LLM-as-Judge evaluation costs ~$20 and takes 5-10 minutes. Proceed?"
 
    Do not run LLM-powered tests without explicit confirmation.
 
-3. Ask the user which test mode to run: deterministic (`agentboot test`), behavioral, or LLM-as-judge. For deterministic tests, instruct the user to run `npm test` or `npx vitest run` in the hub directory — these cannot be invoked via MCP. For behavioral tests, invoke `agentboot_build` only if the user needs a fresh build first.
+3. Ask the user which test mode to run: deterministic (`agentboot test`) or behavioral. For deterministic tests, instruct the user to run `npm test` or `npx vitest run` in the hub directory — these cannot be invoked via MCP. For behavioral tests, invoke `agentboot_build` only if the user needs a fresh build first.
 
 4. Present results:
 
