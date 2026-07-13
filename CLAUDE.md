@@ -194,16 +194,13 @@ Three-stage progression from flat files to RAG:
 - Generated onboarding checklist from org's actual config
 - Org-authored tips (`onboarding/` dir in personas repo — institutional knowledge transfer)
 
-### Marketplace & Community Sharing
+### Community Sharing
 
-`docs/marketplace.md` — three-layer marketplace (Core → Verified → Community):
-- Traits are the most shareable unit (context-free behavioral blocks)
-- Gotchas rules are technology-specific, not org-specific (universally useful)
-- Domain layers package traits + personas + gotchas for compliance regimes (healthcare, fintech, govtech)
-- SuperClaude partnership: shared trait format standard + cross-listing in marketplaces
-- Contribution model with review process for Verified tier
-- CC plugin packaging: each domain/category = one installable plugin
-- Monetization paths documented for V2+ (premium domains, managed marketplace, consulting, certification)
+Reusable units are shared by contributing them back to the source personas repo
+(traits are the most shareable — context-free behavioral blocks; gotcha rules are
+technology-specific, not org-specific; domain layers package traits + personas +
+gotchas for a compliance regime). Contribution flows through the repo's normal PR
+review. (A hosted component registry is not part of v1.0 — see the roadmap.)
 
 ### CI/CD & Automation
 
@@ -233,9 +230,7 @@ Three-stage progression from flat files to RAG:
 
 - No runtime config schema validation (zod planned but not wired in)
 - `repos.json` is empty — production sync path untested with real external repos (integration tests use temp dirs)
-- Marketplace registry not yet hosted (agentboot/marketplace repo planned)
 - `agentboot optimize` LLM calls require provider configuration (resolveProvider from Phase 6)
-- `agentboot test --judge` LLM invocation deferred until provider integration
 - This repo is the build tool, not a personas hub — orgs create a separate `personas` repo that uses AgentBoot as the build tool
 
 See `docs/internal/plans/remaining-work.md` for full inventory of planned features and research needs.

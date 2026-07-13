@@ -30,19 +30,18 @@ Detect the user's intent from natural language and route to the correct speciali
 - Create, add, write, or scaffold a new artifact (persona, trait, gotcha, lexicon entry, instruction)
 - Import content from existing repos
 - Migrate content from an older format
-- Pull content from the marketplace
 - Promote an artifact to a broader scope
 - Demote an artifact to a narrower scope
 - Share or contribute something to the hub
 - Classify or reclassify an artifact
 
-Keywords: create, add, write, scaffold, import, migrate, pull, promote, demote, share, contribute, classify, move up, move down, narrow, broaden, convert
+Keywords: create, add, write, scaffold, import, migrate, promote, demote, share, contribute, classify, move up, move down, narrow, broaden, convert
 
 **Route to `ab-diagnose` when the user wants to:**
 - Check health or fix problems
 - Validate the hub configuration
 - Lint personas for quality issues
-- Run tests (behavioral, snapshot, judge)
+- Run tests (behavioral, snapshot)
 - Optimize persona weights or token costs
 - Audit for stale or orphaned content
 - Score or analyze persona quality
@@ -58,19 +57,17 @@ Keywords: broken, failing, wrong, check, validate, lint, test, score, optimize, 
 - Configure hub settings
 - Enable or disable personas, traits, or platforms
 - Export to a specific format
-- Publish to the marketplace
 
-Keywords: build, compile, sync, deploy, push, install, setup, uninstall, configure, enable, disable, export, publish, config, settings, connect
+Keywords: build, compile, sync, deploy, push, install, setup, uninstall, configure, enable, disable, export, config, settings, connect
 
 **Route to `ab-query` when the user wants to:**
 - Check status of the hub
 - Get cost estimates or projections
 - Find or search for content
 - Ask about attribution or provenance
-- Browse the catalog
 - Ask informational questions about the hub
 
-Keywords: status, what do I have, how much, cost, find, search, why did we, what's the history, who contributed, catalog, list, show me
+Keywords: status, what do I have, how much, cost, find, why did we, what's the history, who contributed, list, show me
 
 **Multi-step requests:** When the user asks for multiple operations (e.g., "build and then sync"), confirm the sequence and route to the specialist that handles the first operation. Include the full sequence in the handoff so the specialist can chain them.
 

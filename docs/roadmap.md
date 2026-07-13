@@ -7,19 +7,15 @@ sidebar_position: 2
 
 ## Current Status
 
-**v0.9.0** is the current release. Phases 1 through 9 are complete.
+**v0.11.0** is the current release. Phases 1 through 11 are complete.
 
 ### Version Architecture
 
 | Version | Phase(s) | Target | Description |
 |---|---|---|---|
-| **v0.9.0** | 1–9 | Now (stealth) | Full build pipeline, 8 platforms, marketplace infra |
-| **v1.0 GA** | 10–11 | June 2026 | Knowledge layer (brain index), marketplace live, stealth exit |
-| **v1.x** | 12 | Aug–Oct 2026 | Org scale: ADR governance, A2A, domain layers |
-| **v2.0** | 13 | Q1 2027 | ADLC governance: agent registry, approval workflows, compliance scoring, full UI |
-| **v2.x** | 14+ | H1 2027+ | Platform/OEM: non-coding agent compilation, white-labeled hub |
-
-See `docs/internal/plans/commercialization-roadmap.md` for full business model and go-to-market strategy.
+| **v0.11.0** | 1–11 | Now | Full build pipeline, cross-platform output, Codex support, governance |
+| **v1.0 GA** | — | Next | Stabilize and harden the shipped surface for general availability |
+| **Post-v1.0** | — | TBD | Roadmap to be determined |
 
 ---
 
@@ -63,7 +59,7 @@ AgentBoot is distributable as a Claude Code plugin with compliance and privacy f
 
 What shipped:
 - Plugin packaging (plugin.json, agents, skills, hooks)
-- `agentboot export --format plugin` and `agentboot publish`
+- `agentboot export --format plugin`
 - Private marketplace template (marketplace.json)
 - N-tier scope model (flexible node hierarchy replaces fixed groups/teams)
 - Extended scaffolding: `add gotcha`, `add domain`, `add hook`
@@ -188,7 +184,7 @@ Total: 7 output platforms (skill, claude, copilot, cursor, agents, gemini, winds
 Marketplace infrastructure, optimization tooling, JetBrains output, and evaluation maturity.
 
 **Delivered (v0.9.0):**
-- **Marketplace infrastructure** — `agentboot search`, `agentboot pull`, `agentboot publish`. Three-layer registry: Core/Verified/Community. Web catalog at `agentboot.dev/marketplace`. Contribution validation workflow. (AB-150–151)
+- **Marketplace infrastructure** — registry and contribution-validation groundwork for component sharing. (AB-150–151)
 - **agentskills.io export** — `agentboot export --format agentskills` generates `skills-index.json` from compiled SKILL.md files. (AB-152)
 - **`agentboot optimize`** — Reads GELF telemetry, aggregates per-persona metrics (invocations, token cost, rephrase rate, finding distribution). LLM-powered trait weight recommendations. HTML report generation. `--apply` flag writes recommendations to `persona.config.json`. (AB-153–154)
 - **Trait weight calibration — all traits** — Calibration preambles (OFF/LOW/MEDIUM/HIGH/MAX) authored for all 6 traits: critical-thinking, structured-output, source-citation, audit-trail, confidence-signaling, schema-awareness. (AB-155)
@@ -196,8 +192,8 @@ Marketplace infrastructure, optimization tooling, JetBrains output, and evaluati
 - **Copilot agent output** — `.github/agents/{name}.agent.md` with `name`, `model`, `tools` frontmatter. Higher-fidelity than `copilot-instructions.md`. (AB-157)
 - **Agent pattern selection** — `pattern` field in `persona.config.json`: `react`, `rewoo`, `router`, `sequential`, `tool-calling`. Validation warns on misuse. (AB-158)
 - **Managed settings group/team fragments** — `10-group.json` per group and `20-team.json` per team alongside existing `00-org.json`. Full MDM scope coverage. (AB-159)
-- **LLM-as-Judge evaluation** — 5-dimension persona quality scoring (accuracy, precision, recall, specificity, actionability). `agentboot test --judge --min-score 0.7`. (AB-160)
-- **Intelligence-driven roadmap** — Nightly synthesis generates prioritized roadmap suggestions to `docs/internal/plans/roadmap-suggestions.md`. Human review gated. (AB-161)
+- **LLM-as-Judge evaluation** — 5-dimension persona quality scoring (accuracy, precision, recall, specificity, actionability). (AB-160)
+- **Intelligence-driven roadmap** — Nightly synthesis generates prioritized roadmap suggestions for maintainer review. (AB-161)
 
 Total: 8 output platforms (skill, claude, copilot, cursor, agents, gemini, windsurf, jetbrains). 944 tests across 18 files.
 
@@ -205,23 +201,20 @@ Total: 8 output platforms (skill, claude, copilot, cursor, agents, gemini, winds
 
 ---
 
-## Phase 10: "Engineer Traction" — NEXT (v0.10.0)
+## Phase 10: "Engineer Traction" — COMPLETE (v0.10.0)
 
-Make the harness worth using every day. The Second Brain is the centerpiece.
+Make the harness worth using every day.
 
 **CLI feature freeze:** Starting Phase 10, the `agentboot` CLI is the CI and scripting interface only. `/ab` is the human interface. All CLI subcommands are soft-deprecated once `/ab` covers the equivalent ground — they remain functional but receive no new features or enhancements. Bug fixes are still applied. No new CLI subcommands in Phase 10 unless there is no `/ab` alternative.
 
-What's planned:
-- **Second Brain Stage 2** — SQLite knowledge index + `agentboot-brain` MCP server + `agentboot brain` CLI (index/query/add/stats). Queryable org memory at the file level.
-- **Second Brain Stage 2.5** — ADR and incident ingestion as first-class knowledge types. `agentboot add adr` / `agentboot add incident` scaffolding.
-- **`/ask` skill** — natural language queries against the Second Brain. "Why does the session middleware not use Redis directly?" → ADR surface, zero prompting.
-- **Harness template library** — `agentboot add template api-service|event-processor|data-pipeline`. Traits + gotchas + personas pre-bundled for common topologies. Ships in Core marketplace tier.
+What shipped:
+- **Harness template library** — `agentboot add template api-service|event-processor|data-pipeline`. Traits + gotchas + personas pre-bundled for common topologies.
 - **Import from remote repos + interop** — `agentboot import --url github.com/org/repo`. Supports AGENTS.md repos, Google Conductor repos, Context Hub repos, SuperClaude repos.
 - **`agentboot audit`** — periodic consistency checks: orphaned traits, dead gotchas, stale ADRs, scope shadows, manifest drift.
 - **Global hub registry** — `~/.agentboot/config.json`, `agentboot connect`, `agentboot use`, `agentboot hubs`.
 - **Agentboot authoring instruction** — `core/instructions/agentboot-authoring.instructions.md` compiled into every hub's `.claude/rules/`. Teaches Claude the trait format, weight semantics, validation rules, and anti-patterns so free-form assistance produces artifacts that pass `agentboot validate --strict` without correction.
 - **MCP server + `/ab` skill (built together)** — these ship as a unit because `/ab` depends on live hub state from MCP to be useful.
-  - *MCP server*: `agentboot mcp-server` entry added to the compiled `.mcp.json` in `core/`. Tools: `get_repos`, `get_personas`, `get_traits`, `get_build_status`, `get_validate_warnings`. Sets up the Second Brain query path when Stage 2 lands.
+  - *MCP server*: `agentboot mcp-server` entry added to the compiled `.mcp.json` in `core/`. Tools: `get_repos`, `get_personas`, `get_traits`, `get_build_status`, `get_validate_warnings`.
   - *`/ab` skill*: single NL-driven entry point in `core/skills/`, compiled to every repo (hub and spoke). Natural language intent → clarify with user → confirm plan → execute. Replaces the separate `/add-trait`, `/add-gotcha`, `/add-persona`, and `/agentboot` meta-skill concepts — those become internal routing, not user-facing commands.
   - *Interaction model*: clarify ambiguity first, then present a concrete plan, then execute with `agentboot` CLI calls. Yolo mode (skip confirm step) planned as a configurable flag in a later release.
   - *Scope*: `/ab` teaches scope vocabulary (org / group / team / repo / path) through repeated clarification questions rather than requiring the user to know it upfront. Users learn the model by being asked, not by reading docs.
@@ -254,27 +247,13 @@ What's planned:
 
 ---
 
-## Phase 11: "Stealth Exit" — (v0.11.0)
+## Phase 11: "Codex Platform & Governance" — COMPLETE (v0.11.0)
 
-Target: AI Engineer World's Fair, June 29–July 2, 2026. Come out of stealth with a live marketplace, a working Second Brain demo, and competitive positioning.
-
-What's planned:
-- **agentboot.dev/marketplace live** — hosted registry; `agentboot publish` functional; Core/Verified/Community tiers; web catalog.
-- **Community launch** — Dev.to, Hacker News Show HN, AI Engineer World's Fair, Latent Space Discord. Messaging: "context engineering, not prompt engineering."
-- **SuperClaude cross-listing** — shared portable trait format standard; cross-list in both marketplaces; submit to AAIF/AGENTS.md working group.
-- **MCP marketplace listing** — list `agentboot-brain` and `agentboot` MCP servers on mcp.so, pulsemcp, Smithery.
-- **Security hardening** — CVE audit against CVE-2025-59536/CVE-2026-21852/DXT patterns; security advisory; new `agentboot validate` check for dangerous hook patterns.
-- **OpenCode / Cline research** — integration viability assessment for 9th/10th output platforms.
-- **Competitive positioning** — internal docs: Google Conductor, Context Hub, SuperClaude, Copilot Cowork.
-- **Catalog built-in platform artifacts** — catalog what each agent platform (Claude Code, Copilot, Cursor, Gemini) ships natively alongside AB core artifacts; surface gaps and overlaps per platform in the marketplace.
-- **Copilot per-request cost model** — `agentboot cost-estimate` currently models token cost; Copilot CLI bills per premium request, not per token. Model both in cost-estimate output.
-- **Conventions and defaults docs** — how AgentBoot establishes conventions in a volatile/new industry; rationale for current defaults; how orgs override them.
-- **Anonymized usage telemetry opt-in** — user/org option to share anonymized data; informs roadmap prioritization.
-- **Platform obsolescence playbook** — design doc for the scenario where a platform ships a native feature that replaces AB-managed content; migration and graceful deprecation path.
-- **CLI rename deferred from Phase 10** — install path rename (`hub` → `org`, `connect` → `user`) once CLI freeze lifts; post-adoption timing.
-- **Shell tab completion / OMZ plugin** — deferred from Phase 10 CLI freeze.
-- **`agentboot/agentboot` as GitHub template** — research and product planning: using the repo as a `gh repo create --template` source; concerns TBD.
-- **Richer CLI help** — verbose mode, examples per subcommand, man pages; deferred from Phase 10 CLI freeze.
+What shipped:
+- **OpenAI Codex platform support** — `.codex/` config, hooks, and skills.
+- **Governance improvements** — drift detection, HARD/SOFT guardrails, and managed-settings output.
+- **Global hub registry** — `/ab` resolves the hub from any spoke repo.
+- **Security hardening** — CVE audit against known hook/DXT patterns; security advisory; a new `agentboot validate` check for dangerous hook patterns.
 
 ---
 
@@ -285,12 +264,10 @@ Gated on engineer adoption landing. Goals: compliance differentiators, governanc
 What's planned:
 - **ADR governance** -- exception lifecycle, expired ADR validation errors, `agentboot adr` CLI.
 - **`/insights` skill + org dashboard** -- personal prompt pattern extraction; anonymized org metrics (rephrase rates, false positives, cost by team). Raw prompts never leave the machine.
-- **Domain layers: healthcare/fintech/govtech** -- complete compliance packages (traits + personas + gotchas + instructions); Verified marketplace tier.
+- **Domain layers: healthcare/fintech/govtech** -- complete compliance packages (traits + personas + gotchas + instructions).
 - **A2A protocol support** -- Agent-to-Agent server/client; personas as A2A-callable services; complements MCP.
 - **Autonomy progression** -- Advisory → Auto-approve → Autonomous, with telemetry-gated promotion.
 - **Abstract/binding composition** -- org semantic contracts, team implementations, validation check 9.
-- **Second Brain Stage 3** -- sqlite-vec semantic retrieval for 500+ knowledge item hubs.
-- **OpenCode + Cline output platforms** -- if Phase 11 research confirms viability.
-- **Personal brain / brain of brains** -- human-scoped knowledge federation. A person works across multiple orgs (each with its own hub and Second Brain). The brain of brains is a personal layer that aggregates across them — AT brain, HG brain, AB brain — queryable as a unified personal knowledge index. Org brains remain org-scoped; the personal layer is additive. Design TBD; see discussion notes.
+- **OpenCode + Cline output platforms** -- integration viability assessment for additional community-tier output platforms.
 - **Distributed repo operations** -- collateral of repo management: `agentboot git pull` (or `/ab git pull all`) runs a git operation across all registered repos. Surfaces naturally once `/ab manage` exists.
 - **OS user-scope via symlinks** -- personal AgentBoot installation scoped to the OS user rather than a hub, managed via symlinks. Enables solo developers without a formal org hub.

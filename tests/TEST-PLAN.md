@@ -1,6 +1,6 @@
 # AgentBoot Test Plan
 
-Last updated: 2026-04-12. Total: 25 test files, 1040+ tests passing.
+Last updated: 2026-07-12. Total: 37 test files, 1198 tests passing.
 
 ## Test Suite Overview
 
@@ -28,7 +28,7 @@ Last updated: 2026-04-12. Total: 25 test files, 1040+ tests passing.
 | `contribution.test.ts` | ~15 | Unit: contribution review, duplicate detection, Jaccard similarity | <200ms |
 | `export.test.ts` | ~10 | Integration: agentskills.io export, skills-index.json schema | ~3s |
 | `monorepo.test.ts` | ~10 | Integration: monorepo detection, per-package sync | ~3s |
-| *(other test files)* | ~100 | intelligence, judge, optimize-weights, etc. | ~5s |
+| *(other test files)* | remainder | intelligence, judge, optimize-weights, trait-weights, crossplatform-hooks, phase11-* (codex, hooks, registry, guardrails, compile, governance, audit-coverage, foundation, ab-import, mcp-dotclaude), gitignore, install, contribution, cost-estimate, etc. | ~5s |
 | **Total** | **1040+** | | ~52s |
 
 ## Coverage by Feature
@@ -170,7 +170,7 @@ tests. All 15 opportunities from that table are now covered.
 | dev-sync.ts copyRecursive/cleanMatchingFiles | Not exported — only tested via integration |
 | compile.ts pure functions | Not exported — only tested via CLI integration |
 | Catalog HTML in browser (headless) | Requires Playwright/Puppeteer — see integration stub in build-catalog.test.ts |
-| XSS in data-search attribute | **Known bug** — see "Bugs Found" #16 below. Fix the bug, then update the test assertion |
+| XSS in data-search attribute | Fixed — see "Bugs Found" #16 below. `escapeHtml()` is now applied to the `data-search` attribute |
 
 ### Manual Test Checklist
 
@@ -207,6 +207,6 @@ Run before each release:
 
 ### Bugs Found in 2026-04-05 Session (from automation of human-in-the-loop-priority.md)
 
-16. **ERROR: XSS in data-search attribute (build-catalog.ts — OPEN)** — The `escapeHtml()` function is called on component descriptions for `<p>` text content display, but the same description is injected raw (without escaping) into the `data-search` HTML attribute used for client-side filtering. An attacker who controls a registry component description can inject attribute-context XSS payloads (e.g., `onerror=alert(2)` via `<img src=x onerror=...>`). Documented in `tests/build-catalog.test.ts` — the test currently asserts the broken behavior with a comment explaining the fix required. To fix: call `escapeHtml(comp.description)` when building the `data-search` attribute in `scripts/build-catalog.ts`. After fixing, change the test assertion to `expect(html).not.toContain('onerror=alert(2)')`.
+16. **ERROR: XSS in data-search attribute (build-catalog.ts — FIXED)** — Previously the `data-search` HTML attribute received the raw component description while `<p>` text content was escaped, allowing an attacker who controls a registry component description to inject attribute-context XSS payloads. `scripts/build-catalog.ts` now calls `escapeHtml()` on the name and description when building the `data-search` attribute; `tests/build-catalog.test.ts` asserts the escaped output.
 
 17. **WARN: validate --strict exits code 1, not code 2 (validate.ts — OPEN)** — The manual test plan (TP-03-12) documents that `validate --strict` should exit with code 2 when warnings are promoted to errors. The implementation exits with code 1 (the default `process.exit(1)` path). There is no `process.exit(2)` in `scripts/validate.ts`. The `tests/validate.test.ts` strict-mode tests document this as the actual behavior. To fix: add a dedicated exit code 2 path for strict-mode failures in validate.ts, then update the test to assert `status === 2`.

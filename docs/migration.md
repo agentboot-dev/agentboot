@@ -119,8 +119,8 @@ cd ~/work/sideproject-personas && agentboot install
 ```
 
 To change the default hub, edit `~/.agentboot/config.json` and update the
-`"defaultHub"` field to the path you want. `agentboot hubs` (coming in a future
-release) will make this interactive.
+`"defaultHub"` field to the path you want, or run `agentboot hubs` to view and
+manage registered hubs.
 
 ---
 
@@ -185,14 +185,6 @@ You should see `AgentBoot MCP server listening` with the hub path shown. `Ctrl+C
 The global registry (`~/.agentboot/config.json`) has a stale `defaultHub` path.
 Open it and update `"defaultHub"` to your hub's current absolute path, or re-run
 `agentboot install` from the hub to regenerate it automatically.
-
-**AgentBoot defaults are over the 8,000-token persona budget**
-
-This is a known issue in v0.10.0 affecting the four built-in personas
-(`review-code`, `review-security`, `gen-tests`, `gen-testdata`). These personas
-compile to 10,000–11,000 tokens when all traits are composed. This does not prevent
-compilation or sync — it is a budget warning only. The fix ships in a subsequent
-patch. Your org's custom personas are not affected.
 
 ---
 

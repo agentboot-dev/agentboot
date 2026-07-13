@@ -92,15 +92,20 @@ One build produces output for multiple platforms:
 
 | Platform | Output | Location |
 |---|---|---|
-| Claude Code | Agents, skills, rules, traits, CLAUDE.md | `.claude/` |
-| GitHub Copilot | copilot-instructions.md fragments | `.github/` |
+| Claude Code | Agents, skills, rules, traits, CLAUDE.md, hooks | `.claude/` |
+| OpenAI Codex | Config, hooks, skills | `.codex/` |
+| GitHub Copilot | copilot-instructions.md fragments, hooks | `.github/` |
 | agentskills.io | Cross-platform SKILL.md | Configurable |
+
+Official support targets the CLI surfaces of Claude Code, Codex, and GitHub Copilot.
+AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the universal
+`AGENTS.md` standard on a community-supported basis.
 
 ### Build once, deploy everywhere
 
 Your personas repo is the source. Target repos receive the compiled output. One PR to the personas repo rebuilds and syncs to every registered repo.
 
-AgentBoot only writes to `.claude/` and `.github/copilot-instructions.md` — it never touches application code, configuration, or dependencies. Sync PRs are safe to auto-merge.
+AgentBoot only writes agent-configuration files (`.claude/`, `.github/`, `.codex/`, and other platform config directories) — it never touches application code, configuration, or dependencies. Sync PRs are safe to auto-merge.
 
 ## Configuration
 
@@ -139,12 +144,12 @@ AgentBoot ships generic. Your industry has specific requirements. Add domain-spe
 | Core traits (6) | Stable |
 | V1 personas (4) | Stable |
 | Build pipeline (validate, compile, sync) | Stable |
-| CLI (12 commands) | Stable |
+| CLI | Stable |
 | Scope hierarchy + distribution | Stable |
 | Lint + token budgets | Stable |
-| Compliance domain template | Planned |
-| MCP knowledge base | Planned |
-| Cursor / Gemini output | Planned |
+| Compliance domain template | Stable |
+| MCP server | Stable |
+| Cursor / Gemini / Codex output | Stable |
 
 ## Contributing
 

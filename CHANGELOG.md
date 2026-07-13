@@ -12,11 +12,24 @@ full PR-level detail; this file is the curated, human-readable summary.
 Work on the `release/v0.11` branch toward the v1.0 line.
 
 ### Added
+- Cross-platform compliance hooks: AgentBoot now emits compliance/guardrail hooks for
+  Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), and GitHub Copilot
+  (`.github/hooks/agentboot.json`) — all blocking on exit code 2 — from one canonical set of
+  portable hook scripts, so the three platforms stay in lock-step.
 - Weight-tier trait sections: a trait may split weight-sensitive guidance into
   `### LOW|MEDIUM|HIGH|MAX` sections and the compiler injects only the tier nearest the
   persona's weight (opt-in; untiered traits compile unchanged), cutting persona token bloat.
 - `/ab` status now reports the full artifact inventory (personas, traits, gotchas, lexicons —
   core vs org-specific), not just personas.
+
+### Changed
+- GA surface-pruning: the marketplace subsystem (`publish`, `marketplace`, `registry`
+  commands) and the `test --judge` / `--verbose` / `--min-score` evaluation flags are
+  hidden from top-level help — they remain functional but are not advertised in the v1.0 surface.
+
+### Removed
+- Dropped the `agentboot_optimize_metrics` MCP tool (a non-functional stub); the real
+  capability is the telemetry-driven `agentboot optimize` CLI.
 
 ### Fixed
 - Validation now scans config-referenced domain layers (`domains/*`) — previously a domain's
