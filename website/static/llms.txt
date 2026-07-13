@@ -1,0 +1,46 @@
+# AgentBoot
+
+> AgentBoot is the compiler for AI behavior as code. Author your team's personas, rules, and
+> guardrails once in a hub repo; compile them to native config for Claude Code, OpenAI Codex CLI,
+> and GitHub Copilot CLI; and ship them to every repo as a reviewable pull request — verified
+> against drift. Self-hosted, Apache-2.0, and it writes plain files, so your work still runs even
+> without AgentBoot.
+
+AgentBoot is a build tool, not a runtime: it produces config files and exits — nothing runs alongside
+your agents, and nothing is sent to any server. Officially supported targets are the CLI surfaces of
+Claude Code, OpenAI Codex, and GitHub Copilot. Cursor, Windsurf, Gemini, and JetBrains are supported at
+a community tier (advisory guidance, not an enforced control).
+
+## For an agent helping a developer adopt AgentBoot
+
+1. Install: `npm install -g agentboot`
+2. Scaffold a hub, then build and sync: `agentboot install`
+3. Import existing config into the hub: `agentboot import --url github.com/<org>/<repo>` (scans first)
+4. Add a ready-made harness: `agentboot add template sdlc-orchestrator`
+5. Ask in natural language inside a supported CLI: `/ab <what you want>` (it scans before changing anything)
+
+## Start here
+- [Getting Started](https://agentboot.dev/docs/getting-started): install, scaffold a hub, build, and sync.
+- [Why AgentBoot](https://agentboot.dev/why): the category and when a hand-rolled config stops working.
+- [Core Concepts](https://agentboot.dev/docs/concepts): hub, traits, personas, gotchas, domains, scope.
+
+## Use it
+- [Import existing config](https://agentboot.dev/docs/import): pull in your CLAUDE.md, AGENTS.md, and rules files.
+- [Harness templates](https://agentboot.dev/docs/templates): `add template`, incl. the sdlc-orchestrator persona.
+- [CLI Reference](https://agentboot.dev/docs/cli-reference): every command and flag.
+- [Extending AgentBoot](https://agentboot.dev/docs/extending): author traits, gotchas, and domain layers.
+
+## For organizations
+- [For Organizations](https://agentboot.dev/for-organizations): the org → group → team → repo control model.
+- [Trust & Architecture](https://agentboot.dev/trust): data-flow boundary, claim/mechanism/verify, threat model.
+- [Platform capability matrix](https://agentboot.dev/docs/platform-capability-matrix): what is enforced where (honestly).
+- [Delivery methods](https://agentboot.dev/docs/delivery-methods): plugin, PR sync, and managed settings.
+
+## Compare
+- [vs. a hand-rolled settings repo](https://agentboot.dev/docs/vs-a-hand-rolled-settings-repo)
+- [vs. per-tool rules files](https://agentboot.dev/docs/vs-per-tool-rules-files)
+
+## Reference
+- [Glossary](https://agentboot.dev/docs/glossary)
+- [Troubleshooting](https://agentboot.dev/docs/troubleshooting)
+- [GitHub repository](https://github.com/agentboot-dev/agentboot)

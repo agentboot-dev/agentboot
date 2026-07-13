@@ -10,6 +10,7 @@ const sidebars: SidebarsConfig = {
         'getting-started',
         'concepts',
         'configuration',
+        'import',
       ],
     },
     {
@@ -20,6 +21,7 @@ const sidebars: SidebarsConfig = {
         'cli-reference',
         'prompt-guide',
         'model-selection',
+        'templates',
       ],
     },
     {
@@ -28,15 +30,17 @@ const sidebars: SidebarsConfig = {
       items: [
         'delivery-methods',
         'org-connection',
+        'platform-capability-matrix',
+        'hub-cicd',
         'privacy',
       ],
     },
     {
       type: 'category',
-      label: 'Community',
+      label: 'Compare',
       items: [
-        'marketplace',
-        'roadmap',
+        'vs-a-hand-rolled-settings-repo',
+        'vs-per-tool-rules-files',
       ],
     },
     {
@@ -45,6 +49,9 @@ const sidebars: SidebarsConfig = {
       items: [
         'glossary',
         'troubleshooting',
+        'migration',
+        'github-bot',
+        'roadmap',
       ],
     },
   ],
