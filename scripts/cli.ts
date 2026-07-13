@@ -1184,8 +1184,8 @@ program
   .option("--snapshot", "create or update snapshot baseline from current dist/")
   .option("--regression", "compare current dist/ against saved snapshot")
   .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
-  // GA surface-pruning (R.2): the LLM-as-Judge evaluation folds into GSD (6-27
-  // decision) — its flags are hidden in v1.0 (still functional, not advertised).
+  // The LLM-as-Judge evaluation is not part of the advertised v1.0 surface —
+  // its flags are hidden (still functional, just not surfaced in help).
   .addOption(new Option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)").hideHelp())
   .addOption(new Option("--verbose", "show detailed rationale per dimension (for --judge)").hideHelp())
   .addOption(new Option("--min-score <score>", "minimum passing score for --judge (default: 3.0)").argParser(parseFloat).hideHelp())

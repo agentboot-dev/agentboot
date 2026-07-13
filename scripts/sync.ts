@@ -1104,7 +1104,7 @@ function syncRepoTarget(
 
   // B.1: flag managed files this repo's .gitignore would exclude. A synced file that
   // git ignores is invisible to the team AND to drift-check — it silently defeats the
-  // whole governance loop (the fortael rollout had .claude/ gitignored in 5 of 6 repos).
+  // whole governance loop (a common failure mode: .claude/ gitignored in most repos).
   const conflicts = detectGitignoreConflicts(effectivePath, result.filesWritten);
   if (conflicts.length > 0) {
     result.gitignoreConflicts = conflicts.map((c) => c.file);
