@@ -453,9 +453,9 @@ program
 
 program
   .command("add")
-  .description("Scaffold a new persona, trait, gotcha, domain, hook, or classify a prompt")
-  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt")
-  .argument("<name>", "name for the new item (lowercase-with-hyphens)")
+  .description("Scaffold a persona, trait, gotcha, domain, hook, or template — or classify a prompt")
+  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt, template")
+  .argument("<name>", "name for the new item (lowercase-with-hyphens); for template, the template name")
   .action(async (type: string, name: string) => {
     // Validate name format (skip for prompt type — name is content/path, not an identifier)
     if (type !== "prompt" && !/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
@@ -765,8 +765,74 @@ exit 0
         throw err;
       }
 
+    } else if (type === "template") {
+      // §L: install a pre-packaged harness bundle from the shipped templates.
+      // A template is a ready-to-tune set of hub files (persona + config, etc.)
+      // that maps directly into the user's hub layout.
+      const harnessDir = path.join(ROOT, "templates", "harness");
+      const templateDir = path.join(harnessDir, name);
+      const manifestPath = path.join(templateDir, "template.json");
+
+      if (!fs.existsSync(manifestPath)) {
+        const available = fs.existsSync(harnessDir)
+          ? fs.readdirSync(harnessDir).filter((d) => fs.existsSync(path.join(harnessDir, d, "template.json")))
+          : [];
+        console.error(chalk.red(`Unknown template: '${name}'.`));
+        if (available.length > 0) {
+          console.error(chalk.gray(`  Available templates: ${available.join(", ")}`));
+        }
+        process.exit(1);
+      }
+
+      let manifest: { name?: string; activation?: string };
+      try {
+        manifest = JSON.parse(stripJsoncComments(fs.readFileSync(manifestPath, "utf-8")));
+      } catch {
+        console.error(chalk.red(`Template '${name}' has an unreadable template.json`));
+        process.exit(1);
+        return;
+      }
+
+      const filesRoot = path.join(templateDir, "files");
+      if (!fs.existsSync(filesRoot)) {
+        console.error(chalk.red(`Template '${name}' has no files/ payload`));
+        process.exit(1);
+      }
+
+      // Collect the payload (recursive), then check for conflicts BEFORE writing
+      // anything — an `add template` either applies cleanly or not at all.
+      const toCopy: Array<{ src: string; rel: string }> = [];
+      const walk = (dir: string, rel: string): void => {
+        for (const entry of fs.readdirSync(dir)) {
+          const abs = path.join(dir, entry);
+          const r = rel ? `${rel}/${entry}` : entry;
+          if (fs.statSync(abs).isDirectory()) walk(abs, r);
+          else toCopy.push({ src: abs, rel: r });
+        }
+      };
+      walk(filesRoot, "");
+
+      const conflicts = toCopy.filter((f) => fs.existsSync(path.join(cwd, f.rel)));
+      if (conflicts.length > 0) {
+        console.error(chalk.red(`Refusing to overwrite existing files:`));
+        for (const c of conflicts) console.error(chalk.gray(`  ${c.rel}`));
+        process.exit(1);
+      }
+
+      for (const f of toCopy) {
+        const dest = path.join(cwd, f.rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(f.src, dest);
+      }
+
+      console.log(chalk.bold(`\n${chalk.green("✓")} Added template: ${manifest.name ?? name}\n`));
+      for (const f of toCopy) console.log(chalk.gray(`  ${f.rel}`));
+      if (manifest.activation) {
+        console.log(chalk.gray(`\n  ${manifest.activation}\n`));
+      }
+
     } else {
-      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook, prompt`));
+      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook, prompt, template`));
       process.exit(1);
     }
   });

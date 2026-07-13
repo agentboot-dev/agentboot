@@ -12,6 +12,10 @@ full PR-level detail; this file is the curated, human-readable summary.
 Work on the `release/v0.11` branch toward the v1.0 line.
 
 ### Added
+- `agentboot add template <name>` installs a pre-packaged harness bundle into a hub, and the
+  first template ships: **`sdlc-orchestrator`** — a phase-gated delivery persona (spec/PRD →
+  architecture → parallel-worktree implementation → QA gates → review) whose rigor is tunable
+  via trait weights.
 - Cross-platform compliance hooks: AgentBoot now emits compliance/guardrail hooks for
   Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), and GitHub Copilot
   (`.github/hooks/agentboot.json`) — all blocking on exit code 2 — from one canonical set of
