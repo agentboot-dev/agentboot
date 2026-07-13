@@ -208,7 +208,7 @@ Make the harness worth using every day.
 **CLI feature freeze:** Starting Phase 10, the `agentboot` CLI is the CI and scripting interface only. `/ab` is the human interface. All CLI subcommands are soft-deprecated once `/ab` covers the equivalent ground — they remain functional but receive no new features or enhancements. Bug fixes are still applied. No new CLI subcommands in Phase 10 unless there is no `/ab` alternative.
 
 What shipped:
-- **Harness template library** — `agentboot add template api-service|event-processor|data-pipeline`. Traits + gotchas + personas pre-bundled for common topologies.
+- **Harness templates** — `agentboot add template <name>` installs a pre-packaged bundle into a hub. Ships with `sdlc-orchestrator` (a phase-gated spec → architecture → parallel-implementation → QA → review persona); more topology templates are planned.
 - **Import from remote repos + interop** — `agentboot import --url github.com/org/repo`. Supports AGENTS.md repos, Google Conductor repos, Context Hub repos, SuperClaude repos.
 - **`agentboot audit`** — periodic consistency checks: orphaned traits, dead gotchas, stale ADRs, scope shadows, manifest drift.
 - **Global hub registry** — `~/.agentboot/config.json`, `agentboot connect`, `agentboot use`, `agentboot hubs`.
