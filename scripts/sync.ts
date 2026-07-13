@@ -1330,7 +1330,6 @@ function generateManifest(
 
 function createSyncPR(
   repoPath: string,
-  targetDir: string,
   config: AgentBootConfig,
   result: SyncResult
 ): void {
@@ -1349,13 +1348,15 @@ function createSyncPR(
   }
 
   // Check if there are actual changes
-  const diffResult = spawnSync("git", ["diff", "--quiet"], { cwd: repoPath, stdio: "pipe" });
-  const cachedResult = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
-  const untrackedResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard", targetDir], { cwd: repoPath, stdio: "pipe" });
-  const untracked = untrackedResult.stdout?.toString().trim() ?? "";
-
-  if (diffResult.status === 0 && cachedResult.status === 0 && !untracked) {
-    return; // No changes
+  // Stage exactly the files sync WROTE (repo-relative paths). This covers every
+  // platform target (.claude/.cursor/.codex/.gemini/.junie/.windsurf/.github) AND
+  // root-level files (AGENTS.md, GEMINI.md, .windsurfrules, .mcp.json, CLAUDE.md).
+  // Previously createSyncPR staged only [targetDir, .github, .mcp.json, CLAUDE.md]
+  // with targetDir hardcoded to .claude — so PR mode created NO PR at all for
+  // cursor/gemini/windsurf/jetbrains/codex repos and always dropped root AGENTS.md.
+  const writtenPaths = result.filesWritten.filter((f) => fs.existsSync(path.join(repoPath, f)));
+  if (writtenPaths.length === 0) {
+    return; // nothing written — no PR
   }
 
   const dateSlug = new Date().toISOString().slice(0, 10);
@@ -1371,6 +1372,7 @@ function createSyncPR(
     branch = `${branch}-${counter}`;
   }
 
+  let originalBranch = "";
   try {
     const run = (cmd: string, args: string[]) => {
       const r = spawnSync(cmd, args, { cwd: repoPath, stdio: "pipe" });
@@ -1380,19 +1382,17 @@ function createSyncPR(
       return r.stdout?.toString().trim() ?? "";
     };
 
+    originalBranch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
     run("git", ["checkout", "-b", branch]);
-    // Only add paths that exist
-    const addPaths = [targetDir];
-    if (fs.existsSync(path.join(repoPath, ".github"))) {
-      addPaths.push(".github/");
+    run("git", ["add", "--", ...writtenPaths]);
+
+    // If staging produced no actual change (files identical to what's committed),
+    // there is nothing to PR — abort cleanly (the finally restores the branch).
+    const stagedClean = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+    if (stagedClean.status === 0) {
+      return;
     }
-    // Root-level files written outside targetDir
-    for (const rootFile of [".mcp.json", "CLAUDE.md"]) {
-      if (fs.existsSync(path.join(repoPath, rootFile))) {
-        addPaths.push(rootFile);
-      }
-    }
-    run("git", ["add", ...addPaths]);
+
     run("git", ["commit", "-m", titleTemplate]);
     run("git", ["push", "-u", "origin", branch]);
     const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", "Automated AgentBoot sync"]);
@@ -1400,6 +1400,12 @@ function createSyncPR(
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     result.errors.push(`PR creation failed: ${errMsg}`);
+  } finally {
+    // Always return to the original branch — previously the repo was left checked
+    // out on the sync branch (M12) on both success and failure.
+    if (originalBranch && originalBranch !== "HEAD") {
+      spawnSync("git", ["checkout", originalBranch], { cwd: repoPath, stdio: "pipe" });
+    }
   }
 }
 
@@ -1484,6 +1490,14 @@ async function main(): Promise<void> {
   const isForce = argv.includes("--force");
   const modeIdx = argv.indexOf("--mode");
   const cliMode = modeIdx !== -1 ? argv[modeIdx + 1] : undefined;
+  // Optional repo-name filter (repeatable): --repo <name>. Scopes the sync to
+  // specific repos.json entries (matched by label or path basename) instead of
+  // syncing every repo. Callers like the MCP sync tool use this to honor a
+  // requested repo subset rather than writing to all repos.
+  const repoFilter: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--repo" && argv[i + 1]) repoFilter.push(argv[i + 1]!);
+  }
 
   console.log(chalk.bold("\nAgentBoot — sync"));
   console.log(chalk.gray(`Config: ${configPath}`));
@@ -1515,11 +1529,24 @@ async function main(): Promise<void> {
   }
 
   // Load repos.
-  const repos = loadRepos(reposPath, configDir);
+  const allRepos = loadRepos(reposPath, configDir);
 
-  if (repos.length === 0) {
+  if (allRepos.length === 0) {
     console.log(chalk.yellow("No repos in repos.json — nothing to sync."));
     process.exit(0);
+  }
+
+  // Apply the optional --repo filter.
+  const repos = repoFilter.length === 0
+    ? allRepos
+    : allRepos.filter((r) => {
+        const want = new Set(repoFilter);
+        return want.has(r.label ?? "") || want.has(path.basename(r.path)) || want.has(r.path);
+      });
+
+  if (repos.length === 0) {
+    console.error(chalk.red(`No repos.json entries matched --repo ${repoFilter.join(", ")}`));
+    process.exit(1);
   }
 
   console.log(chalk.cyan(`Syncing to ${repos.length} repo${repos.length > 1 ? "s" : ""}...`));
@@ -1561,7 +1588,6 @@ async function main(): Promise<void> {
 
     // AB-28: Create ONE PR per repo entry (not per package) in PR mode
     if (isPrMode && !dryRun && successResults.length > 0) {
-      const targetDir = config.sync?.targetDir ?? ".claude";
       // Merge all package results into a single result for the PR
       const mergedResult: SyncResult = {
         repo: successResults[0]!.repo,
@@ -1572,7 +1598,7 @@ async function main(): Promise<void> {
         errors: [],
         dryRun,
       };
-      createSyncPR(path.resolve(entry.path), targetDir, config, mergedResult);
+      createSyncPR(path.resolve(entry.path), config, mergedResult);
       // If PR creation added errors, include them in the results for the summary
       if (mergedResult.errors.length > 0) {
         results.push(mergedResult);

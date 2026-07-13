@@ -662,15 +662,18 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
     console.log(chalk.green("  ✓ /ab skill files written to .claude/agents/"));
   }
 
-  // Write .mcp.json with AgentBoot MCP server entry
+  // Write .mcp.json with AgentBoot MCP server entry.
+  // NOTE: deliberately NO env.AGENTBOOT_HUB. This file is committed and pushed, so
+  // baking an absolute local path here would leak the author's home path/username
+  // and break the hub for every teammate whose checkout lives elsewhere. The MCP
+  // server resolves the hub from its cwd and from the machine-local registry
+  // (~/.agentboot/config.json, written by registerHub below) — sync.ts omits it for
+  // the same reason.
   const mcpConfig = {
     mcpServers: {
       agentboot: {
         command: "npx",
         args: ["agentboot", "mcp-server"],
-        env: {
-          AGENTBOOT_HUB: path.resolve(targetDir),
-        },
       },
     },
   };
@@ -1615,12 +1618,20 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
           return r.stdout?.trim() ?? "";
         };
 
-        // Check that hub working tree is clean before branching
+        // Check that the hub tree is clean before branching — but IGNORE the
+        // repos.json we just wrote (addToReposJson runs before this block, so the
+        // tree is always dirty by exactly that file). Without this exclusion the
+        // branch+PR path below was unreachable and the flow silently no-op'd.
         const statusResult = spawnSync("git", ["status", "--porcelain"], {
           cwd: hubDir!, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
         });
-        if (statusResult.stdout?.trim()) {
-          // addToReposJson already wrote the file — just report
+        const otherDirty = (statusResult.stdout ?? "")
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .filter((l) => !/\brepos\.json$/.test(l));
+        if (otherDirty.length > 0) {
+          // Hub has OTHER uncommitted changes — don't branch on top of them.
           console.log(chalk.green(`  Added ${repoName} to repos.json (direct edit — hub has uncommitted changes).`));
         } else {
           let branchCreated = false;

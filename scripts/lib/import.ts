@@ -165,8 +165,12 @@ function scanPath(targetPath: string): ScanResult {
         if (entry === ".agentboot-archive" || entry === ".agentboot-manifest.json") continue;
         const absPath = path.join(dir, entry);
         const relPath = relBase ? `${relBase}/${entry}` : entry;
-        const stat = fs.statSync(absPath);
-        if (stat.isDirectory()) {
+        // lstat (not stat): never follow a symlinked directory. A committed
+        // symlinked dir (e.g. -> /) would otherwise be walked and read files
+        // outside the repo into the import plan. classifyFile lstat-guards files.
+        const lstat = fs.lstatSync(absPath);
+        if (lstat.isSymbolicLink()) continue;
+        if (lstat.isDirectory()) {
           walkClaude(absPath, relPath);
         } else {
           const scanned = classifyFile(absPath, `.claude/${relPath}`);
@@ -227,7 +231,9 @@ function scanPath(targetPath: string): ScanResult {
         for (const entry of fs.readdirSync(topLevelSkills)) {
           const skillDir = path.join(topLevelSkills, entry);
           try {
-            if (!fs.statSync(skillDir).isDirectory()) continue;
+            // lstat: skip symlinked skill dirs so we never read outside the repo.
+            const ls = fs.lstatSync(skillDir);
+            if (ls.isSymbolicLink() || !ls.isDirectory()) continue;
           } catch { continue; }
           const skillMd = path.join(skillDir, "SKILL.md");
           if (fs.existsSync(skillMd)) {
@@ -289,9 +295,11 @@ export function scanParentForContent(parentDir: string, excludeDirs: string[] = 
   for (const entry of entries) {
     const dirPath = path.join(resolved, entry);
 
-    // Skip non-directories, hidden dirs, and excluded dirs
+    // Skip non-directories, symlinked dirs (never follow outside the repo),
+    // hidden dirs, and excluded dirs
     try {
-      if (!fs.statSync(dirPath).isDirectory()) continue;
+      const ls = fs.lstatSync(dirPath);
+      if (ls.isSymbolicLink() || !ls.isDirectory()) continue;
     } catch { continue; }
     if (entry.startsWith(".")) continue;
     if (excludeSet.has(dirPath)) continue;

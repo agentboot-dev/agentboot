@@ -1358,10 +1358,15 @@ function handleSync(args: Record<string, unknown>): ToolResult {
   const targetRepos = args["repos"] as string[] | undefined;
 
   try {
-    // Build the command
-    let cmd = "npx tsx scripts/sync.ts 2>&1";
-    // If specific repos requested, we can't pass them via CLI args to sync.ts easily,
-    // so we sync all and filter the output. The sync script uses repos.json.
+    // Build the command. When specific repos are requested, scope the actual sync
+    // with --repo (repeatable) so we WRITE to only those repos — not sync everything
+    // and merely filter the report. Names are validated to safe chars to avoid shell
+    // injection (the command is run through a shell).
+    const repoArgs = (targetRepos ?? [])
+      .filter((r) => typeof r === "string" && /^[A-Za-z0-9._@/-]+$/.test(r))
+      .map((r) => `--repo ${r}`)
+      .join(" ");
+    const cmd = `npx tsx scripts/sync.ts ${repoArgs} 2>&1`.replace(/\s+/g, " ").trim();
     const output = execSync(cmd, {
       cwd: HUB_ROOT,
       encoding: "utf-8",
