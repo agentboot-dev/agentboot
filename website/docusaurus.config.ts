@@ -100,6 +100,16 @@ const config: Config = {
       {name: 'og:type', content: 'website'},
       {name: 'twitter:card', content: 'summary_large_image'},
     ],
+    announcementBar: {
+      id: 'beta-v0-11',
+      content:
+        '🚧 AgentBoot v0.11.1 is in <strong>public Beta</strong> — try it and ' +
+        '<a target="_blank" rel="noopener noreferrer" href="https://github.com/agentboot-dev/agentboot/issues">' +
+        'tell us what breaks</a>. Your feedback shapes v1.0 GA.',
+      backgroundColor: '#312e81',
+      textColor: '#e0e7ff',
+      isCloseable: true,
+    },
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,

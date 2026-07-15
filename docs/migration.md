@@ -10,6 +10,130 @@ listed here are backward-compatible and require only a package update.
 
 ---
 
+## v0.10 → v0.11
+
+> **v0.11 is a public Beta.** It's usable end to end, but breaking changes may still
+> occur before **v1.0 GA**. See the [Roadmap](roadmap.md) for what's ahead.
+
+**What changed:** v0.11 adds a third official platform — **OpenAI Codex** — and turns
+governance into a first-class, enforced surface. Compliance hooks are now emitted for
+**Claude Code, Codex, and GitHub Copilot** from one canonical set of portable scripts
+(all blocking on exit code 2), alongside drift detection, HARD/SOFT guardrails, and
+managed-settings output. It also introduces user-level installs (`install-user`),
+packaged harness templates (`add template`, starting with `sdlc-orchestrator`), and
+weight-tiered trait sections. None of your existing hub source needs to be rewritten —
+but you must **re-run install, rebuild, and re-sync** to write the new hook and managed-
+settings files into your hub and every spoke.
+
+### Migration steps
+
+**1. Update the package**
+
+```bash
+npm install -g agentboot@latest
+```
+
+Verify:
+
+```bash
+agentboot --version   # should show 0.11.x or higher
+```
+
+**2. Re-run install in your hub**
+
+```bash
+cd /path/to/your-personas-hub
+agentboot install
+```
+
+Safe to run on an existing hub. It writes the new canonical hook scripts and the
+managed-settings scaffolding, and leaves your traits, personas, gotchas, `repos.json`,
+and `agentboot.config.json` untouched.
+
+**3. (Optional) Enable Codex output**
+
+If your team uses the OpenAI Codex CLI, add it to your build targets in
+`agentboot.config.json`:
+
+```jsonc
+{
+  "output": {
+    "platforms": ["claude", "codex", "copilot"]
+  }
+}
+```
+
+See [`docs/configuration.md`](configuration.md) for the full `output.platforms` list.
+Existing platforms keep building unchanged if you skip this.
+
+**4. Build and sync**
+
+Rebuild and push to every registered repo. This is the step that actually distributes
+the new cross-platform hooks and managed settings to your spokes:
+
+```bash
+cd /path/to/your-personas-hub
+agentboot build
+agentboot sync
+```
+
+Sync opens a pull request per repo (drift-checked). Review and merge as usual — the new
+managed-settings and hook files land under each spoke's `.claude/`, `.codex/`, and
+`.github/` as applicable.
+
+**5. Restart Claude Code**
+
+Blocking hooks and managed settings are read at session start. Restart Claude Code in
+any repo (hub or spoke) to pick them up:
+
+```bash
+claude
+```
+
+**6. Verify**
+
+```bash
+agentboot doctor
+```
+
+`doctor` now reports real content-hash drift and flags any managed file a repo's
+`.gitignore` would silently exclude from sync — a synced repo with locally modified
+managed files is correctly surfaced. `/ab status` likewise reports the full artifact
+inventory (personas, traits, gotchas, lexicons — core vs org-specific).
+
+---
+
+### New in v0.11 you can adopt when ready
+
+These are opt-in — upgrading does not require them:
+
+- **User-level install** — `agentboot install-user` writes compiled skills/rules to your
+  user scope (`~/.claude`) for a personal setup without a formal org hub. If another tool
+  manages `~/.claude` (a `~/.claude/.managed` sentinel or `userLevel.mode: "manifest"`),
+  AgentBoot stages its output plus a handoff manifest instead of writing directly.
+- **Harness templates** — `agentboot add template <name>` installs a pre-packaged bundle
+  into your hub. The first is **`sdlc-orchestrator`**, a phase-gated delivery persona
+  (spec/PRD → architecture → parallel-worktree implementation → QA gates → review) whose
+  rigor is tunable via trait weights.
+- **Weight-tiered trait sections** — a trait may split weight-sensitive guidance into
+  `### LOW|MEDIUM|HIGH|MAX` sections; the compiler injects only the tier nearest the
+  persona's weight, cutting token bloat. Untiered traits compile exactly as before, so
+  this is fully backward-compatible.
+
+---
+
+### Surface changes to be aware of
+
+- **Pruned from top-level help (still functional).** The marketplace subsystem
+  (`publish`, `marketplace`, `registry`) and the `test --judge` / `--verbose` /
+  `--min-score` evaluation flags are hidden from `--help` in the v1.0 surface. They still
+  run if you invoke them directly — no scripts break — but they are no longer advertised.
+- **Removed MCP tool.** The non-functional `agentboot_optimize_metrics` MCP tool was
+  dropped. The real capability is the telemetry-driven `agentboot optimize` CLI; point any
+  automation there instead.
+
+---
+
 ## v0.9 → v0.10
 
 **What changed:** v0.10 ships the `/ab` skill — a five-agent orchestrator that replaces

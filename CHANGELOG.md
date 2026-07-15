@@ -9,7 +9,10 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
-Work on the `release/v0.11` branch toward the v1.0 line.
+## [0.11.1] — 2026-07-15
+
+The **public Beta** of the v0.11 line. Everything below landed on `release/v0.11` on the
+way to v1.0 GA.
 
 ### Added
 - `agentboot install-user` — user-level (`~/.claude`) write SPI. AgentBoot is the default
@@ -63,6 +66,13 @@ Work on the `release/v0.11` branch toward the v1.0 line.
 ### Documentation
 - CONTRIBUTING now requires contributors to anonymize employer/org/client content (code, commit
   messages, PR descriptions, fixtures, examples) with a matching PR-checklist item.
+- Migration guide gains a **v0.10 → v0.11** section (re-install/build/sync for the new
+  cross-platform hooks and managed settings, optional Codex enablement, and the opt-in
+  `install-user` / `add template` / weight-tiered-trait features).
+- Website + docs overhaul for the Beta: rewritten landing page, `/why`, `/for-organizations`,
+  and `/trust` pages, an SEO/GEO/AEO discovery layer (`llms.txt` + JSON-LD structured data),
+  a forward-looking roadmap (Now/Next/Later), a CLI-surface support caveat across the docs, and
+  Beta prominence site-wide.
 
 ## [0.11.0] — 2026-04-26
 
@@ -98,7 +108,8 @@ Work on the `release/v0.11` branch toward the v1.0 line.
 - Security audit across path traversal, input validation, shell injection, and secret patterns;
   test-isolation crash guards; routing/behavioral-test corrections.
 
-[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/agentboot-dev/agentboot/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/agentboot-dev/agentboot/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/agentboot-dev/agentboot/compare/v0.10.1...v0.10.3
 [0.10.1]: https://github.com/agentboot-dev/agentboot/compare/v0.10.0...v0.10.1
