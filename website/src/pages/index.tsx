@@ -61,20 +61,21 @@ function Hero() {
           marginBottom: '2rem', fontSize: '0.8rem', fontWeight: 600, color: C.green,
         }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, display: 'inline-block' }} />
-          <span>v{pkgVersion}</span> — Apache-2.0 · Open Source
+          <strong>v{pkgVersion} · Public Beta</strong>
+          <span style={{ color: C.muted, fontWeight: 500 }}>— Apache-2.0 · Open Source</span>
         </div>
 
         <h1 style={{
           fontSize: 'clamp(2.4rem, 6vw, 4rem)', fontWeight: 800, color: C.text, lineHeight: 1.1,
           letterSpacing: '-0.03em', marginBottom: '1.5rem',
         }}>
-          Your AI tools don't know your org.
+          Stop copy-pasting your AI's rules across repos.
           <br />
           <span style={{
             background: `linear-gradient(135deg, ${C.primary} 0%, ${C.purple} 100%)`,
             WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
           }}>
-            Teach them once.
+            AI behavior as code.
           </span>
         </h1>
 
@@ -82,9 +83,9 @@ function Hero() {
           fontSize: 'clamp(1rem, 2.5vw, 1.25rem)', color: C.muted, maxWidth: '680px',
           margin: '0 auto 2.5rem', lineHeight: 1.7,
         }}>
-          AgentBoot compiles what your team knows — roles, behaviors, hard-won lessons — into native
-          config for Claude Code, OpenAI Codex, and GitHub Copilot, and keeps every repo in sync by
-          pull request.
+          One source of truth for how your AI agents behave — compiled to native config for Claude
+          Code, OpenAI Codex, and GitHub Copilot, versioned, and delivered to every repo by pull
+          request. So every assistant actually knows your codebase, not just the prompt in front of it.
         </p>
 
         <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap', marginBottom: '3rem' }}>
@@ -375,8 +376,14 @@ function Governance() {
           ))}
         </div>
 
-        <div style={{ overflowX: 'auto', maxWidth: '760px', margin: '0 auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem', color: C.text }}>
+        <div style={{ overflowX: 'auto', maxWidth: '720px', marginLeft: 'auto', marginRight: 'auto' }}>
+          <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.9rem', color: C.text }}>
+            <colgroup>
+              <col style={{ width: '40%' }} />
+              <col style={{ width: '20%' }} />
+              <col style={{ width: '20%' }} />
+              <col style={{ width: '20%' }} />
+            </colgroup>
             <thead>
               <tr>
                 <th style={{ textAlign: 'left', padding: '0.75rem 1rem', color: C.muted, fontWeight: 600, borderBottom: `1px solid ${C.border}` }}>Capability</th>
@@ -397,7 +404,9 @@ function Governance() {
             </tbody>
           </table>
           <p style={{ color: C.muted, fontSize: '0.8rem', marginTop: '0.75rem', lineHeight: 1.6 }}>
-            * Copilot’s hook surface is narrower than Claude Code’s and Codex’s — real, but lower-ceiling; we say so on purpose.
+            Official support today covers each tool’s <strong>CLI surface</strong>. Broader surface support — IDE and editor
+            extensions, and additional platforms — is <Link to="/docs/roadmap" style={{ color: C.primary }}>on the roadmap</Link>.
+            {' '}* Copilot’s hook surface is narrower than Claude Code’s and Codex’s — real, but lower-ceiling; we say so on purpose.
             Cursor, Windsurf, Gemini, and JetBrains are supported at a <strong>community tier</strong> — advisory guidance,
             not an enforced control. If a cell says advisory, treat it as advisory.
           </p>

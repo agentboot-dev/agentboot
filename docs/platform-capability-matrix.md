@@ -41,6 +41,11 @@ can ignore is not a control.
   code 2 like the other two, but it exposes fewer hook types. If your control
   depends on a specific lifecycle event, verify it exists on your target platform
   before you rely on it.
+- **Support is scoped to the CLI surface — for now.** Official support covers each
+  tool's **command-line surface**. The IDE and editor extensions of these same
+  tools, and additional platforms, are on the [roadmap](/docs/roadmap) — not
+  shipped today. If your team lives primarily in an IDE extension, plan around the
+  CLI surface for the enforcement guarantees above.
 - **Enforcement lives on the agent surface, not around it.** Blocking hooks bind
   the three official CLI surfaces. They do not constrain a developer who
   uninstalls the tooling or works outside it — pair them with your normal

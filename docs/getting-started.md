@@ -15,10 +15,11 @@ AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the un
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Pre-v1.0 notice:** AgentBoot is under active development. Breaking changes may
-> occur without deprecation warnings before v1.0. Release notes will document all
-> changes. We do our best to minimize disruption, but stability is not guaranteed
-> until v1.0.
+> **Beta notice:** AgentBoot **v0.11.1 is a public Beta**. It's usable end to end, but
+> breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
+> notes document all changes, and we do our best to minimize disruption — but stability
+> is not guaranteed until v1.0. If you hit a rough edge,
+> [tell us](https://github.com/agentboot-dev/agentboot/issues).
 
 ---
 
