@@ -35,6 +35,22 @@ jurisdiction and employment agreement. AgentBoot cannot give legal advice and ca
 adjudicate disputes between you and your employer — the representation in the CLA is
 yours to make. When in doubt, consult a lawyer before contributing.
 
+### Anonymize employer and org-specific content
+
+AgentBoot is a public, general-purpose project. **Do not include your employer's or any
+organization's identifying or confidential information in a contribution** — not in code,
+commit messages, PR descriptions, issue text, test fixtures, or example/verification content.
+Before you submit:
+
+- Strip employer, client, and product names; internal hostnames, repo names, ticket IDs, and
+  URLs; and any employer-specific policies, incidents, or configuration.
+- Write examples and fixtures with **generic, invented** names (`acme-corp`, `example.com`,
+  `SVC-123`) — never real ones.
+- Never paste secrets, credentials, or internal compliance evidence into a PR or issue.
+
+Contributions to core must be universal (see "What is in scope"); org-specific content belongs
+in your own private hub or a domain layer you keep internally, not upstream.
+
 ---
 
 ## What is in scope
@@ -127,6 +143,14 @@ defines the behavior at each weight level, and the persona that composes it sets
 weight. Traits that have meaningful axes of variation should expose them in frontmatter
 rather than hardcoding a single behavior.
 
+**Weight-tier sections (optional, keeps personas lean).** If a trait's guidance genuinely
+differs by weight, split the weight-sensitive parts into per-tier sections whose `###`
+headings match the named weights: `### LOW`, `### MEDIUM`, `### HIGH`, `### MAX`. Everything
+outside those sections (Overview, Anti-Patterns, Interaction, etc.) is weight-independent and
+always included. The compiler injects only the tier nearest the persona's weight, so a persona
+carries just the guidance for the weight it uses instead of every tier's prose at once. A
+trait with no tier sections is injected whole, so this is entirely opt-in.
+
 **Negative space matters.** Every trait must include a "what not to do" section. Personas
 that lack this section tend to produce output that is exhaustive but not useful.
 
@@ -183,6 +207,7 @@ attributed to you.
 Before opening a PR, verify:
 
 - [ ] Every commit includes `Signed-off-by: Your Name <email>` (use `git commit -s`)
+- [ ] No employer/org/client names, internal identifiers, secrets, or confidential content anywhere in the diff, commit messages, PR description, or examples (use generic invented names)
 - [ ] `npm run validate` passes with no errors
 - [ ] `npm run build` passes with no errors
 - [ ] `PERSONAS.md` is updated if you added or changed a persona

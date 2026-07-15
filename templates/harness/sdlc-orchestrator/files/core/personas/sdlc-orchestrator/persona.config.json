@@ -1,0 +1,16 @@
+{
+  // SDLC Orchestrator — a phase-gated software delivery workflow.
+  // Tune the trait weights below to set how rigorous the workflow is
+  // (OFF | LOW | MEDIUM | HIGH | MAX). See the persona's "Tuning" section.
+  "name": "SDLC Orchestrator",
+  "description": "Drives a change from spec to merge through PRD, architecture, parallel implementation, QA gates, and review.",
+  "invocation": "/sdlc",
+  "pattern": "sequential",
+  "traits": {
+    "critical-thinking": "HIGH",      // rigor of design/diff scrutiny — raise for high-risk changes
+    "structured-output": "HIGH",      // strictness of phase reporting
+    "audit-trail": "MEDIUM",          // decision/gate provenance — raise where change-control matters
+    "source-citation": "MEDIUM",      // cite the acceptance criterion / standard behind a call
+    "confidence-signaling": "MEDIUM"
+  }
+}

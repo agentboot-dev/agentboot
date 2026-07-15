@@ -200,16 +200,6 @@ describe("MCP tool handlers", () => {
     });
   });
 
-  describe("agentboot_optimize_metrics", () => {
-    it("returns stub response with message indicating not yet implemented", () => {
-      const result = handleToolCall("agentboot_optimize_metrics", {});
-      expect(result.isError).toBeUndefined();
-      const data = JSON.parse(result.content[0]!.text);
-      expect(typeof data.message).toBe("string");
-      expect(data.message.length).toBeGreaterThan(0);
-    });
-  });
-
   describe("agentboot_build", () => {
     it("returns build result with filesWritten count", () => {
       const result = handleToolCall("agentboot_build", {});
@@ -408,7 +398,6 @@ describe("MCP message handling", () => {
     expect(toolNames).toContain("agentboot_doctor");
     expect(toolNames).toContain("agentboot_build");
     expect(toolNames).toContain("agentboot_sync");
-    expect(toolNames).toContain("agentboot_optimize_metrics");
     // Phase 10 write tool
     expect(toolNames).toContain("agentboot_propose_change");
   });

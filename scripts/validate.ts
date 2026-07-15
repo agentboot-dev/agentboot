@@ -162,21 +162,65 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
 // Check 2: Trait references
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve config-referenced domain layers to their `traits/` and `personas/`
+ * directories, mirroring the discovery + boundary check in compile.ts
+ * (`compileDomains`). Only domains listed in `config.domains` are validated —
+ * matching exactly what the compiler builds, so an unreferenced draft domain on
+ * disk (e.g. one not yet added to config) never affects validation.
+ */
+function resolveDomainDirs(
+  config: AgentBootConfig,
+  configDir: string
+): { name: string; traitsDir: string | null; personasDir: string | null }[] {
+  const out: { name: string; traitsDir: string | null; personasDir: string | null }[] = [];
+  const boundary = path.resolve(configDir);
+  for (const domainRef of config.domains ?? []) {
+    const domainPath =
+      typeof domainRef === "string"
+        ? path.resolve(configDir, domainRef)
+        : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    if (!fs.existsSync(domainPath)) continue;
+    // Path-traversal protection: resolve symlinks then check the project boundary.
+    let realDomainPath: string;
+    try {
+      realDomainPath = fs.realpathSync(domainPath);
+    } catch {
+      continue;
+    }
+    if (!realDomainPath.startsWith(boundary + path.sep) && realDomainPath !== boundary) continue;
+    const name = typeof domainRef === "string" ? path.basename(realDomainPath) : domainRef.name;
+    const traitsDir = path.join(realDomainPath, "traits");
+    const personasDir = path.join(realDomainPath, "personas");
+    out.push({
+      name,
+      traitsDir: fs.existsSync(traitsDir) ? traitsDir : null,
+      personasDir: fs.existsSync(personasDir) ? personasDir : null,
+    });
+  }
+  return out;
+}
+
 function checkTraitReferences(config: AgentBootConfig, configDir: string): CheckResult {
   const result = check(
-    "Trait references — all persona.config.json trait entries exist in core/traits/"
+    "Trait references — all persona.config.json trait entries exist in core/traits/ or configured domains"
   );
 
-  // Traits come from both the package bundle (defaults) and the hub's
-  // own core/traits (additions / overrides). Hub files with the same
-  // name as a package trait win because they are added last to the map.
+  // Traits come from the package bundle (defaults), the hub's own core/traits
+  // (additions / overrides), and any config-referenced domain layers. Files
+  // added later win by name (hub over package, domain over hub).
   const packageTraitsDir = path.join(ROOT, "core", "traits");
   const hubTraitsDir = path.join(configDir, "core", "traits");
   const enabledTraits = config.traits?.enabled;
+  const domainDirs = resolveDomainDirs(config, configDir);
 
-  // Collect available trait names from both sources.
+  // Collect available trait names from all sources.
   const availableTraits = new Set<string>();
-  for (const dir of [packageTraitsDir, hubTraitsDir]) {
+  const traitDirs = [packageTraitsDir, hubTraitsDir];
+  for (const d of domainDirs) {
+    if (d.traitsDir) traitDirs.push(d.traitsDir);
+  }
+  for (const dir of traitDirs) {
     if (!fs.existsSync(dir)) continue;
     for (const file of fs.readdirSync(dir)) {
       if (file.endsWith(".md")) {
@@ -191,7 +235,7 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
   }
 
   // Scan all persona.config.json files in the merged persona directories
-  // (package defaults + hub additions + optional customDir).
+  // (package defaults + hub additions + optional customDir + domain layers).
   const personaRoots: string[] = [
     path.join(ROOT, "core", "personas"),
     path.join(configDir, "core", "personas"),
@@ -199,6 +243,9 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
+  }
+  for (const d of domainDirs) {
+    if (d.personasDir) personaRoots.push(d.personasDir);
   }
 
   for (const root of personaRoots) {
@@ -292,7 +339,7 @@ function checkTraitReferences(config: AgentBootConfig, configDir: string): Check
         if (!availableTraits.has(traitRef)) {
           fail(
             result,
-            `[${personaName}] References trait "${traitRef}" which does not exist in core/traits/`
+            `[${personaName}] References trait "${traitRef}" which does not exist in core/traits/ or any configured domain`
           );
         } else if (enabledTraits && !enabledTraits.includes(traitRef)) {
           warn(
@@ -321,6 +368,9 @@ function checkSkillFrontmatter(config: AgentBootConfig, configDir: string): Chec
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) personaRoots.push(ext);
+  }
+  for (const d of resolveDomainDirs(config, configDir)) {
+    if (d.personasDir) personaRoots.push(d.personasDir);
   }
 
   let skillsChecked = 0;
@@ -412,6 +462,10 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
   if (config.personas?.customDir) {
     const ext = path.resolve(configDir, config.personas.customDir);
     if (fs.existsSync(ext)) scanRoots.push(ext);
+  }
+  for (const d of resolveDomainDirs(config, configDir)) {
+    if (d.traitsDir) scanRoots.push(d.traitsDir);
+    if (d.personasDir) scanRoots.push(d.personasDir);
   }
 
   for (const root of scanRoots) {
@@ -684,6 +738,102 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 11 C1.4: HARD guardrail override detection
+// ---------------------------------------------------------------------------
+
+function checkHardGuardrails(_config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check("HARD guardrails — lower scopes cannot override HARD artifacts");
+
+  // Scan instruction and trait files for guardrail: hard frontmatter
+  const hardArtifacts = new Map<string, string>(); // name → scope
+
+  // Check core instructions
+  const instructionsDir = path.join(configDir, "core", "instructions");
+  if (fs.existsSync(instructionsDir)) {
+    for (const file of fs.readdirSync(instructionsDir).filter(f => f.endsWith(".md"))) {
+      const content = fs.readFileSync(path.join(instructionsDir, file), "utf-8");
+      const fm = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+        hardArtifacts.set(path.basename(file, ".md"), "core");
+      }
+    }
+  }
+
+  // Check core traits
+  const traitsDir = path.join(configDir, "core", "traits");
+  if (fs.existsSync(traitsDir)) {
+    for (const file of fs.readdirSync(traitsDir).filter(f => f.endsWith(".md"))) {
+      const content = fs.readFileSync(path.join(traitsDir, file), "utf-8");
+      const fm = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+        hardArtifacts.set(path.basename(file, ".md"), "core");
+      }
+    }
+  }
+
+  if (hardArtifacts.size === 0) return result; // No HARD artifacts — nothing to check
+
+  // Scan scope nodes for overrides of HARD artifacts
+  const checkScopeDir = (scopeDir: string, scopeLabel: string): void => {
+    // Check persona configs for trait weight overrides
+    const personasDir = path.join(scopeDir, "personas");
+    if (fs.existsSync(personasDir)) {
+      for (const dir of fs.readdirSync(personasDir)) {
+        const configPath = path.join(personasDir, dir, "persona.config.json");
+        if (!fs.existsSync(configPath)) continue;
+        try {
+          const pc = JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8")));
+          const traits = pc.traits;
+          if (traits && typeof traits === "object" && !Array.isArray(traits)) {
+            for (const [traitName, weight] of Object.entries(traits)) {
+              const isOff = weight === 0 || weight === "0" ||
+                (typeof weight === "string" && weight.toUpperCase() === "OFF");
+              if (hardArtifacts.has(traitName) && isOff) {
+                fail(result,
+                  `${scopeLabel} persona "${dir}" sets HARD trait "${traitName}" to OFF — ` +
+                  `HARD guardrails cannot be disabled at lower scopes`
+                );
+              }
+            }
+          }
+        } catch { /* ignore malformed configs */ }
+      }
+    }
+  };
+
+  // Check groups/teams directories
+  const groupsDir = path.join(configDir, "groups");
+  if (fs.existsSync(groupsDir)) {
+    for (const group of fs.readdirSync(groupsDir)) {
+      checkScopeDir(path.join(groupsDir, group), `group/${group}`);
+      const teamsDir = path.join(groupsDir, group, "teams");
+      if (fs.existsSync(teamsDir)) {
+        for (const team of fs.readdirSync(teamsDir)) {
+          checkScopeDir(path.join(teamsDir, team), `team/${group}/${team}`);
+        }
+      }
+    }
+  }
+
+  // Check nodes directories
+  const nodesDir = path.join(configDir, "nodes");
+  if (fs.existsSync(nodesDir)) {
+    const walkNodes = (dir: string, label: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const childLabel = `${label}/${entry.name}`;
+          checkScopeDir(path.join(dir, entry.name), childLabel);
+          walkNodes(path.join(dir, entry.name), childLabel);
+        }
+      }
+    };
+    walkNodes(nodesDir, "nodes");
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -712,6 +862,7 @@ async function main(): Promise<void> {
     checkCompositionConsistency(config, configDir),
     checkRuleOverrides(config, configDir),
     checkMcpGovernance(config),
+    checkHardGuardrails(config, configDir),
   ];
 
   // Print results.

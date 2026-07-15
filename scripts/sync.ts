@@ -33,6 +33,7 @@ import {
   resolveConfigPath,
   loadConfig,
 } from "./lib/config.js";
+import { detectGitignoreConflicts } from "./lib/gitignore.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -89,6 +90,8 @@ interface SyncResult {
   prUrl?: string;
   /** True when smart sync determined the repo is already up-to-date. */
   skippedNoChanges?: boolean;
+  /** B.1: managed files that this repo's .gitignore would exclude (repo-relative). */
+  gitignoreConflicts?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -607,6 +610,9 @@ function isRepoUpToDate(
     } else if (platform === "copilot") {
       if (relPath.startsWith("instructions/") && relPath.endsWith(".instructions.md")) {
         destRelPath = path.join(".github", "instructions", path.basename(relPath));
+      } else if (relPath.startsWith(".github/")) {
+        // A1.5: governance hooks (.github/hooks/agentboot.json + scripts) land as-is.
+        destRelPath = relPath;
       } else {
         continue;
       }
@@ -693,8 +699,14 @@ function syncRepoTarget(
   // AB-142: When syncing to a monorepo package, effectivePath is the package root.
   const effectivePath = packagePath ? path.join(repoPath, packagePath) : repoPath;
   const platform = platformOverride ?? entry.platform ?? "claude";
-  // AB-129: Cursor uses .cursor/ as its target directory
-  const targetDir = platform === "cursor" ? ".cursor" : (config.sync?.targetDir ?? ".claude");
+  // AB-129: Platform-specific target directories
+  const targetDir = platform === "cursor" ? ".cursor"
+    : platform === "gemini" ? ".gemini"
+    : platform === "windsurf" ? ".windsurf"
+    : platform === "jetbrains" ? ".junie"
+    : platform === "agents" ? ".agents"
+    : platform === "codex" ? ".codex"
+    : (config.sync?.targetDir ?? ".claude");
   const writePersonasIndex = config.sync?.writePersonasIndex !== false;
   const org = config.orgDisplayName ?? config.org;
 
@@ -800,32 +812,108 @@ function syncRepoTarget(
   }
 
   // Write all merged files to the target directory.
-  // Platform-specific routing:
-  //   - copilot: merged copilot-instructions.md → .github/, scoped instructions → .github/instructions/
-  //   - cursor: rules/*.mdc → .cursor/rules/
-  //   - claude/skill: everything → {targetDir}/
+  // Platform-specific routing determines where files land in the spoke repo.
   const targetBase = path.join(effectivePath, targetDir);
+
+  // Helper: write a single merged file to the correct destination.
+  const writeMergedFile = (destPath: string, file: ScopedFile): void => {
+    const content = fs.readFileSync(file.absolutePath, "utf-8");
+    ensureDir(path.dirname(destPath), dryRun);
+    const status = writeFile(destPath, content, dryRun);
+    const relDest = path.relative(effectivePath, destPath);
+    if (status === "written") {
+      result.filesWritten.push(relDest);
+    } else {
+      result.filesSkipped.push(relDest);
+    }
+  };
 
   if (platform === "cursor") {
     // AB-129: Cursor platform — write rules/*.mdc to .cursor/rules/
     const cursorBase = path.join(effectivePath, ".cursor");
     for (const [relPath, file] of merged) {
       if (relPath === "PERSONAS.md") continue;
-
-      // Map rules/*.mdc to .cursor/rules/*.mdc
-      const destPath = path.join(cursorBase, relPath);
-      const content = fs.readFileSync(file.absolutePath, "utf-8");
-      ensureDir(path.dirname(destPath), dryRun);
-      const status = writeFile(destPath, content, dryRun);
-
-      const relDest = path.relative(effectivePath, destPath);
-      if (status === "written") {
-        result.filesWritten.push(relDest);
+      writeMergedFile(path.join(cursorBase, relPath), file);
+    }
+  } else if (platform === "gemini") {
+    // Phase 11 A0: Gemini platform routing
+    // GEMINI.md → repo root; .gemini/ subdirectory files → .gemini/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === "GEMINI.md") {
+        // Root-level GEMINI.md goes to repo root
+        writeMergedFile(path.join(effectivePath, "GEMINI.md"), file);
       } else {
-        result.filesSkipped.push(relDest);
+        // Everything else goes under .gemini/ (persona files, rules, etc.)
+        writeMergedFile(path.join(effectivePath, ".gemini", relPath), file);
+      }
+    }
+    // Phase 11 A1c migration: clean up orphaned .gemini/rules/ from old format
+    const orphanedRulesDir = path.join(effectivePath, ".gemini", "rules");
+    if (!dryRun && fs.existsSync(orphanedRulesDir)) {
+      fs.rmSync(orphanedRulesDir, { recursive: true, force: true });
+      console.log(chalk.yellow(`    Removed orphaned .gemini/rules/ directory (replaced by subdirectory GEMINI.md files)`));
+    }
+  } else if (platform === "windsurf") {
+    // Phase 11 A0: Windsurf platform routing
+    // .windsurfrules → repo root; .windsurf/ files → .windsurf/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === ".windsurfrules") {
+        writeMergedFile(path.join(effectivePath, ".windsurfrules"), file);
+      } else if (relPath.startsWith(".windsurf/") || relPath.startsWith("rules/")) {
+        writeMergedFile(path.join(effectivePath, ".windsurf", relPath.replace(/^\.windsurf\//, "")), file);
+      } else {
+        writeMergedFile(path.join(effectivePath, ".windsurf", relPath), file);
+      }
+    }
+  } else if (platform === "jetbrains") {
+    // Phase 11 A0: JetBrains platform routing
+    // .junie/ files → .junie/; .aiassistant/ files → .aiassistant/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath.startsWith(".junie/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else if (relPath.startsWith(".aiassistant/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else {
+        // Default: write under .junie/
+        writeMergedFile(path.join(effectivePath, ".junie", relPath), file);
+      }
+    }
+  } else if (platform === "codex") {
+    // Phase 11 A1.7: Codex platform routing
+    // AGENTS.md → repo root (handled by AGENTS.md sync block below)
+    // .codex/ files → .codex/ (config.toml, hooks.json, hooks/)
+    // .agents/skills/ → .agents/skills/
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === "AGENTS.md") continue; // handled by AGENTS.md sync block below
+      if (relPath.startsWith(".codex/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else if (relPath.startsWith(".agents/")) {
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else {
+        // Other files go under .codex/
+        writeMergedFile(path.join(effectivePath, ".codex", relPath), file);
+      }
+    }
+  } else if (platform === "agents") {
+    // Phase 11 A0 + A1.7-3: Agents platform routing
+    // AGENTS.md → repo root (handled later in AGENTS.md sync block)
+    // .agents/ files → .agents/ (strip prefix if already present in relPath)
+    for (const [relPath, file] of merged) {
+      if (relPath === "PERSONAS.md" || relPath === "composition-manifest.json") continue;
+      if (relPath === "AGENTS.md") continue; // handled by AGENTS.md sync block below
+      if (relPath.startsWith(".agents/")) {
+        // Already has .agents/ prefix — write directly
+        writeMergedFile(path.join(effectivePath, relPath), file);
+      } else {
+        writeMergedFile(path.join(effectivePath, ".agents", relPath), file);
       }
     }
   } else if (platform !== "copilot") {
+    // Claude/skill and other platforms: write to targetDir (default .claude/)
     ensureDir(targetBase, dryRun);
 
     for (const [relPath, file] of merged) {
@@ -884,6 +972,47 @@ function syncRepoTarget(
     }
   }
 
+  // A1.5: Write copilot governance hooks (.github/hooks/agentboot.json + scripts).
+  // One committed .github/hooks file governs both the Copilot CLI and cloud agent.
+  if (platform === "copilot") {
+    for (const [relPath, file] of merged) {
+      if (!relPath.startsWith(".github/")) continue;
+      const destPath = path.join(effectivePath, relPath);
+      const content = fs.readFileSync(file.absolutePath, "utf-8");
+      ensureDir(path.dirname(destPath), dryRun);
+      const status = writeFile(destPath, content, dryRun);
+      // Preserve the execute bit on hook scripts (git/checkout may drop 0o755).
+      if (status === "written" && !dryRun && relPath.endsWith(".sh")) {
+        fs.chmodSync(destPath, 0o755);
+      }
+      const relDest = path.relative(effectivePath, destPath);
+      if (status === "written") {
+        result.filesWritten.push(relDest);
+      } else {
+        result.filesSkipped.push(relDest);
+      }
+    }
+  }
+
+  // Phase 11 B1: Write copilot .agent.md files to .github/agents/
+  if (platform === "copilot") {
+    for (const [relPath, file] of merged) {
+      if (relPath.startsWith("agents/") && relPath.endsWith(".agent.md")) {
+        const fileName = path.basename(relPath);
+        const destPath = path.join(effectivePath, ".github", "agents", fileName);
+        const content = fs.readFileSync(file.absolutePath, "utf-8");
+        ensureDir(path.dirname(destPath), dryRun);
+        const status = writeFile(destPath, content, dryRun);
+        const relDest = path.relative(effectivePath, destPath);
+        if (status === "written") {
+          result.filesWritten.push(relDest);
+        } else {
+          result.filesSkipped.push(relDest);
+        }
+      }
+    }
+  }
+
   // Write root-level files (CC reads .mcp.json and CLAUDE.md from project root, not .claude/).
   if (platform !== "copilot" && platform !== "cursor") {
     // CLAUDE.md — write as-is from dist
@@ -923,6 +1052,27 @@ function syncRepoTarget(
     }
   }
 
+  // Phase 11 B11: Sync scope-specific AGENTS.md files
+  const agentsNodesDir = path.join(distPath, "agents", "nodes");
+  if (fs.existsSync(agentsNodesDir)) {
+    const walkAgentsNodes = (dir: string, relBase: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          walkAgentsNodes(path.join(dir, entry.name), path.join(relBase, entry.name));
+        } else if (entry.name === "AGENTS.md") {
+          const destPath = path.join(effectivePath, ".agents", "nodes", relBase, "AGENTS.md");
+          const content = fs.readFileSync(path.join(dir, entry.name), "utf-8");
+          ensureDir(path.dirname(destPath), dryRun);
+          const status = writeFile(destPath, content, dryRun);
+          const relDest = path.relative(effectivePath, destPath);
+          if (status === "written") result.filesWritten.push(relDest);
+          else result.filesSkipped.push(relDest);
+        }
+      }
+    };
+    walkAgentsNodes(agentsNodesDir, "");
+  }
+
   // Optionally write PERSONAS.md to the target directory.
   if (writePersonasIndex) {
     const personasIndexSrc = path.join(coreDir, "PERSONAS.md");
@@ -950,6 +1100,14 @@ function syncRepoTarget(
   );
   if (!dryRun) {
     result.filesWritten.push(manifestRelPath);
+  }
+
+  // B.1: flag managed files this repo's .gitignore would exclude. A synced file that
+  // git ignores is invisible to the team AND to drift-check — it silently defeats the
+  // whole governance loop (a common failure mode: .claude/ gitignored in most repos).
+  const conflicts = detectGitignoreConflicts(effectivePath, result.filesWritten);
+  if (conflicts.length > 0) {
+    result.gitignoreConflicts = conflicts.map((c) => c.file);
   }
 
   return result;
@@ -1073,7 +1231,7 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
   }
 
   // Validate platform(s)
-  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini"];
+  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"];
   const platforms = getRepoPlatforms(entry);
   for (const platform of platforms) {
     if (!validPlatforms.includes(platform)) {
@@ -1172,7 +1330,6 @@ function generateManifest(
 
 function createSyncPR(
   repoPath: string,
-  targetDir: string,
   config: AgentBootConfig,
   result: SyncResult
 ): void {
@@ -1191,13 +1348,15 @@ function createSyncPR(
   }
 
   // Check if there are actual changes
-  const diffResult = spawnSync("git", ["diff", "--quiet"], { cwd: repoPath, stdio: "pipe" });
-  const cachedResult = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
-  const untrackedResult = spawnSync("git", ["ls-files", "--others", "--exclude-standard", targetDir], { cwd: repoPath, stdio: "pipe" });
-  const untracked = untrackedResult.stdout?.toString().trim() ?? "";
-
-  if (diffResult.status === 0 && cachedResult.status === 0 && !untracked) {
-    return; // No changes
+  // Stage exactly the files sync WROTE (repo-relative paths). This covers every
+  // platform target (.claude/.cursor/.codex/.gemini/.junie/.windsurf/.github) AND
+  // root-level files (AGENTS.md, GEMINI.md, .windsurfrules, .mcp.json, CLAUDE.md).
+  // Previously createSyncPR staged only [targetDir, .github, .mcp.json, CLAUDE.md]
+  // with targetDir hardcoded to .claude — so PR mode created NO PR at all for
+  // cursor/gemini/windsurf/jetbrains/codex repos and always dropped root AGENTS.md.
+  const writtenPaths = result.filesWritten.filter((f) => fs.existsSync(path.join(repoPath, f)));
+  if (writtenPaths.length === 0) {
+    return; // nothing written — no PR
   }
 
   const dateSlug = new Date().toISOString().slice(0, 10);
@@ -1213,6 +1372,7 @@ function createSyncPR(
     branch = `${branch}-${counter}`;
   }
 
+  let originalBranch = "";
   try {
     const run = (cmd: string, args: string[]) => {
       const r = spawnSync(cmd, args, { cwd: repoPath, stdio: "pipe" });
@@ -1222,19 +1382,17 @@ function createSyncPR(
       return r.stdout?.toString().trim() ?? "";
     };
 
+    originalBranch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
     run("git", ["checkout", "-b", branch]);
-    // Only add paths that exist
-    const addPaths = [targetDir];
-    if (fs.existsSync(path.join(repoPath, ".github"))) {
-      addPaths.push(".github/");
+    run("git", ["add", "--", ...writtenPaths]);
+
+    // If staging produced no actual change (files identical to what's committed),
+    // there is nothing to PR — abort cleanly (the finally restores the branch).
+    const stagedClean = spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: repoPath, stdio: "pipe" });
+    if (stagedClean.status === 0) {
+      return;
     }
-    // Root-level files written outside targetDir
-    for (const rootFile of [".mcp.json", "CLAUDE.md"]) {
-      if (fs.existsSync(path.join(repoPath, rootFile))) {
-        addPaths.push(rootFile);
-      }
-    }
-    run("git", ["add", ...addPaths]);
+
     run("git", ["commit", "-m", titleTemplate]);
     run("git", ["push", "-u", "origin", branch]);
     const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", "Automated AgentBoot sync"]);
@@ -1242,6 +1400,12 @@ function createSyncPR(
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     result.errors.push(`PR creation failed: ${errMsg}`);
+  } finally {
+    // Always return to the original branch — previously the repo was left checked
+    // out on the sync branch (M12) on both success and failure.
+    if (originalBranch && originalBranch !== "HEAD") {
+      spawnSync("git", ["checkout", originalBranch], { cwd: repoPath, stdio: "pipe" });
+    }
   }
 }
 
@@ -1293,6 +1457,22 @@ function printSyncResult(result: SyncResult): void {
     console.log(chalk.gray(`      ... and ${written - 5} more`));
   }
 
+  if (result.gitignoreConflicts && result.gitignoreConflicts.length > 0) {
+    console.log(
+      chalk.yellow(
+        `      ⚠ ${result.gitignoreConflicts.length} synced file(s) are gitignored here — they won't be committed, so the team won't see them and drift-check can't verify them:`,
+      ),
+    );
+    for (const f of result.gitignoreConflicts) {
+      console.log(chalk.yellow(`          ${f}`));
+    }
+    console.log(
+      chalk.yellow(
+        "        Fix: remove or anchor the offending .gitignore pattern (or move internal-only excludes to .claude/.gitignore).",
+      ),
+    );
+  }
+
   if (result.prUrl) {
     console.log(chalk.cyan(`      PR: ${result.prUrl}`));
   }
@@ -1310,6 +1490,14 @@ async function main(): Promise<void> {
   const isForce = argv.includes("--force");
   const modeIdx = argv.indexOf("--mode");
   const cliMode = modeIdx !== -1 ? argv[modeIdx + 1] : undefined;
+  // Optional repo-name filter (repeatable): --repo <name>. Scopes the sync to
+  // specific repos.json entries (matched by label or path basename) instead of
+  // syncing every repo. Callers like the MCP sync tool use this to honor a
+  // requested repo subset rather than writing to all repos.
+  const repoFilter: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--repo" && argv[i + 1]) repoFilter.push(argv[i + 1]!);
+  }
 
   console.log(chalk.bold("\nAgentBoot — sync"));
   console.log(chalk.gray(`Config: ${configPath}`));
@@ -1341,11 +1529,24 @@ async function main(): Promise<void> {
   }
 
   // Load repos.
-  const repos = loadRepos(reposPath, configDir);
+  const allRepos = loadRepos(reposPath, configDir);
 
-  if (repos.length === 0) {
+  if (allRepos.length === 0) {
     console.log(chalk.yellow("No repos in repos.json — nothing to sync."));
     process.exit(0);
+  }
+
+  // Apply the optional --repo filter.
+  const repos = repoFilter.length === 0
+    ? allRepos
+    : allRepos.filter((r) => {
+        const want = new Set(repoFilter);
+        return want.has(r.label ?? "") || want.has(path.basename(r.path)) || want.has(r.path);
+      });
+
+  if (repos.length === 0) {
+    console.error(chalk.red(`No repos.json entries matched --repo ${repoFilter.join(", ")}`));
+    process.exit(1);
   }
 
   console.log(chalk.cyan(`Syncing to ${repos.length} repo${repos.length > 1 ? "s" : ""}...`));
@@ -1387,7 +1588,6 @@ async function main(): Promise<void> {
 
     // AB-28: Create ONE PR per repo entry (not per package) in PR mode
     if (isPrMode && !dryRun && successResults.length > 0) {
-      const targetDir = config.sync?.targetDir ?? ".claude";
       // Merge all package results into a single result for the PR
       const mergedResult: SyncResult = {
         repo: successResults[0]!.repo,
@@ -1398,7 +1598,7 @@ async function main(): Promise<void> {
         errors: [],
         dryRun,
       };
-      createSyncPR(path.resolve(entry.path), targetDir, config, mergedResult);
+      createSyncPR(path.resolve(entry.path), config, mergedResult);
       // If PR creation added errors, include them in the results for the summary
       if (mergedResult.errors.length > 0) {
         results.push(mergedResult);

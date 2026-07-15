@@ -7,16 +7,19 @@ sidebar_position: 1
 
 AgentBoot is a harness engineering build tool that manages your AI agent behavior
 as source code — versioned, reviewed, tested, and deployed from a central personas
-repo to every project in your org. It compiles personas into platform-native formats
-for Claude Code, Copilot, Cursor, Gemini, Windsurf, JetBrains AI, and the universal AGENTS.md standard (8 platforms total).
+repo to every project in your org. It compiles personas into platform-native formats.
+Official support targets the **CLI surfaces of Claude Code, Codex, and GitHub Copilot**;
+AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the universal
+`AGENTS.md` standard on a community-supported basis.
 
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Pre-v1.0 notice:** AgentBoot is under active development. Breaking changes may
-> occur without deprecation warnings before v1.0. Release notes will document all
-> changes. We do our best to minimize disruption, but stability is not guaranteed
-> until v1.0.
+> **Beta notice:** AgentBoot **v0.11.1 is a public Beta**. It's usable end to end, but
+> breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
+> notes document all changes, and we do our best to minimize disruption — but stability
+> is not guaranteed until v1.0. If you hit a rough edge,
+> [tell us](https://github.com/agentboot-dev/agentboot/issues).
 
 ---
 
@@ -99,7 +102,7 @@ If you prefer to set up manually, the AgentBoot repo is a GitHub template:
 
 ```bash
 gh repo create my-org/personas \
-  --template agentboot/agentboot \
+  --template agentboot-dev/agentboot \
   --private \
   --clone
 cd personas
@@ -107,7 +110,7 @@ npm install
 ```
 
 Or use the GitHub web UI: go to
-[github.com/agentboot/agentboot](https://github.com/agentboot/agentboot), click
+[github.com/agentboot-dev/agentboot](https://github.com/agentboot-dev/agentboot), click
 "Use this template", choose "Create a new repository", and clone the result.
 
 ### Local evaluation (no GitHub repo required)

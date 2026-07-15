@@ -200,6 +200,31 @@ describe("Story 13f: Path-scoped files in scan", () => {
     expect(generalFile!.type).toBe("rule");
   });
 
+  // H3: a symlinked directory must never be followed during a scan — otherwise a
+  // committed symlink (e.g. -> /) lets `import` read files outside the repo.
+  it.skipIf(process.platform === "win32")("does not follow symlinked directories (H3 traversal guard)", () => {
+    const parentDir = path.join(tmpDir, "parent");
+    const hubPath = path.join(tmpDir, "hub");
+    scaffoldHub(hubPath);
+
+    // A real repo with legitimate content.
+    const repoDir = path.join(parentDir, "myrepo");
+    writeFile(repoDir, ".claude/rules/general.md", "---\ndescription: ok\n---\n# General\nBe careful.");
+
+    // Content OUTSIDE the scan root that must never be reached.
+    const outside = path.join(tmpDir, "outside");
+    writeFile(outside, ".claude/rules/leaked.md", "---\ndescription: secret\n---\n# Leaked\nSHOULD NOT BE SCANNED.");
+
+    // A symlinked directory inside the scan root pointing at the outside content.
+    fs.mkdirSync(parentDir, { recursive: true });
+    fs.symlinkSync(outside, path.join(parentDir, "evil"), "dir");
+
+    const manifest = scanParentForContent(parentDir, [hubPath]);
+    // The legit file is found; the symlink target's file is not.
+    expect(manifest.files.some(f => f.relativePath.includes("general"))).toBe(true);
+    expect(manifest.files.some(f => f.relativePath.includes("leaked"))).toBe(false);
+  });
+
   it("path-scoped rules are categorized as wholeFile (gotchas)", () => {
     const parentDir = path.join(tmpDir, "parent");
     const hubPath = path.join(tmpDir, "hub");

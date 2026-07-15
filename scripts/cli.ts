@@ -22,15 +22,18 @@
  *   agentboot <command> --help
  */
 
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { detectGitignoreConflicts } from "./lib/gitignore.js";
+import { findManifestPath } from "./lib/drift.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -348,6 +351,53 @@ program
     await installAction({});
   });
 
+// §I: user-level (~/.claude) install. AgentBoot is the default provider for the
+// user-level slot; if another tool manages ~/.claude (a ~/.claude/.managed
+// sentinel, or userLevel.mode: "manifest"), it stages for handoff instead.
+program
+  .command("install-user")
+  .description("Install compiled skills/rules to ~/.claude (or stage for an external manager)")
+  .option("--dry-run", "show what would be written/staged without changing anything")
+  .option("--mode <mode>", "override the write mode: auto (default), direct, or manifest")
+  .action(async (opts) => {
+    if (opts.mode && !["auto", "direct", "manifest"].includes(opts.mode)) {
+      console.error(chalk.red("--mode must be one of: auto, direct, manifest"));
+      process.exit(1);
+    }
+    const { installUserLevel } = await import("./lib/user-scope.js");
+    const cwd = process.cwd();
+    const configPath = path.join(cwd, "agentboot.config.json");
+    const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
+    const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
+    if (!fs.existsSync(distCore)) {
+      console.error(chalk.red("dist/claude/core not found — run `agentboot build` first."));
+      process.exit(1);
+    }
+
+    const effectiveConfig = opts.mode
+      ? { ...(config ?? {}), userLevel: { mode: opts.mode } }
+      : config;
+
+    console.log(chalk.bold("\nAgentBoot — install-user\n"));
+    const res = installUserLevel(distCore, effectiveConfig as AgentBootConfig, { dryRun: opts.dryRun });
+
+    if (res.mode === "direct") {
+      const r = res.direct!;
+      for (const e of r.errors) console.log(chalk.red(`  ✗ ${e}`));
+      console.log(chalk.green(`  ✓ ${opts.dryRun ? "Would write" : "Wrote"} ${r.skillsWritten.length} skill file(s) + ${r.rulesWritten.length} rule file(s) to ~/.claude/`));
+      for (const s of r.skipped) console.log(chalk.gray(`  – skipped ${s}`));
+      if (r.errors.length) process.exit(1);
+    } else {
+      const s = res.staged!;
+      for (const e of s.errors) console.log(chalk.red(`  ✗ ${e}`));
+      console.log(chalk.yellow(`  ~/.claude is externally managed — ${opts.dryRun ? "would stage" : "staged"} ${s.staged.length} file(s) for handoff.`));
+      console.log(chalk.gray(`  Staging dir: ${s.stagingDir}`));
+      console.log(chalk.gray(`  Manifest:    ${s.manifestPath}`));
+      if (s.errors.length) process.exit(1);
+    }
+    console.log("");
+  });
+
 // ---- import (AB-43) — LLM-powered content classification -----------------
 
 program
@@ -361,8 +411,28 @@ program
   .option("--non-interactive", "run without prompts (auto-apply high-confidence matches)")
   .option("--retry-failed", "retry previously timed-out files from .agentboot-import-failed.json")
   .option("--isolated", "test prompts without user Claude settings (uses temp config)")
+  .option("--url <github-url>", "import from a GitHub URL (repo or raw file)")
   .action(async (opts) => {
     const parentDir = opts["parent"] as string | undefined;
+    const urlOpt = opts["url"] as string | undefined;
+
+    // Phase 11 B2: Handle --url flag
+    if (urlOpt) {
+      const { importFromUrl, AgentBootError } = await import("./lib/import.js");
+      const hubPath = opts["hubPath"] as string | undefined ?? process.cwd();
+      console.log(chalk.cyan(`\n  Importing from URL: ${urlOpt}\n`));
+      try {
+        const result = await importFromUrl(urlOpt, hubPath);
+        console.log(chalk.green(`  ✓ Downloaded ${result.type} to ${result.tempDir}`));
+        console.log(chalk.gray(`    Run 'agentboot import --path ${result.tempDir}' to classify content.\n`));
+      } catch (err) {
+        if (err instanceof AgentBootError) process.exit(err.exitCode);
+        console.error(chalk.red(`  ✗ ${(err as Error).message}\n`));
+        process.exit(1);
+      }
+      return;
+    }
+
     const run = async () => {
       if (parentDir) {
         // Expanded import: scan all subdirs, categorize by strategy, 3-strategy pipeline
@@ -430,9 +500,9 @@ program
 
 program
   .command("add")
-  .description("Scaffold a new persona, trait, gotcha, domain, hook, or classify a prompt")
-  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt")
-  .argument("<name>", "name for the new item (lowercase-with-hyphens)")
+  .description("Scaffold a persona, trait, gotcha, domain, hook, or template — or classify a prompt")
+  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt, template")
+  .argument("<name>", "name for the new item (lowercase-with-hyphens); for template, the template name")
   .action(async (type: string, name: string) => {
     // Validate name format (skip for prompt type — name is content/path, not an identifier)
     if (type !== "prompt" && !/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
@@ -685,12 +755,14 @@ Add to \`agentboot.config.json\`:
 #   }
 
 INPUT=$(cat)
-EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty')
+# Parse JSON with node (guaranteed present wherever the harness runs) rather than
+# jq, which is not installed on Windows/git-bash — keeps this hook portable.
+EVENT_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(d).hook_event_name||''))}catch{process.stdout.write('')}})")
 
 # TODO: Add your compliance logic here
 # Example: block a tool if a condition is met
 # if [ "$EVENT_NAME" = "PreToolUse" ]; then
-#   TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
+#   TOOL=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(d).tool_name||''))}catch{process.stdout.write('')}})")
 #   if [ "$TOOL" = "Bash" ]; then
 #     echo '{"decision":"block","reason":"Bash tool is restricted by policy"}' >&2
 #     exit 2
@@ -740,8 +812,74 @@ exit 0
         throw err;
       }
 
+    } else if (type === "template") {
+      // §L: install a pre-packaged harness bundle from the shipped templates.
+      // A template is a ready-to-tune set of hub files (persona + config, etc.)
+      // that maps directly into the user's hub layout.
+      const harnessDir = path.join(ROOT, "templates", "harness");
+      const templateDir = path.join(harnessDir, name);
+      const manifestPath = path.join(templateDir, "template.json");
+
+      if (!fs.existsSync(manifestPath)) {
+        const available = fs.existsSync(harnessDir)
+          ? fs.readdirSync(harnessDir).filter((d) => fs.existsSync(path.join(harnessDir, d, "template.json")))
+          : [];
+        console.error(chalk.red(`Unknown template: '${name}'.`));
+        if (available.length > 0) {
+          console.error(chalk.gray(`  Available templates: ${available.join(", ")}`));
+        }
+        process.exit(1);
+      }
+
+      let manifest: { name?: string; activation?: string };
+      try {
+        manifest = JSON.parse(stripJsoncComments(fs.readFileSync(manifestPath, "utf-8")));
+      } catch {
+        console.error(chalk.red(`Template '${name}' has an unreadable template.json`));
+        process.exit(1);
+        return;
+      }
+
+      const filesRoot = path.join(templateDir, "files");
+      if (!fs.existsSync(filesRoot)) {
+        console.error(chalk.red(`Template '${name}' has no files/ payload`));
+        process.exit(1);
+      }
+
+      // Collect the payload (recursive), then check for conflicts BEFORE writing
+      // anything — an `add template` either applies cleanly or not at all.
+      const toCopy: Array<{ src: string; rel: string }> = [];
+      const walk = (dir: string, rel: string): void => {
+        for (const entry of fs.readdirSync(dir)) {
+          const abs = path.join(dir, entry);
+          const r = rel ? `${rel}/${entry}` : entry;
+          if (fs.statSync(abs).isDirectory()) walk(abs, r);
+          else toCopy.push({ src: abs, rel: r });
+        }
+      };
+      walk(filesRoot, "");
+
+      const conflicts = toCopy.filter((f) => fs.existsSync(path.join(cwd, f.rel)));
+      if (conflicts.length > 0) {
+        console.error(chalk.red(`Refusing to overwrite existing files:`));
+        for (const c of conflicts) console.error(chalk.gray(`  ${c.rel}`));
+        process.exit(1);
+      }
+
+      for (const f of toCopy) {
+        const dest = path.join(cwd, f.rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(f.src, dest);
+      }
+
+      console.log(chalk.bold(`\n${chalk.green("✓")} Added template: ${manifest.name ?? name}\n`));
+      for (const f of toCopy) console.log(chalk.gray(`  ${f.rel}`));
+      if (manifest.activation) {
+        console.log(chalk.gray(`\n  ${manifest.activation}\n`));
+      }
+
     } else {
-      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook, prompt`));
+      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook, prompt, template`));
       process.exit(1);
     }
   });
@@ -937,6 +1075,48 @@ program
           warn(`repos.json not found at ${reposPath}`, true);
         }
 
+        // B.1: gitignore conflicts across synced repos. A managed file that a repo's
+        // .gitignore excludes is invisible to the team AND to drift-check, silently
+        // defeating governance. Blocker (fail → exit 1); not auto-fixable because
+        // editing a repo's .gitignore needs human intent (why was the pattern there?).
+        if (fs.existsSync(fullReposPath)) {
+          try {
+            const reposArr = JSON.parse(
+              stripJsoncComments(fs.readFileSync(fullReposPath, "utf-8")),
+            ) as Array<{ path?: string; label?: string }>;
+            let anyConflict = false;
+            let checkedAnyRepo = false;
+            for (const r of Array.isArray(reposArr) ? reposArr : []) {
+              if (!r?.path) continue;
+              const repoPath = path.resolve(path.dirname(configPath), r.path);
+              if (!fs.existsSync(repoPath)) continue;
+              const manifestPath = findManifestPath(repoPath);
+              if (!manifestPath) continue; // never synced — nothing managed to check
+              let managed: string[] = [];
+              try {
+                const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+                  files?: Array<{ path: string }>;
+                };
+                managed = (manifest.files ?? []).map((f) => f.path).filter(Boolean);
+              } catch {
+                continue;
+              }
+              checkedAnyRepo = true;
+              const conflicts = detectGitignoreConflicts(repoPath, managed);
+              if (conflicts.length > 0) {
+                anyConflict = true;
+                const label = r.label ?? path.basename(r.path);
+                fail(
+                  `${conflicts.length} managed file(s) gitignored in ${label} — synced but not committed (e.g. ${conflicts[0]!.file}); remove or anchor the .gitignore pattern`,
+                );
+              }
+            }
+            if (checkedAnyRepo && !anyConflict) ok("No gitignore conflicts in synced repos");
+          } catch {
+            // repos.json unparseable — the check above already surfaced that.
+          }
+        }
+
         // Check dist/
         const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath)) {
@@ -1117,9 +1297,11 @@ program
   .option("--snapshot", "create or update snapshot baseline from current dist/")
   .option("--regression", "compare current dist/ against saved snapshot")
   .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
-  .option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)")
-  .option("--verbose", "show detailed rationale per dimension (for --judge)")
-  .option("--min-score <score>", "minimum passing score for --judge (default: 3.0)", parseFloat)
+  // The LLM-as-Judge evaluation is not part of the advertised v1.0 surface —
+  // its flags are hidden (still functional, just not surfaced in help).
+  .addOption(new Option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)").hideHelp())
+  .addOption(new Option("--verbose", "show detailed rationale per dimension (for --judge)").hideHelp())
+  .addOption(new Option("--min-score <score>", "minimum passing score for --judge (default: 3.0)").argParser(parseFloat).hideHelp())
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
   .action(async (opts) => {
     const {
@@ -1216,7 +1398,7 @@ program
           }
         } else {
           console.log(chalk.yellow("  LLM provider required. Test cases loaded and validated."));
-          const resultsDir = path.join(process.env["HOME"] ?? "~", ".agentboot", "judge-results");
+          const resultsDir = path.join(process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir(), ".agentboot", "judge-results");
           fs.mkdirSync(resultsDir, { recursive: true });
           fs.writeFileSync(path.join(resultsDir, "last-run-summary.json"),
             JSON.stringify({ timestamp: new Date().toISOString(), testCases: testCases.length, status: "pending_provider" }, null, 2) + "\n", "utf-8");
@@ -1228,8 +1410,7 @@ program
       console.log(chalk.gray("  Specify a test type:\n"));
       console.log(chalk.gray("    --behavioral   Run behavioral tests (LLM-powered, costs money)"));
       console.log(chalk.gray("    --snapshot     Create/update snapshot baseline from dist/"));
-      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot"));
-      console.log(chalk.gray("    --judge        Run LLM-as-Judge evaluation tests\n"));
+      console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot\n"));
     }
 
     process.exit(exitCode);
@@ -1776,6 +1957,148 @@ program
     }
   });
 
+// ---- Phase 11: governance commands ----------------------------------------
+
+program
+  .command("drift-check")
+  .description("Check spoke repos for drift against their manifest")
+  .option("--repo <path>", "Check a specific repo (defaults to all repos in repos.json)")
+  .option("--format <type>", "Output format: text or json", "text")
+  .action(async (opts, cmd) => {
+    const { checkDrift, generateComplianceReport } = await import("./lib/drift.js");
+    const globalOpts = cmd.optsWithGlobals();
+    const cwd = process.cwd();
+
+    if (opts.repo) {
+      const report = checkDrift(path.resolve(opts.repo));
+      if (!report.manifestFound) {
+        console.log(chalk.yellow("  No AgentBoot manifest found."));
+        process.exit(2);
+      }
+      if (opts.format === "json") {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(chalk.bold(`\n  Drift check: ${path.basename(report.repoPath)}\n`));
+        for (const entry of report.entries) {
+          const icon = entry.status === "clean" ? chalk.green("✓") : entry.status === "unmanaged" ? chalk.yellow("?") : chalk.red("✗");
+          console.log(`    ${icon} ${entry.file} — ${entry.status}`);
+        }
+        console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.cleanCount} clean\n`);
+      }
+      process.exit(report.clean ? 0 : 1);
+    } else {
+      // Check all repos from repos.json
+      const configPath = globalOpts.config
+        ? path.resolve(globalOpts.config)
+        : path.join(cwd, "agentboot.config.json");
+      const config = loadConfig(configPath);
+      const reposPath = config.sync?.repos ? path.resolve(path.dirname(configPath), config.sync.repos) : path.join(path.dirname(configPath), "repos.json");
+      let repos: Array<{ path: string; label?: string }> = [];
+      try {
+        repos = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+      } catch { /* empty or missing */ }
+      const report = generateComplianceReport(repos, path.dirname(configPath));
+      if (opts.format === "json") {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(chalk.bold(`\n  Compliance Report — ${report.generatedAt}\n`));
+        for (const r of report.repos) {
+          const icon = r.clean ? chalk.green("✓") : r.manifestFound ? chalk.red("✗") : chalk.yellow("?");
+          const label = path.basename(r.repoPath);
+          const detail = !r.manifestFound ? "(no manifest)" : r.clean ? "clean" : `${r.summary.modifiedCount} modified`;
+          console.log(`    ${icon} ${label} — ${detail}`);
+        }
+        console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${report.summary.noManifestRepos} no manifest\n`);
+      }
+      process.exit(report.summary.driftedRepos > 0 ? 1 : 0);
+    }
+  });
+
+program
+  .command("audit")
+  .description("Audit the hub for health issues (orphaned traits, dead gotchas, scope shadows)")
+  .option("--format <type>", "Output format: text or json", "text")
+  .action(async (opts, cmd) => {
+    const { runAudit } = await import("./lib/audit.js");
+    const globalOpts = cmd.optsWithGlobals();
+    const cwd = process.cwd();
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config)
+      : path.join(cwd, "agentboot.config.json");
+    const hubRoot = path.dirname(configPath);
+
+    const report = runAudit(hubRoot);
+
+    if (opts.format === "json") {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(chalk.bold(`\n  Hub Audit\n`));
+      if (report.findings.length === 0) {
+        console.log(chalk.green("  ✓ No issues found\n"));
+      } else {
+        for (const f of report.findings) {
+          const icon = f.severity === "error" ? chalk.red("✗") : f.severity === "warn" ? chalk.yellow("⚠") : chalk.gray("ℹ");
+          console.log(`    ${icon} [${f.type}] ${f.message}${f.file ? ` (${f.file})` : ""}`);
+        }
+        console.log(`\n  Summary: ${report.summary.errors} errors, ${report.summary.warnings} warnings, ${report.summary.info} info\n`);
+      }
+    }
+    process.exit(report.summary.errors > 0 ? 1 : 0);
+  });
+
+program
+  .command("hubs")
+  .description("List registered hubs")
+  .action(async () => {
+    const { listHubs, getDefaultHub } = await import("./lib/registry.js");
+    const hubs = listHubs();
+    const defaultHub = getDefaultHub();
+
+    if (hubs.length === 0) {
+      console.log(chalk.yellow("  No hubs registered. Run 'agentboot connect <path>' to register one."));
+    } else {
+      console.log(chalk.bold("\n  Registered hubs:\n"));
+      for (const hub of hubs) {
+        const marker = hub.path === defaultHub ? chalk.green(" (default)") : "";
+        console.log(`    ${hub.org ?? "(no org)"} → ${hub.path}${marker}`);
+      }
+      console.log("");
+    }
+  });
+
+program
+  .command("connect")
+  .description("Register a hub and set it as default")
+  .argument("[path]", "Path to the hub directory", ".")
+  .action(async (hubPath: string) => {
+    const { registerHub } = await import("./lib/registry.js");
+    const absPath = path.resolve(hubPath);
+    const configPath = path.join(absPath, "agentboot.config.json");
+    if (!fs.existsSync(configPath)) {
+      console.error(chalk.red(`  No agentboot.config.json found at ${absPath}`));
+      process.exit(1);
+    }
+    const config = loadConfig(configPath);
+    registerHub(absPath, config.org);
+    console.log(chalk.green(`  ✓ Hub registered: ${config.org ?? absPath}`));
+    console.log(chalk.gray(`    Path: ${absPath}`));
+  });
+
+program
+  .command("use")
+  .description("Switch the default hub")
+  .argument("<path>", "Path to the hub to set as default")
+  .action(async (hubPath: string) => {
+    const { setDefaultHub } = await import("./lib/registry.js");
+    try {
+      setDefaultHub(path.resolve(hubPath));
+      console.log(chalk.green(`  ✓ Default hub set to: ${path.resolve(hubPath)}`));
+    } catch (err) {
+      console.error(chalk.red(`  ✗ ${(err as Error).message}`));
+      process.exit(1);
+    }
+  });
+
 // ---- config ---------------------------------------------------------------
 
 program
@@ -1881,7 +2204,7 @@ program
 program
   .command("export")
   .description("Export compiled output in a specific format")
-  .option("--format <fmt>", "export format: plugin, marketplace, managed, agentskills", "plugin")
+  .option("--format <fmt>", "export format: plugin, managed, agentskills", "plugin")
   .option("--output <dir>", "output directory")
   .action(async (opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
@@ -1968,7 +2291,6 @@ program
 
       console.log(chalk.green(`  ✓ Exported plugin to ${path.relative(cwd, outputDir)}/`));
       console.log(chalk.gray(`    ${fileCount} files (plugin.json + agents, skills, traits, hooks, rules)`));
-      console.log(chalk.gray(`\n  Next: agentboot publish\n`));
 
     } else if (format === "managed") {
       const managedDir = path.join(distPath, "managed");
@@ -2014,7 +2336,6 @@ program
 
       fs.writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2) + "\n", "utf-8");
       console.log(chalk.green(`  ✓ Created marketplace.json`));
-      console.log(chalk.gray(`\n  Next: agentboot publish to add entries\n`));
 
     } else if (format === "agentskills") {
       // AB-162: agentskills.io listing export
@@ -2032,15 +2353,17 @@ program
       console.log(chalk.gray("  Submit this file to agentskills.io for directory listing."));
 
     } else {
-      console.error(chalk.red(`Unknown export format: '${format}'. Use: plugin, marketplace, managed, agentskills`));
+      console.error(chalk.red(`Unknown export format: '${format}'. Use: plugin, managed, agentskills`));
       process.exit(1);
     }
   });
 
 // ---- publish (AB-41) ------------------------------------------------------
+// GA surface-pruning (R.2): the marketplace/publish subsystem is not advertised
+// in v1.0 — hidden (not deleted) so it stays reversible for a post-GA decision.
 
 program
-  .command("publish")
+  .command("publish", { hidden: true })
   .description("Publish compiled plugin to marketplace")
   .option("--marketplace <path>", "path to marketplace.json", "marketplace.json")
   .option("--bump <level>", "version bump: major, minor, patch")
@@ -2335,7 +2658,9 @@ program
 // ---------------------------------------------------------------------------
 
 const marketplaceCmd = program
-  .command("marketplace")
+  // GA surface-pruning (R.2): hidden in v1.0 (the marketplace was cut) — kept for
+  // a post-GA decision, not advertised in top-level help.
+  .command("marketplace", { hidden: true })
   .description("Marketplace: search, pull, and publish components");
 
 marketplaceCmd
@@ -2444,7 +2769,8 @@ marketplaceCmd
 // ---------------------------------------------------------------------------
 
 const registryCmd = program
-  .command("registry")
+  // GA surface-pruning (R.2): part of the hidden marketplace subsystem.
+  .command("registry", { hidden: true })
   .description("Manage marketplace registry channels");
 
 registryCmd
@@ -2549,7 +2875,6 @@ program
   .option("--json", "Output raw JSON metrics")
   .action(async (opts) => {
     const { loadTelemetry, aggregateMetrics, generateModelRecommendations, analyzeCoverage, printOptimizeReport, generateHtmlReport } = await import("./lib/optimize.js");
-    const config = loadConfig(path.join(ROOT, "agentboot.config.json"));
     const events = loadTelemetry({ since: opts.since, until: opts.until, scope: opts.scope });
     if (events.length === 0) {
       console.log(chalk.yellow("\nNo telemetry found. Run some personas first, or check ~/.agentboot/telemetry/"));
@@ -2557,7 +2882,12 @@ program
     }
     const metrics = aggregateMetrics(events);
     const recommendations = generateModelRecommendations(metrics);
-    const enabledPersonas = config.personas?.enabled ?? [];
+    // Config is optional and only feeds coverage-gap analysis. Resolve from the
+    // user's hub (cwd), never the package dir (ROOT has no config in a published
+    // install), and tolerate its absence rather than crashing.
+    const cwdConfigPath = path.join(process.cwd(), "agentboot.config.json");
+    const config = fs.existsSync(cwdConfigPath) ? loadConfig(cwdConfigPath) : null;
+    const enabledPersonas = config?.personas?.enabled ?? [];
     const knownScopes = metrics.map((m: any) => m.scope).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
     const gaps = analyzeCoverage(metrics, enabledPersonas, knownScopes);
     if (opts.json) { console.log(JSON.stringify({ metrics, recommendations, gaps }, null, 2)); return; }

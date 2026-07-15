@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'AgentBoot',
-  tagline: 'The build tool for AI coding assistant governance',
+  tagline: 'AI behavior as code.',
   favicon: 'img/favicon.png',
 
   future: {
@@ -26,6 +26,36 @@ const config: Config = {
     locales: ['en'],
   },
 
+  // AEO / GEO / SEO: JSON-LD structured data so answer engines and agentic
+  // workflows can parse what AgentBoot is and how to use it. See also
+  // static/llms.txt (the agent/LLM index of the site).
+  headTags: [
+    {
+      tagName: 'script',
+      attributes: {type: 'application/ld+json'},
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'AgentBoot',
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'macOS, Linux, Windows',
+        description:
+          'AgentBoot is the compiler for AI behavior as code: author your team’s ' +
+          'personas, rules, and guardrails once in a hub repo, compile them to native ' +
+          'config for Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI, and ship ' +
+          'them to every repo as a reviewable pull request — verified against drift.',
+        url: 'https://agentboot.dev',
+        codeRepository: 'https://github.com/agentboot-dev/agentboot',
+        license: 'https://www.apache.org/licenses/LICENSE-2.0',
+        offers: {'@type': 'Offer', price: '0', priceCurrency: 'USD'},
+      }),
+    },
+    {
+      tagName: 'link',
+      attributes: {rel: 'alternate', type: 'text/plain', href: '/llms.txt', title: 'llms.txt'},
+    },
+  ],
+
   presets: [
     [
       'classic',
@@ -37,16 +67,49 @@ const config: Config = {
           // Exclude internal docs from the public site
           exclude: ['internal/**'],
         },
-        // Blog coming soon — see docs/internal/plans/marketing-overhaul.md
         blog: false,
         theme: {
           customCss: './src/css/custom.css',
+        },
+        sitemap: {
+          changefreq: 'weekly',
+          priority: 0.5,
         },
       } satisfies Preset.Options,
     ],
   ],
 
   themeConfig: {
+    // Default social-card / OG image + discovery metadata.
+    image: 'img/logo.png',
+    metadata: [
+      {
+        name: 'description',
+        content:
+          'Compile your team’s AI behavior once and ship it to every repo as a pull request. ' +
+          'Native config for Claude Code, OpenAI Codex CLI, and GitHub Copilot CLI — self-hosted, ' +
+          'verified against drift.',
+      },
+      {
+        name: 'keywords',
+        content:
+          'AI behavior as code, AI agent governance, keep CLAUDE.md AGENTS.md in sync, ' +
+          'AI coding assistant configuration, Claude Code hooks, Codex CLI, GitHub Copilot CLI, ' +
+          'managed AI settings, persona compiler, drift detection',
+      },
+      {name: 'og:type', content: 'website'},
+      {name: 'twitter:card', content: 'summary_large_image'},
+    ],
+    announcementBar: {
+      id: 'beta-v0-11',
+      content:
+        '🚧 AgentBoot v0.11.1 is in <strong>public Beta</strong> — try it and ' +
+        '<a target="_blank" rel="noopener noreferrer" href="https://github.com/agentboot-dev/agentboot/issues">' +
+        'tell us what breaks</a>. Your feedback shapes v1.0 GA.',
+      backgroundColor: '#312e81',
+      textColor: '#e0e7ff',
+      isCloseable: true,
+    },
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,
@@ -64,16 +127,9 @@ const config: Config = {
           position: 'left',
           label: 'Docs',
         },
-        {
-          to: '/docs/roadmap',
-          label: 'Roadmap',
-          position: 'left',
-        },
-        {
-          to: '/docs/marketplace',
-          label: 'Marketplace',
-          position: 'left',
-        },
+        {to: '/why', label: 'Why AgentBoot', position: 'left'},
+        {to: '/for-organizations', label: 'For Organizations', position: 'left'},
+        {to: '/trust', label: 'Trust & Architecture', position: 'left'},
         {
           href: 'https://github.com/agentboot-dev/agentboot',
           label: 'GitHub',
@@ -87,34 +143,37 @@ const config: Config = {
         {
           title: 'Documentation',
           items: [
-            { label: 'Getting Started', to: '/docs/getting-started' },
-            { label: 'Core Concepts', to: '/docs/concepts' },
-            { label: 'CLI Reference', to: '/docs/cli-reference' },
+            {label: 'Getting Started', to: '/docs/getting-started'},
+            {label: 'Core Concepts', to: '/docs/concepts'},
+            {label: 'CLI Reference', to: '/docs/cli-reference'},
+            {label: 'Import Existing Config', to: '/docs/import'},
+            {label: 'Harness Templates', to: '/docs/templates'},
+          ],
+        },
+        {
+          title: 'For Organizations',
+          items: [
+            {label: 'Why AgentBoot', to: '/why'},
+            {label: 'For Organizations', to: '/for-organizations'},
+            {label: 'Trust & Architecture', to: '/trust'},
+            {label: 'Platform Capability Matrix', to: '/docs/platform-capability-matrix'},
           ],
         },
         {
           title: 'Guides',
           items: [
-            { label: 'Extending AgentBoot', to: '/docs/extending' },
-            { label: 'Prompt Authoring', to: '/docs/prompt-guide' },
-            { label: 'Privacy & Safety', to: '/docs/privacy' },
+            {label: 'Extending AgentBoot', to: '/docs/extending'},
+            {label: 'Prompt Authoring', to: '/docs/prompt-guide'},
+            {label: 'Privacy & Safety', to: '/docs/privacy'},
           ],
         },
         {
           title: 'Community',
           items: [
-            {
-              label: 'GitHub',
-              href: 'https://github.com/agentboot-dev/agentboot',
-            },
-            {
-              label: 'Issues',
-              href: 'https://github.com/agentboot-dev/agentboot/issues',
-            },
-            {
-              label: 'Blog (coming soon)',
-              href: 'https://github.com/agentboot-dev/agentboot/discussions',
-            },
+            {label: 'GitHub', href: 'https://github.com/agentboot-dev/agentboot'},
+            {label: 'Issues', href: 'https://github.com/agentboot-dev/agentboot/issues'},
+            {label: 'Discussions', href: 'https://github.com/agentboot-dev/agentboot/discussions'},
+            {label: 'Roadmap', to: '/docs/roadmap'},
           ],
         },
       ],

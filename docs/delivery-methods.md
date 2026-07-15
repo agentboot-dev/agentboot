@@ -628,10 +628,10 @@ through different channels.
 
 8. **MCP servers** — Copilot supports MCP in VS Code (GA) and CLI. AgentBoot's
    MCP server (`agentboot mcp-server`, implemented in Phase 8) provides live persona
-   serving and knowledge base access.
+   serving.
 
 **What Copilot lacks vs. CC:**
-- No hooks (except CLI pre-prompt hook) — compliance enforcement is advisory only
+- Fewer hook types than CC — AgentBoot emits Copilot compliance hooks (`.github/hooks/agentboot.json`, blocking on exit code 2), but CC's richer PreToolUse/PostToolUse/Stop lifecycle is not fully mirrored
 - No managed settings/MDM — no HARD guardrail channel
 - No per-persona model selection — Copilot chooses the model
 - No agent memory — no self-improvement reflections
@@ -657,8 +657,8 @@ no marketplace. It's the "repo already has it" model.
 3. **Agent Skills (`skills/{name}/SKILL.md`)** — Cursor supports the agentskills.io
    format. AgentBoot's cross-platform SKILL.md output works here.
 
-4. **MCP servers** — Cursor supports MCP. AgentBoot's MCP server (deferred to
-   Phase 8) would provide live persona access.
+4. **MCP servers** — Cursor supports MCP. AgentBoot's MCP server (implemented in
+   Phase 8) provides live persona access.
 
 **What Cursor lacks vs. CC:**
 - No hooks — zero enforcement capability

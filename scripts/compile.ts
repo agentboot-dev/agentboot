@@ -43,6 +43,7 @@ import {
   groupsToNodes,
   normalizeTraitRefs,
   DEFAULT_WEIGHT,
+  WEIGHT_MAP,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 
@@ -368,6 +369,83 @@ export function buildWeightPreamble(traitName: string, weight: number): string {
   return calibrations[closest.toFixed(1)] ?? "";
 }
 
+/**
+ * Weight-tier section convention for trait files.
+ *
+ * A trait MAY split weight-sensitive guidance into per-tier sections whose `###`
+ * heading text matches a named weight: `### LOW`, `### MEDIUM`, `### HIGH`, `### MAX`
+ * (case-insensitive; the non-OFF entries of WEIGHT_MAP). Everything else — content
+ * before the first tier heading and any non-tier `###`/`##`/`#` section — is
+ * WEIGHT-INDEPENDENT and always included (e.g. Overview, Anti-Patterns, Interaction).
+ *
+ * At a given weight, selectTraitTier keeps all weight-independent content plus ONLY the
+ * single nearest-matching tier section, in document order. A trait with no tier sections
+ * is returned unchanged, so existing (untiered) traits compile byte-identically. This is
+ * what lets a persona carry just the guidance for the weight it uses instead of inlining
+ * every tier's prose at every weight (the token-budget bloat).
+ */
+const TRAIT_TIER_NAMES = Object.keys(WEIGHT_MAP).filter((n) => n !== "OFF");
+const TRAIT_TIER_HEADING = new RegExp(`^###\\s+(${TRAIT_TIER_NAMES.join("|")})\\s*$`, "i");
+
+/** Map a numeric weight to the nearest named tier section (OFF excluded). */
+export function weightToTier(weight: number): string {
+  let best = TRAIT_TIER_NAMES[0]!;
+  let bestDist = Infinity;
+  for (const name of TRAIT_TIER_NAMES) {
+    const dist = Math.abs(weight - (WEIGHT_MAP[name] ?? DEFAULT_WEIGHT));
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = name;
+    }
+  }
+  return best;
+}
+
+/**
+ * Return the weight-appropriate slice of a trait's content per the tier convention.
+ * Untiered content is returned unchanged (backward compatible).
+ */
+export function selectTraitTier(content: string, weight: number): string {
+  const sectionHeading = /^#{1,3}\s/; // any h1–h3 heading closes an open tier section
+  const lines = content.split("\n");
+
+  // Backward compatible: no tier sections → inject the whole trait unchanged.
+  if (!lines.some((l) => TRAIT_TIER_HEADING.test(l))) return content;
+
+  const selected = weightToTier(weight);
+  const kept: string[] = [];
+  let currentTier: string | null = null;
+  for (const line of lines) {
+    const tierMatch = line.match(TRAIT_TIER_HEADING);
+    if (tierMatch) {
+      currentTier = tierMatch[1]!.toUpperCase();
+      if (currentTier === selected) kept.push(line);
+      continue;
+    }
+    if (sectionHeading.test(line)) {
+      // A non-tier h1–h3 heading is weight-independent and closes any open tier section.
+      currentTier = null;
+      kept.push(line);
+      continue;
+    }
+    if (currentTier === null || currentTier === selected) kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Valid values for `ab.modelOverrides` — the Claude Code Agent SDK model aliases,
+ * plus any explicit `claude-*` model id. An invalid override (a typo like "sonet"
+ * or a foreign model) would otherwise be injected verbatim into agent frontmatter
+ * and silently ignored (or error) at runtime; catch it at build time instead.
+ */
+const VALID_AB_MODEL_ALIASES = new Set(["opus", "sonnet", "haiku", "inherit"]);
+export function isValidAbModel(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (VALID_AB_MODEL_ALIASES.has(v)) return true;
+  return /^claude-[a-z0-9.-]+$/.test(v);
+}
+
 function injectTraits(
   skillContent: string,
   resolvedTraits: ResolvedTrait[],
@@ -396,8 +474,13 @@ function injectTraits(
     const preamble = buildWeightPreamble(traitName, weight);
     const preambleBlock = preamble ? `${preamble}\n\n` : "";
 
+    // Inject only the weight-appropriate slice of the trait (untiered traits are
+    // returned whole — see selectTraitTier). Keeps personas from carrying every
+    // tier's prose at every weight.
+    const tierContent = selectTraitTier(trait.content, weight);
+
     blocks.push(
-      `<!-- trait: ${traitName}${weightLabel} -->\n${preambleBlock}${trait.content}\n<!-- /trait: ${traitName} -->`
+      `<!-- trait: ${traitName}${weightLabel} -->\n${preambleBlock}${tierContent}\n<!-- /trait: ${traitName} -->`
     );
   }
 
@@ -818,13 +901,13 @@ function compilePersona(
     const description = personaConfig?.description ? `> ${personaConfig.description}\n\n` : "";
     const junieContent = `${personaHeader}${description}${cleanContent}\n`;
 
-    // Append to concatenated .junie/guidelines.md
+    // Append to concatenated .junie/AGENTS.md (Phase 11 A1f: upgraded from guidelines.md)
     const junieDir = path.join(jetbrainsDir, ".junie");
     ensureDir(junieDir);
-    const guidelinesPath = path.join(junieDir, "guidelines.md");
-    const existing = fs.existsSync(guidelinesPath) ? fs.readFileSync(guidelinesPath, "utf-8") : "";
+    const agentsMdPath = path.join(junieDir, "AGENTS.md");
+    const existing = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, "utf-8") : "";
     const separator = existing ? "\n---\n\n" : `<!-- AgentBoot compiled output — do not edit manually -->\n\n# AgentBoot Personas\n\n`;
-    fs.writeFileSync(guidelinesPath, `${existing}${separator}${junieContent}`, "utf-8");
+    fs.writeFileSync(agentsMdPath, `${existing}${separator}${junieContent}`, "utf-8");
 
     if (!platforms.includes("jetbrains")) platforms.push("jetbrains");
   }
@@ -852,13 +935,7 @@ function compileInstructions(
   const provenanceEnabled = config.output?.provenanceHeaders !== false;
 
   for (const platform of outputFormats) {
-    if (platform === "agents" || platform === "plugin" || platform === "windsurf" || platform === "gemini") continue; // handled separately; gemini inlines instructions in GEMINI.md
-    // CC and Cursor use "rules/" for always-on instructions; JetBrains uses ".aiassistant/rules/"; other platforms use "instructions/"
-    const dirName = (platform === "claude" || platform === "cursor") ? "rules"
-      : platform === "jetbrains" ? ".aiassistant/rules"
-      : "instructions";
-    const outDir = path.join(distPath, platform, scopePath, dirName);
-    ensureDir(outDir);
+    if (platform === "agents" || platform === "plugin" || platform === "gemini" || platform === "codex") continue; // handled separately; gemini/codex inline instructions in their primary config file
 
     for (const file of files) {
       const name = path.basename(file, ".md");
@@ -868,8 +945,52 @@ function compileInstructions(
       const srcPath = path.join(instructionsDir, file);
       let content = fs.readFileSync(srcPath, "utf-8");
 
-      // Strip HTML comments for copilot/cursor output
-      if (platform === "copilot" || platform === "cursor") {
+      // Phase 11 B2: Cursor instructions — use .mdc format with alwaysApply
+      if (platform === "cursor") {
+        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const cursorContent = buildCursorRule(name, strippedContent, { alwaysApply: true });
+        const outDir = path.join(distPath, platform, scopePath, "rules");
+        ensureDir(outDir);
+        fs.writeFileSync(path.join(outDir, `${name}.mdc`), cursorContent, "utf-8");
+        continue;
+      }
+
+      // Phase 11 A1e: Windsurf instructions — write to .windsurf/rules/ with trigger: always_on
+      // Also append to legacy .windsurfrules for backward compat
+      if (platform === "windsurf") {
+        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+        // Modern format: .windsurf/rules/*.md with trigger frontmatter
+        const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
+        ensureDir(windsurfRulesDir);
+        const windsurfModern = [
+          "---",
+          "trigger: always_on",
+          `description: "${name}"`,
+          "---",
+          "",
+          strippedContent,
+          "",
+        ].join("\n");
+        fs.writeFileSync(path.join(windsurfRulesDir, `${name}.md`), windsurfModern, "utf-8");
+        // Legacy format: append to .windsurfrules
+        const windsurfDir = path.join(distPath, "windsurf", scopePath);
+        ensureDir(windsurfDir);
+        const rulesPath = path.join(windsurfDir, ".windsurfrules");
+        const existing = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, "utf-8") : "";
+        const separator = existing ? "\n---\n\n" : "";
+        fs.writeFileSync(rulesPath, `${existing}${separator}${strippedContent}\n`, "utf-8");
+        continue;
+      }
+
+      // CC and other platforms: write instructions to appropriate directory
+      const dirName = platform === "claude" ? "rules"
+        : platform === "jetbrains" ? ".aiassistant/rules"
+        : "instructions";
+      const outDir = path.join(distPath, platform, scopePath, dirName);
+      ensureDir(outDir);
+
+      // Strip HTML comments for copilot output
+      if (platform === "copilot") {
         content = content.replace(/<!--[\s\S]*?-->/g, "").trim() + "\n";
       }
 
@@ -957,23 +1078,77 @@ function compileGotchas(
       fs.writeFileSync(path.join(cursorRulesDir, `${name}.mdc`), cursorContent, "utf-8");
     }
 
-    // AB-146: Windsurf gotchas — append to .windsurfrules
+    // AB-146 + Phase 11 A1e: Windsurf gotchas — .windsurf/rules/*.md (modern) + legacy .windsurfrules
     if (outputFormats.includes("windsurf")) {
+      const fm = parseFrontmatter(content);
+      const rawPaths = fm?.get("paths");
+      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+      const gotchaName = path.basename(file, ".md");
+      const gotchaContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+
+      // Modern format: .windsurf/rules/*.md with trigger frontmatter
+      const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
+      ensureDir(windsurfRulesDir);
+      const triggerType = globs ? "glob" : "always_on";
+      const windsurfModernLines = ["---", `trigger: ${triggerType}`];
+      if (globs && globs.length > 0) {
+        windsurfModernLines.push("globs:");
+        for (const g of globs) windsurfModernLines.push(`  - "${g}"`);
+      }
+      windsurfModernLines.push(`description: "${gotchaName}"`, "---", "", gotchaContent, "");
+      fs.writeFileSync(path.join(windsurfRulesDir, `gotcha-${gotchaName}.md`), windsurfModernLines.join("\n"), "utf-8");
+
+      // Legacy format: append to .windsurfrules
       const windsurfDir = path.join(distPath, "windsurf", scopePath);
       ensureDir(windsurfDir);
       const rulesPath = path.join(windsurfDir, ".windsurfrules");
       const existing = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, "utf-8") : "";
-      const gotchaContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
       const separator = existing ? "\n---\n\n" : "";
       fs.writeFileSync(rulesPath, `${existing}${separator}${gotchaContent}\n`, "utf-8");
     }
 
-    // AB-144: Gemini gotchas — .gemini/ rules directory
+    // Phase 11 A1c: Gemini gotchas — subdirectory GEMINI.md (NOT .gemini/rules/)
     if (outputFormats.includes("gemini")) {
-      const geminiRulesDir = path.join(distPath, "gemini", scopePath, "rules");
-      ensureDir(geminiRulesDir);
-      const geminiContent = content.replace(/<!--[\s\S]*?-->/g, "").trim();
-      fs.writeFileSync(path.join(geminiRulesDir, file), `${geminiContent}\n`, "utf-8");
+      const fm = parseFrontmatter(content);
+      const rawPaths = fm?.get("paths");
+      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      const geminiContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+
+      if (pathsStr) {
+        // Extract directory component from path patterns
+        const patterns = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
+        let targetDir: string | null = null;
+        for (const pattern of patterns) {
+          // Extract directory: "src/auth/**" → "src/auth", "**/*.lambda.ts" → null (wildcard-only)
+          const dirMatch = pattern.match(/^([^*]+)\//);
+          if (dirMatch && dirMatch[1]) {
+            targetDir = dirMatch[1];
+            break;
+          }
+        }
+        if (targetDir) {
+          // Directory-scoped: write GEMINI.md in the target directory
+          const geminiSubDir = path.join(distPath, "gemini", scopePath, targetDir);
+          ensureDir(geminiSubDir);
+          const geminiSubPath = path.join(geminiSubDir, "GEMINI.md");
+          const existingGemini = fs.existsSync(geminiSubPath) ? fs.readFileSync(geminiSubPath, "utf-8") : "";
+          const geminiSeparator = existingGemini ? "\n\n---\n\n" : "";
+          fs.writeFileSync(geminiSubPath, `${existingGemini}${geminiSeparator}${geminiContent}\n`, "utf-8");
+        } else {
+          // Wildcard-only patterns: merge into root GEMINI.md
+          const geminiRoot = path.join(distPath, "gemini", scopePath, "GEMINI.md");
+          const existingRoot = fs.existsSync(geminiRoot) ? fs.readFileSync(geminiRoot, "utf-8") : "";
+          const rootSeparator = existingRoot ? "\n\n---\n\n" : "";
+          fs.writeFileSync(geminiRoot, `${existingRoot}${rootSeparator}${geminiContent}\n`, "utf-8");
+        }
+      } else {
+        // No paths: always-on, merge into root GEMINI.md
+        const geminiRoot = path.join(distPath, "gemini", scopePath, "GEMINI.md");
+        const existingRoot = fs.existsSync(geminiRoot) ? fs.readFileSync(geminiRoot, "utf-8") : "";
+        const rootSeparator = existingRoot ? "\n\n---\n\n" : "";
+        fs.writeFileSync(geminiRoot, `${existingRoot}${rootSeparator}${geminiContent}\n`, "utf-8");
+      }
     }
 
     // AB-130: Copilot scoped instructions — gotchas with paths: become .instructions.md
@@ -1238,7 +1413,11 @@ function generateAgentsMd(
   instructionFileNames: string[],
   lexiconEntries: LexiconEntry[],
   instructionsDir: string,
-  scopePath?: string
+  packageInstructionsDir?: string,
+  traitsMap?: Map<string, TraitContent>,
+  gotchasDir?: string,
+  scopePath?: string,
+  targetPlatform?: string,
 ): void {
   const org = config.orgDisplayName ?? config.org;
   const scopeLabel = scopePath ? ` (${scopePath})` : "";
@@ -1263,21 +1442,69 @@ function generateAgentsMd(
     lines.push("");
   }
 
-  // Coding conventions (from instructions)
+  // Phase 11 B4: Full instruction content inlining (was one-line summaries)
+  // Phase 11 A1a: candidatePaths fallback — try hub first, then package-bundled
   if (instructionFileNames.length > 0) {
     lines.push("## Coding Conventions", "");
     for (const instrName of instructionFileNames) {
-      const instrPath = path.join(instructionsDir, `${instrName}.md`);
-      if (fs.existsSync(instrPath)) {
+      // A1a: Try hub instructionsDir first, fall back to packageInstructionsDir
+      const hubPath = path.join(instructionsDir, `${instrName}.md`);
+      const pkgPath = packageInstructionsDir ? path.join(packageInstructionsDir, `${instrName}.md`) : null;
+      const instrPath = fs.existsSync(hubPath) ? hubPath : (pkgPath && fs.existsSync(pkgPath) ? pkgPath : null);
+
+      if (instrPath) {
         const content = fs.readFileSync(instrPath, "utf-8");
-        const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "");
-        const summaryLines = contentWithoutFrontmatter.split("\n")
-          .filter(l => l.trim() && !l.startsWith("#"));
-        const summary = summaryLines[0]?.trim() ?? instrName;
-        lines.push(`- **${instrName}**: ${summary}`);
+        const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        // B4: Inline full content instead of just first line
+        lines.push(`### ${instrName}`, "");
+        lines.push(contentWithoutFrontmatter);
+        lines.push("");
       }
     }
-    lines.push("");
+  }
+
+  // Phase 11 B4: Traits section
+  if (traitsMap && traitsMap.size > 0) {
+    const enabledTraits = config.traits?.enabled ?? [];
+    const relevantTraits = enabledTraits.filter(t => traitsMap.has(t));
+    if (relevantTraits.length > 0) {
+      lines.push("## Behavioral Traits", "");
+      for (const traitName of relevantTraits) {
+        const trait = traitsMap.get(traitName)!;
+        lines.push(`### ${traitName}`, "");
+        // Include trait content (strip frontmatter, keep concise)
+        const traitContent = trait.content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        // Limit to first ~50 lines to prevent oversized AGENTS.md
+        const traitLines = traitContent.split("\n").slice(0, 50);
+        lines.push(traitLines.join("\n"));
+        if (traitContent.split("\n").length > 50) {
+          lines.push("", "*(truncated for brevity)*");
+        }
+        lines.push("");
+      }
+    }
+  }
+
+  // Phase 11 B4: Path-scoped rules (gotchas) section
+  if (gotchasDir && fs.existsSync(gotchasDir)) {
+    const gotchaFiles = fs.readdirSync(gotchasDir).filter(f => f.endsWith(".md") && f !== "README.md");
+    if (gotchaFiles.length > 0) {
+      lines.push("## Path-Scoped Rules", "");
+      for (const gFile of gotchaFiles) {
+        const gContent = fs.readFileSync(path.join(gotchasDir, gFile), "utf-8");
+        const fm = parseFrontmatter(gContent);
+        const rawPaths = fm?.get("paths");
+        const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+        const gName = path.basename(gFile, ".md");
+        const gBody = gContent.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+
+        lines.push(`### ${gName}`);
+        if (pathsStr) lines.push(`**Applies to:** \`${pathsStr}\``);
+        lines.push("");
+        lines.push(gBody);
+        lines.push("");
+      }
+    }
   }
 
   // Agent definitions
@@ -1301,13 +1528,14 @@ function generateAgentsMd(
     }
   }
 
-  // AB-145: Scope-aware output path
+  // AB-145: Scope-aware output path (targetPlatform allows writing to a different platform dir)
+  const platformDir = targetPlatform ?? "agents";
   if (scopePath) {
-    const agentsDir = path.join(distPath, "agents", scopePath);
+    const agentsDir = path.join(distPath, platformDir, scopePath);
     ensureDir(agentsDir);
     fs.writeFileSync(path.join(agentsDir, "AGENTS.md"), lines.join("\n"), "utf-8");
   } else {
-    const agentsDir = path.join(distPath, "agents");
+    const agentsDir = path.join(distPath, platformDir);
     ensureDir(agentsDir);
     fs.writeFileSync(path.join(agentsDir, "AGENTS.md"), lines.join("\n"), "utf-8");
   }
@@ -1398,6 +1626,7 @@ function generateSettingsJson(
     const validEvents = [
       "PreToolUse", "PostToolUse", "Notification", "Stop",
       "SubagentStop", "SubagentStart", "UserPromptSubmit", "SessionEnd",
+      "PreCompact",
     ];
     for (const key of Object.keys(hooks)) {
       if (!validEvents.includes(key)) {
@@ -1465,6 +1694,208 @@ function generateMcpJson(
     const manifestPath = path.join(distPath, "claude", scopePath, "mcp-governance.json");
     fs.writeFileSync(manifestPath, JSON.stringify(mcpManifest, null, 2) + "\n", "utf-8");
     log(chalk.gray(`  → MCP governance manifest written`));
+  }
+
+}
+
+/**
+ * Phase 11 MCP Expansion: Emit MCP configs for non-Claude platforms.
+ * Always emits the AgentBoot MCP server entry, regardless of claude.mcpServers config.
+ */
+function generateCrossPlatformMcpConfigs(
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string,
+): void {
+  const outputFormats = config.personas?.outputFormats ?? [];
+  const abMcpEntry = { command: "npx", args: ["agentboot", "mcp-server"] };
+
+  if (outputFormats.includes("cursor")) {
+    const cursorMcpDir = path.join(distPath, "cursor", scopePath, ".cursor");
+    ensureDir(cursorMcpDir);
+    const cursorMcp = { mcpServers: { agentboot: abMcpEntry } };
+    fs.writeFileSync(path.join(cursorMcpDir, "mcp.json"), JSON.stringify(cursorMcp, null, 2) + "\n", "utf-8");
+  }
+
+  if (outputFormats.includes("jetbrains")) {
+    const junieMcpDir = path.join(distPath, "jetbrains", scopePath, ".junie", "mcp");
+    ensureDir(junieMcpDir);
+    const junieMcp = { mcpServers: { agentboot: abMcpEntry } };
+    fs.writeFileSync(path.join(junieMcpDir, "mcp.json"), JSON.stringify(junieMcp, null, 2) + "\n", "utf-8");
+  }
+
+  if (outputFormats.includes("gemini")) {
+    const geminiSettingsDir = path.join(distPath, "gemini", scopePath, ".gemini");
+    ensureDir(geminiSettingsDir);
+    const geminiSettingsPath = path.join(geminiSettingsDir, "settings.json");
+    let existing: Record<string, unknown> = {};
+    if (fs.existsSync(geminiSettingsPath)) {
+      try { existing = JSON.parse(fs.readFileSync(geminiSettingsPath, "utf-8")); } catch { /* ignore */ }
+    }
+    (existing as Record<string, unknown>)["mcpServers"] = {
+      ...(existing["mcpServers"] as Record<string, unknown> ?? {}),
+      agentboot: abMcpEntry,
+    };
+    fs.writeFileSync(geminiSettingsPath, JSON.stringify(existing, null, 2) + "\n", "utf-8");
+  }
+
+  // Phase 11 A1.7: Codex MCP config (.codex/config.toml)
+  if (outputFormats.includes("codex")) {
+    generateCodexConfig(distPath, scopePath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 A1.7: Codex platform output generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate .codex/config.toml with MCP server entry.
+ * Codex uses TOML — AgentBoot's first TOML output target.
+ */
+function generateCodexConfig(distPath: string, scopePath: string): void {
+  const codexDir = path.join(distPath, "codex", scopePath, ".codex");
+  ensureDir(codexDir);
+
+  const tomlLines: string[] = [
+    "# AgentBoot managed configuration for Codex",
+    "# Generated by AgentBoot — do not edit manually.",
+    "",
+    "[mcp_servers.agentboot]",
+    'command = "npx"',
+    'args = ["agentboot", "mcp-server"]',
+    "enabled = true",
+    "",
+  ];
+  fs.writeFileSync(path.join(codexDir, "config.toml"), tomlLines.join("\n"), "utf-8");
+}
+
+/**
+ * Generate .codex/hooks.json with compliance hooks.
+ * Codex hook format is identical to Claude Code — same event names, same JSON structure.
+ */
+function generateCodexHooks(
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string,
+  scripts: HookScript[],
+): void {
+  if (scripts.length === 0) return;
+
+  const codexDir = path.join(distPath, "codex", scopePath, ".codex");
+  ensureDir(codexDir);
+
+  // Codex consumes the same portable scripts — write our own copy so this does
+  // not depend on the Claude Code emitter having run first (clean-build safe).
+  const codexHooksDir = path.join(codexDir, "hooks");
+  writeHookScripts(scripts, codexHooksDir);
+
+  const scriptNames = new Set(scripts.map((s) => s.name));
+  const denyOn = denyToolsActive(config);
+
+  // Derive the wiring from the canonical bindings. Codex uses CC-format event
+  // names but honors only a subset (see CODEX_SUPPORTED_EVENTS); timeouts are in
+  // seconds. Caveats (snake_case in / camelCase out; partial tool coverage;
+  // trust-review-unless-managed) are documented at COMPLIANCE_HOOK_BINDINGS.
+  const hooksConfig: Record<string, unknown[]> = {};
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyOn) continue;
+    if (!scriptNames.has(b.script)) continue;
+    if (!CODEX_SUPPORTED_EVENTS.has(b.ccEvent)) continue;
+    hooksConfig[b.ccEvent] = hooksConfig[b.ccEvent] ?? [];
+    (hooksConfig[b.ccEvent] as unknown[]).push({
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        command: `.codex/hooks/${b.script}`,
+        timeout: Math.max(1, Math.ceil(b.timeoutMs / 1000)),
+      }],
+    });
+  }
+
+  if (Object.keys(hooksConfig).length > 0) {
+    fs.writeFileSync(
+      path.join(codexDir, "hooks.json"),
+      JSON.stringify({ hooks: hooksConfig }, null, 2) + "\n",
+      "utf-8",
+    );
+  }
+}
+
+/**
+ * A1.5: Generate GitHub Copilot governance hooks — `.github/hooks/agentboot.json`
+ * plus the portable hook scripts under `.github/hooks/`. One committed file
+ * governs both the Copilot CLI and the cloud agent. Copilot accepts Claude-format
+ * plugin hooks, so the structure mirrors CC's with Copilot's camelCase event names
+ * (COPILOT_EVENT_MAP). Blocking is via the scripts' exit code 2. NOTE: Copilot
+ * command-hook timeouts FAIL OPEN — see the caveat block at COMPLIANCE_HOOK_BINDINGS.
+ * (Copilot emission is documented-but-not-yet-empirically-verified for GA; see the
+ * platform-refresh research doc and the pending exit-2-deny mini-test.)
+ */
+function generateCopilotHooks(
+  config: AgentBootConfig,
+  distPath: string,
+  scopePath: string,
+  scripts: HookScript[],
+): void {
+  if (scripts.length === 0) return;
+
+  const githubDir = path.join(distPath, "copilot", scopePath, ".github");
+  const hooksDir = path.join(githubDir, "hooks");
+  writeHookScripts(scripts, hooksDir);
+
+  const scriptNames = new Set(scripts.map((s) => s.name));
+  const denyOn = denyToolsActive(config);
+
+  const hooksConfig: Record<string, unknown[]> = {};
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyOn) continue;
+    if (!scriptNames.has(b.script)) continue;
+    const copilotEvent = COPILOT_EVENT_MAP[b.ccEvent];
+    if (!copilotEvent) continue;
+    hooksConfig[copilotEvent] = hooksConfig[copilotEvent] ?? [];
+    (hooksConfig[copilotEvent] as unknown[]).push({
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        command: `.github/hooks/${b.script}`,
+        timeout: b.timeoutMs,
+      }],
+    });
+  }
+
+  if (Object.keys(hooksConfig).length > 0) {
+    fs.writeFileSync(
+      path.join(hooksDir, "agentboot.json"),
+      JSON.stringify({ version: 1, hooks: hooksConfig }, null, 2) + "\n",
+      "utf-8",
+    );
+  }
+}
+
+/**
+ * Generate .agents/skills/<persona>/SKILL.md for Codex + cross-tool consumption.
+ * Copies from dist/skill/ output (already compiled).
+ */
+function generateCrossToolSkills(
+  distPath: string,
+  scopePath: string,
+  targetPlatformDir: string,
+): void {
+  const skillSrcDir = path.join(distPath, "skill", scopePath);
+  if (!fs.existsSync(skillSrcDir)) return;
+
+  const agentsSkillsDir = path.join(distPath, targetPlatformDir, scopePath, ".agents", "skills");
+
+  for (const entry of fs.readdirSync(skillSrcDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === "instructions" || entry.name === "gotchas") continue; // skip non-persona dirs
+    const skillMd = path.join(skillSrcDir, entry.name, "SKILL.md");
+    if (fs.existsSync(skillMd)) {
+      const destDir = path.join(agentsSkillsDir, entry.name);
+      ensureDir(destDir);
+      fs.copyFileSync(skillMd, path.join(destDir, "SKILL.md"));
+    }
   }
 }
 
@@ -1694,20 +2125,101 @@ function generatePluginOutput(
 }
 
 // ---------------------------------------------------------------------------
+// A1.5: Canonical compliance-hook layer (Claude Code format = the source schema)
+//
+// One source of truth for the portable hook SCRIPTS (buildComplianceHookScripts)
+// and for their lifecycle WIRING (COMPLIANCE_HOOK_BINDINGS). Every platform
+// emitter — Claude Code settings.json, Codex .codex/hooks.json, Copilot
+// .github/hooks/*.json — derives from these two so the three stay in lock-step.
+// Claude Code event names are canonical; each emitter translates as needed.
+//
+// Cross-platform enforcement caveats (docs/research/platform-refresh-2026-07-11.md):
+//   - Claude Code : matcher is EXACT-match (no substring); exit 2 blocks a tool.
+//   - Codex       : same event names as CC, but stdin is snake_case while the
+//                   output envelope is camelCase (hookSpecificOutput /
+//                   permissionDecision); tool coverage is partial (shell + patch
+//                   + MCP, not WebSearch); hooks require a trust review unless
+//                   deployed as managed. exit 2 blocks.
+//   - Copilot     : command-hook TIMEOUTS FAIL OPEN (hook *errors* fail closed);
+//                   a single committed .github/hooks/*.json governs BOTH the CLI
+//                   and the cloud agent. exit 2 = deny.
+// The generated scripts signal a block via exit code 2 — the one blocking
+// primitive all three platforms honor regardless of stdout shape.
+// ---------------------------------------------------------------------------
+
+interface HookScript {
+  /** Filename, e.g. "agentboot-input-scan.sh". */
+  name: string;
+  content: string;
+}
+
+interface ComplianceHookBinding {
+  /** Generated script filename (lives in the platform's hooks dir). */
+  script: string;
+  /** Canonical Claude Code event name. */
+  ccEvent: string;
+  /** CC matcher (exact-match). "" = all events/tools. */
+  matcher: string;
+  /** Timeout in milliseconds. CC/Copilot use ms; the Codex emitter converts to seconds. */
+  timeoutMs: number;
+  /** Run asynchronously (Claude Code settings.json only). */
+  async?: boolean;
+  /** Only emit when managed.guardrails.denyTools is non-empty. */
+  requiresDenyTools?: boolean;
+}
+
+const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
+  { script: "agentboot-input-scan.sh",  ccEvent: "UserPromptSubmit", matcher: "",                timeoutMs: 5000 },
+  { script: "agentboot-output-scan.sh", ccEvent: "Stop",             matcher: "",                timeoutMs: 5000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "SubagentStart",    matcher: "",                timeoutMs: 3000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "SubagentStop",     matcher: "",                timeoutMs: 3000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "PostToolUse",      matcher: "Edit|Write|Bash", timeoutMs: 3000, async: true },
+  { script: "agentboot-telemetry.sh",   ccEvent: "SessionEnd",       matcher: "",                timeoutMs: 3000, async: true },
+  { script: "agentboot-pretooluse.sh",  ccEvent: "PreToolUse",       matcher: "",                timeoutMs: 5000, requiresDenyTools: true },
+];
+
+/** Codex honors these CC-named events (research §3b). SessionEnd is NOT supported. */
+const CODEX_SUPPORTED_EVENTS = new Set([
+  "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact",
+  "SessionStart", "SubagentStart", "SubagentStop", "UserPromptSubmit", "Stop",
+]);
+
+/** CC event name → Copilot event name. Events absent from the map are not emitted for Copilot. */
+const COPILOT_EVENT_MAP: Record<string, string> = {
+  UserPromptSubmit: "userPromptSubmitted",
+  PreToolUse: "preToolUse",
+  PostToolUse: "postToolUse",
+  Stop: "agentStop",
+  SubagentStop: "subagentStop",
+  SessionEnd: "sessionEnd",
+  // SubagentStart intentionally omitted — not in Copilot's lifecycle event set.
+};
+
+/** True when managed guardrails configure a PreToolUse deny-list. */
+function denyToolsActive(config: AgentBootConfig): boolean {
+  return (config.managed?.guardrails?.denyTools ?? []).length > 0;
+}
+
+/** Write hook scripts into `dir` with the execute bit set. */
+function writeHookScripts(scripts: HookScript[], dir: string): void {
+  ensureDir(dir);
+  for (const s of scripts) {
+    fs.writeFileSync(path.join(dir, s.name), s.content, { mode: 0o755 });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AB-59/60/63: Compliance & audit trail hook generation
 // ---------------------------------------------------------------------------
 
-function generateComplianceHooks(
-  config: AgentBootConfig,
-  distPath: string,
-  scopePath: string
-): void {
-  const hooksDir = path.join(distPath, "claude", scopePath, "hooks");
-  ensureDir(hooksDir);
-
+/**
+ * Build the portable compliance hook scripts (the CC-format source). Pure w.r.t.
+ * the filesystem except for build-time validation of telemetry.logPath. Returned
+ * scripts are consumed by every platform emitter (Claude Code, Codex, Copilot).
+ */
+function buildComplianceHookScripts(config: AgentBootConfig): HookScript[] {
   // AB-59: Input scanning hook (UserPromptSubmit)
-  // S4 fix: use printf instead of echo to avoid flag interpretation
-  // S5 fix: add set -uo pipefail and jq dependency check
+  // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   // Note: -e intentionally omitted because grep -q returns 1 on no-match
   const inputScanHook = `#!/bin/bash
 # AgentBoot compliance hook — input scanning (AB-59)
@@ -1715,10 +2227,11 @@ function generateComplianceHooks(
 # Generated by AgentBoot. Do not edit manually.
 
 set -uo pipefail
-command -v jq >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: jq is required for input scanning"}'; exit 2; }
+HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
+command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node is required for input scanning"}'; exit 2; }
 
 INPUT=$(cat)
-PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // empty') || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
+PROMPT=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.prompt||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
 
 # Scan for potential credential leaks in prompts
 PATTERNS=(
@@ -1745,16 +2258,18 @@ exit 0
 `;
 
   // AB-60: Output scanning hook (Stop)
+  // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   const outputScanHook = `#!/bin/bash
 # AgentBoot compliance hook — output scanning (AB-60)
 # Event: Stop
 # Generated by AgentBoot. Do not edit manually.
 
 set -uo pipefail
-command -v jq >/dev/null 2>&1 || exit 0
+HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
+command -v node >/dev/null 2>&1 || exit 0
 
 INPUT=$(cat)
-RESPONSE=$(printf '%s' "$INPUT" | jq -r '.response // empty') || exit 0
+RESPONSE=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.response||'')}catch{process.stdout.write('')}})") || exit 0
 
 # Scan for accidental credential exposure in output
 PATTERNS=(
@@ -1777,7 +2292,7 @@ exit 0
 `;
 
   // AB-63: Audit trail hook (SubagentStart/Stop, PostToolUse, SessionEnd)
-  // S1 fix: use jq for safe JSON construction (no shell interpolation)
+  // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   // S2 fix: validate and sanitize telemetry.logPath
   let rawLogPath = config.telemetry?.logPath ?? "$HOME/.agentboot/telemetry.ndjson";
   // Normalize ~ to $HOME (~ is not expanded inside bash variable defaults)
@@ -1788,10 +2303,10 @@ exit 0
     log(chalk.red(`    Use a simple path like ~/.agentboot/telemetry.ndjson`));
     process.exit(1);
   }
-  // Reject shell metacharacters, exempting only a leading $HOME
-  const pathWithoutHome = rawLogPath.replace(/^\$HOME/, "");
-  if (/[`$|;&\n]/.test(pathWithoutHome)) {
-    log(chalk.red(`  ✗ telemetry.logPath contains unsafe shell characters: ${rawLogPath}`));
+  // Allowlist approach: path must be $HOME (or ${HOME}) prefix + safe chars only
+  const pathWithoutHome = rawLogPath.replace(/^(\$HOME|\$\{HOME\})/, "");
+  if (!/^[/a-zA-Z0-9._-]*$/.test(pathWithoutHome)) {
+    log(chalk.red(`  ✗ telemetry.logPath contains unsafe characters: ${rawLogPath}`));
     log(chalk.red(`    Use a simple path like ~/.agentboot/telemetry.ndjson`));
     process.exit(1);
   }
@@ -1813,41 +2328,48 @@ exit 0
     devIdBlock = `DEV_ID=""`;
   }
 
+  // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   const auditTrailHook = `#!/bin/bash
 # AgentBoot audit trail hook (AB-63)
 # Events: SubagentStart, SubagentStop, PostToolUse, SessionEnd
 # Generated by AgentBoot. Do not edit manually.
 
-command -v jq >/dev/null 2>&1 || exit 0
+HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
+command -v node >/dev/null 2>&1 || exit 0
 
 TELEMETRY_LOG="\${AGENTBOOT_TELEMETRY_LOG:-${rawLogPath}}"
 umask 077
 mkdir -p "$(dirname "$TELEMETRY_LOG")"
 
 INPUT=$(cat)
-EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty')
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ${devIdBlock}
 
-# Use jq for safe JSON construction — prevents shell injection via agent_type/tool_name
-case "$EVENT_NAME" in
-  SubagentStart)
-    printf '%s' "$INPUT" | jq -c --arg ts "$TIMESTAMP" --arg status "started" --arg dev "$DEV_ID" \\
-      '{event:"persona_invocation",persona_id:.agent_type,timestamp:$ts,status:$status,dev_id:$dev}' >> "$TELEMETRY_LOG"
-    ;;
-  SubagentStop)
-    printf '%s' "$INPUT" | jq -c --arg ts "$TIMESTAMP" --arg status "completed" --arg dev "$DEV_ID" \\
-      '{event:"persona_invocation",persona_id:.agent_type,timestamp:$ts,status:$status,dev_id:$dev}' >> "$TELEMETRY_LOG"
-    ;;
-  PostToolUse)
-    printf '%s' "$INPUT" | jq -c --arg ts "$TIMESTAMP" --arg dev "$DEV_ID" \\
-      '{event:"hook_execution",persona_id:.agent_type,tool_name:.tool_name,timestamp:$ts,dev_id:$dev}' >> "$TELEMETRY_LOG"
-    ;;
-  SessionEnd)
-    jq -n -c --arg ts "$TIMESTAMP" --arg dev "$DEV_ID" \\
-      '{event:"session_summary",timestamp:$ts,dev_id:$dev}' >> "$TELEMETRY_LOG"
-    ;;
-esac
+# Use node for safe JSON construction — prevents shell injection via agent_type/tool_name
+export TIMESTAMP DEV_ID
+printf '%s' "$INPUT" | node -e "
+  let d='';
+  process.stdin.on('data',c=>d+=c);
+  process.stdin.on('end',()=>{
+    try {
+      const input = JSON.parse(d);
+      const event = input.hook_event_name || '';
+      const ts = process.env.TIMESTAMP || new Date().toISOString();
+      const dev = process.env.DEV_ID || '';
+      let entry = null;
+      if (event === 'SubagentStart') {
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev};
+      } else if (event === 'SubagentStop') {
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev};
+      } else if (event === 'PostToolUse') {
+        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev};
+      } else if (event === 'SessionEnd') {
+        entry = {event:'session_summary',timestamp:ts,dev_id:dev};
+      }
+      if (entry) console.log(JSON.stringify(entry));
+    } catch {}
+  });
+" >> "$TELEMETRY_LOG"
 
 exit 0
 `;
@@ -1856,25 +2378,38 @@ exit 0
   const denyTools = config.managed?.guardrails?.denyTools ?? [];
   let preToolUseHook = "";
   if (denyTools.length > 0) {
+    // Validate denyTools patterns — must be safe identifiers (no shell metacharacters)
+    for (const p of denyTools) {
+      if (!/^[a-zA-Z0-9._*?-]+$/.test(p)) {
+        log(chalk.red(`  ✗ managed.guardrails.denyTools contains unsafe pattern: "${p}"`));
+        log(chalk.red(`    Patterns must match [a-zA-Z0-9._*?-]+ (tool names and glob chars only)`));
+        process.exit(1);
+      }
+    }
     const patterns = denyTools.map(p => `  '${p.replace(/'/g, "'\\''")}'`).join("\n");
+    // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
     preToolUseHook = `#!/bin/bash
 # AgentBoot compliance hook — PreToolUse tool blocking (AB-122)
 # Event: PreToolUse
 # Generated by AgentBoot. Do not edit manually.
 
 set -uo pipefail
-# Fail-closed: if jq is missing, block the tool (compliance requires enforcement)
-command -v jq >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: jq required for compliance hooks"}'; exit 2; }
+HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
+# Fail-closed: if node is missing, block the tool (compliance requires enforcement)
+command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node required for compliance hooks"}'; exit 2; }
 
 INPUT=$(cat)
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty') || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
+TOOL_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.tool_name||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
 
 DENY_PATTERNS=(
 ${patterns}
 )
 
 for pattern in "\${DENY_PATTERNS[@]}"; do
-  if [[ "$TOOL_NAME" == "$pattern" ]]; then
+  # RHS is intentionally UNQUOTED so bash treats it as a glob — denyTools patterns
+  # may contain * and ? (e.g. "mcp__*", "Bash*"). Values are validated at compile
+  # time to [a-zA-Z0-9._*?-]+, so there is nothing unsafe to word-split here.
+  if [[ "$TOOL_NAME" == $pattern ]]; then
     echo "{\\"decision\\":\\"block\\",\\"reason\\":\\"AgentBoot: Tool \\\\\\"$TOOL_NAME\\\\\\" is blocked by organization policy.\\"}"
     exit 2
   fi
@@ -1882,29 +2417,37 @@ done
 
 exit 0
 `;
-    fs.writeFileSync(path.join(hooksDir, "agentboot-pretooluse.sh"), preToolUseHook, { mode: 0o755 });
   }
 
-  fs.writeFileSync(path.join(hooksDir, "agentboot-input-scan.sh"), inputScanHook, { mode: 0o755 });
-  fs.writeFileSync(path.join(hooksDir, "agentboot-output-scan.sh"), outputScanHook, { mode: 0o755 });
-  fs.writeFileSync(path.join(hooksDir, "agentboot-telemetry.sh"), auditTrailHook, { mode: 0o755 });
+  const scripts: HookScript[] = [
+    { name: "agentboot-input-scan.sh", content: inputScanHook },
+    { name: "agentboot-output-scan.sh", content: outputScanHook },
+    { name: "agentboot-telemetry.sh", content: auditTrailHook },
+  ];
+  if (preToolUseHook) {
+    scripts.push({ name: "agentboot-pretooluse.sh", content: preToolUseHook });
+  }
+  return scripts;
+}
+
+/**
+ * Write the compliance hook scripts into Claude Code's dist tree (and the plugin
+ * tree). Codex and Copilot generate their own copies from the same scripts.
+ */
+function generateComplianceHooks(
+  distPath: string,
+  scopePath: string,
+  scripts: HookScript[],
+): void {
+  writeHookScripts(scripts, path.join(distPath, "claude", scopePath, "hooks"));
 
   // Also generate the plugin hooks
-  const pluginHooksDir = path.join(distPath, "plugin", "hooks");
   if (fs.existsSync(path.join(distPath, "plugin"))) {
-    ensureDir(pluginHooksDir);
-    fs.writeFileSync(path.join(pluginHooksDir, "agentboot-input-scan.sh"), inputScanHook, { mode: 0o755 });
-    fs.writeFileSync(path.join(pluginHooksDir, "agentboot-output-scan.sh"), outputScanHook, { mode: 0o755 });
-    fs.writeFileSync(path.join(pluginHooksDir, "agentboot-telemetry.sh"), auditTrailHook, { mode: 0o755 });
-    if (preToolUseHook) {
-      fs.writeFileSync(path.join(pluginHooksDir, "agentboot-pretooluse.sh"), preToolUseHook, { mode: 0o755 });
-    }
+    writeHookScripts(scripts, path.join(distPath, "plugin", "hooks"));
   }
 
-  const hookList = denyTools.length > 0
-    ? "input-scan, output-scan, telemetry, pretooluse"
-    : "input-scan, output-scan, telemetry";
-  log(chalk.gray(`  → Compliance hooks written (${hookList})`));
+  const names = scripts.map((s) => s.name.replace(/^agentboot-|\.sh$/g, "")).join(", ");
+  log(chalk.gray(`  → Compliance hooks written (${names})`));
 }
 
 // ---------------------------------------------------------------------------
@@ -1934,9 +2477,9 @@ function generateComplianceSettingsJson(
   const hooks: Record<string, unknown[]> = {};
   for (const [event, entries] of Object.entries(rawHooks)) {
     const userEntries = (Array.isArray(entries) ? entries : []).filter((e) => {
-      const eHooks = (e as Record<string, unknown[]>)?.hooks;
+      const eHooks = (e as Record<string, unknown[]>)?.["hooks"];
       if (!Array.isArray(eHooks) || eHooks.length === 0) return true;
-      const cmd = String((eHooks[0] as Record<string, unknown>)?.command ?? "");
+      const cmd = String((eHooks[0] as Record<string, unknown>)?.["command"] ?? "");
       return !AGENTBOOT_HOOK_PATTERN.test(cmd);
     });
     if (userEntries.length > 0) hooks[event] = userEntries;
@@ -1950,42 +2493,21 @@ function generateComplianceSettingsJson(
     ];
   };
 
-  // AB-59: Input scanning
-  appendHook("UserPromptSubmit", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-input-scan.sh", timeout: 5000 }],
-  });
-
-  // AB-60: Output scanning
-  appendHook("Stop", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-output-scan.sh", timeout: 5000, async: true }],
-  });
-
-  // AB-63: Audit trail
-  appendHook("SubagentStart", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-  appendHook("SubagentStop", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-  appendHook("PostToolUse", {
-    matcher: "Edit|Write|Bash",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-  // B3 fix: register SessionEnd (matches the case in telemetry hook script)
-  appendHook("SessionEnd", {
-    matcher: "",
-    hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }],
-  });
-
-  // AB-122: PreToolUse compliance hook (only if denyTools configured)
-  if ((_config.managed?.guardrails?.denyTools ?? []).length > 0) {
-    appendHook("PreToolUse", {
-      matcher: "",
-      hooks: [{ type: "command", command: ".claude/hooks/agentboot-pretooluse.sh", timeout: 5000 }],
+  // Derive the CC wiring from the canonical bindings (input-scan → UserPromptSubmit,
+  // output-scan → Stop, telemetry → SubagentStart/Stop + PostToolUse + SessionEnd,
+  // pretooluse → PreToolUse only when denyTools is configured). CC event names are
+  // canonical, timeouts in ms, matcher exact-match.
+  const denyOn = (_config.managed?.guardrails?.denyTools ?? []).length > 0;
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyOn) continue;
+    appendHook(b.ccEvent, {
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        command: `.claude/hooks/${b.script}`,
+        timeout: b.timeoutMs,
+        ...(b.async ? { async: true } : {}),
+      }],
     });
   }
 
@@ -2284,7 +2806,7 @@ function main(): void {
   const packageTraitsDir = path.join(packageCoreDir, "traits");
   const packageInstructionsDir = path.join(packageCoreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains"];
+  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains", "codex"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -2382,6 +2904,16 @@ function main(): void {
 
   const allResults: CompileResult[] = [];
 
+  // Phase 11 audit fix: Clear concatenated output files before compilation loop.
+  // Without this, running `build` twice without `clean` produces duplicate content
+  // in JetBrains AGENTS.md and Windsurf .windsurfrules (append-without-clear bug).
+  for (const scope of ["core"]) {
+    const junieFile = path.join(distPath, "jetbrains", scope, ".junie", "AGENTS.md");
+    if (fs.existsSync(junieFile)) fs.unlinkSync(junieFile);
+    const windsurfFile = path.join(distPath, "windsurf", scope, ".windsurfrules");
+    if (fs.existsSync(windsurfFile)) fs.unlinkSync(windsurfFile);
+  }
+
   // ---------------------------------------------------------------------------
   // 1. Compile core personas → dist/{platform}/core/{persona}/
   // ---------------------------------------------------------------------------
@@ -2471,6 +3003,7 @@ function main(): void {
 
     generateSettingsJson(config, distPath, "core");
     generateMcpJson(config, distPath, "core");
+    generateCrossPlatformMcpConfigs(config, distPath, "core");
 
     // AB-111: Generate managed-settings.d/ scope fragments
     // Alphabetical naming for scope precedence: 00-org wins over 10-group wins over 20-team
@@ -2502,12 +3035,57 @@ function main(): void {
     const skillsTemplateDir = path.join(ROOT, "templates", "skills");
     const distAgentsDir = path.join(distPath, "claude", "core", "agents");
     ensureDir(distAgentsDir);
+    // Phase 11 B1.5: Model-aware delegation + tool restrictions
+    const defaultModels: Record<string, string> = {
+      "ab": "sonnet",
+      "ab-query": "haiku",
+      "ab-author": "sonnet",
+      "ab-diagnose": "sonnet",
+      "ab-manage": "sonnet",
+    };
+    const defaultDisallowedTools: Record<string, string[]> = {
+      "ab-query": ["Bash", "Write", "Edit", "NotebookEdit"],
+    };
     const abSkillFiles = ["ab.md", "ab-author.md", "ab-diagnose.md", "ab-manage.md", "ab-query.md"];
     for (const file of abSkillFiles) {
       const src = path.join(skillsTemplateDir, file);
       const dest = path.join(distAgentsDir, file);
       if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dest);
+        let content = fs.readFileSync(src, "utf-8");
+        const fileName = path.basename(file, ".md");
+        const override = config.ab?.modelOverrides?.[fileName];
+        let model = defaultModels[fileName];
+        if (override !== undefined) {
+          if (isValidAbModel(override)) {
+            model = override;
+          } else {
+            log(
+              chalk.yellow(
+                `  ⚠ Ignoring invalid ab.modelOverrides["${fileName}"] = "${override}" — ` +
+                  `expected opus | sonnet | haiku | inherit or a claude-* model id; ` +
+                  `using default "${defaultModels[fileName]}".`,
+              ),
+            );
+          }
+        }
+        const disallowed = defaultDisallowedTools[fileName];
+
+        // Inject model: and disallowedTools: into frontmatter if it has one
+        if (content.startsWith("---\n")) {
+          const fmEnd = content.indexOf("\n---\n", 4);
+          if (fmEnd !== -1) {
+            let frontmatter = content.slice(4, fmEnd);
+            const body = content.slice(fmEnd + 5);
+            if (model && !frontmatter.includes("model:")) {
+              frontmatter += `\nmodel: ${model}`;
+            }
+            if (disallowed && !frontmatter.includes("disallowedTools:")) {
+              frontmatter += `\ndisallowedTools: [${disallowed.map(t => `"${t}"`).join(", ")}]`;
+            }
+            content = `---\n${frontmatter}\n---\n${body}`;
+          }
+        }
+        fs.writeFileSync(dest, content, "utf-8");
       }
     }
 
@@ -2565,13 +3143,92 @@ function main(): void {
       const pc = loadPersonaConfig(personaDir);
       if (pc) personaConfigs.set(personaName, pc);
     }
-    generateAgentsMd(config, distPath, personaConfigs, instrFileNames, lexiconEntries, coreInstructionsDir);
+    generateAgentsMd(config, distPath, personaConfigs, instrFileNames, lexiconEntries,
+      coreInstructionsDir, packageInstructionsDir, traits, coreGotchasDir);
     log(chalk.green("  AGENTS.md generated"));
+
+    // Phase 11 A1.7-3: Broaden agents platform — emit .agents/skills/ alongside AGENTS.md
+    generateCrossToolSkills(distPath, "core", "agents");
+    log(chalk.green("  .agents/skills/ generated (cross-tool)"));
+  }
+
+  // A1.5: build the portable compliance hook scripts ONCE. Every platform emitter
+  // (Claude Code, Codex, Copilot) writes its own copy from this single source, so
+  // Codex/Copilot no longer depend on the Claude Code emitter having run first.
+  const complianceHookScripts = buildComplianceHookScripts(config);
+
+  // Phase 11 A1.7: Codex platform output
+  if (outputFormats.includes("codex")) {
+    log(chalk.cyan("\nGenerating Codex output..."));
+    // AGENTS.md for Codex — reuse agents output if available, otherwise generate directly
+    const codexCoreDir = path.join(distPath, "codex", "core");
+    ensureDir(codexCoreDir);
+    const agentsSrc = path.join(distPath, "agents", "AGENTS.md");
+    if (fs.existsSync(agentsSrc)) {
+      fs.copyFileSync(agentsSrc, path.join(codexCoreDir, "AGENTS.md"));
+    } else {
+      // agents platform not enabled — generate AGENTS.md directly for codex
+      const codexPersonaConfigs = new Map<string, PersonaConfig>();
+      for (const [personaName, personaDir] of personaDirs) {
+        if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+        const pc = loadPersonaConfig(personaDir);
+        if (pc) codexPersonaConfigs.set(personaName, pc);
+      }
+      generateAgentsMd(config, distPath, codexPersonaConfigs, instrFileNames, lexiconEntries,
+        coreInstructionsDir, packageInstructionsDir, traits, coreGotchasDir, undefined, "codex");
+    }
+    // .codex/config.toml — already generated by generateCrossPlatformMcpConfigs
+    // .codex/hooks.json — compliance hooks in Codex format
+    generateCodexHooks(config, distPath, "core", complianceHookScripts);
+    // .agents/skills/ — cross-tool skills
+    generateCrossToolSkills(distPath, "core", "codex");
+    log(chalk.green("  → dist/codex/"));
+  }
+
+  // A1.5: GitHub Copilot governance hooks — .github/hooks/agentboot.json + scripts.
+  if (outputFormats.includes("copilot")) {
+    generateCopilotHooks(config, distPath, "core", complianceHookScripts);
+    log(chalk.green("  → dist/copilot/.github/hooks/"));
+  }
+
+  // Phase 11 C1.4: Write HARD guardrail artifacts to dist/managed/
+  {
+    const managedOutDir = path.join(distPath, "managed");
+    let hardCount = 0;
+
+    // Scan instructions for guardrail: hard
+    const instrDirs = [coreInstructionsDir, packageInstructionsDir];
+    for (const dir of instrDirs) {
+      if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir).filter(f => f.endsWith(".md"))) {
+        const content = fs.readFileSync(path.join(dir, file), "utf-8");
+        const fm = content.match(/^---\n([\s\S]*?)\n---/);
+        if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+          ensureDir(path.join(managedOutDir, "instructions"));
+          fs.writeFileSync(path.join(managedOutDir, "instructions", file), content, "utf-8");
+          hardCount++;
+        }
+      }
+    }
+
+    // Scan traits for guardrail: hard
+    for (const [name, trait] of traits) {
+      const fm = trait.content.match(/^---\n([\s\S]*?)\n---/);
+      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+        ensureDir(path.join(managedOutDir, "traits"));
+        fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.content, "utf-8");
+        hardCount++;
+      }
+    }
+
+    if (hardCount > 0) {
+      log(chalk.gray(`  → ${hardCount} HARD guardrail artifact(s) written to dist/managed/`));
+    }
   }
 
   // Generate composition manifests for core scope (all platforms)
   for (const fmt of outputFormats) {
-    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf" || fmt === "jetbrains") continue; // No scope merging for these
+    if (fmt === "agents" || fmt === "plugin" || fmt === "windsurf") continue; // No scope merging for these
     generateCompositionManifest(distPath, fmt, "core", config);
   }
 
@@ -2668,7 +3325,8 @@ function main(): void {
           const pc = loadPersonaConfig(path.join(personasDir, entry));
           if (pc) nodePersonaConfigs.set(entry, pc);
         }
-        generateAgentsMd(config, distPath, nodePersonaConfigs, instrFileNames, lexiconEntries, coreInstructionsDir, `nodes/${nodePath}`);
+        generateAgentsMd(config, distPath, nodePersonaConfigs, instrFileNames, lexiconEntries,
+          coreInstructionsDir, packageInstructionsDir, traits, coreGotchasDir, `nodes/${nodePath}`);
       }
     }
 
@@ -2759,7 +3417,7 @@ function main(): void {
   // ---------------------------------------------------------------------------
 
   if (outputFormats.includes("claude")) {
-    generateComplianceHooks(config, distPath, "core");
+    generateComplianceHooks(distPath, "core", complianceHookScripts);
     generateComplianceSettingsJson(config, distPath, "core");
 
     // AB-147: Per-persona hook compilation — merge persona-level hooks into settings

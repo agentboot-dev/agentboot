@@ -56,6 +56,20 @@ export interface AgentBootConfig {
     mcpServers?: Record<string, unknown>;
   };
 
+  // User-level (~/.claude) write SPI. AgentBoot is the default provider for this
+  // slot. If another tool manages ~/.claude — signalled by a ~/.claude/.managed
+  // sentinel — AgentBoot defers to it and stages its output for that tool to apply.
+  userLevel?: {
+    /**
+     * "auto" (default): write ~/.claude directly UNLESS a ~/.claude/.managed
+     * sentinel indicates another tool owns the slot, in which case stage for handoff.
+     * "direct": always write ~/.claude directly.
+     * "manifest": never write ~/.claude; stage the resolved content + a manifest for
+     * an external provider to apply.
+     */
+    mode?: "auto" | "direct" | "manifest";
+  };
+
   // Agent tools and LLM provider preferences
   agents?: {
     /** Which agent tools the org uses. Drives output format selection. */
@@ -89,6 +103,11 @@ export interface AgentBootConfig {
 
   // AB-143: MCP connection governance
   mcp?: McpGovernanceConfig;
+
+  // Phase 11 B1.5: /ab skill model and tool configuration
+  ab?: {
+    modelOverrides?: Record<string, string>;
+  };
 
   validation?: {
     secretPatterns?: string[];

@@ -78,8 +78,8 @@
     // "gemini"   — GEMINI.md + .gemini/ rules
     // "jetbrains" — .junie/guidelines.md + .aiassistant/rules/
     // "plugin" is auto-generated from claude output (not listed here).
-    // Default: all eight distribution formats.
-    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains"]
+    // Default: all nine distribution formats.
+    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"]
   },
 
   // ---------------------------------------------------------------------------

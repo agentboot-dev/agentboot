@@ -27,9 +27,9 @@ function run(script: string, cwd = ROOT): string {
 // ---------------------------------------------------------------------------
 
 describe("validate script", () => {
-  it("passes all 6 checks", () => {
+  it("passes all 8 checks", () => {
     const output = run("scripts/validate.ts");
-    expect(output).toContain("All 7 checks passed");
+    expect(output).toContain("All 8 checks passed");
   });
 
   it("detects missing persona", () => {
@@ -72,7 +72,7 @@ describe("compile script", () => {
   it("compiles all 4 personas across 8 platforms", () => {
     const output = run("scripts/compile.ts");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("8 platform(s)");
+    expect(output).toContain("9 platform(s)");
     expect(output).toContain("dist/skill/");
     expect(output).toContain("dist/claude/");
     expect(output).toContain("dist/copilot/");
@@ -316,7 +316,7 @@ describe("compile script", () => {
 
   it("platforms are self-contained and each has all personas", () => {
     // skill and copilot use persona directories
-    const nonPersonaDirs = new Set(["instructions", "gotchas", "agents", "rules"]);
+    const nonPersonaDirs = new Set(["instructions", "gotchas", "agents", "rules", ".github"]);
     const skillPersonas = fs.readdirSync(path.join(ROOT, "dist", "skill", "core"))
       .filter(f => !f.endsWith(".md") && !f.endsWith(".json") && !nonPersonaDirs.has(f)).sort();
     const copilotPersonas = fs.readdirSync(path.join(ROOT, "dist", "copilot", "core"))
@@ -806,9 +806,9 @@ describe("full pipeline (validate → compile)", () => {
       { cwd: ROOT, env: { ...process.env, NODE_NO_WARNINGS: "1" }, timeout: 30_000 }
     ).toString();
 
-    expect(output).toContain("All 7 checks passed");
+    expect(output).toContain("All 8 checks passed");
     expect(output).toContain("Compiled 4 persona(s)");
-    expect(output).toContain("8 platform(s)");
+    expect(output).toContain("9 platform(s)");
   });
 });
 
@@ -906,6 +906,17 @@ describe("AB-138: multi-platform production sync", () => {
     expect(fs.existsSync(instrPath), "copilot-instructions.md should exist").toBe(true);
     const content = fs.readFileSync(instrPath, "utf-8");
     expect(content.length).toBeGreaterThan(100);
+  });
+
+  it("copilot: syncs governance hooks to .github/hooks/ (A1.5)", () => {
+    const hooksDir = path.join(copilotTarget, ".github", "hooks");
+    expect(fs.existsSync(hooksDir), ".github/hooks/ should be synced").toBe(true);
+    const json = path.join(hooksDir, "agentboot.json");
+    expect(fs.existsSync(json), "agentboot.json should be synced").toBe(true);
+    const hooks = JSON.parse(fs.readFileSync(json, "utf-8")).hooks;
+    expect(hooks["userPromptSubmitted"]).toBeDefined();
+    // The portable scripts travel with the JSON so the committed file is runnable.
+    expect(fs.existsSync(path.join(hooksDir, "agentboot-input-scan.sh"))).toBe(true);
   });
 
   it("copilot: writes scoped instructions to .github/instructions/ if gotchas have paths", () => {

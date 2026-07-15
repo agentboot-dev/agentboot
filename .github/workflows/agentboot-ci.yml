@@ -20,7 +20,9 @@ on:
       node-version:
         description: "Node.js version to use"
         required: false
-        default: "20"
+        # AgentBoot requires Node >=22 (package.json engines). The reusable workflow
+        # installs the package, so its default must satisfy the engine constraint.
+        default: "22"
         type: string
       agentboot-version:
         description: "AgentBoot version to install (e.g., '0.6.0', 'latest')"

@@ -13,7 +13,7 @@ Key terms used throughout AgentBoot documentation.
 
 **Agent-Agnostic** — Content that works across multiple AI agent platforms without modification. Traits, personas (SKILL.md), and gotchas are agent-agnostic. Hooks, managed settings, and agent frontmatter are platform-specific.
 
-**AGENTS.md** — The emerging universal standard for cross-tool agent configuration. Supported by Codex, Cursor, Copilot, Gemini CLI, and 60K+ projects. AgentBoot generates AGENTS.md as an output format alongside platform-native formats.
+**AGENTS.md** — The universal standard for cross-tool agent configuration, stewarded by the Agentic AI Foundation (Linux Foundation). Natively consumed by Codex, Copilot, Cursor, Windsurf, Gemini CLI, Junie, and 60K+ projects. AgentBoot generates AGENTS.md as an output format alongside platform-native formats.
 
 **agentskills.io** — An open standard for AI agent skill definitions using SKILL.md format (Markdown with YAML frontmatter). Supported by 26+ agent platforms. AgentBoot uses agentskills.io as its cross-platform persona format.
 
@@ -33,7 +33,7 @@ Key terms used throughout AgentBoot documentation.
 
 **Cowork** — Anthropic's desktop application for non-technical users. Cowork plugins use the same format as Claude Code plugins but appear in a GUI with form-based input rather than slash commands.
 
-**Domain Layer** — A complete package of traits, personas, gotchas, and instructions for a specific compliance regime or technology stack (e.g., healthcare-compliance, fintech-compliance). Domain layers are the highest-value marketplace contribution.
+**Domain Layer** — A complete package of traits, personas, gotchas, and instructions for a specific compliance regime or technology stack (e.g., healthcare-compliance, fintech-compliance).
 
 **Frontmatter** — A YAML metadata block at the top of a Markdown file, delimited by `---`. Used in SKILL.md files for persona metadata (name, version, traits, scope) and in gotchas for path-scoping configuration.
 
@@ -55,9 +55,7 @@ Key terms used throughout AgentBoot documentation.
 
 **Managed Settings** — Claude Code configuration files deployed to OS-level paths via MDM. Cannot be overridden by any user or project setting. Used for HARD guardrails and forced plugin installation.
 
-**Marketplace** — The three-layer ecosystem for sharing governance content: Core (maintained by AgentBoot), Verified (community-contributed and reviewed), and Community (unreviewed).
-
-**MCP (Model Context Protocol)** — A protocol for AI agents to interact with external tools and data sources. MCP servers expose tools and resources that agents can consume. AgentBoot uses MCP for cross-platform persona serving and knowledge base access.
+**MCP (Model Context Protocol)** — A protocol for AI agents to interact with external tools and data sources. MCP servers expose tools and resources that agents can consume. AgentBoot uses MCP for cross-platform persona serving.
 
 **MDM (Mobile Device Management)** — Enterprise device management tooling (e.g., Jamf, Intune) used to deploy managed settings files to developer machines. The enforcement channel for HARD guardrails.
 
