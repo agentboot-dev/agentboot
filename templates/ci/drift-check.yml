@@ -1,0 +1,34 @@
+# AgentBoot Compliance Check — GitHub Actions workflow template
+# Phase 11 C1.2: Runs drift-check on PRs that touch AI tool configuration files.
+#
+# Copy this file to .github/workflows/agentboot-compliance.yml in your repo.
+# Requires: Node.js 22+, agentboot installed.
+
+name: AgentBoot Compliance Check
+on:
+  pull_request:
+    paths:
+      - '.claude/**'
+      - '.cursor/**'
+      - '.windsurf/**'
+      - '.windsurfrules'
+      - '.gemini/**'
+      - 'GEMINI.md'
+      - '.junie/**'
+      - '.aiassistant/**'
+      - 'AGENTS.md'
+      - '.mcp.json'
+      - '.github/agents/**'
+      - '.github/instructions/**'
+      - '.github/copilot-instructions.md'
+      - '.agents/**'
+
+jobs:
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npx agentboot drift-check --format json

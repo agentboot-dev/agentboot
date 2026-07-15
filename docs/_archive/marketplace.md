@@ -1,7 +1,14 @@
 ---
-sidebar_label: "Marketplace"
+sidebar_label: "Marketplace (archived)"
 sidebar_position: 1
+draft: true
 ---
+
+> **ARCHIVED — not part of v1.0.** The hosted marketplace/registry was cut from the
+> v1.0 GA surface; the `agentboot search`/`pull`/`publish`/`registry` commands are
+> hidden and unsupported. This document is retained for historical reference only and
+> does not describe shipping behavior. Component sharing in v1.0 is done by
+> contributing back to the source personas repo via normal PRs.
 
 # AgentBoot Marketplace — Community Sharing & Curation
 
@@ -788,23 +795,6 @@ governance content — not because of marketing, but because that's where everyt
 
 ---
 
-## Monetization Considerations
-
-The marketplace itself is free and open. But there are legitimate monetization
-paths for the ecosystem:
-
-| Model | What | Who pays |
-|-------|------|---------|
-| **Free core + paid domains** | Core traits/personas are free. Premium domain layers (SOC 2 automation, HIPAA pre-audit) are paid. | Orgs that need compliance |
-| **Free self-host + paid managed** | Self-host the marketplace for free. Pay for a managed marketplace with automatic updates, quality monitoring, and SLA. | Enterprise orgs |
-| **Consulting marketplace** | Marketplace lists consulting partners who implement AgentBoot for orgs. AgentBoot takes a referral fee. | Orgs that need help |
-| **Certification** | "AgentBoot Certified" trait/domain authors who meet advanced quality standards. | Trait authors who want credibility |
-
-These are future considerations. V1 is free and open. Monetization is a V2+
-conversation based on what the community actually values.
-
----
-
 ## Phased Rollout
 
 | Phase | What | When |
@@ -812,7 +802,7 @@ conversation based on what the community actually values.
 | V1 | Core traits + personas in a public marketplace repo. `agentboot add --from marketplace`. | At launch |
 | V1.5 | Contribution guide. First community PRs. Verified review process. | Post-launch |
 | V2 | SuperClaude cross-listing. Domain layers (healthcare, fintech). Web catalog at agentboot.dev. | Growth phase |
-| V2+ | Community marketplace (Layer 3). Search. Trust signals. Monetization exploration. | Scale phase |
+| V2+ | Community marketplace (Layer 3). Search. Trust signals. | Scale phase |
 
 ---
 

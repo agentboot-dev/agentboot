@@ -12,7 +12,7 @@
  * Phase 10 additions:
  *   - AGENTBOOT_HUB env var support (override cwd as hub root)
  *   - Read tools: agentboot_status, agentboot_list_repos, agentboot_cost_estimate, agentboot_scan_for_import
- *   - Execute tools: agentboot_validate, agentboot_lint, agentboot_doctor, agentboot_build, agentboot_sync, agentboot_optimize_metrics
+ *   - Execute tools: agentboot_validate, agentboot_lint, agentboot_doctor, agentboot_build, agentboot_sync
  *   - Write tool: agentboot_propose_change (always opens a PR, never pushes to main)
  *
  * Usage:
@@ -22,12 +22,14 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import os from "node:os";
 import { createInterface } from "node:readline";
 import { execSync, spawnSync } from "node:child_process";
 import { stripJsoncComments, type PersonaConfig, type AgentBootConfig, loadConfig } from "./lib/config.js";
 import { scanParentForContent } from "./lib/import.js";
+import { getDefaultHub } from "./lib/registry.js";
+import { checkDrift, findManifestPath } from "./lib/drift.js";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -43,34 +45,49 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 
 function resolveHubRoot(): string {
+  // Diagnostics go to stderr only — stdout is the JSON-RPC channel and must not
+  // be polluted, or the MCP handshake breaks.
   // 1. Explicit env var
-  if (process.env["AGENTBOOT_HUB"]) {
-    return path.resolve(process.env["AGENTBOOT_HUB"]);
+  const envHub = process.env["AGENTBOOT_HUB"];
+  if (envHub) {
+    const resolved = path.resolve(envHub);
+    // Dual-source clarity: if a registry default also exists and differs, the
+    // env var wins — surface that so the operator isn't confused about which SSOT applies.
+    try {
+      const regDefault = getDefaultHub();
+      if (regDefault && path.resolve(regDefault) !== resolved) {
+        console.error(
+          `[agentboot] AGENTBOOT_HUB (${resolved}) overrides the registry default hub (${regDefault}).`
+        );
+      }
+    } catch {
+      // registry unavailable — nothing to compare against
+    }
+    return resolved;
   }
   // 2. cwd is a hub
   const cwdConfig = path.join(process.cwd(), "agentboot.config.json");
   if (fs.existsSync(cwdConfig)) {
     return process.cwd();
   }
-  // 3. Global registry
-  const registryPath = path.join(os.homedir(), ".agentboot", "config.json");
-  if (fs.existsSync(registryPath)) {
-    try {
-      const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as {
-        defaultHub?: string;
-        hubs?: Array<{ path: string }>;
-      };
-      const candidate =
-        registry.defaultHub ??
-        (registry.hubs?.length === 1 ? registry.hubs[0]?.path : undefined);
-      if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
-        return candidate;
-      }
-    } catch {
-      // malformed registry — fall through
+  // 3. Global registry (Phase 11 A3): default hub, or the only hub for single-hub orgs
+  try {
+    const candidate = getDefaultHub();
+    if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
+      return candidate;
     }
+  } catch {
+    // Registry file missing/corrupt — fall through (getDefaultHub self-heals a corrupt file)
   }
-  // 4. Package install dir (running the build tool itself)
+  // 4. Package install dir — no hub resolved from env, cwd, or registry. Fall back
+  //    to AgentBoot's own bundled content so the server still starts, but make the
+  //    fallback VISIBLE: a spoke that silently serves the package's demo personas is
+  //    the confusing failure mode the registry was built to prevent.
+  console.error(
+    "[agentboot] No hub resolved from AGENTBOOT_HUB, the current directory, or the " +
+      "global registry — falling back to AgentBoot's bundled content. Run " +
+      "'agentboot connect <hub-path>' to register your hub, or set AGENTBOOT_HUB."
+  );
   return DEFAULT_ROOT;
 }
 
@@ -278,6 +295,7 @@ function loadHubConfig(): AgentBootConfig | null {
 interface RepoEntry {
   path: string;
   platform?: string;
+  platforms?: string[];
   group?: string;
   team?: string;
   label?: string;
@@ -496,22 +514,6 @@ const TOOLS: McpTool[] = [
       required: [],
     },
   },
-  {
-    name: "agentboot_optimize_metrics",
-    description:
-      "Retrieve optimization metrics for personas (telemetry-driven). Currently a stub — telemetry collection not yet implemented.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        persona: {
-          type: "string",
-          description: "Optional persona ID to get metrics for.",
-        },
-      },
-      required: [],
-    },
-  },
-
   // --- Story 3: Write tool ---
   {
     name: "agentboot_propose_change",
@@ -691,8 +693,6 @@ export function handleToolCall(
       return handleBuild();
     case "agentboot_sync":
       return handleSync(args);
-    case "agentboot_optimize_metrics":
-      return handleOptimizeMetrics(args);
 
     // ----- Story 3: Write tool -----
     case "agentboot_propose_change":
@@ -709,6 +709,38 @@ export function handleToolCall(
 // ---------------------------------------------------------------------------
 // Story 1: Read Tool Implementations
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-repo sync/drift state for status reporting. Uses the real drift checker
+ * (content-hash comparison), so a synced repo whose managed files were modified
+ * correctly reports drift — the previous check only asked "does a manifest exist",
+ * which reported hasDrift=false for any drifted-but-synced repo. "Never synced"
+ * (no manifest) is a distinct state (synced=false), not drift.
+ */
+export function computeRepoDrift(repoPath: string): {
+  synced: boolean;
+  hasDrift: boolean;
+  driftCount: number;
+  lastSyncAt: string | null;
+} {
+  const manifestPath = findManifestPath(repoPath);
+  let lastSyncAt: string | null = null;
+  if (manifestPath) {
+    try {
+      lastSyncAt = fs.statSync(manifestPath).mtime.toISOString();
+    } catch { /* ignore */ }
+  }
+  let synced = false;
+  let hasDrift = false;
+  let driftCount = 0;
+  try {
+    const report = checkDrift(repoPath);
+    synced = report.manifestFound;
+    driftCount = report.summary.modifiedCount + report.summary.missingCount;
+    hasDrift = report.manifestFound && driftCount > 0;
+  } catch { /* drift check is best-effort for status; keep defaults */ }
+  return { synced, hasDrift, driftCount, lastSyncAt };
+}
 
 function handleStatus(): ToolResult {
   const config = loadHubConfig();
@@ -739,29 +771,80 @@ function handleStatus(): ToolResult {
   const repoEntries = loadReposJson();
   const repos = repoEntries.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const manifestPath = path.join(repoPath, ".agentboot-manifest.json");
-    const hasDrift = !fs.existsSync(manifestPath);
-    let lastSyncAt: string | null = null;
-    if (fs.existsSync(manifestPath)) {
-      try {
-        const stat = fs.statSync(manifestPath);
-        lastSyncAt = stat.mtime.toISOString();
-      } catch { /* ignore */ }
-    }
+    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
-      platforms: [r.platform ?? "claude"],
+      platforms: r.platforms ?? (r.platform ? [r.platform] : ["claude"]),
       lastSyncAt,
+      synced,
       hasDrift,
+      driftCount,
     };
   });
 
   // Platforms
   const platformSet = new Set<string>();
   for (const r of repoEntries) {
-    platformSet.add(r.platform ?? "claude");
+    const plats = r.platforms ?? (r.platform ? [r.platform] : ["claude"]);
+    for (const p of plats) platformSet.add(p);
   }
+
+  // Phase 11 B1.1: Artifact counts and maturity label
+  const countDir = (dir: string): number => {
+    try {
+      return fs.readdirSync(path.join(HUB_ROOT, dir)).filter(f => f.endsWith(".md") && f !== "README.md").length;
+    } catch { return 0; }
+  };
+  const countDirAll = (dir: string): number => {
+    try {
+      return fs.readdirSync(path.join(HUB_ROOT, dir)).filter(f => !f.startsWith(".")).length;
+    } catch { return 0; }
+  };
+
+  // Package-bundled counts = the personas/traits AgentBoot itself ships, read from
+  // the package's own core/ dir (DEFAULT_ROOT). Derived, not hardcoded, so the
+  // org-specific math stays correct as the bundled set changes over releases.
+  const countPackageDir = (rel: string, dirsOnly: boolean): number => {
+    try {
+      const dir = path.join(DEFAULT_ROOT, rel);
+      return fs.readdirSync(dir).filter((e) => {
+        if (dirsOnly) {
+          try {
+            return fs.statSync(path.join(dir, e)).isDirectory();
+          } catch {
+            return false;
+          }
+        }
+        return e.endsWith(".md") && e !== "README.md";
+      }).length;
+    } catch {
+      return 0;
+    }
+  };
+  const packagePersonaCount = countPackageDir(path.join("core", "personas"), true);
+  const packageTraitCount = countPackageDir(path.join("core", "traits"), false);
+  const coreTraitCount = countDir("core/traits");
+  const coreGotchaCount = countDir("core/gotchas");
+  const coreLexiconCount = countDirAll("core/lexicon");
+
+  // Gotchas with paths: frontmatter
+  let gotchaPathPatternCount = 0;
+  try {
+    const gotchaDir = path.join(HUB_ROOT, "core", "gotchas");
+    if (fs.existsSync(gotchaDir)) {
+      for (const f of fs.readdirSync(gotchaDir).filter(f => f.endsWith(".md") && f !== "README.md")) {
+        const content = fs.readFileSync(path.join(gotchaDir, f), "utf-8");
+        if (content.match(/^paths:/m)) gotchaPathPatternCount++;
+      }
+    }
+  } catch { /* ignore */ }
+
+  const orgSpecificPersonas = Math.max(0, personas.length - packagePersonaCount);
+  const orgSpecificTraits = Math.max(0, coreTraitCount - packageTraitCount);
+
+  // Maturity label
+  const maturityLabel = computeMaturityLabel(orgSpecificPersonas, orgSpecificTraits, coreGotchaCount, repos.length, lastBuiltAt);
 
   return toolOk({
     hub: {
@@ -777,28 +860,49 @@ function handleStatus(): ToolResult {
     personas,
     repos,
     platforms: [...platformSet],
+    artifactCounts: {
+      personas: { core: packagePersonaCount, orgSpecific: orgSpecificPersonas },
+      traits: { core: packageTraitCount, orgSpecific: orgSpecificTraits },
+      gotchas: { total: coreGotchaCount, withPaths: gotchaPathPatternCount },
+      lexicons: coreLexiconCount,
+    },
+    maturityLabel,
   });
+}
+
+function computeMaturityLabel(
+  orgPersonas: number,
+  orgTraits: number,
+  gotchaCount: number,
+  repoCount: number,
+  lastBuiltAt: string | null,
+): string {
+  // "early": only default personas, no org-specific content
+  if (orgPersonas === 0 && orgTraits === 0 && gotchaCount === 0) return "early";
+  // "mature": 20+ gotchas, multiple repos, recent build
+  if (gotchaCount >= 20 && repoCount >= 3 && lastBuiltAt) {
+    const daysSinceBuild = (Date.now() - new Date(lastBuiltAt).getTime()) / 86_400_000;
+    if (daysSinceBuild <= 30) return "mature";
+  }
+  // "established": some org content + gotchas with paths
+  if (gotchaCount >= 10 || (orgPersonas >= 1 && orgTraits >= 2)) return "established";
+  // "growing": any org-specific content
+  return "growing";
 }
 
 function handleListRepos(): ToolResult {
   const repoEntries = loadReposJson();
   const repos = repoEntries.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const manifestPath = path.join(repoPath, ".agentboot-manifest.json");
-    const hasDrift = !fs.existsSync(manifestPath);
-    let lastSyncAt: string | null = null;
-    if (fs.existsSync(manifestPath)) {
-      try {
-        const stat = fs.statSync(manifestPath);
-        lastSyncAt = stat.mtime.toISOString();
-      } catch { /* ignore */ }
-    }
+    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
-      platforms: [r.platform ?? "claude"],
+      platforms: r.platforms ?? (r.platform ? [r.platform] : ["claude"]),
       lastSyncAt,
+      synced,
       hasDrift,
+      driftCount,
     };
   });
   return toolOk({ repos });
@@ -889,7 +993,13 @@ function handleScanForImport(args: Record<string, unknown>): ToolResult {
   ]);
 
   // Reject system directories to prevent scanning sensitive locations
-  const BLOCKED_PREFIXES = ["/etc", "/usr", "/var", "/root", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys"];
+  const homeDir = process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir();
+  const BLOCKED_PREFIXES = [
+    "/etc", "/usr", "/var", "/root", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys",
+    // Sensitive user directories — scan is for git repos, not credentials/config
+    path.join(homeDir, ".ssh"), path.join(homeDir, ".gnupg"), path.join(homeDir, ".aws"),
+    path.join(homeDir, ".config"), path.join(homeDir, ".kube"),
+  ];
 
   for (const scanPath of paths) {
     const resolved = path.resolve(scanPath);
@@ -1248,10 +1358,15 @@ function handleSync(args: Record<string, unknown>): ToolResult {
   const targetRepos = args["repos"] as string[] | undefined;
 
   try {
-    // Build the command
-    let cmd = "npx tsx scripts/sync.ts 2>&1";
-    // If specific repos requested, we can't pass them via CLI args to sync.ts easily,
-    // so we sync all and filter the output. The sync script uses repos.json.
+    // Build the command. When specific repos are requested, scope the actual sync
+    // with --repo (repeatable) so we WRITE to only those repos — not sync everything
+    // and merely filter the report. Names are validated to safe chars to avoid shell
+    // injection (the command is run through a shell).
+    const repoArgs = (targetRepos ?? [])
+      .filter((r) => typeof r === "string" && /^[A-Za-z0-9._@/-]+$/.test(r))
+      .map((r) => `--repo ${r}`)
+      .join(" ");
+    const cmd = `npx tsx scripts/sync.ts ${repoArgs} 2>&1`.replace(/\s+/g, " ").trim();
     const output = execSync(cmd, {
       cwd: HUB_ROOT,
       encoding: "utf-8",
@@ -1310,12 +1425,6 @@ function handleSync(args: Record<string, unknown>): ToolResult {
   }
 }
 
-function handleOptimizeMetrics(_args: Record<string, unknown>): ToolResult {
-  return toolOk({
-    message: "Telemetry data not yet available. Run agentboot optimize after configuring telemetry collection.",
-    personas: [],
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Story 3: Write Tool Implementation — agentboot_propose_change
@@ -1449,9 +1558,9 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
     // Commit — pass message and author as separate args (no shell interpolation)
     const commitArgs = ["commit", "-m", commitMessage];
     if (contributor) {
-      // Validate contributor format: reject control characters, newlines, backticks
-      if (/[\x00-\x1f\x7f`]/.test(contributor)) {
-        throw new Error("Invalid contributor: must not contain control characters or backticks");
+      // Validate contributor format: reject control chars, backticks, and git author special chars
+      if (/[\x00-\x1f\x7f`<>"']/.test(contributor)) {
+        throw new Error("Invalid contributor: must not contain control characters, backticks, or angle brackets");
       }
       commitArgs.push(`--author=${contributor} <${contributor}>`);
     }

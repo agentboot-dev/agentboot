@@ -366,7 +366,9 @@ describe("hasPrompts: additional edge cases", () => {
     expect(result.files.filter((f) => f.startsWith(".claude/"))).toEqual([]);
   });
 
-  it("gracefully handles unreadable directories (permission errors)", () => {
+  // POSIX permission semantics: chmod 0o000 does not restrict access on Windows,
+  // so the unreadable-directory scenario this test exercises can't be set up there.
+  it.skipIf(process.platform === "win32")("gracefully handles unreadable directories (permission errors)", () => {
     // Create a directory that will cause a permission error on read
     const restrictedDir = path.join(testDir, ".claude");
     fs.mkdirSync(restrictedDir);
@@ -809,7 +811,10 @@ describe("scaffoldHub: writes .mcp.json with AgentBoot MCP server", () => {
     expect(mcp.mcpServers.agentboot).toBeDefined();
     expect(mcp.mcpServers.agentboot.command).toBe("npx");
     expect(mcp.mcpServers.agentboot.args).toEqual(["agentboot", "mcp-server"]);
-    expect(mcp.mcpServers.agentboot.env.AGENTBOOT_HUB).toBe(path.resolve(tempDir));
+    // L4: no absolute AGENTBOOT_HUB is baked into this committed file — it would
+    // leak the author's home path and break the hub for teammates. Hub resolution
+    // uses cwd + the machine-local registry instead.
+    expect(mcp.mcpServers.agentboot.env?.AGENTBOOT_HUB).toBeUndefined();
   });
 
   it("merges into existing .mcp.json without overwriting other servers", () => {
@@ -832,7 +837,8 @@ describe("scaffoldHub: writes .mcp.json with AgentBoot MCP server", () => {
     expect(mcp.mcpServers["other-server"].command).toBe("node");
     // AgentBoot server added
     expect(mcp.mcpServers.agentboot).toBeDefined();
-    expect(mcp.mcpServers.agentboot.env.AGENTBOOT_HUB).toBe(path.resolve(tempDir));
+    // L4: no baked absolute AGENTBOOT_HUB path (see above).
+    expect(mcp.mcpServers.agentboot.env?.AGENTBOOT_HUB).toBeUndefined();
   });
 
   it("overwrites corrupted .mcp.json gracefully", () => {

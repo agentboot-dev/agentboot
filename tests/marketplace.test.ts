@@ -386,15 +386,18 @@ describe("getChannels", () => {
 // ---------------------------------------------------------------------------
 
 describe("CLI marketplace commands", () => {
-  it("marketplace and registry commands appear in --help", () => {
+  it("marketplace and registry are HIDDEN from top-level --help (GA surface-pruning R.2)", () => {
+    // The marketplace subsystem is not advertised in v1.0 — hidden, not deleted,
+    // so it stays functional (its own --help still works, tested below) and is
+    // fully reversible for a post-GA decision.
     const result = spawnSync("npx", ["tsx", path.join(ROOT, "scripts", "cli.ts"), "--help"], {
       cwd: ROOT,
       stdio: "pipe",
       timeout: 30_000,
     });
     const stdout = result.stdout?.toString() ?? "";
-    expect(stdout).toContain("marketplace");
-    expect(stdout).toContain("registry");
+    expect(stdout).not.toContain("marketplace");
+    expect(stdout).not.toContain("registry");
   });
 
   it("marketplace subcommands (search, pull, publish) appear in marketplace --help", () => {

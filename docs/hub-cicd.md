@@ -76,9 +76,7 @@ jobs:
 ## CI Interface
 
 For automated environments that use Claude evaluation, the primary interface is
-`claude -p --output-format json`. This is cost-bounded and schema-enforced — see
-`docs/internal/plans/ci-cd-automation.md` for details on the five CI integration
-methods.
+`claude -p --output-format json`. This is cost-bounded and schema-enforced.
 
 ---
 

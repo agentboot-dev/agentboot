@@ -909,8 +909,8 @@ reading documentation.
 Over time, they start writing traits and gotchas directly because they've seen
 enough examples. The `add prompt` command is a scaffold that teaches by doing.
 
-When they have something worth sharing, `agentboot publish` is one more step.
-But that's a graduation moment, not a starting requirement.
+When they have something worth sharing, contributing it back to the personas repo
+is one more step. But that's a graduation moment, not a starting requirement.
 
 ---
 

@@ -234,7 +234,9 @@ describe("AB-147: Compliance hook compilation", () => {
     }
   });
 
-  it("sync restores execute permission even when file content is unchanged", () => {
+  // The execute bit (mode & 0o111) is a POSIX concept — Windows has no exec permission,
+  // so there is nothing to strip or restore there.
+  it.skipIf(process.platform === "win32")("sync restores execute permission even when file content is unchanged", () => {
     // Simulates a fresh clone or manual chmod 644 — the next sync must fix the perms.
     const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-rerun-"));
     const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");
@@ -314,7 +316,7 @@ describe("AB-143: MCP governance validation", () => {
   it("passes when no MCP config defined", () => {
     const output = run("scripts/validate.ts");
     expect(output).toContain("MCP governance");
-    expect(output).toContain("All 7 checks passed");
+    expect(output).toContain("All 8 checks passed");
   });
 
   it("rejects required server not in approved list", () => {
@@ -376,19 +378,20 @@ describe("AB-143: MCP governance validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("Multi-platform output completeness", () => {
-  it("all 8 platforms produce output", () => {
-    for (const platform of ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains"]) {
+  it("all 9 platforms produce output", () => {
+    for (const platform of ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"]) {
       const platformDir = path.join(ROOT, "dist", platform);
       expect(fs.existsSync(platformDir), `dist/${platform}/ should exist`).toBe(true);
     }
   });
 
-  it("compile output mentions all 8 platforms", () => {
+  it("compile output mentions all 9 platforms", () => {
     const output = run("scripts/compile.ts");
-    expect(output).toContain("8 platform(s)");
+    expect(output).toContain("9 platform(s)");
     expect(output).toContain("dist/windsurf/");
     expect(output).toContain("dist/gemini/");
     expect(output).toContain("dist/jetbrains/");
+    expect(output).toContain("dist/codex/");
   });
 });
 

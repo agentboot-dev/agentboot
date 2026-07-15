@@ -36,7 +36,7 @@ agentboot build -c path/to/config.json
 
 ## `agentboot validate`
 
-Run pre-build validation checks (7 checks):
+Run pre-build validation checks (8 checks):
 1. Persona existence — all enabled personas found in `core/personas/`
 2. Trait references — all traits in persona configs exist in `core/traits/`
 3. SKILL.md frontmatter — required fields present
@@ -44,6 +44,7 @@ Run pre-build validation checks (7 checks):
 5. Composition consistency — no scope conflicts between rule/preference types
 6. Rule override detection — lower scopes shadowing rule-type core artifacts
 7. MCP governance — approved/required server validation against `mcp` config
+8. HARD guardrails — lower scopes cannot override HARD-classified artifacts
 
 ```
 agentboot validate
@@ -66,10 +67,8 @@ Run behavioral and snapshot tests for personas.
 agentboot test --behavioral              # Run YAML behavioral tests (LLM-powered)
 agentboot test --snapshot                 # Create/update snapshot baseline from dist/
 agentboot test --regression               # Compare dist/ against saved snapshot
-agentboot test --judge                    # LLM-as-Judge evaluation (5-dimension scoring)
 agentboot test --behavioral --test-dir tests/behavioral
 agentboot test --regression --snapshot-file .agentboot-snapshot.json
-agentboot test --judge --min-score 0.7
 ```
 
 | Flag | Description |
@@ -77,14 +76,8 @@ agentboot test --judge --min-score 0.7
 | `--behavioral` | Run behavioral tests (requires LLM, costs money) |
 | `--snapshot` | Create or update snapshot baseline from current `dist/` |
 | `--regression` | Compare current `dist/` against saved snapshot |
-| `--judge` | Run LLM-as-Judge evaluation (requires LLM, costs money) |
-| `--min-score <n>` | Minimum acceptable judge score 0.0–1.0 (default: `0.7`); exit 1 if below |
 | `--test-dir <dir>` | Directory with behavioral test YAML files (default: `tests/behavioral`) |
 | `--snapshot-file <path>` | Path to snapshot baseline file (default: `.agentboot-snapshot.json`) |
-
-**LLM-as-Judge** scores each persona across 5 dimensions: accuracy, precision, recall,
-specificity, and actionability. Scores are averaged per persona and across all personas.
-Exit code `1` if the average score is below `--min-score`.
 
 ---
 
@@ -345,14 +338,13 @@ Export compiled output in a distributable format.
 agentboot export
 agentboot export --format plugin
 agentboot export --format managed --output ./out
-agentboot export --format marketplace
 agentboot export --format agentskills
 agentboot export --format agentskills --output ./skills-export
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--format <fmt>` | Export format: `plugin` (default), `managed`, `marketplace`, `agentskills` |
+| `--format <fmt>` | Export format: `plugin` (default), `managed`, `agentskills` |
 | `--output <dir>` | Output directory (defaults vary by format) |
 
 ### Export formats
@@ -361,32 +353,9 @@ agentboot export --format agentskills --output ./skills-export
 |--------|--------|--------------|
 | `plugin` | Claude Code plugin directory | `.claude-plugin/` |
 | `managed` | Managed settings for MDM deployment | `managed-output/` |
-| `marketplace` | `marketplace.json` scaffold | current directory |
 | `agentskills` | `skills-index.json` from compiled SKILL.md files (agentskills.io standard) | `dist/agentskills/` |
 
 Requires `agentboot build` to have been run first (for `plugin`, `managed`, and `agentskills` formats).
-
----
-
-## `agentboot publish`
-
-Publish a compiled plugin to a marketplace manifest. Reads the plugin from
-`.claude-plugin/` or `dist/plugin/`, computes a SHA-256 hash, updates
-`marketplace.json`, and copies the plugin to a versioned release directory.
-
-```
-agentboot publish
-agentboot publish --bump patch
-agentboot publish --bump minor
-agentboot publish --marketplace path/to/marketplace.json
-agentboot publish --dry-run
-```
-
-| Flag | Description |
-|------|-------------|
-| `--marketplace <path>` | Path to marketplace.json (default: `marketplace.json`) |
-| `--bump <level>` | Version bump before publishing: `major`, `minor`, `patch` |
-| `-d, --dry-run` | Preview changes without writing |
 
 ---
 
@@ -501,68 +470,3 @@ agentboot optimize --apply --dry-run
 
 Requires telemetry data to have been collected. Uses `resolveProvider()` for the LLM
 recommendation step — requires an active Claude Code session or configured API provider.
-
----
-
-## `agentboot search`
-
-Search the AgentBoot marketplace registry for traits, personas, gotchas, and domain layers.
-
-```
-agentboot search traits "gdpr"
-agentboot search gotchas "postgres"
-agentboot search domains "healthcare"
-agentboot search personas "accessibility"
-agentboot search "phi-awareness"
-```
-
-| Argument | Description |
-|----------|-------------|
-| `<type>` | Content type to filter: `traits`, `gotchas`, `personas`, `domains` (optional) |
-| `<query>` | Search term |
-
-| Flag | Description |
-|------|-------------|
-| `--layer <layer>` | Filter by marketplace layer: `core`, `verified`, `community` |
-| `--json` | Output results in machine-readable JSON |
-
----
-
-## `agentboot pull`
-
-Download and add a marketplace item to your personas repo.
-
-```
-agentboot pull trait phi-awareness
-agentboot pull gotcha postgres-rls
-agentboot pull domain healthcare-compliance
-agentboot pull persona accessibility-reviewer
-```
-
-| Argument | Description |
-|----------|-------------|
-| `<type>` | Content type: `trait`, `gotcha`, `domain`, `persona` |
-| `<name>` | Marketplace item name |
-
-| Flag | Description |
-|------|-------------|
-| `--from <source>` | Registry source: `marketplace` (default), `github:user/repo` |
-| `--version <ver>` | Pin to a specific version |
-| `--dry-run` | Preview what would be added without writing |
-
----
-
-## `agentboot catalog`
-
-List all installed marketplace content and check for available updates.
-
-```
-agentboot catalog
-agentboot catalog --updates
-agentboot catalog --json
-```
-
-| Flag | Description |
-|------|-------------|
-| `--updates` | Check for available updates to installed marketplace content |
-| `--json` | Output in machine-readable JSON |

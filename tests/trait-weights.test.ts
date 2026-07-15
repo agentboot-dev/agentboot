@@ -168,7 +168,7 @@ describe("traitRefsToNames", () => {
   });
 });
 
-import { buildWeightPreamble } from "../scripts/compile.js";
+import { buildWeightPreamble, weightToTier, selectTraitTier } from "../scripts/compile.js";
 
 // ---------------------------------------------------------------------------
 // Unit: buildWeightPreamble()
@@ -544,5 +544,103 @@ describe("trait weight compiled text differences — HIGH vs OFF preamble prose"
     expect(content).not.toMatch(/adversarial reviewer/i);
     // The structured-output trait (MEDIUM) must still be present
     expect(content).toContain("<!-- trait: structured-output -->");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A.1: weight-tier trait section selection
+// ---------------------------------------------------------------------------
+
+describe("weightToTier", () => {
+  it("maps named-weight values to their tier", () => {
+    expect(weightToTier(0.3)).toBe("LOW");
+    expect(weightToTier(0.5)).toBe("MEDIUM");
+    expect(weightToTier(0.7)).toBe("HIGH");
+    expect(weightToTier(1.0)).toBe("MAX");
+  });
+
+  it("snaps an arbitrary weight to the nearest tier", () => {
+    expect(weightToTier(0.1)).toBe("LOW");   // nearest non-OFF is LOW (0.3)
+    expect(weightToTier(0.9)).toBe("MAX");   // 0.9 → MAX (1.0) over HIGH (0.7)
+    expect(weightToTier(0.6)).toBe("MEDIUM"); // tie 0.5/0.7 → earlier (MEDIUM)
+  });
+});
+
+describe("selectTraitTier", () => {
+  const tiered = [
+    "# Trait: Example",
+    "",
+    "## Overview",
+    "Always-included overview.",
+    "",
+    "### LOW",
+    "Low-tier guidance.",
+    "",
+    "### MEDIUM",
+    "Medium-tier guidance.",
+    "",
+    "### HIGH",
+    "High-tier guidance.",
+    "",
+    "## Anti-Patterns",
+    "Always-included anti-patterns.",
+  ].join("\n");
+
+  it("returns untiered content unchanged (backward compatible)", () => {
+    const untiered = "# Trait: Plain\n\n## Overview\nNo tiers here.\n";
+    expect(selectTraitTier(untiered, 0.7)).toBe(untiered);
+  });
+
+  it("keeps weight-independent content + only the HIGH section at HIGH weight", () => {
+    const out = selectTraitTier(tiered, 0.7);
+    expect(out).toContain("Always-included overview.");
+    expect(out).toContain("Always-included anti-patterns.");
+    expect(out).toContain("High-tier guidance.");
+    expect(out).not.toContain("Low-tier guidance.");
+    expect(out).not.toContain("Medium-tier guidance.");
+  });
+
+  it("selects the LOW section at LOW weight", () => {
+    const out = selectTraitTier(tiered, 0.3);
+    expect(out).toContain("Low-tier guidance.");
+    expect(out).not.toContain("High-tier guidance.");
+    expect(out).not.toContain("Medium-tier guidance.");
+    // weight-independent sections still present
+    expect(out).toContain("Always-included overview.");
+    expect(out).toContain("Always-included anti-patterns.");
+  });
+
+  it("selects exactly one tier and always keeps weight-independent sections", () => {
+    const out = selectTraitTier(tiered, 0.5);
+    expect(out).toContain("Medium-tier guidance.");
+    expect(out).not.toContain("Low-tier guidance.");
+    expect(out).not.toContain("High-tier guidance.");
+    expect(out).toContain("## Overview");
+    expect(out).toContain("## Anti-Patterns");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G.1: ab.modelOverrides validation
+// ---------------------------------------------------------------------------
+
+import { isValidAbModel } from "../scripts/compile.js";
+
+describe("isValidAbModel", () => {
+  it("accepts the Agent SDK model aliases (case-insensitive)", () => {
+    for (const m of ["opus", "sonnet", "haiku", "inherit", "Sonnet", "HAIKU"]) {
+      expect(isValidAbModel(m)).toBe(true);
+    }
+  });
+
+  it("accepts explicit claude-* model ids", () => {
+    expect(isValidAbModel("claude-sonnet-5")).toBe(true);
+    expect(isValidAbModel("claude-opus-4-8")).toBe(true);
+  });
+
+  it("rejects typos and foreign models", () => {
+    for (const m of ["sonet", "opus-4", "gpt-4", "gemini", "", "  "]) {
+      expect(isValidAbModel(m)).toBe(false);
+    }
   });
 });

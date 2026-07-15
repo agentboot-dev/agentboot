@@ -529,6 +529,108 @@ describe("validate error message quality", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Domain layers (A.2) — validate must scan config-referenced domains/*
+// Addresses gap: checkTraitReferences/checkSkillFrontmatter/checkNoSecrets
+// previously ignored domain layers, so a domain passed validation vacuously.
+// ---------------------------------------------------------------------------
+
+describe("validate — domain layers (A.2)", () => {
+  // Prove domain PERSONAS are scanned: a bad trait ref inside a domain persona
+  // is caught and the error names both the domain persona and the missing trait.
+  it("domain persona with an unknown trait ref is caught", () => {
+    // realpath the tmp dir so the compiler's boundary check (which compares a
+    // realpath'd domain path against a non-realpath'd configDir) matches on
+    // macOS, where os.tmpdir() lives under a /var → /private/var symlink.
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-domain-badtrait-"))
+    );
+    const personaDir = path.join(tmpDir, "domains", "test-domain", "personas", "dana-durability");
+    fs.mkdirSync(personaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(personaDir, "persona.config.json"),
+      JSON.stringify({
+        name: "Dana Durability",
+        description: "Domain persona for the A.2 negative test",
+        invocation: "/dana",
+        traits: ["nonexistent-domain-trait"],
+      })
+    );
+    // Copy a real SKILL.md so the frontmatter check is not what fails.
+    fs.copyFileSync(
+      path.join(__dirname, "..", "core", "personas", "code-reviewer", "SKILL.md"),
+      path.join(personaDir, "SKILL.md")
+    );
+
+    const tmpConfig = path.join(tmpDir, "agentboot.config.json");
+    fs.writeFileSync(
+      tmpConfig,
+      JSON.stringify({
+        org: "test-org",
+        personas: { enabled: [] },
+        instructions: { enabled: [] },
+        domains: ["./domains/test-domain"],
+      })
+    );
+
+    try {
+      const { output } = runValidateExpectFailRaw(`--config ${tmpConfig}`);
+      expect(output).toContain("dana-durability");
+      expect(output).toContain("nonexistent-domain-trait");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Prove domain TRAITS join the resolution pool: a domain persona referencing a
+  // domain-local trait validates cleanly (would ERROR if domain traits were ignored).
+  it("domain persona referencing a valid domain-local trait passes", () => {
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-domain-ok-"))
+    );
+    const domainDir = path.join(tmpDir, "domains", "test-domain");
+    const traitsDir = path.join(domainDir, "traits");
+    const personaDir = path.join(domainDir, "personas", "sam-simplicity");
+    fs.mkdirSync(traitsDir, { recursive: true });
+    fs.mkdirSync(personaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(traitsDir, "domain-only-trait.md"),
+      "# Trait: Domain Only\n\nA domain-local trait used only by this domain's personas.\n"
+    );
+    fs.writeFileSync(
+      path.join(personaDir, "persona.config.json"),
+      JSON.stringify({
+        name: "Sam Simplicity",
+        description: "Domain persona for the A.2 positive test",
+        invocation: "/sam",
+        traits: ["domain-only-trait"],
+      })
+    );
+    fs.writeFileSync(
+      path.join(personaDir, "SKILL.md"),
+      "---\nname: sam-simplicity\ndescription: Domain persona for the A.2 positive test\n---\n\n# Sam\n"
+    );
+
+    const tmpConfig = path.join(tmpDir, "agentboot.config.json");
+    fs.writeFileSync(
+      tmpConfig,
+      JSON.stringify({
+        org: "test-org",
+        personas: { enabled: [] },
+        instructions: { enabled: [] },
+        domains: ["./domains/test-domain"],
+      })
+    );
+
+    try {
+      const output = runValidateRaw(`--config ${tmpConfig}`);
+      expect(output).toContain("passed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 
 function walkDir(dir: string, extensions: string[]): string[] {
   const results: string[] = [];
