@@ -1960,9 +1960,11 @@ describe("AB-59/60/63: compliance and audit trail hooks", () => {
     const content = fs.readFileSync(hookPath, "utf-8");
     expect(content).toContain("UserPromptSubmit");
     expect(content).toContain("credential");
-    // Verify executable
-    const stat = fs.statSync(hookPath);
-    expect(stat.mode & 0o111).toBeGreaterThan(0);
+    // Verify executable (POSIX-only; Windows has no exec bit)
+    if (process.platform !== "win32") {
+      const stat = fs.statSync(hookPath);
+      expect(stat.mode & 0o111).toBeGreaterThan(0);
+    }
   });
 
   it("generates output scanning hook (AB-60)", () => {
@@ -2050,9 +2052,11 @@ describe("AB-46: add domain and hook scaffolding", () => {
     const content = fs.readFileSync(hookPath, "utf-8");
     expect(content).toContain("#!/bin/bash");
     expect(content).toContain("hook_event_name");
-    // Verify executable
-    const stat = fs.statSync(hookPath);
-    expect(stat.mode & 0o111).toBeGreaterThan(0);
+    // Verify executable (POSIX-only; Windows has no exec bit)
+    if (process.platform !== "win32") {
+      const stat = fs.statSync(hookPath);
+      expect(stat.mode & 0o111).toBeGreaterThan(0);
+    }
   });
 
   it("rejects duplicate domain names", () => {

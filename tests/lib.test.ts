@@ -104,7 +104,9 @@ describe("resolveConfigPath", () => {
       ["--config", "/custom/path/config.json"],
       "/some/root"
     );
-    expect(result).toBe("/custom/path/config.json");
+    // resolveConfigPath resolves the value; on Windows "/custom/..." becomes
+    // "D:\custom\...". Compare against the platform-resolved form.
+    expect(result).toBe(path.resolve("/custom/path/config.json"));
   });
 
   it("handles --config with relative path", () => {
@@ -120,7 +122,7 @@ describe("resolveConfigPath", () => {
       ["--strict", "--config", "/custom/config.json", "--verbose"],
       "/root"
     );
-    expect(result).toBe("/custom/config.json");
+    expect(result).toBe(path.resolve("/custom/config.json"));
   });
 
   it("returns default path when --config is the last arg with no value", () => {
