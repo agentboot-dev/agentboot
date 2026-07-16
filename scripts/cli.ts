@@ -1147,6 +1147,9 @@ program
               cwd,
               encoding: "utf-8",
               stdio: ["pipe", "pipe", "pipe"],
+              // Windows: the .bin/tsx shim is tsx.cmd — resolve it via the shell
+              // (otherwise spawnSync ENOENTs and doctor --fix reports a false build failure).
+              shell: process.platform === "win32",
             });
             if (buildResult.status === 0) {
               fixed(`Built dist/`);
