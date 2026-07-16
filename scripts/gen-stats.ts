@@ -23,7 +23,7 @@ function runVitest(): number {
   const result = spawnSync(
     "npx",
     ["vitest", "run", "--reporter=json"],
-    { cwd: ROOT, encoding: "utf-8" }
+    { cwd: ROOT, encoding: "utf-8", shell: process.platform === "win32" }
   );
   // vitest --reporter=json writes JSON to stdout
   const raw = result.stdout ?? "";
@@ -46,6 +46,7 @@ function runTsc(): number {
   const result = spawnSync("npx", ["tsc", "--noEmit"], {
     cwd: ROOT,
     encoding: "utf-8",
+    shell: process.platform === "win32",
   });
   if (result.status === 0) return 0;
   // Count error lines (lines containing ": error TS")
