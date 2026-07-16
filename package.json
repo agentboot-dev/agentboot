@@ -1,6 +1,6 @@
 {
   "name": "agentboot",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "Bootstrap your agentic development teams. Convention over configuration for AI agent governance.",
   "license": "Apache-2.0",
   "author": "Mike Saavedra <mike@agentboot.dev>",
@@ -55,6 +55,7 @@
     "build": "tsx scripts/compile.ts",
     "build-catalog": "tsx scripts/build-catalog.ts",
     "validate": "tsx scripts/validate.ts",
+    "check:versions": "tsx scripts/check-version-strings.ts",
     "sync": "tsx scripts/sync.ts",
     "dev-build": "npm run clean && npm run validate && npm run build && npm run dev-sync",
     "test": "vitest run",

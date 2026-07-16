@@ -222,6 +222,29 @@ review. (A hosted component registry is not part of v1.0 — see the roadmap.)
 
 `docs/internal/action-items.md` — centralized tracker of all open questions, audit doubts, and TODOs (88 items across 5 priority tiers).
 
+## Release Process
+
+Releases are cut by `.github/workflows/release.yml` when a PR merges to `main` (or via
+`workflow_dispatch`). The version is taken from `package.json`: bump it in the release PR
+(manual bump path), and the workflow tags `v<version>`, publishes to npm with provenance,
+bumps the Homebrew tap, and the docs deploy separately on push to `main`.
+
+**Version strings are enforced, not remembered.** A few public prose spots hardcode the
+current version (the site advertises it). To stop the site ever showing a version that
+isn't shipping:
+
+- **Dynamic surfaces read `package.json`** and never need touching: the landing hero badge
+  (`website/src/pages/index.tsx`), the announcement bar, and the JSON-LD `softwareVersion`
+  (`website/docusaurus.config.ts`). Prefer this pattern for any new version display.
+- **Hardcoded prose spots are tracked** in `scripts/version-strings.manifest.json`. Every
+  release MUST bump all of them to the new version. `future-milestone` refs (`v1.0`,
+  `v1.0 GA`) are conceptual and NOT tracked; reference the **minor line** (`v0.11`) in prose
+  you don't want to churn each patch.
+- **The gate:** `npm run check:versions` (also a hard preflight step in `release.yml`, run
+  *before* any tag is cut) fails the release if a tracked file is missing the release version
+  or still carries a stale patch of the same minor line. Run it locally before opening a
+  release PR. When you add a new hardcoded version string, add its file to the manifest.
+
 ## Git Safety Rules
 
 **NEVER use `git add -f` on `docs/internal/`.** This directory is gitignored intentionally — it contains internal planning docs that must not be committed to the public repo. Using `git add -f` to bypass `.gitignore` here has caused accidental history contamination requiring `git filter-repo` cleanup and force-pushes to all branches. If you need to track changes to internal docs, use a separate private repo or local-only tooling.

@@ -1,0 +1,12 @@
+# Normalize line endings to LF on checkout everywhere.
+#
+# The toolchain expects LF: the frontmatter parser, the compliance hook shell
+# scripts (which must be LF to run under git-bash on Windows), and the
+# validators. Without this, git's autocrlf on Windows rewrites checked-out
+# files to CRLF, which broke SKILL.md frontmatter detection on windows-latest
+# CI. The parser also tolerates CRLF/BOM defensively, but keeping working
+# trees LF is the primary guard.
+* text=auto eol=lf
+
+# Shell scripts must always be LF, regardless of platform.
+*.sh text eol=lf

@@ -409,7 +409,7 @@ function archiveExistingContent(
     fs.copyFileSync(file.absPath, destPath);
     const stat = fs.statSync(file.absPath);
     manifestEntries.push({
-      path: file.relPath,
+      path: file.relPath.replace(/\\/g, "/"), // POSIX separators — portable manifest
       timestamp: stat.mtime.toISOString(),
       size: stat.size,
     });
@@ -664,17 +664,24 @@ function isRepoUpToDate(
     wouldWrite.set("AGENTS.md", hash);
   }
 
+  // Normalize keys to POSIX before comparing: path.join above yields "\" on
+  // Windows, while the manifest stores "/". Without this, every file looks
+  // changed on Windows and smart-sync never skips an up-to-date repo.
+  const toPosix = (p: string) => p.replace(/\\/g, "/");
+  const wouldWritePosix = new Map([...wouldWrite].map(([k, v]) => [toPosix(k), v]));
+  const manifestPosix = new Map([...manifestHashes].map(([k, v]) => [toPosix(k), v]));
+
   // Compare: every file we would write must exist in manifest with same hash
-  for (const [destPath, hash] of wouldWrite) {
-    const manifestHash = manifestHashes.get(destPath);
+  for (const [destPath, hash] of wouldWritePosix) {
+    const manifestHash = manifestPosix.get(destPath);
     if (manifestHash !== hash) return false;
   }
 
   // Also check: manifest shouldn't have files we wouldn't write (deleted files)
   // Skip the manifest file itself
-  for (const [manifestPath] of manifestHashes) {
+  for (const [manifestPath] of manifestPosix) {
     if (manifestPath.endsWith(".agentboot-manifest.json")) continue;
-    if (!wouldWrite.has(manifestPath)) return false;
+    if (!wouldWritePosix.has(manifestPath)) return false;
   }
 
   return true;
@@ -1301,7 +1308,10 @@ function generateManifest(
     if (fs.existsSync(absPath)) {
       const content = fs.readFileSync(absPath);
       const hash = createHash("sha256").update(content).digest("hex");
-      fileEntries.push({ path: relPath, hash });
+      // Manifests are portable artifacts read back on any OS for drift detection —
+      // always store POSIX separators, not the native "\" that path.relative emits
+      // on Windows. (path.join tolerates "/" on Windows when the manifest is read.)
+      fileEntries.push({ path: relPath.replace(/\\/g, "/"), hash });
     }
   }
 

@@ -94,6 +94,8 @@ function runScript({ script, args, verbose, quiet }: RunOptions): never {
     cwd: process.cwd(),
     stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit",
     env: { ...process.env },
+    // Windows: `npx` is npx.cmd and can't be spawned without a shell (ENOENT).
+    shell: process.platform === "win32",
   });
 
   if (result.error) {
@@ -261,7 +263,12 @@ program
     const valResult = spawnSync(
       "npx",
       ["tsx", path.join(SCRIPTS_DIR, "validate.ts"), ...baseArgs],
-      { cwd: ROOT, stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit" },
+      {
+        cwd: ROOT,
+        stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit",
+        // Windows: `npx` is npx.cmd and needs a shell to resolve (ENOENT otherwise).
+        shell: process.platform === "win32",
+      },
     );
     if (valResult.error) {
       console.error(`Validation failed to start: ${valResult.error.message}`);
@@ -277,7 +284,12 @@ program
     const buildResult = spawnSync(
       "npx",
       ["tsx", path.join(SCRIPTS_DIR, "compile.ts"), ...baseArgs],
-      { cwd: ROOT, stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit" },
+      {
+        cwd: ROOT,
+        stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit",
+        // Windows: `npx` is npx.cmd and needs a shell to resolve (ENOENT otherwise).
+        shell: process.platform === "win32",
+      },
     );
     if (buildResult.error) {
       console.error(`Build failed to start: ${buildResult.error.message}`);
@@ -293,7 +305,12 @@ program
     const syncResult = spawnSync(
       "npx",
       ["tsx", path.join(SCRIPTS_DIR, "dev-sync.ts"), ...baseArgs],
-      { cwd: ROOT, stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit" },
+      {
+        cwd: ROOT,
+        stdio: quiet ? ["inherit", "ignore", "pipe"] : "inherit",
+        // Windows: `npx` is npx.cmd and needs a shell to resolve (ENOENT otherwise).
+        shell: process.platform === "win32",
+      },
     );
     if (syncResult.error) {
       console.error(`Dev-sync failed to start: ${syncResult.error.message}`);
@@ -1130,6 +1147,9 @@ program
               cwd,
               encoding: "utf-8",
               stdio: ["pipe", "pipe", "pipe"],
+              // Windows: the .bin/tsx shim is tsx.cmd — resolve it via the shell
+              // (otherwise spawnSync ENOENTs and doctor --fix reports a false build failure).
+              shell: process.platform === "win32",
             });
             if (buildResult.status === 0) {
               fixed(`Built dist/`);

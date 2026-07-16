@@ -216,6 +216,23 @@ Before opening a PR, verify:
 - [ ] The trait design principles are satisfied if you added a new trait
 - [ ] The persona quality bar is met if you added a new persona
 - [ ] The issue number is referenced in the PR description
+- [ ] For a **release PR** (bumping `package.json`): every tracked version string is bumped and `npm run check:versions` passes (see below)
+
+---
+
+## Releasing
+
+Releases run automatically when a release PR merges to `main` (`.github/workflows/release.yml`):
+it tags `v<version>`, publishes to npm with provenance, and bumps the Homebrew tap. The version
+comes from `package.json` — bump it in the release PR.
+
+A few public prose spots hardcode the current version. `scripts/version-strings.manifest.json`
+is the single source of truth for which ones, and `npm run check:versions` enforces that they
+match `package.json`. The same check is a hard preflight in `release.yml`, so a release with a
+stale version string fails **before** any tag is cut. Bump every tracked string in the same PR
+that bumps `package.json`, and run `npm run check:versions` locally first. Version displays that
+read `package.json` dynamically (the website hero, announcement bar, JSON-LD) are the preferred
+pattern and are not tracked.
 
 ---
 
