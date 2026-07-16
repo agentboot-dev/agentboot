@@ -2,6 +2,12 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+// Single source of truth for the version shown in the announcement bar and
+// structured data. Reads the published package version so these surfaces track
+// releases automatically and never drift. (The landing hero reads it the same
+// way — see src/pages/index.tsx.)
+const {version: pkgVersion} = require('../package.json') as {version: string};
+
 const config: Config = {
   title: 'AgentBoot',
   tagline: 'AI behavior as code.',
@@ -37,6 +43,7 @@ const config: Config = {
         '@context': 'https://schema.org',
         '@type': 'SoftwareApplication',
         name: 'AgentBoot',
+        softwareVersion: pkgVersion,
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'macOS, Linux, Windows',
         description:
@@ -101,9 +108,12 @@ const config: Config = {
       {name: 'twitter:card', content: 'summary_large_image'},
     ],
     announcementBar: {
+      // Keep the id stable across patch releases so a reader who dismissed the
+      // bar is not re-shown it on every version bump. The version in the copy is
+      // interpolated from package.json (see pkgVersion above).
       id: 'beta-v0-11',
       content:
-        '🚧 AgentBoot v0.11.1 is in <strong>public Beta</strong> — try it and ' +
+        `🚧 AgentBoot v${pkgVersion} is in <strong>public Beta</strong> — try it and ` +
         '<a target="_blank" rel="noopener noreferrer" href="https://github.com/agentboot-dev/agentboot/issues">' +
         'tell us what breaks</a>. Your feedback shapes v1.0 GA.',
       backgroundColor: '#312e81',

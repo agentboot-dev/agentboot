@@ -1,0 +1,16 @@
+{
+  "$comment": "Single source of truth for hardcoded CURRENT-version strings in the public site/docs that MUST be bumped on every release. Enforced by scripts/check-version-strings.ts (run as `npm run check:versions` locally and as a hard preflight gate in .github/workflows/release.yml). The check asserts each listed file contains the release version at least `occurrences` times AND contains no stale patch of the same minor line (e.g. a leftover v0.11.1 when releasing v0.11.2). Dynamic surfaces that read package.json — the website hero badge (src/pages/index.tsx), the announcement bar and JSON-LD softwareVersion (docusaurus.config.ts) — are intentionally NOT listed; they never drift. Future-milestone references (v1.0 / v1.0 GA) are conceptual, not the current version, and are NOT tracked.",
+  "versionSource": "package.json",
+  "files": [
+    {
+      "path": "docs/roadmap.md",
+      "occurrences": 3,
+      "note": "'Where we are today' heading + intro sentence + release-history current bullet"
+    },
+    {
+      "path": "docs/getting-started.md",
+      "occurrences": 1,
+      "note": "Beta notice callout"
+    }
+  ]
+}

@@ -95,6 +95,36 @@ description: Reviews code for bugs
     expect(parseFrontmatter(content)).toBeNull();
   });
 
+  // Regression: git autocrlf on Windows checks files out with CRLF, which the
+  // original `^---\n` matcher rejected — breaking SKILL.md validation on the
+  // windows-latest CI leg while ubuntu (LF) passed.
+  it("parses CRLF line endings (Windows checkout)", () => {
+    const content =
+      "---\r\nname: code-reviewer\r\ndescription: Reviews code for bugs\r\n---\r\n\r\n# Code Reviewer";
+    const fields = parseFrontmatter(content);
+    expect(fields).not.toBeNull();
+    expect(fields!.get("name")).toBe("code-reviewer");
+    expect(fields!.get("description")).toBe("Reviews code for bugs");
+  });
+
+  it("parses content with a leading UTF-8 BOM", () => {
+    const content =
+      "\uFEFF---\nname: security-reviewer\ndescription: Finds vulnerabilities\n---\n";
+    const fields = parseFrontmatter(content);
+    expect(fields).not.toBeNull();
+    expect(fields!.get("name")).toBe("security-reviewer");
+    expect(fields!.get("description")).toBe("Finds vulnerabilities");
+  });
+
+  it("parses content with a BOM and CRLF together", () => {
+    const content =
+      "\uFEFF---\r\nname: test-generator\r\ndescription: Writes tests\r\n---\r\n";
+    const fields = parseFrontmatter(content);
+    expect(fields).not.toBeNull();
+    expect(fields!.get("name")).toBe("test-generator");
+    expect(fields!.get("description")).toBe("Writes tests");
+  });
+
   it("handles multi-word values", () => {
     const content = `---
 name: test-generator

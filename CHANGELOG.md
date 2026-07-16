@@ -9,6 +9,27 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-07-16
+
+Patch release: Windows CI correctness and version-string drift prevention.
+
+### Fixed
+- Frontmatter parsing now tolerates CRLF line endings and a leading UTF-8 BOM, fixing
+  `SKILL.md` validation on the `windows-latest` CI leg (git `autocrlf` checks files out as
+  CRLF, which the previous `^---\n` matcher rejected while Linux/macOS passed).
+
+### Changed
+- Line endings are normalized to LF on checkout via a new `.gitattributes` (`* text=auto
+  eol=lf`, and `*.sh eol=lf` so the compliance-hook scripts stay executable under git-bash).
+- The website announcement bar and JSON-LD `softwareVersion` now read the version from
+  `package.json` (like the landing hero), so they track releases instead of being hand-edited.
+
+### Added
+- `scripts/version-strings.manifest.json` + `npm run check:versions` — a guard that enforces
+  the hardcoded current-version strings in the docs against `package.json`. Wired as a hard
+  preflight in `release.yml`, so a release with a stale version string fails before any tag is
+  cut. Release process documented in `CONTRIBUTING.md` and `CLAUDE.md`.
+
 ## [0.11.1] — 2026-07-15
 
 The **public Beta** of the v0.11 line. Everything below landed on `release/v0.11` on the
@@ -108,7 +129,8 @@ way to v1.0 GA.
 - Security audit across path traversal, input validation, shell injection, and secret patterns;
   test-isolation crash guards; routing/behavioral-test corrections.
 
-[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/agentboot-dev/agentboot/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/agentboot-dev/agentboot/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/agentboot-dev/agentboot/compare/v0.10.3...v0.11.0
 [0.10.3]: https://github.com/agentboot-dev/agentboot/compare/v0.10.1...v0.10.3
