@@ -409,7 +409,7 @@ function archiveExistingContent(
     fs.copyFileSync(file.absPath, destPath);
     const stat = fs.statSync(file.absPath);
     manifestEntries.push({
-      path: file.relPath,
+      path: file.relPath.replace(/\\/g, "/"), // POSIX separators — portable manifest
       timestamp: stat.mtime.toISOString(),
       size: stat.size,
     });
@@ -1301,7 +1301,10 @@ function generateManifest(
     if (fs.existsSync(absPath)) {
       const content = fs.readFileSync(absPath);
       const hash = createHash("sha256").update(content).digest("hex");
-      fileEntries.push({ path: relPath, hash });
+      // Manifests are portable artifacts read back on any OS for drift detection —
+      // always store POSIX separators, not the native "\" that path.relative emits
+      // on Windows. (path.join tolerates "/" on Windows when the manifest is read.)
+      fileEntries.push({ path: relPath.replace(/\\/g, "/"), hash });
     }
   }
 
