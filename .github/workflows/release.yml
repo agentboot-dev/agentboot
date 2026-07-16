@@ -101,6 +101,16 @@ jobs:
         if: env.SKIP != 'true'
         run: npm run validate && npm run build && npm test
 
+      # Hard gate: the public site/docs hardcode the release version in a few
+      # prose spots (scripts/version-strings.manifest.json). Fail the release —
+      # before any tag is cut — if they were not bumped to this version, so the
+      # site can never advertise a version that isn't shipping.
+      - name: Verify release version strings
+        if: env.SKIP != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npx tsx scripts/check-version-strings.ts --version "$VERSION"
+
       - name: Bump version in package.json (patch auto-bump only)
         if: env.SKIP != 'true' && steps.version.outputs.bump == 'true'
         env:

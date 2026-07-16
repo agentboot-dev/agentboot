@@ -215,7 +215,8 @@ describe("AB-147: Compliance hook compilation", () => {
     expect(settings.hooks.Stop).toHaveLength(1);
   });
 
-  it("sync writes shell hook scripts with execute permission", () => {
+  // The execute bit (mode & 0o111) is a POSIX concept — Windows has no exec permission.
+  it.skipIf(process.platform === "win32")("sync writes shell hook scripts with execute permission", () => {
     // Set up a temp target repo and sync to it.
     const syncTarget = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-chmod-"));
     const originalRepos = fs.readFileSync(path.join(ROOT, "repos.json"), "utf-8");

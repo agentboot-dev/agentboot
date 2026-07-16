@@ -10,10 +10,17 @@
 
 // Matches YAML frontmatter blocks. Uses [\s\S]*? (zero or more) so that
 // empty frontmatter (---\n---) returns an empty Map rather than null.
+// Line endings are normalized to LF before this runs, so it only needs \n.
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
 
 export function parseFrontmatter(content: string): Map<string, string> | null {
-  const match = FRONTMATTER_RE.exec(content);
+  // Tolerate a leading UTF-8 BOM and CRLF / lone-CR line endings. Files checked
+  // out on Windows arrive with CRLF (git autocrlf), and some editors prepend a
+  // BOM — neither should defeat frontmatter detection. Normalize first so the
+  // matcher and the per-line split below only ever deal with LF.
+  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+
+  const match = FRONTMATTER_RE.exec(normalized);
   if (!match) return null;
 
   const lines = (match[1] ?? "").split("\n");

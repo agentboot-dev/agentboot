@@ -394,6 +394,7 @@ describe("CLI marketplace commands", () => {
       cwd: ROOT,
       stdio: "pipe",
       timeout: 30_000,
+      shell: true, // Windows: `npx` is npx.cmd and needs a shell to resolve
     });
     const stdout = result.stdout?.toString() ?? "";
     expect(stdout).not.toContain("marketplace");
@@ -405,6 +406,7 @@ describe("CLI marketplace commands", () => {
       cwd: ROOT,
       stdio: "pipe",
       timeout: 30_000,
+      shell: true, // Windows: `npx` is npx.cmd and needs a shell to resolve
     });
     const stdout = result.stdout?.toString() ?? "";
     expect(stdout).toContain("search");
@@ -417,6 +419,7 @@ describe("CLI marketplace commands", () => {
       cwd: ROOT,
       stdio: "pipe",
       timeout: 30_000,
+      shell: true, // Windows: `npx` is npx.cmd and needs a shell to resolve
     });
     const stdout = result.stdout?.toString() ?? "";
     expect(stdout).toContain("channels");
