@@ -10,10 +10,22 @@ import path from "node:path";
 import os from "node:os";
 
 function getRegistryDir(): string {
-  return path.join(process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir(), ".agentboot");
+  // AGENTBOOT_HOME overrides the home base for the registry. It exists so the
+  // test suite (and anyone wanting a non-default location) can redirect the
+  // global registry away from the real ~/.agentboot — without it, install/
+  // scaffold/CLI tests register throwaway hubs into the developer's real
+  // registry and pollute it.
+  const home =
+    process.env["AGENTBOOT_HOME"] ??
+    process.env["HOME"] ??
+    process.env["USERPROFILE"] ??
+    os.homedir();
+  return path.join(home, ".agentboot");
 }
 
-function getRegistryPath(): string {
+// Exported so other modules (e.g. install.ts) resolve the registry through the
+// same AGENTBOOT_HOME-aware path — never hardcode os.homedir()/.agentboot.
+export function getRegistryPath(): string {
   return path.join(getRegistryDir(), "config.json");
 }
 
@@ -136,4 +148,25 @@ export function removeHub(hubPath: string): void {
     registry.defaultHub = registry.hubs[0]?.path;
   }
   saveRegistry(registry);
+}
+
+/**
+ * Remove every registered hub whose path no longer exists on disk (dead
+ * entries left behind by moved/deleted hubs or throwaway test dirs). Also
+ * clears the default hub if it points at a path that is gone. Returns the
+ * list of removed hubs.
+ */
+export function pruneHubs(): RegistryHub[] {
+  const registry = loadRegistry();
+  const removed: RegistryHub[] = [];
+  registry.hubs = registry.hubs.filter(h => {
+    const alive = fs.existsSync(h.path) && fs.statSync(h.path).isDirectory();
+    if (!alive) removed.push(h);
+    return alive;
+  });
+  if (registry.defaultHub && !registry.hubs.some(h => h.path === registry.defaultHub)) {
+    registry.defaultHub = registry.hubs[0]?.path;
+  }
+  saveRegistry(registry);
+  return removed;
 }
