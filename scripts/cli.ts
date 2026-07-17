@@ -2069,8 +2069,23 @@ program
 program
   .command("hubs")
   .description("List registered hubs")
-  .action(async () => {
-    const { listHubs, getDefaultHub } = await import("./lib/registry.js");
+  .option("--prune", "remove registered hubs whose path no longer exists on disk")
+  .action(async (opts) => {
+    const { listHubs, getDefaultHub, pruneHubs } = await import("./lib/registry.js");
+
+    if (opts.prune) {
+      const removed = pruneHubs();
+      if (removed.length === 0) {
+        console.log(chalk.gray("  No dead hubs to prune — all registered paths exist."));
+      } else {
+        console.log(chalk.green(`  ✓ Pruned ${removed.length} dead hub(s):`));
+        for (const hub of removed) {
+          console.log(chalk.gray(`    ${hub.org ?? "(no org)"} → ${hub.path}`));
+        }
+      }
+      console.log("");
+    }
+
     const hubs = listHubs();
     const defaultHub = getDefaultHub();
 
