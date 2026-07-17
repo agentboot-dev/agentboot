@@ -9,6 +9,23 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.11.3] — 2026-07-17
+
+Patch release: hub-registry isolation and cleanup.
+
+### Fixed
+- `agentboot install` registered hubs by hardcoding `os.homedir()/.agentboot`, bypassing
+  the registry path resolver. It now resolves through the canonical `getRegistryPath()`, so
+  the global registry location is consistent and overridable — and the test suite no longer
+  pollutes the developer's real `~/.agentboot` (which had accumulated thousands of dead
+  temp-hub entries).
+
+### Added
+- `AGENTBOOT_HOME` env override for the global hub registry location (used for test
+  isolation and non-default setups); a global test setup points it at a throwaway temp dir.
+- `agentboot hubs --prune` removes registered hubs whose path no longer exists on disk (and
+  clears a dead default hub) — a one-command cleanup for a registry that has gone stale.
+
 ## [0.11.2] — 2026-07-16
 
 Patch release: Windows CI correctness and version-string drift prevention.
@@ -129,7 +146,8 @@ way to v1.0 GA.
 - Security audit across path traversal, input validation, shell injection, and secret patterns;
   test-isolation crash guards; routing/behavioral-test corrections.
 
-[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/agentboot-dev/agentboot/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/agentboot-dev/agentboot/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/agentboot-dev/agentboot/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/agentboot-dev/agentboot/compare/v0.10.3...v0.11.0
