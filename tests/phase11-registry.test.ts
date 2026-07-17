@@ -20,6 +20,7 @@ import {
   listHubs,
   setDefaultHub,
   removeHub,
+  pruneHubs,
   type Registry,
 } from "../scripts/lib/registry.js";
 
@@ -29,16 +30,17 @@ describe("A3: Global hub registry", () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-registry-"));
-    origHome = process.env["HOME"];
-    // Override HOME so registry reads/writes to temp dir
-    process.env["HOME"] = tempDir;
+    origHome = process.env["AGENTBOOT_HOME"];
+    // Override AGENTBOOT_HOME so registry reads/writes to a per-test temp dir.
+    // (getRegistryDir prefers AGENTBOOT_HOME; the global test setup sets it too.)
+    process.env["AGENTBOOT_HOME"] = tempDir;
   });
 
   afterEach(() => {
     if (origHome !== undefined) {
-      process.env["HOME"] = origHome;
+      process.env["AGENTBOOT_HOME"] = origHome;
     } else {
-      delete process.env["HOME"];
+      delete process.env["AGENTBOOT_HOME"];
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -159,5 +161,34 @@ describe("A3: Global hub registry", () => {
       hubs: [{ path: hubPath, registeredAt: "2026-04-26T00:00:00Z" }],
     }));
     expect(getDefaultHub()).toBe(hubPath);
+  });
+
+  it("pruneHubs removes entries whose path no longer exists, keeps live ones", () => {
+    const live = path.join(tempDir, "live-hub");
+    const dead = path.join(tempDir, "dead-hub");
+    fs.mkdirSync(live);
+    fs.mkdirSync(dead);
+    registerHub(live, "live-org");
+    registerHub(dead, "dead-org");
+    // Remove the dead hub's directory out from under the registry.
+    fs.rmSync(dead, { recursive: true, force: true });
+
+    const removed = pruneHubs();
+
+    expect(removed.map(h => h.path)).toEqual([dead]);
+    expect(listHubs().map(h => h.path)).toEqual([live]);
+  });
+
+  it("pruneHubs clears a default hub that points at a gone path", () => {
+    const dead = path.join(tempDir, "dead-default");
+    fs.mkdirSync(dead);
+    registerHub(dead, "dead-org"); // first hub becomes default
+    expect(getDefaultHub()).toBe(dead);
+    fs.rmSync(dead, { recursive: true, force: true });
+
+    pruneHubs();
+
+    expect(listHubs()).toEqual([]);
+    expect(getDefaultHub()).toBeFalsy();
   });
 });

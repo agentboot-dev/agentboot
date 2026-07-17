@@ -9,13 +9,13 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { select, input, confirm, checkbox } from "@inquirer/prompts";
+import { getRegistryPath } from "./registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "..", "..");
@@ -80,8 +80,11 @@ export function shellQuote(p: string): string {
  * can resolve the hub from any repo without AGENTBOOT_HUB being set.
  */
 export function registerHub(hubPath: string): void {
-  const registryDir = path.join(os.homedir(), ".agentboot");
-  const registryPath = path.join(registryDir, "config.json");
+  // Resolve via the canonical registry path (honors AGENTBOOT_HOME) instead of
+  // hardcoding the home dir — otherwise install writes to the real ~/.agentboot
+  // even under a test-isolated AGENTBOOT_HOME, polluting it.
+  const registryPath = getRegistryPath();
+  const registryDir = path.dirname(registryPath);
   fs.mkdirSync(registryDir, { recursive: true });
 
   type RegistryHub = { path: string; org?: string; registeredAt: string };
