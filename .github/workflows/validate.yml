@@ -71,6 +71,17 @@ jobs:
             exit 1
           fi
 
+      # Plugin-spec conformance — the OFFICIAL claude plugin validate against
+      # dist/plugin (manifest at .claude-plugin/plugin.json, spec field types,
+      # registered hooks). Linux leg only; the offline mirror in
+      # tests/agentskills-conformance.test.ts covers both platforms.
+      - name: Plugin spec conformance (claude plugin validate)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate ./dist/plugin
+
       - name: Run tests
         run: npm test
 

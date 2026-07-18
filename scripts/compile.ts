@@ -2030,7 +2030,6 @@ function generatePluginOutput(
 
   const personas: PluginManifest["personas"] = [];
   const traitEntries: PluginManifest["traits"] = [];
-  const hookEntries: PluginManifest["hooks"] = [];
   const ruleEntries: PluginManifest["rules"] = [];
 
   // Copy agents and skills from claude output
@@ -2109,27 +2108,68 @@ function generatePluginOutput(
     });
   }
 
-  // Generate plugin.json
+  // Plugin-spec conformance: hooks/hooks.json registers the compliance hooks.
+  // The scripts were previously copied into hooks/ but never REGISTERED — an
+  // installed plugin carried them as dead files. Commands use the spec's
+  // ${CLAUDE_PLUGIN_ROOT} substitution; entry shape mirrors the settings.json
+  // emission (matcher/hooks/type/command/timeout/async), driven by the same
+  // canonical COMPLIANCE_HOOK_BINDINGS table so the two surfaces cannot drift.
+  const pluginHooksConfig: Record<string, unknown[]> = {};
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyToolsActive(config)) continue;
+    pluginHooksConfig[b.ccEvent] = pluginHooksConfig[b.ccEvent] ?? [];
+    pluginHooksConfig[b.ccEvent]!.push({
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        // Quoted per the reference examples — the plugin cache path may contain spaces.
+        command: `"\${CLAUDE_PLUGIN_ROOT}"/hooks/${b.script}`,
+        timeout: b.timeoutMs,
+        ...(b.async ? { async: true } : {}),
+      }],
+    });
+  }
+  fs.writeFileSync(
+    path.join(pluginHooksDir, "hooks.json"),
+    JSON.stringify({ hooks: pluginHooksConfig }, null, 2) + "\n",
+    "utf-8"
+  );
+
+  // Generate the manifest at the SPEC location: .claude-plugin/plugin.json.
+  // (A root-level plugin.json is invisible to the plugin system — the official
+  // validator rejects the directory outright.) Spec-recognized fields use
+  // spec types (kebab-case name, author as an object); the AgentBoot inventory
+  // fields (personas/traits/rules/agentboot_version) ride along deliberately —
+  // the spec tolerates unrecognized fields as warnings so one manifest can
+  // serve multiple ecosystems.
+  const pluginName = `${config.org}-personas`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
   const pluginManifest: PluginManifest = {
-    name: `@${config.org}/${config.org}-personas`,
+    name: pluginName,
+    displayName: `${config.orgDisplayName ?? config.org} Personas`,
     version: pkg.version,
     description: `Agentic personas for ${config.orgDisplayName ?? config.org}`,
-    author: config.orgDisplayName ?? config.org,
+    author: { name: config.orgDisplayName ?? config.org },
     license: "Apache-2.0",
+    hooks: "./hooks/hooks.json",
     agentboot_version: pkg.version,
     personas,
     traits: traitEntries,
-    hooks: hookEntries.length > 0 ? hookEntries : undefined,
     rules: ruleEntries.length > 0 ? ruleEntries : undefined,
   };
 
+  const manifestDir = path.join(pluginDir, ".claude-plugin");
+  ensureDir(manifestDir);
   fs.writeFileSync(
-    path.join(pluginDir, "plugin.json"),
+    path.join(manifestDir, "plugin.json"),
     JSON.stringify(pluginManifest, null, 2) + "\n",
     "utf-8"
   );
 
-  log(chalk.gray(`  → Plugin output written to dist/plugin/`));
+  log(chalk.gray(`  → Plugin output written to dist/plugin/ (.claude-plugin/plugin.json + hooks/hooks.json)`));
 }
 
 // ---------------------------------------------------------------------------

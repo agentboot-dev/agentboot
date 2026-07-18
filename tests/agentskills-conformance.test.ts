@@ -83,3 +83,61 @@ describe("Agent Skills spec conformance (dist/skill)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plugin-spec conformance (dist/plugin) — offline mirror of the load-bearing
+// rules; CI additionally runs the official `claude plugin validate`.
+// ---------------------------------------------------------------------------
+
+describe("Plugin spec conformance (dist/plugin)", () => {
+  const PLUGIN_DIR = path.join(ROOT, "dist", "plugin");
+
+  it("manifest lives at .claude-plugin/plugin.json (root plugin.json is invisible to the plugin system)", () => {
+    expect(fs.existsSync(path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json"))).toBe(true);
+    expect(fs.existsSync(path.join(PLUGIN_DIR, "plugin.json"))).toBe(false);
+    // Component dirs must sit at the plugin root, never inside .claude-plugin/
+    for (const d of ["skills", "agents", "hooks"]) {
+      expect(fs.existsSync(path.join(PLUGIN_DIR, d)), `${d}/ at plugin root`).toBe(true);
+      expect(fs.existsSync(path.join(PLUGIN_DIR, ".claude-plugin", d))).toBe(false);
+    }
+  });
+
+  it("manifest uses spec types: kebab-case name, author object, hooks reference", () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json"), "utf-8")
+    );
+    expect(manifest.name).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+    expect(typeof manifest.author).toBe("object"); // a bare string is a LOAD ERROR per spec
+    expect(typeof manifest.author.name).toBe("string");
+    expect(manifest.hooks).toBe("./hooks/hooks.json");
+  });
+
+  it("hooks are REGISTERED, not just copied: hooks.json wires every binding via CLAUDE_PLUGIN_ROOT", () => {
+    const hooksConfig = JSON.parse(
+      fs.readFileSync(path.join(PLUGIN_DIR, "hooks", "hooks.json"), "utf-8")
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    const events = Object.keys(hooksConfig.hooks);
+    for (const required of ["UserPromptSubmit", "Stop", "PostToolUse", "SessionEnd"]) {
+      expect(events, `event ${required} registered`).toContain(required);
+    }
+    for (const entries of Object.values(hooksConfig.hooks)) {
+      for (const entry of entries) {
+        for (const h of entry.hooks) {
+          expect(h.command).toContain("${CLAUDE_PLUGIN_ROOT}");
+          // The referenced script must actually exist in the plugin
+          const script = h.command.split("/").pop()!;
+          expect(fs.existsSync(path.join(PLUGIN_DIR, "hooks", script)), `hooks/${script} exists`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("skills keep the frontmatter-first invariant inside the plugin too", () => {
+    const skillsDir = path.join(PLUGIN_DIR, "skills");
+    for (const d of fs.readdirSync(skillsDir)) {
+      const skillMd = path.join(skillsDir, d, "SKILL.md");
+      if (!fs.existsSync(skillMd)) continue;
+      expect(fs.readFileSync(skillMd, "utf-8").startsWith("---\n"), `plugin skills/${d}`).toBe(true);
+    }
+  });
+});
