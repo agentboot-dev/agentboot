@@ -119,10 +119,15 @@ function runHook(hookPath: string, payload: object): { status: number; stdout: s
 describe("B2/B3: pluggable scanners + output blocking", () => {
   it("input hook: org scanner exit 2 blocks; scanner failure honors failMode closed", () => {
     const hub = mkHub(BASE_CONFIG);
-    const blockScanner = path.join(hub, "block-scanner.sh");
-    fs.writeFileSync(blockScanner, "#!/bin/bash\ncat >/dev/null\necho policy-phi-042\nexit 2\n", { mode: 0o755 });
-    const brokenScanner = path.join(hub, "broken-scanner.sh");
-    fs.writeFileSync(brokenScanner, "#!/bin/bash\ncat >/dev/null\nexit 1\n", { mode: 0o755 });
+    // Invoke via "bash <posix-path>" so the embedded command works in git-bash
+    // on Windows too (a backslashed C:\ path would be mangled by bash).
+    const posix = (p: string) => p.replace(/\\/g, "/");
+    const blockScannerFile = path.join(hub, "block-scanner.sh");
+    fs.writeFileSync(blockScannerFile, "#!/bin/bash\ncat >/dev/null\necho policy-phi-042\nexit 2\n", { mode: 0o755 });
+    const blockScanner = `bash ${posix(blockScannerFile)}`;
+    const brokenScannerFile = path.join(hub, "broken-scanner.sh");
+    fs.writeFileSync(brokenScannerFile, "#!/bin/bash\ncat >/dev/null\nexit 1\n", { mode: 0o755 });
+    const brokenScanner = `bash ${posix(brokenScannerFile)}`;
     try {
       // Scanner that blocks
       fs.writeFileSync(path.join(hub, "agentboot.config.json"), JSON.stringify({
