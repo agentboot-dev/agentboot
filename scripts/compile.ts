@@ -115,6 +115,24 @@ function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
   ].join("\n");
 }
 
+/**
+ * Attach the provenance header WITHOUT breaking frontmatter-first formats.
+ * The Agent Skills spec (and Claude Code's own loaders) require SKILL.md to
+ * BEGIN with the YAML frontmatter delimiter — any content before `---` fails
+ * the official skills-ref validator. When the content opens with frontmatter,
+ * the provenance comment is inserted immediately AFTER the closing `---`
+ * (comments in the body are unrestricted); otherwise it is prepended as before.
+ */
+function withProvenance(content: string, sourceFile: string, config: AgentBootConfig): string {
+  if (config.output?.provenanceHeaders === false) return content;
+  const header = provenanceHeader(sourceFile, config);
+  const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---\r?\n)/);
+  if (fmMatch) {
+    return `${fmMatch[1]}${header}${content.slice(fmMatch[1]!.length)}`;
+  }
+  return `${header}${content}`;
+}
+
 // ---------------------------------------------------------------------------
 // Trait loading
 // ---------------------------------------------------------------------------
@@ -527,10 +545,7 @@ function buildSkillOutput(
   config: AgentBootConfig,
   skillPath: string
 ): string {
-  const provenanceEnabled = config.output?.provenanceHeaders !== false;
-  return provenanceEnabled
-    ? `${provenanceHeader(skillPath, config)}${composedContent}`
-    : composedContent;
+  return withProvenance(composedContent, skillPath, config);
 }
 
 /**
@@ -998,18 +1013,11 @@ function compileInstructions(
       let finalContent: string;
       if (!provenanceEnabled) {
         finalContent = content;
-      } else if (platform === "claude") {
-        // For CC rules, frontmatter must be the first thing in the file.
-        // Insert provenance after the closing --- of frontmatter.
-        const fmMatch = content.match(/^(---\n[\s\S]*?\n---\n)/);
-        if (fmMatch) {
-          const afterFm = content.slice(fmMatch[1]!.length);
-          finalContent = `${fmMatch[1]}\n${provenanceHeader(srcPath, config)}${afterFm}`;
-        } else {
-          finalContent = `${provenanceHeader(srcPath, config)}${content}`;
-        }
       } else {
-        finalContent = `${provenanceHeader(srcPath, config)}${content}`;
+        // Frontmatter-first formats (CC rules, SKILL.md, Cursor .mdc, Copilot
+        // .instructions.md) must open with the YAML delimiter — withProvenance
+        // places the header after the frontmatter when present.
+        finalContent = withProvenance(content, srcPath, config);
       }
       fs.writeFileSync(path.join(outDir, file), finalContent, "utf-8");
     }
@@ -1041,23 +1049,22 @@ function compileGotchas(
 
   for (const file of gotchaFiles) {
     const content = fs.readFileSync(path.join(gotchasDir, file), "utf-8");
-    const provenanceEnabled = config.output?.provenanceHeaders !== false;
-    const header = provenanceEnabled
-      ? provenanceHeader(path.join(gotchasDir, file), config)
-      : "";
+    // Gotchas carry paths: frontmatter — the provenance comment must land AFTER
+    // it (frontmatter-first formats; a comment before --- defeats path scoping).
+    const withHeader = withProvenance(content, path.join(gotchasDir, file), config);
 
     // Write to claude rules (gotchas are path-scoped rules)
     if (outputFormats.includes("claude")) {
       const rulesDir = path.join(distPath, "claude", scopePath, "rules");
       ensureDir(rulesDir);
-      fs.writeFileSync(path.join(rulesDir, file), `${header}${content}`, "utf-8");
+      fs.writeFileSync(path.join(rulesDir, file), withHeader, "utf-8");
     }
 
     // Write to skill output as well
     if (outputFormats.includes("skill")) {
       const gotchaOutDir = path.join(distPath, "skill", scopePath, "gotchas");
       ensureDir(gotchaOutDir);
-      fs.writeFileSync(path.join(gotchaOutDir, file), `${header}${content}`, "utf-8");
+      fs.writeFileSync(path.join(gotchaOutDir, file), withHeader, "utf-8");
     }
 
     // AB-129: Cursor output — gotchas become glob-scoped .mdc rules
