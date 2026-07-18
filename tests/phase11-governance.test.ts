@@ -218,7 +218,8 @@ describe("C1.2: CI template", () => {
     expect(content).toContain("name:");
     expect(content).toContain("on:");
     expect(content).toContain("jobs:");
-    expect(content).toContain("agentboot drift-check");
+    // Version-pinned invocation (agentboot@vX.Y.Z drift-check)
+    expect(content).toMatch(/agentboot@v\d+\.\d+\.\d+ drift-check/);
   });
 
   it("CI template covers all platform trigger paths", () => {
