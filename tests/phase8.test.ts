@@ -317,7 +317,7 @@ describe("AB-143: MCP governance validation", () => {
   it("passes when no MCP config defined", () => {
     const output = run("scripts/validate.ts");
     expect(output).toContain("MCP governance");
-    expect(output).toContain("All 9 checks passed");
+    expect(output).toContain("All 10 checks passed");
   });
 
   it("rejects required server not in approved list", () => {

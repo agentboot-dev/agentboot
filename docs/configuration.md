@@ -268,11 +268,14 @@ Deployment flow:
    path for your MDM (the build prints the target path — e.g.
    `/Library/Application Support/Claude/` for Jamf/Kandji, `/etc/claude-code/` for Linux
    MDM, `C:\ProgramData\Claude\` for Intune).
-2. **Per-team policy:** merge the applicable fragments (org `00-*` first, then group
-   `10-*`, then team `20-*` — later keys must not override org rules; the org fragment
-   wins on conflict) into one `managed-settings.json` per fleet segment, and deploy that
-   merged file to each segment. Keep the merge in your MDM repo so it is reviewed like
-   any policy change.
+2. **Per-team policy:** the build performs the merge for you — every scope with policy
+   gets a single deployable file at `dist/managed/scopes/<scope>/managed-settings.json`
+   (e.g. `scopes/core/` for the org-wide fleet, `scopes/nodes/platform/api/` for a team
+   segment). Merge semantics: `permissions.deny` and `permissions.allow` are the UNION
+   across scopes (a team can add denies, never remove the org's), and every other key is
+   won by the higher scope (org over group over team). Deploy the merged file for each
+   fleet segment; the `managed-settings.d/` fragments remain available as the reviewable
+   composition inputs.
 3. **Verify after deployment** on one managed machine: start a Claude Code session and
    confirm (a) a denied tool from `guardrails.denyTools` is actually blocked, and
    (b) `--dangerously-skip-permissions` is rejected if `disableBypassPermissions` is set.
@@ -327,6 +330,42 @@ AgentBoot does not become a DLP engine; it gives your scanner a reliable integra
 
 Scanner content never leaves the machine through AgentBoot: the hook pipes content to your
 command locally and surfaces its stdout/stderr to the developer only.
+
+### Policy exceptions — owners and expiration dates
+
+Enterprise policies always meet legitimate exceptions; unstructured exceptions become
+permanent bypasses. AgentBoot records exceptions as **owned, expiring, reviewable JSON**:
+
+- **Hub:** `agentboot-exceptions.json` at the hub root — validated by `agentboot validate`.
+- **Spoke repo:** `.agentboot-exceptions.json` at the repo root — consumed by
+  `agentboot drift-check`. A modified/missing managed file covered by an unexpired
+  `"policy": "drift:<path-or-glob>"` exception reports as **`excepted`** (with its
+  exception id) instead of failing the repo — approved drift is always *distinguished*
+  from unauthorized drift, never hidden. Living in the repo means the exception itself
+  is PR-reviewed history.
+
+```jsonc
+{
+  "exceptions": [
+    {
+      "id": "EX-2026-001",
+      "policy": "drift:.claude/settings.json",
+      "reason": "Vendor pilot needs a temporary permission override",
+      "approver": "security-lead",          // a person, not a team alias
+      "owner": "platform-lead",             // owns resolving it before expiry
+      "created": "2026-07-01",
+      "expires": "2026-10-01",              // REQUIRED — expired exceptions are NOT honored
+      "compensatingControl": "weekly manual review of the overridden file",
+      "link": "https://tickets.example.com/SEC-123"
+    }
+  ]
+}
+```
+
+Required fields: `id`, `policy`, `reason`, `approver`, `owner`, `created`, `expires`.
+An **expired** exception is treated as absent — the drift resurfaces, validation fails,
+and the report names the owner. Exceptions expiring within 14 days produce warnings.
+"Just this once" cannot silently become forever.
 
 ---
 

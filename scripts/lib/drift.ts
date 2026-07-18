@@ -8,12 +8,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import {
+  loadExceptionsFile, validateExceptions, driftExceptionFor,
+  REPO_EXCEPTIONS_FILE, type PolicyException,
+} from "./exceptions.js";
 
 export interface DriftEntry {
   file: string;
-  status: "clean" | "modified" | "missing" | "unmanaged";
+  status: "clean" | "modified" | "missing" | "unmanaged" | "excepted";
   expectedHash?: string | undefined;
   actualHash?: string | undefined;
+  /** B7: id of the active policy exception covering this drift, when status is "excepted". */
+  exceptionId?: string;
 }
 
 export interface DriftReport {
@@ -26,7 +32,11 @@ export interface DriftReport {
     modifiedCount: number;
     missingCount: number;
     unmanagedCount: number;
+    /** B7: drifted files covered by an unexpired policy exception. */
+    exceptedCount: number;
   };
+  /** B7: problems with the repo's exceptions file (expired entries etc.). */
+  exceptionIssues?: string[];
 }
 
 export interface ComplianceReport {
@@ -111,8 +121,24 @@ export function checkDrift(repoPath: string): DriftReport {
       manifestFound: false,
       entries: [],
       clean: false,
-      summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0 },
+      summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0 },
     };
+  }
+
+  // B7: load the repo's policy exceptions. Only ACTIVE (unexpired, well-formed)
+  // entries are honored; expired ones surface as issues so the drift resurfaces
+  // loudly rather than staying silently waived.
+  let activeExceptions: PolicyException[] = [];
+  let exceptionIssues: string[] = [];
+  try {
+    const list = loadExceptionsFile(path.join(absPath, REPO_EXCEPTIONS_FILE));
+    if (list.length > 0) {
+      const v = validateExceptions(list);
+      activeExceptions = v.active;
+      exceptionIssues = [...v.errors, ...v.warnings];
+    }
+  } catch (e) {
+    exceptionIssues = [`${REPO_EXCEPTIONS_FILE}: unreadable (${e instanceof Error ? e.message : String(e)}) — no exceptions honored`];
   }
 
   const entries: DriftEntry[] = [];
@@ -122,15 +148,24 @@ export function checkDrift(repoPath: string): DriftReport {
     managedPaths.add(file.path);
     const absFilePath = path.join(absPath, file.path);
 
+    const pushDrift = (status: "missing" | "modified", actualHash?: string) => {
+      const exception = driftExceptionFor(file.path, activeExceptions);
+      if (exception) {
+        entries.push({ file: file.path, status: "excepted", expectedHash: file.hash, actualHash, exceptionId: exception.id });
+      } else {
+        entries.push({ file: file.path, status, expectedHash: file.hash, actualHash });
+      }
+    };
+
     if (!fs.existsSync(absFilePath)) {
-      entries.push({ file: file.path, status: "missing", expectedHash: file.hash });
+      pushDrift("missing");
     } else {
       const content = fs.readFileSync(absFilePath, "utf-8");
       const actualHash = sha256(content);
       if (actualHash === file.hash) {
         entries.push({ file: file.path, status: "clean", expectedHash: file.hash, actualHash });
       } else {
-        entries.push({ file: file.path, status: "modified", expectedHash: file.hash, actualHash });
+        pushDrift("modified", actualHash);
       }
     }
   }
@@ -155,6 +190,7 @@ export function checkDrift(repoPath: string): DriftReport {
     modifiedCount: entries.filter(e => e.status === "modified").length,
     missingCount: entries.filter(e => e.status === "missing").length,
     unmanagedCount: entries.filter(e => e.status === "unmanaged").length,
+    exceptedCount: entries.filter(e => e.status === "excepted").length,
   };
 
   return {
@@ -166,8 +202,11 @@ export function checkDrift(repoPath: string): DriftReport {
     // and entries but deliberately do NOT flip `clean` — they are user content, not
     // drift of managed artifacts, and treating them as violations would flag almost
     // every real repo. Callers that care about unmanaged files read summary.unmanagedCount.
+    // Excepted entries are approved drift — visible in the report, but they do
+    // not fail the repo. Unauthorized drift (modified/missing) still does.
     clean: summary.modifiedCount === 0 && summary.missingCount === 0,
     summary,
+    ...(exceptionIssues.length > 0 ? { exceptionIssues } : {}),
   };
 }
 
@@ -201,7 +240,7 @@ export function generateComplianceReport(
         manifestFound: false,
         entries: [],
         clean: false,
-        summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0 },
+        summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0 },
       });
       continue;
     }

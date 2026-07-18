@@ -202,6 +202,7 @@ program
   .option("--repos-file <path>", "path to repos.json")
   .option("-d, --dry-run", "preview changes without writing")
   .option("--force", "override drift detection (overwrite modified files)")
+  .option("--adopt-existing", "allow a FIRST sync to replace pre-existing bespoke instruction files (they are archived; consider import first)")
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const args = collectGlobalArgs({ config: globalOpts.config });
@@ -214,6 +215,9 @@ program
     }
     if (opts.force) {
       args.push("--force");
+    }
+    if (opts.adoptExisting) {
+      args.push("--adopt-existing");
     }
 
     runScript({
@@ -2019,10 +2023,17 @@ program
       } else {
         console.log(chalk.bold(`\n  Drift check: ${path.basename(report.repoPath)}\n`));
         for (const entry of report.entries) {
-          const icon = entry.status === "clean" ? chalk.green("✓") : entry.status === "unmanaged" ? chalk.yellow("?") : chalk.red("✗");
-          console.log(`    ${icon} ${entry.file} — ${entry.status}`);
+          const icon = entry.status === "clean" ? chalk.green("✓")
+            : entry.status === "unmanaged" ? chalk.yellow("?")
+            : entry.status === "excepted" ? chalk.cyan("◦")
+            : chalk.red("✗");
+          const suffix = entry.status === "excepted" ? ` (approved exception ${entry.exceptionId})` : "";
+          console.log(`    ${icon} ${entry.file} — ${entry.status}${suffix}`);
         }
-        console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.cleanCount} clean\n`);
+        if (report.exceptionIssues) {
+          for (const issue of report.exceptionIssues) console.log(chalk.yellow(`    ⚠ ${issue}`));
+        }
+        console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.exceptedCount} excepted (approved), ${report.summary.cleanCount} clean\n`);
       }
       process.exit(report.clean ? 0 : 1);
     } else {

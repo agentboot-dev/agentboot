@@ -41,6 +41,7 @@ import {
   resolveCompositionType,
   type CompositionType,
 } from "./lib/frontmatter.js";
+import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -807,6 +808,27 @@ function checkClaudeSettingsPassthrough(config: AgentBootConfig): CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// B7: policy exceptions — well-formed, owned, and not expired
+// ---------------------------------------------------------------------------
+
+function checkPolicyExceptions(configDir: string): CheckResult {
+  const result = check("Policy exceptions — well-formed, owned, and not expired");
+  const file = path.join(configDir, HUB_EXCEPTIONS_FILE);
+  if (!fs.existsSync(file)) return result;
+  let list;
+  try {
+    list = loadExceptionsFile(file);
+  } catch (e) {
+    fail(result, `${HUB_EXCEPTIONS_FILE}: unreadable — ${e instanceof Error ? e.message : String(e)}`);
+    return result;
+  }
+  const v = validateExceptions(list);
+  for (const e of v.errors) fail(result, e);
+  for (const w of v.warnings) warn(result, w);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Phase 11 C1.4: HARD guardrail override detection
 // ---------------------------------------------------------------------------
 
@@ -932,6 +954,7 @@ async function main(): Promise<void> {
     checkRuleOverrides(config, configDir),
     checkMcpGovernance(config),
     checkClaudeSettingsPassthrough(config),
+    checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
   ];
 
