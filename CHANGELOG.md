@@ -9,6 +9,8 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-18
+
 Enterprise-readiness batch from adopting-organization feedback: quick wins (secret-scan
 parity, supply-chain hardening, first-run fixes, security policy), the enterprise
 feature tier, and the scope-layout unification fixes below.
