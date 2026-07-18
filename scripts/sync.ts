@@ -765,6 +765,36 @@ function syncRepoTarget(
     console.log(chalk.yellow(`    ⚠ Overriding drift in ${drift.drifted.length} file(s) (--force)`));
   }
 
+  // B9: import-first sync safety. A FIRST sync onto pre-existing bespoke
+  // instruction files replaces them — archived, but the knowledge goes dormant.
+  // That has to be a deliberate choice, not a default: without --adopt-existing
+  // the sync stops and points at import, which decomposes the bespoke content
+  // into hub artifacts so nothing is lost by construction.
+  const targetBaseForAdopt = path.join(effectivePath, targetDir);
+  const isFirstSync =
+    !fs.existsSync(path.join(targetBaseForAdopt, ".agentboot-archive", "archive-manifest.json")) &&
+    !fs.existsSync(path.join(targetBaseForAdopt, ".agentboot-manifest.json"));
+  if (isFirstSync && !process.argv.includes("--adopt-existing")) {
+    const bespoke: string[] = [];
+    for (const f of ["CLAUDE.md", ".cursorrules", "AGENTS.md"]) {
+      if (fs.existsSync(path.join(effectivePath, f))) bespoke.push(f);
+    }
+    if (fs.existsSync(path.join(effectivePath, ".github", "copilot-instructions.md"))) {
+      bespoke.push(".github/copilot-instructions.md");
+    }
+    if (bespoke.length > 0) {
+      result.errors.push(
+        `First sync would REPLACE pre-existing instruction file(s): ${bespoke.join(", ")}.\n` +
+        `      They would be archived, but their knowledge goes dormant. Choose deliberately:\n` +
+        `        1. Import first (recommended): agentboot import --path ${entry.path}\n` +
+        `           — decomposes the bespoke content into hub artifacts, then sync.\n` +
+        `        2. Replace anyway:             agentboot sync --adopt-existing\n` +
+        `           — originals are archived to ${targetDir}/.agentboot-archive/`
+      );
+      return result;
+    }
+  }
+
   // Archive existing content before first sync.
   const archive = archiveExistingContent(effectivePath, targetDir, dryRun);
   if (archive.archived) {

@@ -277,6 +277,193 @@ describe("B4: MCP profiles", () => {
 
 import { TELEMETRY_EVENTS, PROHIBITED_TELEMETRY_FIELDS, TELEMETRY_SCHEMA_VERSION } from "../scripts/lib/telemetry-schema.js";
 
+// ---------------------------------------------------------------------------
+// B8: fragment composition end-to-end + single merged deployable artifact
+// ---------------------------------------------------------------------------
+
+describe("B8: merged managed artifacts per scope", () => {
+  it("merges guardrails + 00-org + 10-group with org-wins and deny-union semantics", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      groups: {
+        platform: { teams: ["api"], permissions: { deny: ["WebSearch"], allow: ["Bash(npm test:*)"] } },
+      },
+      claude: {
+        permissions: { deny: ["WebFetch"] },
+        settings: { cleanupPeriodDays: 30 },
+      },
+      managed: { enabled: true, guardrails: { denyTools: ["curl*"], disableBypassPermissions: true } },
+    });
+    try {
+      run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+
+      // Core merged artifact: guardrail deny + org fragment deny UNIONed; settings pass-through present
+      const core = JSON.parse(fs.readFileSync(
+        path.join(hub, "dist", "managed", "scopes", "core", "managed-settings.json"), "utf-8"));
+      expect(core.permissions.deny).toEqual(expect.arrayContaining(["curl*", "WebFetch"]));
+      expect(core.cleanupPeriodDays).toBe(30);
+      expect(core.disableBypassPermissionsMode).toBe("disable");
+
+      // Group merged artifact: adds the group's deny to the union, keeps org keys
+      const group = JSON.parse(fs.readFileSync(
+        path.join(hub, "dist", "managed", "scopes", "nodes", "platform", "managed-settings.json"), "utf-8"));
+      expect(group.permissions.deny).toEqual(expect.arrayContaining(["curl*", "WebFetch", "WebSearch"]));
+      expect(group.permissions.allow).toEqual(expect.arrayContaining(["Bash(npm test:*)"]));
+      expect(group.cleanupPeriodDays).toBe(30);
+      // No comment keys leak into the deployable
+      expect(Object.keys(group).some((k) => k.startsWith("//"))).toBe(false);
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B9: import-first sync safety — first sync onto bespoke files needs opt-in
+// ---------------------------------------------------------------------------
+
+describe("B9: import-first sync safety", () => {
+  it("first sync onto a bespoke CLAUDE.md stops with import guidance; --adopt-existing proceeds and archives", () => {
+    const hub = mkHub(BASE_CONFIG);
+    const spoke = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-b9-spoke-"));
+    try {
+      fs.writeFileSync(path.join(spoke, "CLAUDE.md"), "# Hand-curated repo knowledge\nyears of hard-won context\n");
+      fs.writeFileSync(path.join(hub, "repos.json"), JSON.stringify([{ path: spoke, platform: "claude" }]));
+      run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+
+      // Without the flag: sync reports the guard and does NOT touch the file
+      let output = "";
+      try {
+        output = run(`scripts/sync.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      } catch (err: any) {
+        output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      }
+      expect(output).toContain("REPLACE pre-existing instruction file");
+      expect(output).toContain("agentboot import");
+      expect(fs.readFileSync(path.join(spoke, "CLAUDE.md"), "utf-8")).toContain("Hand-curated");
+      expect(fs.existsSync(path.join(spoke, ".claude", ".agentboot-manifest.json"))).toBe(false);
+
+      // With the flag: sync proceeds and the original is archived
+      let output2 = "";
+      try {
+        output2 = run(`scripts/sync.ts --config ${path.join(hub, "agentboot.config.json")} --adopt-existing`);
+      } catch (err: any) {
+        output2 = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      }
+      expect(fs.existsSync(path.join(spoke, ".claude", ".agentboot-archive", "__root__", "CLAUDE.md"))).toBe(true);
+      expect(fs.readFileSync(path.join(spoke, ".claude", ".agentboot-archive", "__root__", "CLAUDE.md"), "utf-8")).toContain("Hand-curated");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+      fs.rmSync(spoke, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B7: policy exceptions — owner/TTL/expiry; drift distinguishes approved drift
+// ---------------------------------------------------------------------------
+
+import { createHash } from "node:crypto";
+import { checkDrift } from "../scripts/lib/drift.js";
+import { validateExceptions, type PolicyException } from "../scripts/lib/exceptions.js";
+
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+
+function mkSpokeWithDrift(exceptions?: object[]): string {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-b7-"));
+  fs.mkdirSync(path.join(repo, ".claude"), { recursive: true });
+  fs.writeFileSync(path.join(repo, ".claude", "settings.json"), "TAMPERED");
+  fs.writeFileSync(path.join(repo, ".claude", "rules.md"), "intact");
+  fs.writeFileSync(path.join(repo, ".claude", ".agentboot-manifest.json"), JSON.stringify({
+    managed_by: "agentboot", version: "0.0.0", synced_at: "2026-01-01",
+    files: [
+      { path: ".claude/settings.json", hash: sha("original") },
+      { path: ".claude/rules.md", hash: sha("intact") },
+    ],
+  }));
+  if (exceptions) {
+    fs.writeFileSync(path.join(repo, ".agentboot-exceptions.json"), JSON.stringify({ exceptions }));
+  }
+  return repo;
+}
+
+const FULL_EXCEPTION = {
+  id: "EX-001", policy: "drift:.claude/settings.json", reason: "vendor pilot needs a temporary override",
+  approver: "security-lead", owner: "platform-lead", created: "2026-07-01", expires: "2099-01-01",
+  compensatingControl: "weekly manual review",
+};
+
+describe("B7: policy exceptions", () => {
+  it("unexpired exception converts drift to excepted and keeps the repo passing, visibly", () => {
+    const repo = mkSpokeWithDrift([FULL_EXCEPTION]);
+    try {
+      const report = checkDrift(repo);
+      const entry = report.entries.find((e) => e.file === ".claude/settings.json");
+      expect(entry?.status).toBe("excepted");
+      expect(entry?.exceptionId).toBe("EX-001");
+      expect(report.summary.exceptedCount).toBe(1);
+      expect(report.summary.modifiedCount).toBe(0);
+      expect(report.clean).toBe(true); // approved drift does not fail the repo
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("EXPIRED exception is not honored — drift resurfaces and the issue is reported", () => {
+    const repo = mkSpokeWithDrift([{ ...FULL_EXCEPTION, expires: "2026-01-01" }]);
+    try {
+      const report = checkDrift(repo);
+      expect(report.entries.find((e) => e.file === ".claude/settings.json")?.status).toBe("modified");
+      expect(report.clean).toBe(false);
+      expect(report.exceptionIssues?.join(" ")).toContain("EXPIRED");
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("no exception at all → plain modified (control)", () => {
+    const repo = mkSpokeWithDrift();
+    try {
+      const report = checkDrift(repo);
+      expect(report.entries.find((e) => e.file === ".claude/settings.json")?.status).toBe("modified");
+      expect(report.summary.exceptedCount).toBe(0);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("validateExceptions: missing fields error; near-expiry warns; duplicate ids error", () => {
+    const now = Date.parse("2026-07-18T12:00:00Z");
+    const v = validateExceptions([
+      { id: "EX-1", policy: "drift:x", reason: "r", approver: "a", owner: "o", created: "2026-07-01", expires: "2026-07-25" },
+      { id: "EX-1", policy: "drift:y", reason: "r", approver: "a", owner: "o", created: "2026-07-01", expires: "2099-01-01" },
+      { id: "EX-2", policy: "drift:z", reason: "", approver: "a", owner: "o", created: "2026-07-01", expires: "2099-01-01" },
+    ] as PolicyException[], now);
+    expect(v.errors.join(" ")).toContain("duplicate id");
+    expect(v.errors.join(" ")).toContain('missing required field "reason"');
+    expect(v.warnings.join(" ")).toContain("within 14 days");
+    expect(v.active.map((e) => e.id)).toContain("EX-1");
+  });
+
+  it("hub validate fails on an expired hub exception", () => {
+    const hub = mkHub(BASE_CONFIG);
+    try {
+      fs.writeFileSync(path.join(hub, "agentboot-exceptions.json"), JSON.stringify({
+        exceptions: [{ ...FULL_EXCEPTION, id: "EX-HUB-1", expires: "2026-01-01" }],
+      }));
+      let output = "";
+      try {
+        output = run(`scripts/validate.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      } catch (err: any) {
+        output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      }
+      expect(output).toContain("EXPIRED");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("B6: telemetry schema conformance", () => {
   it("generated hook output matches the canonical schema key-for-key", () => {
     const hub = mkHub(BASE_CONFIG);
@@ -384,7 +571,7 @@ describe("B5: MCP identity pinning", () => {
     });
     try {
       const output = run(`scripts/validate.ts --config ${path.join(hub, "agentboot.config.json")}`);
-      expect(output).toContain("All 9 checks passed");
+      expect(output).toContain("All 10 checks passed");
     } finally {
       fs.rmSync(hub, { recursive: true, force: true });
     }

@@ -2721,6 +2721,104 @@ function generateTelemetrySchema(distPath: string): void {
 // AB-61: Managed settings artifact generation
 // ---------------------------------------------------------------------------
 
+/**
+ * B8: Merge managed-settings fragments into ONE deployable artifact per scope.
+ *
+ * The `managed-settings.d/` fragments (00-org / 10-group / 20-team) are
+ * composition INPUTS; an MDM operator deploys a single file per fleet
+ * segment. This emits that file to dist/managed/scopes/<scope>/managed-settings.json.
+ *
+ * Merge semantics (documented in configuration.md):
+ *   - `permissions.deny`: UNION across scopes — a lower scope can add denies,
+ *     never remove the org's.
+ *   - `permissions.allow`: UNION — teams may extend what they allow.
+ *   - every other key: the HIGHER scope wins (org over group over team).
+ *   - "// source" comment keys are dropped from the merged artifact.
+ */
+function generateMergedManagedArtifacts(
+  distPath: string,
+  nodePaths: string[],
+): void {
+  const readFragment = (p: string): Record<string, unknown> | null => {
+    if (!fs.existsSync(p)) return null;
+    try { return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>; }
+    catch { return null; }
+  };
+
+  // Org-level inputs: the guardrail-derived deployable + the org fragment.
+  const guardrailBase = readFragment(path.join(distPath, "managed", "managed-settings.json")) ?? {};
+  const orgFragment = readFragment(path.join(distPath, "claude", "core", "managed-settings.d", "00-org.json")) ?? {};
+
+  const mergePermissions = (
+    higher: Record<string, unknown> | undefined,
+    lower: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined => {
+    if (!higher && !lower) return undefined;
+    const merged: Record<string, unknown> = { ...(lower ?? {}), ...(higher ?? {}) };
+    for (const key of ["deny", "allow"] as const) {
+      const h = (higher?.[key] as string[] | undefined) ?? [];
+      const l = (lower?.[key] as string[] | undefined) ?? [];
+      const union = [...new Set([...h, ...l])];
+      if (union.length > 0) merged[key] = union;
+    }
+    return merged;
+  };
+
+  /** Merge fragments ordered from HIGHEST precedence to lowest. */
+  const mergeScopes = (ordered: Array<Record<string, unknown>>): Record<string, unknown> => {
+    const merged: Record<string, unknown> = {};
+    // Apply lowest precedence first so higher scopes overwrite.
+    for (const frag of [...ordered].reverse()) {
+      for (const [k, v] of Object.entries(frag)) {
+        if (k.startsWith("//")) continue;
+        if (k === "permissions") continue; // handled below
+        merged[k] = v;
+      }
+    }
+    const permissions = ordered
+      .map((f) => f["permissions"] as Record<string, unknown> | undefined)
+      .filter((p): p is Record<string, unknown> => p !== undefined)
+      .reduce<Record<string, unknown> | undefined>((acc, p) => mergePermissions(acc, p), undefined);
+    if (permissions) merged["permissions"] = permissions;
+    return merged;
+  };
+
+  const writeMerged = (scope: string, merged: Record<string, unknown>, sources: string[]): void => {
+    if (Object.keys(merged).length === 0) return;
+    const outDir = path.join(distPath, "managed", "scopes", scope);
+    ensureDir(outDir);
+    fs.writeFileSync(
+      path.join(outDir, "managed-settings.json"),
+      JSON.stringify(merged, null, 2) + "\n",
+      "utf-8"
+    );
+    log(chalk.gray(`  → Merged managed artifact: scopes/${scope} (${sources.join(" + ")})`));
+  };
+
+  // Core scope: guardrail base wins over the org fragment (both org-authored;
+  // the guardrail channel is the harder statement of intent).
+  writeMerged("core", mergeScopes([guardrailBase, orgFragment]), ["guardrails", "00-org"]);
+
+  for (const nodePath of nodePaths) {
+    const parts = nodePath.split("/");
+    const fragments: Array<Record<string, unknown>> = [guardrailBase, orgFragment];
+    const sources = ["guardrails", "00-org"];
+    // Walk down the scope chain: group fragment, then team fragment.
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const ancestor = parts.slice(0, depth).join("/");
+      const fragName = depth === 1 ? "10-group.json" : "20-team.json";
+      const frag = readFragment(path.join(distPath, "claude", `nodes/${ancestor}`, "managed-settings.d", fragName));
+      if (frag) {
+        fragments.push(frag);
+        sources.push(`${fragName.replace(".json", "")}(${ancestor})`);
+      }
+    }
+    if (fragments.length > 2) {
+      writeMerged(`nodes/${nodePath}`, mergeScopes(fragments), sources);
+    }
+  }
+}
+
 function generateManagedSettings(config: AgentBootConfig, distPath: string): void {
   const managed = config.managed;
   if (!managed?.enabled) return;
@@ -3502,6 +3600,12 @@ function main(): void {
   // ---------------------------------------------------------------------------
 
   generateManagedSettings(config, distPath);
+
+  // B8: single deployable managed artifact per scope, merged from the fragments
+  if (outputFormats.includes("claude")) {
+    const mergeNodePaths = scopeNodes ? flattenNodes(scopeNodes).map((n) => n.path) : [];
+    generateMergedManagedArtifacts(distPath, mergeNodePaths);
+  }
 
   // ---------------------------------------------------------------------------
   // 9. AB-25: Token budget estimation
