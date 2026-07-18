@@ -17,16 +17,18 @@ lock-step.
 
 **Community tier (advisory):** Cursor, Windsurf, Gemini, JetBrains, the universal
 `AGENTS.md` standard, and agentskills.io `SKILL.md` output. AgentBoot emits native
-instruction files for these, and drift detection still covers the files — but there
-is no hook surface to bind, so nothing *enforces* the content. Guidance an agent
-can ignore is not a control.
+instruction files for these, and drift detection still covers the files — but
+AgentBoot does not emit enforcement hooks for them, so nothing *enforces* the
+content. (Several of these tools — Cursor, Windsurf, Gemini — do have hook surfaces
+of their own; AgentBoot just doesn't bind them today.) Guidance an agent can ignore
+is not a control.
 
 ## The matrix
 
 | Capability | Claude Code | OpenAI Codex CLI | GitHub Copilot CLI | Community tier |
 |---|---|---|---|---|
 | **Compiled instructions** (personas, traits, gotchas → native config) | ✅ `CLAUDE.md`, skills, `settings.json` | ✅ `AGENTS.md`, `.agents/skills/` | ✅ `copilot-instructions.md`, path-scoped `.instructions.md`, agents, prompt files | ✅ Native files emitted (Cursor rules, Gemini, JetBrains, `AGENTS.md`, `SKILL.md`) — **advisory only** |
-| **Blocking pre-tool-use / lifecycle hooks** | ✅ Full hook lifecycle (`PreToolUse`, `PostToolUse`, `Stop`, …), blocking on exit code 2, via `.claude/settings.json` | ✅ Blocking on exit code 2, via `.codex/hooks.json` — hooks require a trust review unless deployed as managed; tool coverage is partial (shell/patch/MCP, not WebSearch); `SessionEnd` unsupported | ⚠️ Blocking on exit code 2, via `.github/hooks/agentboot.json` — **lower ceiling**: fewer hook types; command-hook **timeouts fail open** (a slow hook does not block); exit-2 blocking is documented but **not yet empirically verified for GA** | ❌ No hook surface AgentBoot can bind. Instructions only. |
+| **Blocking pre-tool-use / lifecycle hooks** | ✅ Full hook lifecycle (`PreToolUse`, `PostToolUse`, `Stop`, …), blocking on exit code 2, via `.claude/settings.json` | ✅ Blocking on exit code 2, via `.codex/hooks.json` — hooks require a trust review unless deployed as managed; tool coverage is partial (shell/patch/MCP, not WebSearch); `SessionEnd` unsupported | ⚠️ Blocking on exit code 2, via `.github/hooks/agentboot.json` — **lower ceiling**: fewer hook types; command-hook **timeouts fail open** (a slow hook does not block); exit-2 blocking is documented but **not yet empirically verified for GA** | ❌ AgentBoot emits no enforcement here — instructions only. (Cursor/Windsurf/Gemini have hook surfaces of their own; AgentBoot does not bind them today.) |
 | **Drift detection** | ✅ Content-hash manifest comparison flags any managed file that's been modified | ✅ Same mechanism | ✅ Same mechanism | ✅ Same mechanism — the files are still drift-checked, but nothing enforces their content |
 | **Managed settings** (non-overridable) | ✅ `managed-settings.json` — MDM-deployable; overrides user and project settings | ❌ No native non-overridable settings layer. HARD guardrails are protected at build time (a lower scope cannot silently disable one) and ride in the emitted hooks/config | ❌ Same as Codex | ❌ Not available |
 | **MCP** | ✅ `.mcp.json` compiled and synced, with an approved-server allowlist filter | ✅ `.codex/config.toml` emitted with the AgentBoot MCP server entry (`[mcp_servers.agentboot]`) automatically | ⚠️ No MCP config emitted for Copilot — point it at the AgentBoot MCP server manually | ⚠️ Varies by tool; manual setup |
