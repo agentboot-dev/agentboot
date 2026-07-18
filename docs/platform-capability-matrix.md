@@ -26,10 +26,10 @@ can ignore is not a control.
 | Capability | Claude Code | OpenAI Codex CLI | GitHub Copilot CLI | Community tier |
 |---|---|---|---|---|
 | **Compiled instructions** (personas, traits, gotchas → native config) | ✅ `CLAUDE.md`, skills, `settings.json` | ✅ `AGENTS.md`, `.agents/skills/` | ✅ `copilot-instructions.md`, path-scoped `.instructions.md`, agents, prompt files | ✅ Native files emitted (Cursor rules, Gemini, JetBrains, `AGENTS.md`, `SKILL.md`) — **advisory only** |
-| **Blocking pre-tool-use / lifecycle hooks** | ✅ Full hook lifecycle (`PreToolUse`, `PostToolUse`, `Stop`, …), blocking on exit code 2, via `.claude/settings.json` | ✅ Blocking on exit code 2, via `.codex/hooks.json` | ⚠️ Blocking on exit code 2, via `.github/hooks/agentboot.json` — **lower ceiling: fewer hook types than Claude Code/Codex; the richer lifecycle is not fully mirrored** | ❌ No hook surface AgentBoot can bind. Instructions only. |
+| **Blocking pre-tool-use / lifecycle hooks** | ✅ Full hook lifecycle (`PreToolUse`, `PostToolUse`, `Stop`, …), blocking on exit code 2, via `.claude/settings.json` | ✅ Blocking on exit code 2, via `.codex/hooks.json` — hooks require a trust review unless deployed as managed; tool coverage is partial (shell/patch/MCP, not WebSearch); `SessionEnd` unsupported | ⚠️ Blocking on exit code 2, via `.github/hooks/agentboot.json` — **lower ceiling**: fewer hook types; command-hook **timeouts fail open** (a slow hook does not block); exit-2 blocking is documented but **not yet empirically verified for GA** | ❌ No hook surface AgentBoot can bind. Instructions only. |
 | **Drift detection** | ✅ Content-hash manifest comparison flags any managed file that's been modified | ✅ Same mechanism | ✅ Same mechanism | ✅ Same mechanism — the files are still drift-checked, but nothing enforces their content |
 | **Managed settings** (non-overridable) | ✅ `managed-settings.json` — MDM-deployable; overrides user and project settings | ❌ No native non-overridable settings layer. HARD guardrails are protected at build time (a lower scope cannot silently disable one) and ride in the emitted hooks/config | ❌ Same as Codex | ❌ Not available |
-| **MCP** | ✅ `.mcp.json` compiled and synced, with an approved-server allowlist filter | ⚠️ MCP-capable client; AgentBoot does not sync MCP config for it — point it at the bundled AgentBoot MCP server manually | ⚠️ Same as Codex | ⚠️ Varies by tool; manual setup |
+| **MCP** | ✅ `.mcp.json` compiled and synced, with an approved-server allowlist filter | ✅ `.codex/config.toml` emitted with the AgentBoot MCP server entry (`[mcp_servers.agentboot]`) automatically | ⚠️ No MCP config emitted for Copilot — point it at the AgentBoot MCP server manually | ⚠️ Varies by tool; manual setup |
 
 ## Reading the matrix honestly
 
@@ -38,9 +38,13 @@ can ignore is not a control.
   `list_repos`. It does not stop the modification from happening. What AgentBoot
   gives you is drift you can *see*, not drift that cannot occur.
 - **Copilot's ceiling is real and stated on purpose.** Its hooks block on exit
-  code 2 like the other two, but it exposes fewer hook types. If your control
-  depends on a specific lifecycle event, verify it exists on your target platform
-  before you rely on it.
+  code 2 like the other two, but it exposes fewer hook types, its command-hook
+  **timeouts fail open** (a slow hook does not block), and exit-2 blocking is
+  documented but not yet empirically verified for GA. If your control depends on a
+  specific lifecycle event, verify it exists on your target platform before you rely on it.
+- **Codex hooks aren't zero-config.** They require a trust review unless deployed
+  as managed, and cover shell/patch/MCP calls (not WebSearch) — confirm the tool
+  call you want to gate is in scope.
 - **Support is scoped to the CLI surface — for now.** Official support covers each
   tool's **command-line surface**. The IDE and editor extensions of these same
   tools, and additional platforms, are on the [roadmap](/docs/roadmap) — not

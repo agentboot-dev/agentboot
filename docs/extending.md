@@ -78,9 +78,7 @@ To activate the domain, add it to your `agentboot.config.json`:
 
 ```jsonc
 {
-  "extend": {
-    "domains": ["./domains/my-domain"]
-  }
+  "domains": ["./domains/my-domain"]
 }
 ```
 
@@ -231,11 +229,11 @@ Before suggesting any migration change, verify:
 
 ## How org-level customization works
 
-The `extend` field in `agentboot.config.json` is the integration point for all
-customization. It can reference:
+Org customization uses top-level fields in `agentboot.config.json` (there is no `extend` key):
 
-- Local directories (relative to `agentboot.config.json`): `"./personas"`, `"./domains/my-domain"`
-- Domain manifests: an array of domain paths, each resolved and merged in order
+- `personas.customDir` — a local directory of org-specific personas compiled alongside core.
+- `domains` — a top-level array of domain paths/manifests, each resolved and merged in order.
+- `instructions.enabled` — always-on instruction fragments (filenames under `core/instructions/`).
 
 ```jsonc
 {
@@ -244,17 +242,17 @@ customization. It can reference:
     "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
     "customDir": "./personas"
   },
-  "extend": {
-    "domains": [
-      "./domains/my-domain",
-      "./domains/my-second-domain"
-    ],
-    "instructions": "./instructions/org-always-on.md"
+  "domains": [
+    "./domains/my-domain",
+    "./domains/my-second-domain"
+  ],
+  "instructions": {
+    "enabled": ["baseline.instructions", "security.instructions"]
   }
 }
 ```
 
-**Precedence rules for `extend`:**
+**Precedence rules:**
 1. Core traits and personas form the base.
 2. Domain layers are applied in the order listed. Later domains can add to but not
    remove core traits or personas.

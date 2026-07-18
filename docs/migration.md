@@ -57,13 +57,13 @@ If your team uses the OpenAI Codex CLI, add it to your build targets in
 
 ```jsonc
 {
-  "output": {
-    "platforms": ["claude", "codex", "copilot"]
+  "personas": {
+    "outputFormats": ["claude", "codex", "copilot"]
   }
 }
 ```
 
-See [`docs/configuration.md`](configuration.md) for the full `output.platforms` list.
+See [`docs/configuration.md`](configuration.md) for the full `personas.outputFormats` list.
 Existing platforms keep building unchanged if you skip this.
 
 **4. Build and sync**
@@ -323,7 +323,7 @@ npm install -g agentboot@latest
 v0.9 added multi-platform output targets (Gemini, Windsurf, JetBrains) and the
 `agentboot import` command. These activate automatically if you run `agentboot build`
 after upgrading. No config changes needed unless you want to enable the new output
-targets — see [`docs/configuration.md`](configuration.md) for the `output.platforms`
+targets — see [`docs/configuration.md`](configuration.md) for the `personas.outputFormats`
 field.
 
 ---

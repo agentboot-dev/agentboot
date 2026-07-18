@@ -60,7 +60,7 @@ Useful flags:
 
 | Flag | What it does |
 |---|---|
-| `--non-interactive` | Auto-apply classifications above 0.8 confidence; everything else is left for review |
+| `--non-interactive` | Auto-apply items the classifier marks **high** confidence (categorical); medium/low are left for review |
 | `--overlap` | Heuristic overlap analysis — flags imports that look like near-duplicates of existing hub content |
 | `--retry-failed` | Retry files that timed out on a previous run |
 | `--isolated` | Classify using a temporary Claude config, leaving your personal settings untouched |

@@ -358,7 +358,7 @@ function Governance() {
   const rows = [
     ['Compiled instructions', '✓', '✓', '✓'],
     ['Blocking pre-tool-use hooks', '✓', '✓', '✓ *'],
-    ['Managed settings', '✓', '✓', '—'],
+    ['Managed settings', '✓', '—', '—'],
     ['Drift detection', '✓', '✓', '✓'],
   ];
   return (

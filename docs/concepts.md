@@ -7,7 +7,7 @@ sidebar_position: 2
 
 AgentBoot is a harness engineering build tool. It compiles agentic personas — the
 behavioral definitions that make AI agents reliable — into platform-native formats for
-every major coding agent (Claude Code, Copilot, Cursor, Gemini, Windsurf, JetBrains) and the universal AGENTS.md
+every major coding agent (Claude Code, OpenAI Codex, Copilot, Cursor, Gemini, Windsurf, JetBrains) and the universal AGENTS.md
 standard.
 
 This document explains the conceptual foundation. Read this before the configuration
@@ -132,7 +132,9 @@ A persona is not:
 
 ## The scope hierarchy
 
-AgentBoot models your organization as a four-level hierarchy:
+AgentBoot models your organization as a scope tree. The current model is **N-tier `nodes`** —
+arbitrary-depth scopes defined under `nodes` in `agentboot.config.json`, each adding personas/traits
+and able to override config. The classic four-level shape is the common case:
 
 ```
 org
@@ -140,6 +142,8 @@ org
        └── team
              └── repo
 ```
+
+The legacy flat `groups`/`teams` config is still supported and converted to `nodes` internally.
 
 This mirrors the way real organizations are actually structured — and the way
 responsibility and governance work in them.
@@ -168,8 +172,8 @@ migrations directory might activate schema review guardrails.
 how scope conflicts are resolved. **Rule** composition (top-down): the highest scope wins
 — an org-level gotcha cannot be overridden by a team. **Preference** composition
 (bottom-up): the lowest scope wins — a team can customize an org default. Defaults:
-gotchas and persona-rules are `rule` (enforced top-down); traits and instructions are
-`preference` (customizable by teams). Individual artifacts can override their default
+gotchas, personas, persona-rules, and lexicons are `rule` (enforced top-down); traits and
+instructions are `preference` (customizable by teams). Individual artifacts can override their default
 composition type via frontmatter (`composition: rule`).
 
 This hierarchy matters for two reasons. First, it ensures that governance propagates
@@ -188,10 +192,12 @@ platform — developers use whichever tool they prefer without losing governance
 Output formats:
 - **AGENTS.md** — universal cross-tool standard (Cursor, Copilot, Gemini CLI, etc.)
 - **Claude Code** — full `.claude/` directory with agents, skills, rules, traits, hooks
+- **OpenAI Codex** — `.codex/` config, hooks, and skills (`config.toml` with the MCP entry)
 - **Copilot** — `copilot-instructions.md`, `.github/agents/`, scoped instructions
 - **Cursor** — `.cursor/rules/*.mdc` with `alwaysApply`/`globs` frontmatter
 - **Gemini** — `GEMINI.md` project instructions + `.gemini/` rules directory
 - **Windsurf** — `.windsurfrules` flat text file (all personas concatenated)
+- **JetBrains** — `.junie/guidelines.md` + `.aiassistant/rules/`
 - **SKILL.md** — agentskills.io cross-platform format
 
 ### Claude Code-native output

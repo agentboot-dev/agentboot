@@ -358,8 +358,8 @@ integrations (CI/CD persona invocation, API access).
 **How it works:**
 ```bash
 agentboot sync    # Writes .claude/ to all repos in repos.json
-# Or in CI:
-agentboot sync --mode github-api   # Creates PRs via GitHub API
+# Or, with sync.pr.enabled set in agentboot.config.json:
+agentboot sync    # Opens a PR per repo instead of writing directly (requires the gh CLI)
 ```
 
 **Serves:**
@@ -631,7 +631,7 @@ through different channels.
    serving.
 
 **What Copilot lacks vs. CC:**
-- Fewer hook types than CC — AgentBoot emits Copilot compliance hooks (`.github/hooks/agentboot.json`, blocking on exit code 2), but CC's richer PreToolUse/PostToolUse/Stop lifecycle is not fully mirrored
+- Fewer hook types than CC — AgentBoot emits Copilot compliance hooks (`.github/hooks/agentboot.json`, blocking on exit code 2) and maps `PreToolUse`/`PostToolUse`/`Stop`, but `SubagentStart` is not in Copilot's event set, and command-hook timeouts fail open (a slow hook does not block)
 - No managed settings/MDM — no HARD guardrail channel
 - No per-persona model selection — Copilot chooses the model
 - No agent memory — no self-improvement reflections
