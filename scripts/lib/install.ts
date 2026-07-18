@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { select, input, confirm, checkbox } from "@inquirer/prompts";
 import { getRegistryPath } from "./registry.js";
+import { agentbootNpxSpec } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "..", "..");
@@ -676,7 +677,7 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
     mcpServers: {
       agentboot: {
         command: "npx",
-        args: ["agentboot", "mcp-server"],
+        args: [agentbootNpxSpec(), "mcp-server"],
       },
     },
   };

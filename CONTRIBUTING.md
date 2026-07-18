@@ -51,6 +51,28 @@ Before you submit:
 Contributions to core must be universal (see "What is in scope"); org-specific content belongs
 in your own private hub or a domain layer you keep internally, not upstream.
 
+### Reporting in work capacity vs. contributing in personal capacity
+
+Many engineers encounter AgentBoot at work — evaluating or operating it for an employer — and
+also want to contribute personally. Those are **two different activities with different IP
+consequences**, and it pays to keep them cleanly separated:
+
+- **Reporting a bug or requesting a feature** (a repro, expected/actual behavior, a version
+  number) is ordinary engineering work. File it whenever you find it — on work time is fine.
+  Keep work-capacity reports **descriptive**: what happened and what you expected. Avoid
+  writing design proposals or implementation plans in an issue authored on work time — detailed
+  design work arguably becomes employer work product, which muddies any later personal-capacity
+  contribution that builds on it.
+- **Fixing the bug or building the feature** is a contribution, and the CLA's representation
+  (own time, own equipment, unrelated to your employer's business — or explicit employer
+  permission) applies to it. Do that work in personal capacity, referencing the issue.
+- **If you have separate work and personal GitHub accounts, use them accordingly** — work
+  account for work-capacity reports, personal account for contributions. Not required, but it
+  keeps the record unambiguous for you, your employer, and the project.
+- **Security findings** follow the same split via a private channel: see [SECURITY.md](SECURITY.md).
+
+This is guidance, not legal advice — the "note on employer IP" above applies throughout.
+
 ---
 
 ## What is in scope

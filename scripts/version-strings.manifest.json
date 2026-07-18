@@ -11,6 +11,11 @@
       "path": "docs/getting-started.md",
       "occurrences": 1,
       "note": "Beta notice callout"
+    },
+    {
+      "path": "templates/ci/drift-check.yml",
+      "occurrences": 1,
+      "note": "Pinned npx agentboot@<version> invocation in the compliance-check template"
     }
   ]
 }

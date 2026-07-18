@@ -488,6 +488,26 @@ export function resolveProvider(config: AgentBootConfig): LLMProvider {
 }
 
 /**
+ * Probe whether ANY real LLM provider is currently usable (Claude Code login or
+ * an API key in the environment), without invoking one. Used by `import --isolated`
+ * to fail fast: isolation replaces the Claude config dir, which usually removes
+ * Claude Code auth, and discovering that mid-import wastes the whole session.
+ * Returns the first available provider's name, or null if only manual mode remains.
+ */
+export function probeAnyProvider(): string | null {
+  const candidates: LLMProvider[] = [
+    new ClaudeCodeProvider(),
+    new AnthropicAPIProvider(),
+    new OpenAIAPIProvider(),
+    new GoogleAPIProvider(),
+  ];
+  for (const provider of candidates) {
+    if (provider.isAvailable()) return provider.name;
+  }
+  return null;
+}
+
+/**
  * Interactive provider fallback: when configured provider is unavailable,
  * offer the user a choice from available providers.
  */

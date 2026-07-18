@@ -25,10 +25,15 @@ on:
         default: "22"
         type: string
       agentboot-version:
-        description: "AgentBoot version to install (e.g., '0.6.0', 'latest')"
+        description: "AgentBoot version to install (e.g., '0.6.0', 'latest'). Pin an exact version for reproducible, auditable CI."
         required: false
         default: "latest"
         type: string
+      forbid-latest:
+        description: "Policy switch: fail the workflow if agentboot-version resolves to 'latest'. Enable in production/regulated pipelines to force an explicit, pinned version."
+        required: false
+        default: false
+        type: boolean
       config-path:
         description: "Path to agentboot.config.json"
         required: false
@@ -60,12 +65,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ inputs.node-version }}
+
+      - name: Enforce pinned-version policy
+        if: inputs.forbid-latest && inputs.agentboot-version == 'latest'
+        run: |
+          echo "::error::forbid-latest is enabled but agentboot-version is 'latest'. Pin an exact version (e.g. agentboot-version: '0.11.4')."
+          exit 1
 
       - name: Install AgentBoot
         run: |
