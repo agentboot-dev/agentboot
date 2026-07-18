@@ -5,732 +5,313 @@ sidebar_position: 3
 
 # Configuration Reference
 
-This document is the complete reference for `agentboot.config.json`. Every field is
-documented with its type, default value, and an example.
+AgentBoot is configured by a single file at the root of your hub: **`agentboot.config.json`**.
+It is [JSONC](https://github.com/microsoft/node-jsonc-parser) — `//` comments are allowed — and
+follows *convention over configuration*: every field has a sensible default, so you only specify
+what is different about your organization.
+
+> **There is no JSON Schema.** `agentboot validate` (and every build/sync) runs a small set of
+> runtime checks — `org` must be a non-empty string, `personas.enabled` must be an array,
+> `sync.targetDir` must be a dot-prefixed path, and path fields are rejected if they contain `..`.
+> Unknown keys are ignored, not rejected. The authoritative shape is the `AgentBootConfig` type in
+> `scripts/lib/config.ts`; this page documents it.
+
+Run `agentboot validate` after editing to check your config.
 
 ---
 
-## JSON Schema
+## Organization identity
 
-The config file is validated against the following JSON Schema on every `npm run build`
-and `npm run validate` invocation. Validation errors block the build.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `org` | string | *(required)* | Your organization slug (lowercase, no spaces). Written into provenance headers on every output file and into `PERSONAS.md`. |
+| `orgDisplayName` | string | — | Human-readable org name for generated docs and headers. |
 
-```json
+```jsonc
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://agentboot.dev/schema/config/v1",
-  "title": "AgentBoot Configuration",
-  "type": "object",
-  "required": ["org"],
-  "additionalProperties": false,
-  "properties": {
-    "org": {
-      "type": "string",
-      "description": "Your organization identifier. Used as a namespace in generated files.",
-      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"
-    },
-    "orgDisplayName": {
-      "type": "string",
-      "description": "Human-readable organization name. Used in generated file headers and welcome messages. Falls back to org if not set."
-    },
-    "groups": {
-      "type": "object",
-      "description": "Group definitions. Keys are group names; values describe the group.",
-      "additionalProperties": {
-        "$ref": "#/definitions/GroupConfig"
-      }
-    },
-    "personas": {
-      "$ref": "#/definitions/PersonasConfig"
-    },
-    "traits": {
-      "$ref": "#/definitions/TraitsConfig"
-    },
-    "sync": {
-      "$ref": "#/definitions/SyncConfig"
-    },
-    "output": {
-      "$ref": "#/definitions/OutputConfig"
-    },
-    "extend": {
-      "$ref": "#/definitions/ExtendConfig"
-    }
-  },
-  "definitions": {
-    "GroupConfig": {
-      "type": "object",
-      "required": ["teams"],
-      "additionalProperties": false,
-      "properties": {
-        "teams": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "List of team names within this group."
-        },
-        "personas": {
-          "$ref": "#/definitions/PersonasConfig",
-          "description": "Group-level persona overrides. Merged with org-level config."
-        },
-        "traits": {
-          "$ref": "#/definitions/TraitsConfig",
-          "description": "Group-level trait overrides."
-        },
-        "extend": {
-          "type": "string",
-          "description": "Path to group-level persona extensions directory."
-        }
-      }
-    },
-    "PersonasConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "List of persona IDs to include in the build.",
-          "default": ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"]
-        },
-        "extend": {
-          "type": ["string", "null"],
-          "description": "Path to a directory containing additional persona definitions.",
-          "default": null
-        }
-      }
-    },
-    "TraitsConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "List of trait IDs to include. All listed traits must exist in core/traits/ or an extension directory.",
-          "default": ["critical-thinking", "structured-output", "source-citation", "confidence-signaling", "audit-trail"]
-        }
-      }
-    },
-    "SyncConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "repos": {
-          "type": ["string", "array"],
-          "description": "Path to repos.json file, or an inline array of RepoConfig objects.",
-          "default": "./repos.json"
-        },
-        "mode": {
-          "type": "string",
-          "enum": ["local", "github-api"],
-          "description": "Sync mode. 'local' writes to local filesystem paths. 'github-api' creates PRs via the GitHub API.",
-          "default": "local"
-        },
-        "pr": {
-          "$ref": "#/definitions/SyncPrConfig"
-        }
-      }
-    },
-    "SyncPrConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "When true (and mode is 'local'), the sync script commits and opens a PR in each target repo after writing files.",
-          "default": false
-        },
-        "branch_prefix": {
-          "type": "string",
-          "description": "Git branch prefix for sync PRs.",
-          "default": "agentboot/sync-"
-        },
-        "title_template": {
-          "type": "string",
-          "description": "PR title template. Supports {version} and {date} placeholders.",
-          "default": "chore: AgentBoot persona sync {version}"
-        }
-      }
-    },
-    "OutputConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "dir": {
-          "type": "string",
-          "description": "Subdirectory within each target repo where compiled output is written.",
-          "default": ".claude"
-        },
-        "personas_registry": {
-          "type": "boolean",
-          "description": "When true, generates PERSONAS.md in the root of the personas repo after each build.",
-          "default": true
-        }
-      }
-    },
-    "ExtendConfig": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "domains": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Array of paths to domain layer directories. Applied in order.",
-          "default": []
-        },
-        "instructions": {
-          "type": ["string", "null"],
-          "description": "Path to an org-level always-on instruction fragment. Prepended to the generated CLAUDE.md.",
-          "default": null
-        }
+  "org": "your-org",
+  "orgDisplayName": "Your Organization"
+}
+```
+
+---
+
+## Scope model
+
+AgentBoot compiles personas top-down through a scope tree; on a filename conflict the more specific
+scope wins. There are two ways to express scope.
+
+### `nodes` — N-tier scope (current model)
+
+`nodes` is an arbitrary-depth tree. Each node adds personas/traits and can override config for the
+repos mapped to it.
+
+| Field (per node) | Type | Description |
+|---|---|---|
+| `displayName` | string | Display name for this scope level. |
+| `children` | `Record<string, ScopeNode>` | Child nodes (any depth). |
+| `personas` | string[] | Personas enabled at this scope (additive to parent). |
+| `traits` | string[] | Additional traits enabled at this scope. |
+| `config` | object | Config values overridden at this scope. |
+
+```jsonc
+{
+  "nodes": {
+    "platform": {
+      "displayName": "Platform",
+      "personas": ["code-reviewer"],
+      "children": {
+        "api": { "traits": ["schema-awareness"] }
       }
     }
   }
 }
 ```
 
----
+### `groups` — legacy flat scope (still supported)
 
-## Field Reference
+The original two-level `org → group → team` model. It is converted to `nodes` internally, so you can
+keep using it. Prefer `nodes` for new hubs.
 
-### `org`
+| Field | Type | Description |
+|---|---|---|
+| `groups[name].teams` | string[] | Team names under this group. |
+| `groups[name].permissions` | `{ allow?: string[]; deny?: string[] }` | Group-level managed permissions. |
+| `groups[name].mcpServers` | object | Group-level MCP servers. |
+| `groups[name].enabledPlugins` | `{ url: string }[]` | Plugins force-enabled for the group. |
 
-**Type:** `string`
-**Required:** Yes
-**Pattern:** Lowercase alphanumeric and hyphens, no leading/trailing hyphen
-
-Your organization identifier. Used as a namespace prefix in generated file headers and
-in the PERSONAS.md registry. Does not need to match your GitHub organization name,
-but using the same value reduces confusion.
-
-```json
-"org": "acme-corp"
-```
-
----
-
-### `orgDisplayName`
-
-**Type:** `string`
-**Required:** No
-**Default:** Falls back to `org`
-
-Human-readable organization name. Used in generated file headers (e.g.,
-`AgentBoot — Acme Corporation`) and in welcome messages during install. Unlike `org`,
-this value has no format restrictions — it can contain spaces, capitalization, and
-special characters.
-
-```json
-"orgDisplayName": "Acme Corporation"
-```
-
-**Migration:** If your hub was created before `orgDisplayName` was added, `agentboot doctor`
-will suggest setting it. Run `agentboot config orgDisplayName "Your Org Name"` or edit
-`agentboot.config.json` directly.
-
----
-
-### `groups`
-
-**Type:** `object`
-**Required:** No
-**Default:** `{}`
-
-Defines the group structure of your organization. Keys are group names (lowercase,
-hyphen-separated). Values are `GroupConfig` objects.
-
-Groups represent horizontal slices of your organization — typically engineering
-departments or platform areas. A group has teams and can have group-level persona
-and trait overrides.
-
-```json
-"groups": {
-  "platform": {
-    "teams": ["api", "infra", "data"],
-    "personas": {
-      "enabled": ["code-reviewer", "security-reviewer", "test-generator", "api-contract-reviewer"]
-    }
-  },
-  "product": {
-    "teams": ["web", "mobile", "growth"]
+```jsonc
+{
+  "groups": {
+    "platform": { "teams": ["api", "infra", "data"] },
+    "product":  { "teams": ["web", "mobile", "growth"] }
   }
 }
 ```
 
-Repos registered to a team inherit the group's configuration on top of the org default.
-In the example above, repos in the `platform` group receive the `api-contract-reviewer`
-persona in addition to the org default set; repos in the `product` group receive only
-the org defaults.
+`repos.json` maps each target repo to a group/team: an array of `{ path, group?, team? }`.
 
 ---
 
-### `groups[name].teams`
-
-**Type:** `string[]`
-**Required:** Yes within a group definition
-
-List of team names that belong to this group. Team names are used to match repos in
-`repos.json` to their group for layered configuration.
-
----
-
-### `groups[name].personas`
-
-**Type:** `PersonasConfig`
-**Required:** No
-**Default:** Inherits org-level `personas` config
-
-Group-level persona configuration. If specified, the group's `enabled` list is **merged
-with** the org-level list — it does not replace it. The group can add personas; it cannot
-remove org-level personas.
-
----
-
-### `groups[name].traits`
-
-**Type:** `TraitsConfig`
-**Required:** No
-**Default:** Inherits org-level `traits` config
-
-Group-level trait configuration. Same merge semantics as `groups[name].personas`.
-
----
-
-### `groups[name].extend`
-
-**Type:** `string`
-**Required:** No
-**Default:** `null`
-
-Path to a directory containing group-level persona extensions. Same format as
-`personas.customDir` at the org level.
-
----
+## Personas, traits, instructions
 
 ### `personas`
 
-**Type:** `PersonasConfig`
-**Required:** No
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `personas.enabled` | string[] | all in `core/personas/` | Which personas to compile and distribute (directory names under `core/personas/`). |
+| `personas.customDir` | string | — | Path (relative to the config) to an org-specific personas directory compiled alongside core. |
+| `personas.outputFormats` | string[] | all nine formats | **The output-format control.** Which native formats to emit per persona (see below). |
 
-Org-level persona configuration.
-
----
-
-### `personas.enabled`
-
-**Type:** `string[]`
-**Required:** No
-**Default:** `["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"]`
-
-List of persona IDs to include in the build. IDs must match the directory name under
-`core/personas/` or the ID declared in a persona SKILL.md frontmatter in an extension
-directory.
-
-Removing a persona from `enabled` removes it from the build output and from all synced
-repos.
-
-```json
-"personas": {
-  "enabled": ["code-reviewer", "security-reviewer"]
-}
-```
-
----
-
-### `personas.customDir`
-
-**Type:** `string | null`
-**Required:** No
-**Default:** `null`
-
-Path to a directory containing additional persona definitions, relative to
-`agentboot.config.json`. Personas in this directory are added to the build on top of
-the `enabled` list from core. The directory must follow the same structure as
-`core/personas/`: one subdirectory per persona, each containing a `SKILL.md`.
-
-```json
-"personas": {
-  "enabled": ["code-reviewer", "security-reviewer"],
-  "customDir": "./personas"
-}
-```
-
----
+**Output formats** (`personas.outputFormats`): `skill` (SKILL.md), `claude` (Claude Code), `copilot`
+(`.github/copilot-instructions.md`), `cursor` (`.cursor/rules/*.mdc`), `agents` (universal
+`AGENTS.md`), `windsurf` (`.windsurfrules`), `gemini` (`GEMINI.md` + `.gemini/`), `jetbrains`
+(`.junie/` + `.aiassistant/`), `codex` (`.codex/`). The `plugin` output is auto-generated from
+`claude` and is not listed. Default: all nine.
 
 ### `traits`
 
-**Type:** `TraitsConfig`
-**Required:** No
-
-Org-level trait configuration.
-
----
-
-### `traits.enabled`
-
-**Type:** `string[]`
-**Required:** No
-**Default:** All traits in `core/traits/`
-
-List of trait IDs to include in the build. Trait IDs must match the filename (without
-`.md`) under `core/traits/` or in a domain layer's `traits/` directory.
-
-You rarely need to set this explicitly. The default includes all core traits. Only set
-this if you want to deliberately exclude a core trait from your org's builds (unusual).
-
----
-
-### `sync`
-
-**Type:** `SyncConfig`
-**Required:** No
-
-Controls how compiled output is distributed to target repos.
-
----
-
-### `sync.repos`
-
-**Type:** `string | RepoConfig[]`
-**Required:** No
-**Default:** `"./repos.json"`
-
-Path to a JSON file containing the list of repos, or an inline array. When a string,
-the path is relative to `agentboot.config.json`. The referenced file (or inline array)
-must be an array of `RepoConfig` objects:
-
-```json
-[
-  {
-    "name": "my-org/my-repo",
-    "path": "/absolute/path/to/my-repo",
-    "team": "api",
-    "group": "platform"
-  }
-]
-```
-
-`name` is the GitHub repo slug (used in PR titles and sync commit messages). `path` is
-the absolute local filesystem path used in `local` sync mode. `team` and `group` must
-match values declared in the `groups` config. `platform` determines which output format
-the repo receives:
-
-```json
-[
-  {
-    "name": "my-org/my-repo",
-    "path": "/absolute/path/to/my-repo",
-    "team": "api",
-    "group": "platform",
-    "platform": "claude-code"
-  }
-]
-```
-
-Valid `platform` values: `"claude-code"` (default), `"copilot"`, `"cross-platform"`.
-When `output.format` is `"both"`, the sync script uses this field to select the right
-output for each repo.
-
----
-
-### `sync.mode`
-
-**Type:** `"local" | "github-api"`
-**Required:** No
-**Default:** `"local"`
-
-Controls how the sync script delivers compiled output.
-
-- `"local"`: Writes files directly to `path` in each repo entry. Fastest for local
-  development and CI workflows where you check out the repos.
-- `"github-api"`: Creates a PR in each target repo via the GitHub API without requiring
-  a local checkout. Requires a `GITHUB_TOKEN` environment variable with write access to
-  all target repos.
-
----
-
-### `sync.pr.enabled`
-
-**Type:** `boolean`
-**Required:** No
-**Default:** `false`
-
-When `true` in `local` mode, the sync script automatically commits the written files
-and opens a PR in each target repo. Requires the local repo to have a clean working
-tree and a configured git identity.
-
----
-
-### `sync.pr.branch_prefix`
-
-**Type:** `string`
-**Required:** No
-**Default:** `"agentboot/sync-"`
-
-Git branch prefix for sync PRs. A timestamp or version suffix is appended automatically.
-Example result: `agentboot/sync-2026-03-17`.
-
----
-
-### `sync.pr.title_template`
-
-**Type:** `string`
-**Required:** No
-**Default:** `"chore: AgentBoot persona sync {version}"`
-
-PR title template. Supported placeholders: `{version}` (the AgentBoot version from
-package.json), `{date}` (ISO date of the sync run), `{org}` (the org identifier).
-
----
-
-### `output.dir`
-
-**Type:** `string`
-**Required:** No
-**Default:** `".claude"`
-
-The subdirectory within each target repo where the sync script writes compiled output.
-Defaults to `.claude`, which is the directory Claude Code reads for always-on
-instructions, personas, and path-scoped instructions.
-
-Change this if you want to use AgentBoot with a different AI agent tool that reads
-from a different directory (e.g., `.github/copilot-instructions.md` for GitHub Copilot).
-
----
-
-### `output.personas_registry`
-
-**Type:** `boolean`
-**Required:** No
-**Default:** `true`
-
-When `true`, the build step generates `PERSONAS.md` in the root of the personas repo.
-This file is the human-readable registry of all compiled personas. CI checks that this
-file is up to date on every PR.
-
----
-
-### `output.format`
-
-**Type:** `"claude-code" | "cross-platform" | "both"`
-**Required:** No
-**Default:** `"both"`
-
-Controls which compilation target the build produces.
-
-- `"claude-code"`: Generates Claude Code-native output using the full feature surface —
-  `.claude/agents/` with rich frontmatter (model, tools, hooks, MCP), `.claude/skills/`
-  with `context: fork`, `.claude/rules/` with `paths:` frontmatter, `.claude/traits/` as
-  separate files for `@import`, `.claude/CLAUDE.md` using `@imports`, `.claude/settings.json`
-  with hook entries, and `.claude/.mcp.json`. This is the optimal output for organizations
-  using Claude Code.
-
-- `"cross-platform"`: Generates standalone output that works across all agent platforms —
-  inlined SKILL.md (agentskills.io format), `copilot-instructions.md`, and a flattened
-  `CLAUDE.md`. Traits are baked into each persona file. No @imports, no hooks, no MCP
-  config.
-
-- `"both"`: Generates both formats. Use this when your organization has repos using
-  different agent platforms. The sync script writes the appropriate format per repo
-  based on the repo's `platform` field in `repos.json`.
-
----
-
-### `output.hooks`
-
-**Type:** `boolean`
-**Required:** No
-**Default:** `true`
-
-When `true` and output format includes `claude-code`, the build step generates
-`.claude/settings.json` with hook entries from domain layer hook configurations.
-Hooks are merged across scopes (org → group → team) with the same precedence rules
-as other configuration.
-
----
-
-### `output.mcp`
-
-**Type:** `boolean`
-**Required:** No
-**Default:** `true`
-
-When `true` and output format includes `claude-code`, the build step generates
-`.claude/.mcp.json` with MCP server configurations referenced by agent frontmatter.
-
----
-
-### `output.managed`
-
-**Type:** `boolean`
-**Required:** No
-**Default:** `false`
-
-When `true`, the build step generates managed settings artifacts in `dist/managed/`
-for MDM deployment. These are the non-overridable HARD guardrail files:
-- `managed-settings.json` — hooks and permissions that no user can override
-- `managed-mcp.json` — MCP servers that are always active
-- `CLAUDE.md` — instructions that are always prepended
-
-Managed settings are deployed to system paths via MDM (JumpCloud, Jamf, Intune), not
-via the sync script. The build generates the artifacts; your MDM pipeline distributes
-them.
-
----
-
-### `extend.domains`
-
-**Type:** `string[]`
-**Required:** No
-**Default:** `[]`
-
-Array of paths to domain layer directories, relative to `agentboot.config.json`.
-Domain layers are applied in order — traits and personas from later domains are merged
-on top of earlier ones. No domain can override a core trait or persona that has been
-marked required.
-
-```json
-"extend": {
-  "domains": ["./domains/healthcare", "./domains/federal"]
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `traits.enabled` | string[] | all in `core/traits/` | Traits available org-wide. Personas select which to use via their `persona.config.json`. Listing a subset restricts what personas may reference. |
+
+### `instructions`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `instructions.enabled` | string[] | all in `core/instructions/` | Always-on instruction fragments (filenames without `.md`) distributed to every synced repo — baseline guardrails loaded before any slash command. |
+
+```jsonc
+{
+  "personas": {
+    "enabled": ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"],
+    "outputFormats": ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"]
+  },
+  "traits": { "enabled": ["critical-thinking", "structured-output", "source-citation"] },
+  "instructions": { "enabled": ["baseline.instructions", "security.instructions"] }
 }
 ```
 
 ---
 
-### `extend.instructions`
+## Domains
 
-**Type:** `string | null`
-**Required:** No
-**Default:** `null`
+`domains` is a **top-level** array of domain-layer references (packaged bundles of traits, personas,
+gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 
-Path to a Markdown file containing org-level always-on instructions. The content is
-prepended to the generated `CLAUDE.md` in every synced repo, before group, team, and
-path-scoped instructions. Use this for universal rules that must be active in every
-Claude Code session across your entire organization.
+| Form | Example |
+|---|---|
+| string path | `"./domains/my-domain"` |
+| object | `{ "name": "healthcare", "version": "1.0.0", "path": "./domains/healthcare" }` |
 
-```json
-"extend": {
-  "instructions": "./instructions/org-always-on.md"
+```jsonc
+{ "domains": ["./domains/my-domain"] }
+```
+
+> Packaged, opinionated compliance domains (healthcare/fintech/govtech) are on the
+> [roadmap](roadmap.md). The `domains` mechanism and `add domain` scaffold exist today.
+
+---
+
+## Sync
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `sync.repos` | string | `./repos.json` | Path to the repo list that receives compiled output. |
+| `sync.targetDir` | string | `.claude` | Where within each repo to write output (must be dot-prefixed). Copilot instructions also go to `.github/`. |
+| `sync.writePersonasIndex` | boolean | `true` | Write a `PERSONAS.md` inventory into each repo. |
+| `sync.dryRun` | boolean | `false` | Print what would change without writing (override at runtime with `--dry-run`). |
+| `sync.pr.enabled` | boolean | `false` | Open a PR per repo instead of writing directly (requires the `gh` CLI). |
+| `sync.pr.branchPrefix` | string | `agentboot/sync-` | Branch name prefix for sync PRs. |
+| `sync.pr.titleTemplate` | string | — | PR title template. |
+
+```jsonc
+{
+  "sync": {
+    "repos": "./repos.json",
+    "targetDir": ".claude",
+    "writePersonasIndex": true,
+    "pr": { "enabled": true, "branchPrefix": "agentboot/sync-", "titleTemplate": "chore: AgentBoot sync" }
+  }
 }
 ```
 
 ---
 
-### `telemetry`
+## Output / build
 
-**Type:** `TelemetryConfig`
-**Required:** No
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `output.distPath` | string | `./dist` | Where compiled output is written before syncing. |
+| `output.provenanceHeaders` | boolean | `true` | Add source-file + timestamp provenance headers to output. |
+| `output.failOnDirtyDist` | boolean | `false` | Fail the build if `dist/` already contains prior output (CI staleness guard). |
+| `output.tokenBudget.warnAt` | number | `8000` | Per-persona estimated-token warning threshold (informational — warns, never blocks). |
 
-Controls telemetry output. AgentBoot telemetry is local-only NDJSON — no data is sent
-to any external service.
-
----
-
-### `telemetry.enabled`
-
-**Type:** `boolean`
-**Required:** No
-**Default:** `false`
-
-When `true`, hooks write telemetry events to the NDJSON log file.
+> Which **platforms** to emit is controlled by `personas.outputFormats`, not `output`. There is no
+> `output.format`, `output.hooks`, `output.mcp`, `output.managed`, or `output.dir` key.
 
 ---
 
-### `telemetry.includeDevId`
+## Platform-specific & delivery
 
-**Type:** `false | "hashed" | "email" | "email-raw"`
-**Required:** No
-**Default:** `false`
+### `claude` (experimental)
 
-Controls how developer identity appears in telemetry records:
+Claude Code-specific extras, emitted only for the `claude` format when set.
 
-- `false` — no developer identifier is included
-- `"hashed"` — SHA-256 hash of the developer's git email
-- `"email"` — **hashed** email (same as `"hashed"`, for backward compatibility)
-- `"email-raw"` — raw email address (requires explicit opt-in)
+| Field | Type | Description |
+|---|---|---|
+| `claude.hooks` | object | Extra Claude Code hooks. |
+| `claude.permissions` | `{ allow?: string[]; deny?: string[] }` | Permission rules. |
+| `claude.mcpServers` | object | Additional MCP server entries. |
 
-Note: `"email"` defaults to hashed output, not raw. If you need raw email addresses
-in telemetry, you must explicitly use `"email-raw"`.
+### `userLevel` — user-scope install
+
+Controls `agentboot install-user` (writing compiled skills/rules to `~/.claude`).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `userLevel.mode` | `"auto" \| "direct" \| "manifest"` | `auto` | `auto`: write `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns the slot (then stage for handoff). `direct`: always write. `manifest`: never write — stage resolved content + a handoff manifest for an external provider. |
+
+### `agents` — tools & LLM provider
+
+| Field | Type | Description |
+|---|---|---|
+| `agents.tools` | `("claude-code"\|"copilot"\|"cursor"\|"gemini"\|string)[]` | Which agent tools your org uses (informs output selection). |
+| `agents.primary` | string | Default tool when a choice is needed. |
+| `agents.llmProvider` | `"claude-code"\|"anthropic-api"\|"manual"\|string` | Provider for AgentBoot's own LLM operations (e.g. import classification). |
+| `agents.llmModel` | string \| null | Model override for API providers. |
+| `agents.billingAcknowledged` | boolean | Whether the user acknowledged that LLM-powered commands cost money. |
+
+### `ab.modelOverrides`
+
+`ab.modelOverrides` (`Record<string,string>`) overrides the model used by individual `/ab` skill
+agents.
 
 ---
 
-### `telemetry.logPath`
+## Governance
 
-**Type:** `string`
-**Required:** No
-**Default:** `"~/.agentboot/telemetry.ndjson"`
+### `composition` — rule/preference merging
 
-Path to the NDJSON telemetry log file. Subject to path traversal validation — the
-path must resolve to a location under the user's home directory or the hub directory.
+| Field | Type | Description |
+|---|---|---|
+| `composition.defaults` | `Record<string, "rule"\|"preference">` | Override the default composition type per classification. |
+| `composition.overrides` | `Record<string, "rule"\|"preference">` | Override composition type for specific artifact paths. |
+
+### `managed` — HARD guardrails (MDM)
+
+Generates a managed-settings artifact (Claude Code only) for MDM distribution.
+
+| Field | Type | Description |
+|---|---|---|
+| `managed.enabled` | boolean | Enable managed-settings generation. |
+| `managed.platform` | `"jamf"\|"intune"\|"jumpcloud"\|"kandji"\|"other"` | MDM target. |
+| `managed.outputPath` | string | Custom output path. |
+| `managed.guardrails.forcePlugins` | string[] | Plugins to force-install. |
+| `managed.guardrails.denyTools` | string[] | Tool patterns to deny. |
+| `managed.guardrails.requireAuditLog` | boolean | Require audit logging. |
+| `managed.guardrails.disableBypassPermissions` | boolean | Disallow bypassing permissions. |
+
+### `mcp` — MCP connection governance
+
+| Field | Type | Description |
+|---|---|---|
+| `mcp.approved` | `McpServerEntry[]` | Allowed MCP servers (`{ name, command? }`). |
+| `mcp.enforceApproved` | boolean | Reject any MCP server in a target repo not on the approved list. |
+| `mcp.required` | string[] | MCP servers required in all repos. |
+
+### `privacy` — three-tier privacy model
+
+| Field | Type | Description |
+|---|---|---|
+| `privacy.tier` | `"private"\|"privileged"\|"organizational"` | private = raw prompts never leave the machine; privileged = LLM analysis via API with developer approval; organizational = anonymized metrics only. |
+| `privacy.rawPrompts` | `false` | Design invariant — raw prompts are never collected. Only `false` is valid. |
+| `privacy.escalationEnabled` | boolean | Escalation exception for genuinely harmful content (category flag only). |
+
+### `validation`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `validation.secretPatterns` | string[] | `[]` | Extra regex patterns that fail validation if found in a trait/persona (e.g. internal hostnames, account IDs). |
+| `validation.strictMode` | boolean | `false` | Treat validation warnings as build-blocking errors. |
 
 ---
 
-### `telemetry.includeContent`
+## Telemetry
 
-**Type:** `false`
-**Required:** No
-**Default:** `false`
+Local, opt-in usage telemetry. **Raw prompt content is never included** (`includeContent` is a `false`
+design invariant).
 
-Design invariant: raw prompt content is never included in telemetry. This field
-exists in the schema to make the invariant explicit — it cannot be set to `true`.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `telemetry.enabled` | boolean | `false` | Enable telemetry emission. |
+| `telemetry.includeDevId` | `false \| "hashed" \| "email" \| "email-raw"` | `false` | Developer identification. The value *is* the format — `"hashed"` = SHA-256 of email, `"email"` = raw email, `false` = no dev ID. (There is no separate `devIdFormat` field.) |
+| `telemetry.logPath` | string | `~/.agentboot/telemetry.ndjson` | NDJSON log file path. |
+| `telemetry.includeContent` | `false` | `false` | Never include raw prompt content. Design invariant. |
+
+```jsonc
+{
+  "telemetry": { "enabled": true, "includeDevId": "hashed" }
+}
+```
+
+The emitted telemetry record per persona invocation contains only:
+`{ event, persona_id, timestamp, status, dev_id }` — no prompt, model, token, or cost fields.
 
 ---
 
 ## Complete example
 
+The shipped `agentboot.config.json` at the repo root is a fully-annotated working example. A minimal
+hub needs only:
+
 ```jsonc
 {
-  "org": "acme-corp",
-  "orgDisplayName": "Acme Corporation",
-  "groups": {
-    "platform": {
-      "teams": ["api", "infra", "data"],
-      "personas": {
-        "enabled": [
-          "code-reviewer",
-          "security-reviewer",
-          "test-generator",
-          "test-data-expert",
-          "api-contract-reviewer"
-        ]
-      }
-    },
-    "product": {
-      "teams": ["web", "mobile", "growth"]
-    }
-  },
-  "personas": {
-    "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
-    "customDir": "./personas"
-  },
-  "traits": {
-    "enabled": [
-      "critical-thinking",
-      "structured-output",
-      "source-citation",
-      "confidence-signaling",
-      "audit-trail"
-    ]
-  },
-  "sync": {
-    "repos": "./repos.json",
-    "mode": "local",
-    "pr": {
-      "enabled": true,
-      "branch_prefix": "agentboot/sync-",
-      "title_template": "chore: AgentBoot persona sync {version}"
-    }
-  },
-  "output": {
-    "dir": ".claude",
-    "format": "both",
-    "personas_registry": true,
-    "hooks": true,
-    "mcp": true,
-    "managed": false
-  },
-  "extend": {
-    "domains": ["./domains/fintech-compliance"],
-    "instructions": "./instructions/acme-always-on.md"
-  }
+  "org": "acme",
+  "orgDisplayName": "Acme Corp",
+  "personas": { "enabled": ["code-reviewer", "security-reviewer", "test-generator"] },
+  "sync": { "repos": "./repos.json", "targetDir": ".claude" }
 }
 ```
+
+Everything else is optional and defaulted. See `scripts/lib/config.ts` for the authoritative type.
