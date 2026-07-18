@@ -44,6 +44,7 @@ import {
   normalizeTraitRefs,
   DEFAULT_WEIGHT,
   WEIGHT_MAP,
+  agentbootNpxSpec,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 
@@ -1708,7 +1709,7 @@ function generateCrossPlatformMcpConfigs(
   scopePath: string,
 ): void {
   const outputFormats = config.personas?.outputFormats ?? [];
-  const abMcpEntry = { command: "npx", args: ["agentboot", "mcp-server"] };
+  const abMcpEntry = { command: "npx", args: [agentbootNpxSpec(), "mcp-server"] };
 
   if (outputFormats.includes("cursor")) {
     const cursorMcpDir = path.join(distPath, "cursor", scopePath, ".cursor");
@@ -1763,7 +1764,7 @@ function generateCodexConfig(distPath: string, scopePath: string): void {
     "",
     "[mcp_servers.agentboot]",
     'command = "npx"',
-    'args = ["agentboot", "mcp-server"]',
+    `args = ["${agentbootNpxSpec()}", "mcp-server"]`,
     "enabled = true",
     "",
   ];

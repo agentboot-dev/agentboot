@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,6 +122,30 @@ export interface GroupConfig {
   permissions?: { allow?: string[]; deny?: string[] };
   mcpServers?: Record<string, unknown>;
   enabledPlugins?: Array<{ url: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Version-pinned npx spec
+// ---------------------------------------------------------------------------
+
+/**
+ * The npx package spec for invoking this exact AgentBoot version
+ * ("agentboot@X.Y.Z"). All generated artifacts that launch AgentBoot via npx
+ * (MCP server entries in .mcp.json / mcp.json / Codex config.toml) must use
+ * this — an unpinned "agentboot" spec would execute whatever npm serves as
+ * latest, breaking reproducibility and supply-chain review of the generated
+ * output. Falls back to the bare name only if package.json cannot be read.
+ */
+export function agentbootNpxSpec(): string {
+  try {
+    const pkgPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json"
+    );
+    const version = (JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: string }).version;
+    return version ? `agentboot@${version}` : "agentboot";
+  } catch {
+    return "agentboot";
+  }
 }
 
 // ---------------------------------------------------------------------------
