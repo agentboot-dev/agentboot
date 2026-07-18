@@ -252,6 +252,32 @@ Generates a managed-settings artifact (Claude Code only) for MDM distribution.
 | `managed.guardrails.requireAuditLog` | boolean | Require audit logging. |
 | `managed.guardrails.disableBypassPermissions` | boolean | Disallow bypassing permissions. |
 
+#### Deploying the managed output (what your MDM operator ships)
+
+The build writes managed artifacts to **two places with two different jobs**:
+
+| Output | Contents | Role |
+|---|---|---|
+| `dist/managed/` | `managed-settings.json` (complete managed-settings file: HARD guardrails, deny-tool hooks, bypass disable, audit/telemetry hooks), a managed `CLAUDE.md` banner, and `managed-mcp.json` when MCP servers are configured | **The deployable unit.** This is what the MDM pushes to the OS-level managed location. |
+| `managed-settings.d/` fragments — `00-org.json` under `dist/claude/core/`, plus `10-group.json` / `20-team.json` under `dist/claude/nodes/<scope>/` when scopes define policy | Per-scope building blocks (permissions, hooks, bypass disable), named for alphabetical precedence (org wins over group wins over team) | **Composition inputs.** They are not deployed as-is. |
+
+Deployment flow:
+
+1. **Single org-wide policy:** deploy `dist/managed/managed-settings.json` to the managed
+   path for your MDM (the build prints the target path — e.g.
+   `/Library/Application Support/Claude/` for Jamf/Kandji, `/etc/claude-code/` for Linux
+   MDM, `C:\ProgramData\Claude\` for Intune).
+2. **Per-team policy:** merge the applicable fragments (org `00-*` first, then group
+   `10-*`, then team `20-*` — later keys must not override org rules; the org fragment
+   wins on conflict) into one `managed-settings.json` per fleet segment, and deploy that
+   merged file to each segment. Keep the merge in your MDM repo so it is reviewed like
+   any policy change.
+3. **Verify after deployment** on one managed machine: start a Claude Code session and
+   confirm (a) a denied tool from `guardrails.denyTools` is actually blocked, and
+   (b) `--dangerously-skip-permissions` is rejected if `disableBypassPermissions` is set.
+   A managed settings file that is present but in the wrong location fails silently —
+   the denied-action check is the real verification, not the file copy.
+
 ### `mcp` — MCP connection governance
 
 | Field | Type | Description |

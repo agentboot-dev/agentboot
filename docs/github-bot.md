@@ -16,6 +16,38 @@ This gives spoke repos visibility and control while keeping the process lightwei
 Spoke teams can see exactly what changed, review if they want to, and rely on their
 existing CI to gate the merge.
 
+## Decide your review posture first
+
+Sync PRs write agent configuration, and agent configuration is not inert: it can include
+**executable hooks, tool permissions, MCP server configuration, and settings**. A change
+to those deserves the same scrutiny as a CI-pipeline or infrastructure change. Classify
+before you automate:
+
+| Change class | Examples | Recommended posture |
+|---|---|---|
+| Instruction-only | personas, traits, gotchas, rules, `CLAUDE.md`/`AGENTS.md` text | Auto-merge on green CI is reasonable |
+| Security-sensitive | anything under `hooks/`, `settings.json`, `managed-settings*`, `.mcp.json`, permission lists | Require review by configured owners |
+
+Two ways to enforce the split:
+
+- **CODEOWNERS** in each spoke repo — auto-merge stays enabled, but GitHub blocks the
+  merge until the owning team approves when a sync touches a sensitive path:
+
+  ```
+  # .github/CODEOWNERS
+  .claude/settings.json      @your-org/ai-platform-owners
+  .claude/hooks/             @your-org/ai-platform-owners @your-org/security
+  .mcp.json                  @your-org/ai-platform-owners @your-org/security
+  ```
+
+- **Path-conditional automation** — have the auto-merge workflow inspect the PR's changed
+  files and skip enabling auto-merge when any sensitive path is touched.
+
+Fully unattended auto-merge of every sync PR is a deliberate trade-off, not the default
+recommendation: it is acceptable when your hub's own review process is the control (every
+sync PR is the compiled output of an already-reviewed hub PR) **and** you accept the hub
+as the single point of review for hook/permission changes across the fleet.
+
 ---
 
 ## Setup
@@ -79,8 +111,9 @@ jobs:
 
 Configure these settings on the `main` (or default) branch of each spoke repo:
 
-- **Require PR reviews:** `0` for full automation, or `1` if you want a human review
-  option on sync PRs.
+- **Require PR reviews:** `1` with a CODEOWNERS rule on security-sensitive paths (see
+  "Decide your review posture first" above) is the recommended baseline; `0` only if you
+  have consciously accepted full automation for every change class.
 - **Require status checks:** your existing CI checks. AgentBoot sync PRs must pass
   the same bar as any other change.
 - **Allow auto-merge:** enabled. Required for the auto-merge workflow above.
