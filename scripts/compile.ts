@@ -2819,6 +2819,42 @@ function generateMergedManagedArtifacts(
   }
 }
 
+/**
+ * UI-7: resolve a scope node's persona source directory. ONE resolver, used by
+ * every consumer, honoring every documented layout:
+ *   1. nodes/<path>/personas/            (canonical, AB-88)
+ *   2. groups/<g>/teams/<t>/personas/    (nested legacy — what validate always walked)
+ *   3. teams/<g>/<t>/personas/           (sibling legacy)
+ *   4. groups/<g>/personas/              (group scope)
+ * Before this, validate enforced layout 2 while compile only discovered 1/3/4 —
+ * the same hub content was guarded by one command and invisible to the other.
+ */
+function resolveNodePersonasDir(hubRoot: string, nodePath: string): string | null {
+  const parts = nodePath.split("/");
+  const candidates: Array<string | undefined> = [
+    path.join(hubRoot, "nodes", nodePath, "personas"),
+    parts.length === 2 ? path.join(hubRoot, "groups", parts[0]!, "teams", parts[1]!, "personas") : undefined,
+    parts.length === 2 ? path.join(hubRoot, "teams", parts[0]!, parts[1]!, "personas") : undefined,
+    parts.length === 1 ? path.join(hubRoot, "groups", parts[0]!, "personas") : undefined,
+  ];
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+/** UI-8: all existing scope ROOT dirs for a node (any accepted layout). */
+function listNodeScopeRoots(hubRoot: string, nodePath: string): string[] {
+  const parts = nodePath.split("/");
+  const candidates: Array<string | undefined> = [
+    path.join(hubRoot, "nodes", nodePath),
+    parts.length === 2 ? path.join(hubRoot, "groups", parts[0]!, "teams", parts[1]!) : undefined,
+    parts.length === 2 ? path.join(hubRoot, "teams", parts[0]!, parts[1]!) : undefined,
+    parts.length === 1 ? path.join(hubRoot, "groups", parts[0]!) : undefined,
+  ];
+  return candidates.filter((c): c is string => c !== undefined && fs.existsSync(c));
+}
+
 function generateManagedSettings(config: AgentBootConfig, distPath: string): void {
   const managed = config.managed;
   if (!managed?.enabled) return;
@@ -3408,25 +3444,28 @@ function main(): void {
     let nodePersonasFound = false;
 
     for (const { path: nodePath } of flatNodes) {
-      // Look for personas at nodes/{path}/personas/
-      const nodePersonasDir = path.join(HUB_ROOT, "nodes", nodePath, "personas");
-
-      // Also check legacy paths: groups/{name}/personas/ and teams/{group}/{team}/personas/
+      // UI-7: one resolver for every documented scope layout (see resolveNodePersonasDir)
       const parts = nodePath.split("/");
-      const legacyGroupDir = parts.length === 1
-        ? path.join(HUB_ROOT, "groups", parts[0]!, "personas")
-        : undefined;
-      const legacyTeamDir = parts.length === 2
-        ? path.join(HUB_ROOT, "teams", parts[0]!, parts[1]!, "personas")
-        : undefined;
+      const personasDir = resolveNodePersonasDir(HUB_ROOT, nodePath);
 
-      const personasDir = fs.existsSync(nodePersonasDir)
-        ? nodePersonasDir
-        : legacyGroupDir && fs.existsSync(legacyGroupDir)
-          ? legacyGroupDir
-          : legacyTeamDir && fs.existsSync(legacyTeamDir)
-            ? legacyTeamDir
-            : null;
+      // UI-8: loud diagnostic — scope-level CONTENT files (traits/instructions/
+      // gotchas) are not compiled at node scope in this version; scope overrides
+      // are node persona definitions + per-persona trait weights. Without this
+      // warning such files validate clean and silently produce no output.
+      for (const root of listNodeScopeRoots(HUB_ROOT, nodePath)) {
+        for (const category of ["traits", "instructions", "gotchas"] as const) {
+          const catDir = path.join(root, category);
+          if (!fs.existsSync(catDir)) continue;
+          const mdFiles = fs.readdirSync(catDir).filter((f) => f.endsWith(".md") && f !== "README.md");
+          if (mdFiles.length > 0) {
+            log(chalk.yellow(
+              `  ⚠ [${nodePath}] ${mdFiles.length} ${category} file(s) at ${path.relative(HUB_ROOT, catDir)} — ` +
+              `scope-level ${category} CONTENT is not compiled (only node personas and per-persona trait weights are). ` +
+              `These files currently produce NO output.`
+            ));
+          }
+        }
+      }
 
       if (!personasDir) continue;
 
@@ -3468,14 +3507,7 @@ function main(): void {
     if (outputFormats.includes("agents")) {
       for (const { path: nodePath } of flatNodes) {
         // Collect personas that exist at this node
-        const parts = nodePath.split("/");
-        const nodePersonasDir = path.join(HUB_ROOT, "nodes", nodePath, "personas");
-        const legacyGroupDir = parts.length === 1 ? path.join(HUB_ROOT, "groups", parts[0]!, "personas") : undefined;
-        const legacyTeamDir = parts.length === 2 ? path.join(HUB_ROOT, "teams", parts[0]!, parts[1]!, "personas") : undefined;
-        const personasDir = fs.existsSync(nodePersonasDir) ? nodePersonasDir
-          : legacyGroupDir && fs.existsSync(legacyGroupDir) ? legacyGroupDir
-          : legacyTeamDir && fs.existsSync(legacyTeamDir) ? legacyTeamDir
-          : null;
+        const personasDir = resolveNodePersonasDir(HUB_ROOT, nodePath);
         if (!personasDir) continue;
 
         const nodePersonaConfigs = new Map<string, PersonaConfig>();

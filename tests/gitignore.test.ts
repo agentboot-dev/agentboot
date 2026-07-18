@@ -49,10 +49,11 @@ describe("detectGitignoreConflicts (B.1)", () => {
     expect(detectGitignoreConflicts(os.tmpdir(), [])).toEqual([]);
   });
 
-  it("ignores the user's GLOBAL gitignore (false-positive regression)", () => {
-    // Repro of the field report: a repo with NO .gitignore warned anyway because
-    // the developer's personal global excludes matched managed paths. Global
-    // rules say nothing about what teammates/CI will see — repo-level only.
+  it("detects GLOBAL-gitignore matches and ATTRIBUTES them (UI-6 resolution)", () => {
+    // Field report resolution: a warning in a repo with no .gitignore was
+    // CORRECT — the machine's global excludes ignored .claude, so the sync
+    // runner's commits genuinely omit the files. Detect it, but say WHERE the
+    // rule lives, or the fix hint points at the wrong file.
     const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-gi-global-")));
     const repo = path.join(base, "repo");
     fs.mkdirSync(repo);
@@ -65,15 +66,30 @@ describe("detectGitignoreConflicts (B.1)", () => {
     try {
       execSync("git init -q", { cwd: repo });
       const managed = [".claude/settings.json", "AGENTS.md"];
-      // Sanity: plain git DOES consider these ignored via the global file...
-      const raw = execSync("git check-ignore .claude/settings.json || true", { cwd: repo, encoding: "utf-8" });
-      expect(raw).toContain(".claude/settings.json");
-      // ...but the conflict detector must not — no repo-level .gitignore exists.
-      expect(detectGitignoreConflicts(repo, managed)).toEqual([]);
+      const conflicts = detectGitignoreConflicts(repo, managed);
+      expect(conflicts.map((c) => c.file).sort()).toEqual([".claude/settings.json", "AGENTS.md"].sort());
+      for (const c of conflicts) {
+        expect(c.fromGlobal).toBe(true);
+        expect(c.source).toContain("global-gitignore");
+      }
     } finally {
       if (savedEnv !== undefined) process.env["GIT_CONFIG_GLOBAL"] = savedEnv;
       else delete process.env["GIT_CONFIG_GLOBAL"];
       fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("attributes repo-level rules as non-global with source .gitignore", () => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-gi-src-")));
+    try {
+      execSync("git init -q", { cwd: repo });
+      fs.writeFileSync(path.join(repo, ".gitignore"), ".claude/\n");
+      const conflicts = detectGitignoreConflicts(repo, [".claude/settings.json"]);
+      expect(conflicts).toHaveLength(1);
+      expect(conflicts[0]!.fromGlobal).toBe(false);
+      expect(conflicts[0]!.source).toMatch(/^\.gitignore:\d+/);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 });
