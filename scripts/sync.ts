@@ -103,8 +103,9 @@ interface SyncResult {
   prUrl?: string;
   /** True when smart sync determined the repo is already up-to-date. */
   skippedNoChanges?: boolean;
-  /** B.1: managed files that this repo's .gitignore would exclude (repo-relative). */
-  gitignoreConflicts?: string[];
+  /** B.1: managed files git would ignore here (repo-relative), with the source
+   * of the matching rule (UI-6: global-gitignore matches are attributed). */
+  gitignoreConflicts?: Array<{ file: string; source?: string; fromGlobal?: boolean }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -803,18 +804,47 @@ function syncRepoTarget(
   }
 
   // Collect files from applicable scopes within the platform distribution.
+  // UI-8: compile writes scope output to dist/{platform}/nodes/<g>[/<t>]/ (the
+  // AB-88 canonical layout) — sync previously only read the legacy
+  // dist/{platform}/groups|teams/ dirs, so team-scope content built clean and
+  // silently never reached a spoke. Read BOTH; the nodes layout wins on
+  // filename conflict within the same scope tier (listed later → overrides in
+  // mergeScopes, still subject to rule-composition checks).
   const platformDir = path.join(distPath, platform);
   const coreDir = path.join(platformDir, "core");
   const groupDir = entry.group
     ? path.join(platformDir, "groups", entry.group)
     : null;
+  const nodeGroupDir = entry.group
+    ? path.join(platformDir, "nodes", entry.group)
+    : null;
   const teamDir = entry.group && entry.team
     ? path.join(platformDir, "teams", entry.group, entry.team)
     : null;
+  const nodeTeamDir = entry.group && entry.team
+    ? path.join(platformDir, "nodes", entry.group, entry.team)
+    : null;
+
+  /** Node-scope dirs contain composition inputs that are not spoke files. */
+  const dropNodeArtifacts = (files: ScopedFile[]): ScopedFile[] =>
+    files.filter((f) =>
+      !f.relativePath.startsWith("managed-settings.d/") &&
+      // A team node dir contains its child dirs when groups nest — exclude
+      // deeper node subtrees collected via the group-level walk.
+      !f.relativePath.split("/").includes("managed-settings.d")
+    );
 
   const coreFiles = collectScopeFiles(coreDir, "core");
-  const groupFiles = groupDir ? collectScopeFiles(groupDir, "group") : [];
-  const teamFiles = teamDir ? collectScopeFiles(teamDir, "team") : [];
+  const groupFiles = [
+    ...(groupDir ? collectScopeFiles(groupDir, "group") : []),
+    ...(nodeGroupDir ? dropNodeArtifacts(collectScopeFiles(nodeGroupDir, "group"))
+      // Exclude the team subtree from the group-level collection — it is its own scope.
+      .filter((f) => !(entry.team && f.relativePath.startsWith(`${entry.team}/`))) : []),
+  ];
+  const teamFiles = [
+    ...(teamDir ? collectScopeFiles(teamDir, "team") : []),
+    ...(nodeTeamDir ? dropNodeArtifacts(collectScopeFiles(nodeTeamDir, "team")) : []),
+  ];
 
   if (coreFiles.length === 0) {
     result.errors.push(
@@ -1158,7 +1188,12 @@ function syncRepoTarget(
   // whole governance loop (a common failure mode: .claude/ gitignored in most repos).
   const conflicts = detectGitignoreConflicts(effectivePath, result.filesWritten);
   if (conflicts.length > 0) {
-    result.gitignoreConflicts = conflicts.map((c) => c.file);
+    result.gitignoreConflicts = conflicts.map((c) => {
+      const entry: { file: string; source?: string; fromGlobal?: boolean } = { file: c.file };
+      if (c.source !== undefined) entry.source = c.source;
+      if (c.fromGlobal !== undefined) entry.fromGlobal = c.fromGlobal;
+      return entry;
+    });
   }
 
   return result;
@@ -1514,15 +1549,19 @@ function printSyncResult(result: SyncResult): void {
   if (result.gitignoreConflicts && result.gitignoreConflicts.length > 0) {
     console.log(
       chalk.yellow(
-        `      ⚠ ${result.gitignoreConflicts.length} synced file(s) are gitignored here — they won't be committed, so the team won't see them and drift-check can't verify them:`,
+        `      ⚠ ${result.gitignoreConflicts.length} synced file(s) are gitignored here — they won't be committed, so they never reach the repo and drift-check can't verify them:`,
       ),
     );
-    for (const f of result.gitignoreConflicts) {
-      console.log(chalk.yellow(`          ${f}`));
+    for (const c of result.gitignoreConflicts) {
+      const attribution = c.source ? ` (rule: ${c.source}${c.fromGlobal ? " — your GLOBAL gitignore" : ""})` : "";
+      console.log(chalk.yellow(`          ${c.file}${attribution}`));
     }
+    const anyGlobal = result.gitignoreConflicts.some((c) => c.fromGlobal);
     console.log(
       chalk.yellow(
-        "        Fix: remove or anchor the offending .gitignore pattern (or move internal-only excludes to .claude/.gitignore).",
+        anyGlobal
+          ? "        Fix: the matching rule is in your machine-wide global gitignore (core.excludesFile), not this repo — edit THAT file. Teammates and CI are unaffected, but YOUR commits will silently omit these files."
+          : "        Fix: remove or anchor the offending .gitignore pattern (or move internal-only excludes to .claude/.gitignore).",
       ),
     );
   }

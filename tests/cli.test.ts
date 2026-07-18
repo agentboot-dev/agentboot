@@ -1890,9 +1890,14 @@ describe("dev-sync script", () => {
 describe("AB-57: plugin structure", () => {
   const pluginDir = path.join(ROOT, "dist", "plugin");
 
-  it("generates plugin.json with required fields", () => {
-    const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "plugin.json"), "utf-8"));
+  it("generates .claude-plugin/plugin.json with required fields", () => {
+    // Plugin-spec conformance: the manifest lives at .claude-plugin/plugin.json
+    // (a root-level plugin.json is invisible to the plugin system).
+    const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginDir, ".claude-plugin", "plugin.json"), "utf-8"));
     expect(pluginJson.name).toBeTruthy();
+    expect(pluginJson.name).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/); // spec: kebab-case
+    expect(typeof pluginJson.author).toBe("object");               // spec: author is an object
+    expect(pluginJson.hooks).toBe("./hooks/hooks.json");          // hooks REGISTERED, not just copied
     expect(pluginJson.version).toBeTruthy();
     expect(pluginJson.agentboot_version).toBeTruthy();
     expect(pluginJson.license).toBe("Apache-2.0");
@@ -1938,7 +1943,7 @@ describe("AB-57: plugin structure", () => {
   });
 
   it("persona entries have correct paths", () => {
-    const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "plugin.json"), "utf-8"));
+    const pluginJson = JSON.parse(fs.readFileSync(path.join(pluginDir, ".claude-plugin", "plugin.json"), "utf-8"));
     for (const persona of pluginJson.personas) {
       expect(persona.id).toBeTruthy();
       expect(persona.agent_path).toMatch(/^agents\//);
@@ -2093,7 +2098,8 @@ describe("AB-40: export command", () => {
   it("exports plugin format to specified directory", () => {
     const output = run(`export --format plugin --output ${tmpDir}/plugin-out`);
     expect(output).toContain("Exported plugin");
-    expect(fs.existsSync(path.join(tmpDir, "plugin-out", "plugin.json"))).toBe(true);
+    // Plugin-spec conformance: manifest at .claude-plugin/plugin.json
+    expect(fs.existsSync(path.join(tmpDir, "plugin-out", ".claude-plugin", "plugin.json"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "plugin-out", "agents"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "plugin-out", "skills"))).toBe(true);
   });
@@ -2268,7 +2274,7 @@ import { validatePluginManifest } from "../scripts/lib/config.js";
 describe("AB-131: validatePluginManifest", () => {
   it("returns no warnings for a valid manifest", () => {
     const manifest = {
-      name: "@my-org/personas",
+      name: "my-org-personas",
       version: "1.0.0",
       description: "My personas plugin",
       agents: ["code-reviewer"],
@@ -2295,23 +2301,26 @@ describe("AB-131: validatePluginManifest", () => {
     expect(nameError!.message).toContain("string");
   });
 
-  it("reports error when name does not follow @scope/package format", () => {
-    const manifest = { name: "not-scoped", version: "1.0.0", description: "test" };
-    const warnings = validatePluginManifest(manifest);
-    const nameError = warnings.find(w => w.field === "name" && w.level === "error");
-    expect(nameError).toBeDefined();
-    expect(nameError!.message).toContain("@scope/package-name");
+  it("reports error when name is not spec kebab-case", () => {
+    // Plugin-spec conformance: the old @scope/package format is REJECTED by
+    // the plugin spec (kebab-case only — the name namespaces components).
+    for (const bad of ["@acme-corp/my-personas", "Not-Kebab", "double--hyphen", "-leading"]) {
+      const warnings = validatePluginManifest({ name: bad, version: "1.0.0", description: "test" });
+      const nameError = warnings.find(w => w.field === "name" && w.level === "error");
+      expect(nameError, `name "${bad}" must error`).toBeDefined();
+      expect(nameError!.message).toContain("kebab-case");
+    }
   });
 
-  it("accepts valid scoped name formats", () => {
-    const manifest = { name: "@acme-corp/my-personas", version: "1.0.0", description: "test" };
+  it("accepts valid kebab-case names", () => {
+    const manifest = { name: "acme-corp-personas", version: "1.0.0", description: "test" };
     const warnings = validatePluginManifest(manifest);
     const nameErrors = warnings.filter(w => w.field === "name");
     expect(nameErrors).toHaveLength(0);
   });
 
   it("reports error when version is missing", () => {
-    const manifest = { name: "@org/pkg", description: "test" };
+    const manifest = { name: "org-pkg", description: "test" };
     const warnings = validatePluginManifest(manifest);
     const versionError = warnings.find(w => w.field === "version");
     expect(versionError).toBeDefined();
@@ -2319,7 +2328,7 @@ describe("AB-131: validatePluginManifest", () => {
   });
 
   it("reports error when description is missing", () => {
-    const manifest = { name: "@org/pkg", version: "1.0.0" };
+    const manifest = { name: "org-pkg", version: "1.0.0" };
     const warnings = validatePluginManifest(manifest);
     const descError = warnings.find(w => w.field === "description");
     expect(descError).toBeDefined();
@@ -2327,7 +2336,7 @@ describe("AB-131: validatePluginManifest", () => {
   });
 
   it("warns when agents array is empty", () => {
-    const manifest = { name: "@org/pkg", version: "1.0.0", description: "test", agents: [] };
+    const manifest = { name: "org-pkg", version: "1.0.0", description: "test", agents: [] };
     const warnings = validatePluginManifest(manifest);
     const agentsWarn = warnings.find(w => w.field === "agents");
     expect(agentsWarn).toBeDefined();
@@ -2335,7 +2344,7 @@ describe("AB-131: validatePluginManifest", () => {
   });
 
   it("warns when skills array is empty", () => {
-    const manifest = { name: "@org/pkg", version: "1.0.0", description: "test", skills: [] };
+    const manifest = { name: "org-pkg", version: "1.0.0", description: "test", skills: [] };
     const warnings = validatePluginManifest(manifest);
     const skillsWarn = warnings.find(w => w.field === "skills");
     expect(skillsWarn).toBeDefined();
@@ -2343,7 +2352,7 @@ describe("AB-131: validatePluginManifest", () => {
   });
 
   it("warns when rules array is empty", () => {
-    const manifest = { name: "@org/pkg", version: "1.0.0", description: "test", rules: [] };
+    const manifest = { name: "org-pkg", version: "1.0.0", description: "test", rules: [] };
     const warnings = validatePluginManifest(manifest);
     const rulesWarn = warnings.find(w => w.field === "rules");
     expect(rulesWarn).toBeDefined();
@@ -2351,7 +2360,7 @@ describe("AB-131: validatePluginManifest", () => {
   });
 
   it("does not warn when arrays are absent (only when empty)", () => {
-    const manifest = { name: "@org/pkg", version: "1.0.0", description: "test" };
+    const manifest = { name: "org-pkg", version: "1.0.0", description: "test" };
     const warnings = validatePluginManifest(manifest);
     expect(warnings).toHaveLength(0);
   });
