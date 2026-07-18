@@ -705,7 +705,7 @@ the appropriate format:
 
 ```json
 [
-  { "name": "org/api-service", "platform": "claude-code", "team": "api" },
+  { "name": "org/api-service", "platform": "claude", "team": "api" },
   { "name": "org/web-app", "platform": "copilot", "team": "web" },
   { "name": "org/ml-pipeline", "platform": "cursor", "team": "data" }
 ]

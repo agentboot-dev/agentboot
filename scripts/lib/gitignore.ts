@@ -6,6 +6,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import os from "node:os";
 
 export interface GitignoreConflict {
   file: string;
@@ -25,8 +26,13 @@ export function detectGitignoreConflicts(
   if (managedFiles.length === 0) return [];
 
   try {
-    // Batch all paths into a single git check-ignore call via stdin
-    const result = spawnSync("git", ["check-ignore", "--stdin"], {
+    // Batch all paths into a single git check-ignore call via stdin.
+    // Neutralize the user's GLOBAL excludes file (core.excludesFile): this check
+    // warns that "the team won't see these files", which is only true for ignore
+    // rules the repo itself carries — a rule in one developer's personal global
+    // gitignore says nothing about teammates or CI, and matching it here produced
+    // false-positive warnings in repos with no .gitignore at all.
+    const result = spawnSync("git", ["-c", `core.excludesFile=${os.devNull}`, "check-ignore", "--stdin"], {
       cwd: repoPath,
       input: managedFiles.join("\n"),
       stdio: ["pipe", "pipe", "pipe"],

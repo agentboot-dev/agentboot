@@ -500,7 +500,26 @@ program
       if (opts["isolated"]) {
         const { withIsolatedClaude } = await import("./prompts/index.js");
         console.log(chalk.yellow("  Running in isolated mode — using temporary Claude config (your settings are untouched).\n"));
-        await withIsolatedClaude(run);
+        await withIsolatedClaude(async () => {
+          // UI fail-fast: isolation usually removes Claude Code auth. Probing now —
+          // before any scanning/classification work — turns a silent mid-import
+          // degradation to manual mode into an up-front, actionable message.
+          const { probeAnyProvider } = await import("./lib/llm-provider.js");
+          const available = probeAnyProvider();
+          if (!available) {
+            console.log(chalk.yellow(
+              "  ⚠ No LLM available under the isolated config.\n" +
+              "    Classification will run in MANUAL mode: the import plan will contain\n" +
+              "    empty classifications for you to fill in by hand.\n" +
+              "    For LLM classification, either:\n" +
+              "      - run without --isolated (uses your logged-in Claude Code), or\n" +
+              "      - set ANTHROPIC_API_KEY (or OPENAI_API_KEY / GOOGLE_API_KEY) for this run.\n"
+            ));
+          } else {
+            console.log(chalk.gray(`  LLM available in isolated mode: ${available}\n`));
+          }
+          await run();
+        });
       } else {
         await run();
       }
