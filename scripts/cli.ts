@@ -1146,8 +1146,12 @@ program
               if (conflicts.length > 0) {
                 anyConflict = true;
                 const label = r.label ?? path.basename(r.path);
+                const first = conflicts[0]!;
+                const where = first.source
+                  ? ` (rule: ${first.source}${first.fromGlobal ? " — your GLOBAL gitignore, not this repo" : ""})`
+                  : "";
                 fail(
-                  `${conflicts.length} managed file(s) gitignored in ${label} — synced but not committed (e.g. ${conflicts[0]!.file}); remove or anchor the .gitignore pattern`,
+                  `${conflicts.length} managed file(s) gitignored in ${label} — synced but not committed (e.g. ${first.file}${where}); ${first.fromGlobal ? "edit your global excludes file" : "remove or anchor the .gitignore pattern"}`,
                 );
               }
             }

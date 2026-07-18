@@ -729,6 +729,36 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
   }
 }
 
+/**
+ * UI-9: install the compiled skills into the HUB'S OWN .claude/skills/.
+ *
+ * The ab*.md files copied into .claude/agents/ are subagent definitions — they
+ * do not register slash commands. Spokes get the /ab skill via sync
+ * (dist/claude/core/skills/), but nothing delivered it to the hub itself, so
+ * the quickstart ("type /ab") failed precisely in the first repo a new user
+ * tries it in. Copy the compiled skills into the hub after every install build.
+ */
+export function installHubSkills(hubDir: string): number {
+  const compiledSkillsDir = path.join(hubDir, "dist", "claude", "core", "skills");
+  if (!fs.existsSync(compiledSkillsDir)) return 0;
+  const destDir = path.join(hubDir, ".claude", "skills");
+  let count = 0;
+  for (const skillName of fs.readdirSync(compiledSkillsDir)) {
+    const srcDir = path.join(compiledSkillsDir, skillName);
+    if (!fs.statSync(srcDir).isDirectory()) continue;
+    const dest = path.join(destDir, skillName);
+    fs.mkdirSync(dest, { recursive: true });
+    for (const f of fs.readdirSync(srcDir)) {
+      const srcFile = path.join(srcDir, f);
+      if (fs.statSync(srcFile).isFile()) {
+        fs.copyFileSync(srcFile, path.join(dest, f));
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
 function runBuild(hubDir: string): boolean {
   console.log(chalk.cyan("\n  Compiling personas..."));
   console.log(chalk.gray(
@@ -744,6 +774,10 @@ function runBuild(hubDir: string): boolean {
 
   if (result.status === 0) {
     console.log(chalk.green("  Build complete."));
+    const skillCount = installHubSkills(hubDir);
+    if (skillCount > 0) {
+      console.log(chalk.green(`  ✓ Compiled skills installed to .claude/skills/ (${skillCount} file(s)) — /ab works in the hub after a session restart.`));
+    }
     return true;
   } else {
     console.log(chalk.yellow("  Build did not complete — you can run `agentboot build` later."));

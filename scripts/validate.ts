@@ -892,7 +892,9 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
     }
   };
 
-  // Check groups/teams directories
+  // Check groups/teams directories — BOTH team layouts (UI-7: compile accepts
+  // sibling teams/<g>/<t>/ as well; a rogue override there must not be
+  // invisible to validate).
   const groupsDir = path.join(configDir, "groups");
   if (fs.existsSync(groupsDir)) {
     for (const group of fs.readdirSync(groupsDir)) {
@@ -901,6 +903,19 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
       if (fs.existsSync(teamsDir)) {
         for (const team of fs.readdirSync(teamsDir)) {
           checkScopeDir(path.join(teamsDir, team), `team/${group}/${team}`);
+        }
+      }
+    }
+  }
+  const siblingTeamsDir = path.join(configDir, "teams");
+  if (fs.existsSync(siblingTeamsDir)) {
+    for (const group of fs.readdirSync(siblingTeamsDir)) {
+      const gDir = path.join(siblingTeamsDir, group);
+      if (!fs.statSync(gDir).isDirectory()) continue;
+      for (const team of fs.readdirSync(gDir)) {
+        const tDir = path.join(gDir, team);
+        if (fs.statSync(tDir).isDirectory()) {
+          checkScopeDir(tDir, `team/${group}/${team}`);
         }
       }
     }
