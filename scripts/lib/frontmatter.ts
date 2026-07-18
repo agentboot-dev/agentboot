@@ -119,12 +119,22 @@ function inferClassificationFromPath(relativePath: string): string | null {
 // Secret scanning
 // ---------------------------------------------------------------------------
 
+// Parity contract: defense-in-depth must be strongest at the earliest gate, so every
+// bare credential VALUE format that the generated runtime hooks (input-scan/output-scan
+// in compile.ts) block must also be caught here at build time. tests/secret-parity.test.ts
+// enforces this with canary values — if you add a value-format pattern to a runtime hook,
+// add it here (and a canary there) too. Label-style patterns (password=..., api_key=...)
+// deliberately require a quoted value at build time to avoid flagging documentation
+// placeholders in persona/trait prose; the runtime hooks scan live prompts and can be
+// stricter without that false-positive cost.
 export const DEFAULT_SECRET_PATTERNS: RegExp[] = [
   /(?:password|passwd|pwd)\s*[:=]\s*['"][^'"]+['"]/i,
   /(?:api[_-]?key|apikey)\s*[:=]\s*['"][^'"]+['"]/i,
   /(?:secret|token)\s*[:=]\s*['"][^'"]+['"]/i,
   /aws[_-]?(?:access[_-]?key|secret[_-]?key)/i,
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
+  /\bAKIA[A-Z0-9]{16}\b/,                       // AWS access key id — bare VALUE format
+  /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}/, // JWT (header.payload)
+  /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
   /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}/,  // GitHub tokens
   /xox[baprs]-[0-9A-Za-z-]+/,                   // Slack tokens
   /sk-ant-api[a-zA-Z0-9\-_]{20,}/,              // Anthropic API keys
