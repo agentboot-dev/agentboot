@@ -105,7 +105,7 @@ AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the un
 
 Your personas repo is the source. Target repos receive the compiled output. One PR to the personas repo rebuilds and syncs to every registered repo.
 
-AgentBoot only writes agent-configuration files (`.claude/`, `.github/`, `.codex/`, and other platform config directories) — it never touches application code, configuration, or dependencies. Sync PRs are safe to auto-merge.
+AgentBoot only writes agent-configuration files (`.claude/`, `.github/`, `.codex/`, and other platform config directories) — it never touches application code, configuration, or dependencies. That said, agent configuration is not inert: synced artifacts include executable hooks, tool permissions, and MCP configuration, so give sync PRs the same review posture as CI or infrastructure changes. Many orgs auto-merge instruction-only updates and require owner review when a sync touches hooks, permissions, or MCP config — see [docs/github-bot.md](docs/github-bot.md) for the recommended setup.
 
 ## Configuration
 

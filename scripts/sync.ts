@@ -32,6 +32,7 @@ import {
   type AgentBootConfig,
   resolveConfigPath,
   loadConfig,
+  agentbootNpxSpec,
 } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 
@@ -67,14 +68,26 @@ interface RepoEntry {
 }
 
 /**
+ * Common aliases for platform names. People naturally write the product name
+ * ("claude-code") where the canonical id is expected ("claude") — accept the
+ * alias instead of failing their first sync.
+ */
+const PLATFORM_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  "github-copilot": "copilot",
+  "openai-codex": "codex",
+};
+
+/**
  * Normalize platform(s) for a repo entry. Handles both the old singular
- * `platform` field and the new `platforms` array. Returns an array.
+ * `platform` field and the new `platforms` array, and resolves common
+ * aliases to canonical platform ids. Returns an array.
  */
 function getRepoPlatforms(entry: RepoEntry): string[] {
-  if (entry.platforms && entry.platforms.length > 0) {
-    return entry.platforms;
-  }
-  return [entry.platform ?? "claude"];
+  const raw = entry.platforms && entry.platforms.length > 0
+    ? entry.platforms
+    : [entry.platform ?? "claude"];
+  return raw.map((p) => PLATFORM_ALIASES[p] ?? p);
 }
 
 interface SyncResult {
@@ -552,7 +565,7 @@ function buildMcpContent(
   mergedFiles: Map<string, ScopedFile>,
   existingMcpPath: string,
 ): string {
-  const agentbootEntry = { command: "npx", args: ["agentboot", "mcp-server"] };
+  const agentbootEntry = { command: "npx", args: [agentbootNpxSpec(), "mcp-server"] };
   let mcpServers: Record<string, unknown> = {};
   const mcpDistFile = mergedFiles.get(".mcp.json");
   if (mcpDistFile) {
@@ -705,7 +718,8 @@ function syncRepoTarget(
   const repoPath = path.resolve(entry.path);
   // AB-142: When syncing to a monorepo package, effectivePath is the package root.
   const effectivePath = packagePath ? path.join(repoPath, packagePath) : repoPath;
-  const platform = platformOverride ?? entry.platform ?? "claude";
+  const rawPlatform = platformOverride ?? entry.platform ?? "claude";
+  const platform = PLATFORM_ALIASES[rawPlatform] ?? rawPlatform;
   // AB-129: Platform-specific target directories
   const targetDir = platform === "cursor" ? ".cursor"
     : platform === "gemini" ? ".gemini"

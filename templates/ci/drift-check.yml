@@ -27,8 +27,12 @@ jobs:
   compliance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Pinned to commit SHAs — update the SHA and its version comment together.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
-      - run: npx agentboot drift-check --format json
+      # Pinned agentboot version for reproducible, auditable CI. Keep in step with
+      # the version your hub builds with; bump deliberately, like any dependency.
+      # (npm accepts the v-prefixed form: agentboot@v0.11.4 ≡ agentboot@0.11.4)
+      - run: npx agentboot@v0.11.4 drift-check --format json

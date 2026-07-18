@@ -810,7 +810,11 @@ describe("scaffoldHub: writes .mcp.json with AgentBoot MCP server", () => {
     expect(mcp.mcpServers).toBeDefined();
     expect(mcp.mcpServers.agentboot).toBeDefined();
     expect(mcp.mcpServers.agentboot.command).toBe("npx");
-    expect(mcp.mcpServers.agentboot.args).toEqual(["agentboot", "mcp-server"]);
+    // Version-pinned spec (agentboot@X.Y.Z) — unpinned npx would run whatever
+    // npm serves as latest at session start.
+    expect(mcp.mcpServers.agentboot.args).toHaveLength(2);
+    expect(mcp.mcpServers.agentboot.args[0]).toMatch(/^agentboot@\d+\.\d+\.\d+/);
+    expect(mcp.mcpServers.agentboot.args[1]).toBe("mcp-server");
     // L4: no absolute AGENTBOOT_HUB is baked into this committed file — it would
     // leak the author's home path and break the hub for teammates. Hub resolution
     // uses cwd + the machine-local registry instead.

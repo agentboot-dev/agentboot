@@ -9,6 +9,56 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+Enterprise-readiness quick wins from adopting-organization feedback (build-time secret-scan
+parity, supply-chain hardening, first-run fixes, security policy).
+
+### Security
+- **Build-time secret scan now catches bare credential values** the runtime input-scan hook
+  already blocks — bare AWS access-key IDs (`AKIA…`), JWTs, and DSA private-key headers — closing
+  the gap where the earliest gate (hub `validate --strict`) was weaker than the runtime gate. A
+  parity contract comment + `tests/secret-parity.test.ts` canaries keep the two pattern sets
+  aligned going forward.
+- **Added `SECURITY.md`** — private vulnerability reporting (GitHub advisories + email), response
+  targets, supported-versions policy, coordinated disclosure, and dependency-advisory dispositions.
+  GitHub private vulnerability reporting is enabled on the repo.
+- **Generated `npx agentboot` invocations are version-pinned** — the MCP server entries emitted
+  into `.mcp.json`, cross-platform `mcp.json`, and Codex `config.toml` now pin the exact compiling
+  AgentBoot version instead of resolving `latest` at session start.
+- **Supply-chain hardening in CI**: all GitHub Actions pinned to commit SHAs (with version
+  comments), release and validate workflows use `npm ci` (lockfile-enforced) instead of
+  `npm install`, and `.github/dependabot.yml` keeps npm deps and pinned action SHAs current.
+- **Reusable CI workflow gains a `forbid-latest` policy switch** — regulated pipelines can make
+  the workflow fail unless `agentboot-version` is pinned to an exact version.
+- **Dependency advisories resolved**: `js-yaml` (moderate, production) and the Vitest/Vite dev
+  chain (1 critical, 1 high, 2 moderate) via upgrade to Vitest 4. Remaining `esbuild` low advisory
+  is dispositioned in `SECURITY.md` (vulnerable code path unreachable).
+
+### Fixed
+- **`repos.json` platform value `"claude-code"` is now accepted as an alias for `"claude"`**
+  (also `"github-copilot"` → `copilot`, `"openai-codex"` → `codex`), and the delivery-methods doc
+  example uses the canonical value — following the docs verbatim no longer fails the first sync.
+- **Gitignore-conflict warning no longer false-positives from the developer's personal global
+  gitignore** — `git check-ignore` is now scoped to repo-level ignore rules, since only those
+  affect what teammates and CI see. (Field report: warning fired in a repo with no `.gitignore`.)
+- **`import --isolated` probes LLM availability up front** — if isolation removed Claude Code
+  auth and no API key is set, it says so immediately with the remediation options, instead of
+  silently degrading to manual mode mid-import.
+
+### Documentation
+- **Sync-PR auto-merge guidance rewritten as risk-classified review posture** (README +
+  GitHub-bot guide): instruction-only changes may auto-merge; hook / permission / MCP / settings
+  changes should require owner review, with recommended CODEOWNERS patterns. Generated agent
+  config is executable configuration, not inert text.
+- **New "Deploying the managed output" section** in the configuration reference — which of
+  `dist/managed/` vs the `managed-settings.d/` fragments an MDM operator deploys, how per-team
+  fragment merges compose, and how to verify enforcement on a managed machine (denied-action
+  check, not file presence).
+- **CONTRIBUTING adds work-capacity vs personal-capacity guidance** — descriptive-only reports on
+  work time, design + implementation in personal capacity, separate accounts recommended; links
+  the new private security-reporting channel.
+- The hub CI compliance-check template pins `npx agentboot@<version>` and SHA-pinned actions
+  (tracked in the version-strings manifest so releases bump it).
+
 ## [0.11.4] — 2026-07-18
 
 Documentation accuracy & completeness pass (no code changes).

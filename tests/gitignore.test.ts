@@ -48,4 +48,32 @@ describe("detectGitignoreConflicts (B.1)", () => {
   it("returns [] for an empty managed-file list", () => {
     expect(detectGitignoreConflicts(os.tmpdir(), [])).toEqual([]);
   });
+
+  it("ignores the user's GLOBAL gitignore (false-positive regression)", () => {
+    // Repro of the field report: a repo with NO .gitignore warned anyway because
+    // the developer's personal global excludes matched managed paths. Global
+    // rules say nothing about what teammates/CI will see — repo-level only.
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-gi-global-")));
+    const repo = path.join(base, "repo");
+    fs.mkdirSync(repo);
+    const globalIgnore = path.join(base, "global-gitignore");
+    fs.writeFileSync(globalIgnore, ".claude/\nAGENTS.md\n");
+    const savedEnv = process.env["GIT_CONFIG_GLOBAL"];
+    const globalCfg = path.join(base, "gitconfig");
+    fs.writeFileSync(globalCfg, `[core]\n\texcludesFile = ${globalIgnore.replace(/\\/g, "/")}\n`);
+    process.env["GIT_CONFIG_GLOBAL"] = globalCfg;
+    try {
+      execSync("git init -q", { cwd: repo });
+      const managed = [".claude/settings.json", "AGENTS.md"];
+      // Sanity: plain git DOES consider these ignored via the global file...
+      const raw = execSync("git check-ignore .claude/settings.json || true", { cwd: repo, encoding: "utf-8" });
+      expect(raw).toContain(".claude/settings.json");
+      // ...but the conflict detector must not — no repo-level .gitignore exists.
+      expect(detectGitignoreConflicts(repo, managed)).toEqual([]);
+    } finally {
+      if (savedEnv !== undefined) process.env["GIT_CONFIG_GLOBAL"] = savedEnv;
+      else delete process.env["GIT_CONFIG_GLOBAL"];
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
