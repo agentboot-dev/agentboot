@@ -529,17 +529,47 @@ Start a Model Context Protocol (MCP) server over stdio. Exposes AgentBoot person
 and trait data to any MCP-compatible client.
 
 ```
-agentboot mcp-server
+agentboot mcp-server                        # read-only profile (default)
+agentboot mcp-server --profile maintainer   # adds build / sync / propose_change
 ```
 
-Exposed tools:
+**Profiles.** The default profile is **read-only**: inspection tools only. The mutating
+tools — `agentboot_build`, `agentboot_sync`, `agentboot_propose_change` (creates a branch,
+pushes, opens a PR) — are hidden from `tools/list` *and* rejected if called, unless the
+server is started with `--profile maintainer` or `AGENTBOOT_MCP_PROFILE=maintainer`.
+An autonomous MCP client wired to the default server entry cannot push branches or
+rewrite `dist/`. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+`openWorldHint`) so clients can display what mutates.
+
+Read-only tools:
 - `agentboot_list_personas` — list available personas with names and descriptions
 - `agentboot_get_persona` — get full SKILL.md content by persona name
 - `agentboot_list_traits` — list available traits
 - `agentboot_get_trait` — get trait content by name
 - `agentboot_list_gotchas` — list gotcha rules with path patterns
+- `agentboot_status`, `agentboot_list_repos`, `agentboot_cost_estimate`,
+  `agentboot_scan_for_import`, `agentboot_validate`, `agentboot_lint`, `agentboot_doctor`
+
+Maintainer-profile tools:
+- `agentboot_build` — compile dist/ from source
+- `agentboot_sync` — sync compiled output to registered repos
+- `agentboot_propose_change` — branch + commit + push + open a PR (never pushes to main)
 
 Reads from compiled `dist/skill/core/` when available, falls back to `core/` source files.
+
+---
+
+## `agentboot telemetry-inspect`
+
+Show exactly what telemetry would be emitted under the current config: whether telemetry
+is enabled, the developer-identifier mode (with its privacy classification), the log path,
+the versioned event schema (every event type and field, flagged if it can identify a
+person), and one sample emission per event type. Reads config only — never touches a log.
+
+```
+agentboot telemetry-inspect
+agentboot telemetry-inspect --config path/to/agentboot.config.json
+```
 
 ---
 

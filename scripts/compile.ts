@@ -2219,6 +2219,25 @@ function writeHookScripts(scripts: HookScript[], dir: string): void {
  * scripts are consumed by every platform emitter (Claude Code, Codex, Copilot).
  */
 function buildComplianceHookScripts(config: AgentBootConfig): HookScript[] {
+  // B2/B3: org-pluggable scanners + output blocking. The scanner command is
+  // embedded verbatim in generated bash, so reject shell metacharacters at
+  // build time — the org config is the trust root, but a quoting accident
+  // must fail the build, not produce a broken (or injectable) hook.
+  const sanitizeScanner = (cmd: string | undefined, label: string): string => {
+    if (!cmd) return "";
+    if (/["'`$\n\r;|&<>]/.test(cmd)) {
+      throw new Error(
+        `compliance.${label}.scannerCommand contains shell metacharacters (quotes, backticks, $, ;, |, &, <, > or newlines) — not embeddable in the generated hook`
+      );
+    }
+    return cmd.trim();
+  };
+  const inputScanner = sanitizeScanner(config.compliance?.inputScan?.scannerCommand, "inputScan");
+  const inputFailClosed = config.compliance?.inputScan?.failMode === "closed";
+  const outputScanner = sanitizeScanner(config.compliance?.outputScan?.scannerCommand, "outputScan");
+  const outputFailClosed = config.compliance?.outputScan?.failMode === "closed";
+  const outputBlocking = config.compliance?.outputScan?.blocking === true;
+
   // AB-59: Input scanning hook (UserPromptSubmit)
   // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   // Note: -e intentionally omitted because grep -q returns 1 on no-match
@@ -2254,7 +2273,22 @@ for pattern in "\${PATTERNS[@]}"; do
     exit 2
   fi
 done
-
+${inputScanner ? `
+# Org-supplied scanner (compliance.inputScan.scannerCommand).
+# Contract: content on stdin; exit 0 = allow, exit 2 = block, other = scanner failure.
+SCAN_OUT=$(printf '%s' "$PROMPT" | ${inputScanner} 2>&1)
+SCAN_STATUS=$?
+if [ "$SCAN_STATUS" -eq 2 ]; then
+  echo "AgentBoot scanner: $SCAN_OUT" >&2
+  echo '{"decision":"block","reason":"AgentBoot: the organization content scanner blocked this prompt. Remove the flagged content before proceeding."}'
+  exit 2
+elif [ "$SCAN_STATUS" -ne 0 ]; then${inputFailClosed ? `
+  echo "AgentBoot scanner failed (exit $SCAN_STATUS): $SCAN_OUT" >&2
+  echo '{"decision":"block","reason":"AgentBoot: the organization content scanner failed and inputScan.failMode is closed."}'
+  exit 2` : `
+  echo "AgentBoot: organization scanner failed (exit $SCAN_STATUS) — continuing on bundled patterns only (failMode: open)" >&2`}
+fi
+` : ""}
 exit 0
 `;
 
@@ -2283,11 +2317,34 @@ PATTERNS=(
   'BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY'
 )
 
+MATCHED=0
 for pattern in "\${PATTERNS[@]}"; do
   if printf '%s' "$RESPONSE" | grep -qiE "$pattern"; then
-    echo "AgentBoot WARNING: Potential credential in output — review before sharing" >&2
+    MATCHED=1
+    break
   fi
 done
+${outputScanner ? `
+# Org-supplied scanner (compliance.outputScan.scannerCommand).
+# Contract: content on stdin; exit 0 = allow, exit 2 = block, other = scanner failure.
+if [ "$MATCHED" -eq 0 ]; then
+  SCAN_OUT=$(printf '%s' "$RESPONSE" | ${outputScanner} 2>&1)
+  SCAN_STATUS=$?
+  if [ "$SCAN_STATUS" -eq 2 ]; then
+    echo "AgentBoot scanner: $SCAN_OUT" >&2
+    MATCHED=1
+  elif [ "$SCAN_STATUS" -ne 0 ]; then${outputFailClosed ? `
+    echo "AgentBoot scanner failed (exit $SCAN_STATUS): $SCAN_OUT" >&2
+    MATCHED=1` : `
+    echo "AgentBoot: organization scanner failed (exit $SCAN_STATUS) — continuing on bundled patterns only (failMode: open)" >&2`}
+  fi
+fi
+` : ""}
+if [ "$MATCHED" -eq 1 ]; then${outputBlocking ? `
+  echo '{"decision":"block","reason":"AgentBoot: potential credential or policy-flagged content detected in the response. Redact the flagged content, then finish again. (compliance.outputScan.blocking is enabled)"}'
+  exit 2` : `
+  echo "AgentBoot WARNING: Potential credential in output — review before sharing" >&2`}
+fi
 
 exit 0
 `;
@@ -2359,13 +2416,13 @@ printf '%s' "$INPUT" | node -e "
       const dev = process.env.DEV_ID || '';
       let entry = null;
       if (event === 'SubagentStart') {
-        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev};
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev,schema:1};
       } else if (event === 'SubagentStop') {
-        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev};
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev,schema:1};
       } else if (event === 'PostToolUse') {
-        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev};
+        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev,schema:1};
       } else if (event === 'SessionEnd') {
-        entry = {event:'session_summary',timestamp:ts,dev_id:dev};
+        entry = {event:'session_summary',timestamp:ts,dev_id:dev,schema:1};
       }
       if (entry) console.log(JSON.stringify(entry));
     } catch {}
@@ -2673,8 +2730,14 @@ function generateManagedSettings(config: AgentBootConfig, distPath: string): voi
   const managedDir = path.join(distPath, "managed");
   ensureDir(managedDir);
 
-  // Managed settings carry HARD guardrails only
+  // Managed settings carry HARD guardrails plus any pass-through settings keys
   const managedSettings: Record<string, unknown> = {};
+
+  // Arbitrary-key pass-through (claude.settings) first — lets an org reproduce an
+  // existing hand-written managed settings file 1:1 (enableAllProjectMcpServers,
+  // enabled/disabledMcpjsonServers, env, cleanupPeriodDays, includeCoAuthoredBy, ...).
+  // Guardrail-derived keys below win on collision.
+  if (config.claude?.settings) Object.assign(managedSettings, config.claude.settings);
 
   // Permissions: deny dangerous tools
   if (managed.guardrails?.denyTools && managed.guardrails.denyTools.length > 0) {
@@ -3008,10 +3071,13 @@ function main(): void {
 
     // AB-111: Generate managed-settings.d/ scope fragments
     // Alphabetical naming for scope precedence: 00-org wins over 10-group wins over 20-team
-    if (config.managed || config.claude?.permissions || config.claude?.hooks) {
+    if (config.managed || config.claude?.permissions || config.claude?.hooks || config.claude?.settings) {
       const managedDir = path.join(distPath, "claude", "core", "managed-settings.d");
       ensureDir(managedDir);
       const fragment: Record<string, unknown> = {};
+      // Arbitrary-key pass-through first, so the dedicated keys below win on collision
+      // (validation already rejects collisions; this is defense in depth).
+      if (config.claude?.settings) Object.assign(fragment, config.claude.settings);
       if (config.claude?.permissions) fragment["permissions"] = config.claude.permissions;
       if (config.claude?.hooks) fragment["hooks"] = config.claude.hooks;
       if (config.managed) {

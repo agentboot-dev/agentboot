@@ -2697,14 +2697,61 @@ program
 program
   .command("mcp-server")
   .description("Start the MCP server (JSON-RPC over stdio)")
-  .action((_opts, cmd) => {
+  .option(
+    "--profile <profile>",
+    "tool profile: read-only (default; inspection tools only) or maintainer (adds build/sync/propose_change)",
+  )
+  .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
+    const args = collectGlobalArgs(globalOpts);
+    if (opts["profile"]) args.push("--profile", opts["profile"] as string);
     runScript({
       script: "mcp-server.ts",
-      args: collectGlobalArgs(globalOpts),
+      args,
       verbose: globalOpts.verbose,
       quiet: globalOpts.quiet,
     });
+  });
+
+// ---- telemetry-inspect (B6) ------------------------------------------------
+
+program
+  .command("telemetry-inspect")
+  .description("Show exactly what telemetry would be emitted under the current config — schema, sample events, and log status")
+  .option("-c, --config <path>", "path to agentboot.config.json")
+  .action(async (opts) => {
+    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+    const { TELEMETRY_EVENTS, TELEMETRY_SCHEMA_VERSION, sampleEvents } = await import("./lib/telemetry-schema.js");
+    const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
+    const config = loadConfig(configPath);
+    const t = config.telemetry ?? {};
+    const enabled = t.enabled === true;
+    const devIdMode = (t.includeDevId ?? false) as false | string;
+
+    console.log(chalk.bold("\nAgentBoot — telemetry-inspect"));
+    console.log(chalk.gray(`Config: ${configPath}\n`));
+    console.log(`  Enabled:        ${enabled ? chalk.green("yes") : chalk.yellow("no (nothing is emitted)")}`);
+    console.log(`  Dev identifier: ${devIdMode === false ? "off (dev_id always empty)" : devIdMode === "hashed" ? "hashed (SHA-256 of git email — PSEUDONYMOUS, not anonymous)" : `${devIdMode} (raw email — identifies the developer)`}`);
+    console.log(`  Log path:       ${t.logPath ?? "~/.agentboot/telemetry.ndjson"} (local file; nothing is transmitted)`);
+    console.log(`  Schema version: ${TELEMETRY_SCHEMA_VERSION}\n`);
+
+    console.log(chalk.bold("  Event types and every field they may carry:"));
+    for (const [name, spec] of Object.entries(TELEMETRY_EVENTS)) {
+      console.log(`\n  ${chalk.cyan(name)} — ${spec.emittedOn}`);
+      for (const [field, f] of Object.entries(spec.fields)) {
+        console.log(`    ${field.padEnd(12)} ${f.type.padEnd(7)} ${f.purpose}${f.identifiesPerson ? chalk.yellow("  [may identify a person]") : ""}`);
+      }
+    }
+
+    console.log(chalk.bold("\n  Sample emissions under this config:"));
+    for (const ev of Object.values(sampleEvents(devIdMode))) {
+      console.log(`    ${JSON.stringify(ev)}`);
+    }
+    console.log(chalk.gray(
+      "\n  Prompts, responses, code, file paths, and tool arguments have no field in this\n" +
+      "  schema — they cannot be emitted. The conformance test (tests/band-b.test.ts)\n" +
+      "  executes the generated hook and fails if its output deviates from this schema.\n"
+    ));
   });
 
 // ---------------------------------------------------------------------------
