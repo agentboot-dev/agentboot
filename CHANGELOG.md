@@ -28,7 +28,7 @@ Documentation accuracy & completeness pass (no code changes).
   `doctor` dry-run flag.
 - **Platform capability accuracy** — corrected Codex MCP auto-emission, added Codex/Copilot hook
   enforcement caveats (trust review, partial coverage, fail-open timeouts, not-yet-GA-verified), and
-  fixed the Codex managed-settings cell on the landing page.
+  fixed the Codex managed-settings cell on the landing page; and clarified that community-tier tools (Cursor/Windsurf/Gemini) have hook surfaces AgentBoot doesn't bind (not "no hook surface").
 - README now discloses Beta status and splits official vs community platform tiers; concepts/glossary
   updated for the N-tier `nodes` model, Codex/JetBrains outputs, and full composition/weight defaults;
   removed a leftover Docusaurus stub page; assorted precision fixes.
