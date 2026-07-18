@@ -2341,7 +2341,7 @@ program
 
     if (format === "plugin") {
       const pluginDir = path.join(distPath, "plugin");
-      const pluginJson = path.join(pluginDir, "plugin.json");
+      const pluginJson = path.join(pluginDir, ".claude-plugin", "plugin.json");
 
       if (!fs.existsSync(pluginJson)) {
         console.error(chalk.red("Plugin output not found. Run `agentboot build` first."));
@@ -2374,7 +2374,8 @@ program
         const resolvedCwd = path.resolve(cwd);
         const isSafe = outputDir.startsWith(resolvedCwd + path.sep)
           || outputDir === resolvedCwd
-          || fs.existsSync(path.join(outputDir, "plugin.json"));
+          || fs.existsSync(path.join(outputDir, "plugin.json"))
+          || fs.existsSync(path.join(outputDir, ".claude-plugin", "plugin.json"));
         if (!isSafe) {
           console.error(chalk.red(`  Refusing to delete ${outputDir} — not within project directory.`));
           console.error(chalk.gray("  Use a path within your project or an empty directory."));
@@ -2485,13 +2486,15 @@ program
 
     // Find plugin
     const pluginJsonPath = path.join(cwd, ".claude-plugin", "plugin.json");
-    const distPluginPath = path.join(cwd, "dist", "plugin", "plugin.json");
+    const distPluginPath = path.join(cwd, "dist", "plugin", ".claude-plugin", "plugin.json");
 
     let pluginDir: string;
+    let manifestPath: string;
     let pluginManifest: Record<string, unknown>;
 
     if (fs.existsSync(pluginJsonPath)) {
       pluginDir = path.join(cwd, ".claude-plugin");
+      manifestPath = pluginJsonPath;
       try {
         pluginManifest = JSON.parse(fs.readFileSync(pluginJsonPath, "utf-8"));
       } catch (e: unknown) {
@@ -2500,6 +2503,7 @@ program
       }
     } else if (fs.existsSync(distPluginPath)) {
       pluginDir = path.join(cwd, "dist", "plugin");
+      manifestPath = distPluginPath;
       try {
         pluginManifest = JSON.parse(fs.readFileSync(distPluginPath, "utf-8"));
       } catch (e: unknown) {
@@ -2534,7 +2538,7 @@ program
 
       // Write bumped version to source plugin.json BEFORE hashing
       fs.writeFileSync(
-        path.join(pluginDir, "plugin.json"),
+        manifestPath,
         JSON.stringify(pluginManifest, null, 2) + "\n",
         "utf-8"
       );

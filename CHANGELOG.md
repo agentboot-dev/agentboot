@@ -36,6 +36,18 @@ feature tier, and the scope-layout unification fixes below.
   immediately after the frontmatter — same fix applied to gotcha rules in the claude
   output, where a leading comment could defeat `paths:` scoping. CI runs the official
   validator against every emitted skill, plus an offline conformance test.
+- **`dist/plugin` is now a loadable, spec-conformant Claude Code plugin**: the manifest
+  moved to `.claude-plugin/plugin.json` (a root-level `plugin.json` is invisible to the
+  plugin system — the official validator rejected the directory outright), `name` is
+  kebab-case (`<org>-personas`; the old `@scope/package` style predates the plugin spec),
+  `author` is an object (a bare string is a load error), and the compliance hooks are now
+  REGISTERED via a generated `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}` paths —
+  previously the scripts were copied but never wired, so an installed plugin carried them
+  as dead files. The AgentBoot inventory fields (`personas`/`traits`/`rules`/
+  `agentboot_version`) remain in the manifest deliberately (spec-tolerated warnings).
+  `claude plugin validate` runs in CI alongside the skills validator, plus offline
+  conformance tests. *Behavior change*: consumers reading `dist/plugin/plugin.json` must
+  read `dist/plugin/.claude-plugin/plugin.json`.
 - **Gitignore-conflict warning attributes its source** (UI-6 resolution): the earlier
   "false positive" was a correct warning triggered by the machine's GLOBAL gitignore.
   Detection now covers every ignore source again and names the file the matching rule

@@ -483,11 +483,17 @@ export interface TelemetryEvent {
 // ---------------------------------------------------------------------------
 
 export interface PluginManifest {
+  /** Spec: kebab-case unique identifier (used for component namespacing). */
   name: string;
+  /** Spec: human-readable name for UI surfaces (may contain spaces/casing). */
+  displayName?: string;
   version: string;
   description: string;
-  author: string;
+  /** Spec type: author is an OBJECT — a bare string is a load error. */
+  author: { name: string; email?: string };
   license: string;
+  /** Spec: hook config path (or inline object). We point at ./hooks/hooks.json. */
+  hooks?: string | Array<{ event: string; path: string }> | undefined;
   agentboot_version: string;
   personas: Array<{
     id: string;
@@ -501,10 +507,6 @@ export interface PluginManifest {
     id: string;
     path: string;
   }>;
-  hooks?: Array<{
-    event: string;
-    path: string;
-  }> | undefined;
   rules?: Array<{
     path: string;
     description?: string | undefined;
@@ -694,13 +696,15 @@ function hasPathTraversal(val: unknown): boolean {
 export function validatePluginManifest(manifest: Record<string, unknown>): PluginValidationWarning[] {
   const warnings: PluginValidationWarning[] = [];
 
-  // name: required, must be string, must follow @scope/package-name format
+  // name: required, must be string, spec format = kebab-case (used for
+  // component namespacing, e.g. "org-personas:code-reviewer"). The old
+  // @scope/package format predates the plugin spec and is rejected by it.
   if (manifest["name"] === undefined || manifest["name"] === null) {
     warnings.push({ field: "name", message: "name is required", level: "error" });
   } else if (typeof manifest["name"] !== "string") {
     warnings.push({ field: "name", message: "name must be a string", level: "error" });
-  } else if (!/^@[a-z0-9-]+\/[a-z0-9._-]+$/.test(manifest["name"])) {
-    warnings.push({ field: "name", message: `name must follow @scope/package-name format, got "${manifest["name"]}"`, level: "error" });
+  } else if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest["name"])) {
+    warnings.push({ field: "name", message: `name must be kebab-case (lowercase letters, digits, single hyphens), got "${manifest["name"]}"`, level: "error" });
   }
 
   // version: required
