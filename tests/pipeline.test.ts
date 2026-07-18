@@ -71,7 +71,7 @@ describe("compile script", () => {
 
   it("compiles all 4 personas across 8 platforms", () => {
     const output = run("scripts/compile.ts");
-    expect(output).toContain("Compiled 4 persona(s)");
+    expect(output).toContain("Compiled 5 persona(s)");
     expect(output).toContain("9 platform(s)");
     expect(output).toContain("dist/skill/");
     expect(output).toContain("dist/claude/");
@@ -325,7 +325,7 @@ describe("compile script", () => {
 
     // claude uses skills/ directory with subdirectories
     const claudeSkills = fs.readdirSync(path.join(ROOT, "dist", "claude", "core", "skills")).sort();
-    expect(claudeSkills).toEqual(["ab", "gen-testdata", "gen-tests", "review-code", "review-security"]);
+    expect(claudeSkills).toEqual(["ab", "gen-testdata", "gen-tests", "review-ai-security", "review-code", "review-security"]);
   });
 
   // --- AB-26: settings.json ---
@@ -807,7 +807,7 @@ describe("full pipeline (validate → compile)", () => {
     ).toString();
 
     expect(output).toContain("All 10 checks passed");
-    expect(output).toContain("Compiled 4 persona(s)");
+    expect(output).toContain("Compiled 5 persona(s)");
     expect(output).toContain("9 platform(s)");
   });
 });

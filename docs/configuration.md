@@ -186,6 +186,7 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 | `output.provenanceHeaders` | boolean | `true` | Add source-file + timestamp provenance headers to output. |
 | `output.failOnDirtyDist` | boolean | `false` | Fail the build if `dist/` already contains prior output (CI staleness guard). |
 | `output.tokenBudget.warnAt` | number | `8000` | Per-persona estimated-token warning threshold (informational — warns, never blocks). |
+| `output.tokenBudget.failAt` | number | — | Opt-in hard ceiling: the build **fails** when a compiled persona's estimated size exceeds it — the CI gate for prompt-size regressions. The build also writes `dist/persona-sizes.json` so hub PRs show size changes as a reviewable diff. Estimates use a chars/4 heuristic — a stable relative measure, not an exact tokenizer count. |
 
 > Which **platforms** to emit is controlled by `personas.outputFormats`, not `output`. There is no
 > `output.format`, `output.hooks`, `output.mcp`, `output.managed`, or `output.dir` key.

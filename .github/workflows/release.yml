@@ -160,6 +160,24 @@ jobs:
           fi
           npm publish --provenance
 
+      # B13: attach an SBOM + checksums to the GitHub Release so enterprise
+      # consumers get a verifiable route from an approved release to artifacts.
+      # Verification procedure: SECURITY.md "Verifying a release".
+      - name: Attach SBOM and checksums to the release
+        if: env.SKIP != 'true' && !inputs.dry-run
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm sbom --sbom-format cyclonedx --omit dev > "agentboot-${VERSION}.sbom.cdx.json"
+          npm pack
+          shasum -a 256 "agentboot-${VERSION}.tgz" "agentboot-${VERSION}.sbom.cdx.json" > "agentboot-${VERSION}.sha256"
+          cat "agentboot-${VERSION}.sha256"
+          gh release upload "v${VERSION}" \
+            "agentboot-${VERSION}.sbom.cdx.json" \
+            "agentboot-${VERSION}.sha256" \
+            --clobber
+
       - name: Update Homebrew formula
         if: env.SKIP != 'true' && !inputs.dry-run
         env:

@@ -326,7 +326,7 @@ describe("AB-160: Managed settings group/team fragments", () => {
     // so 00-org.json may not exist in the default build. Let's verify the build completes.
     // This is a no-regression check that the build still works.
     const output = run("scripts/compile.ts");
-    expect(output).toContain("Compiled 4 persona(s)");
+    expect(output).toContain("Compiled 5 persona(s)");
   });
 
   it("generates 10-group.json for groups with config", () => {

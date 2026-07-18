@@ -44,6 +44,30 @@ We ask reporters to allow up to **90 days** from acknowledgement before public d
 In practice fixes usually ship much faster; we will coordinate timing with you and credit
 reporters in the release notes unless you prefer otherwise.
 
+## Verifying a release
+
+Every release provides three independent verification routes:
+
+1. **npm provenance** — packages are published with `--provenance` (Sigstore attestation
+   linking the package to the exact GitHub Actions run and commit):
+
+   ```bash
+   npm audit signatures            # in a project depending on agentboot
+   npm view agentboot@<version> dist.attestations
+   ```
+
+2. **Checksums** — each GitHub Release attaches `agentboot-<version>.sha256` covering the
+   npm tarball and the SBOM:
+
+   ```bash
+   curl -sLO https://registry.npmjs.org/agentboot/-/agentboot-<version>.tgz
+   shasum -a 256 -c agentboot-<version>.sha256   # from the GitHub Release assets
+   ```
+
+3. **SBOM** — each GitHub Release attaches a CycloneDX SBOM
+   (`agentboot-<version>.sbom.cdx.json`) of the production dependency tree for
+   ingestion into your dependency-tracking tooling.
+
 ## Known dependency-advisory dispositions
 
 Advisories in AgentBoot's dependency tree that are known and deliberately dispositioned
