@@ -23,7 +23,7 @@ A team scope extends its group; a group extends the org. The payments team can t
 
 - **Personas** — agent role definitions (a code reviewer, a security reviewer, a test generator) composed from reusable **traits**. Change a trait once and every persona that uses it rebuilds.
 - **Gotchas** — path-scoped incident rules: the hard-won "never do X in this directory" knowledge that otherwise lives in one senior engineer's head.
-- **Domains** — compliance and industry overlays for regulated environments.
+- **Domains** — an optional overlay for grouping domain-specific traits, personas, and gotchas (`agentboot add domain`). Packaged, opinionated compliance domains are on the [roadmap](/docs/roadmap).
 - **Guardrails, marked HARD or SOFT.** SOFT guardrails are defaults a lower scope may adapt. **HARD guardrails cannot be silently disabled downstream** — the compiler detects attempted overrides (including case variations and comments-in-JSON tricks) and refuses to bury them. This is the MDM-style managed-settings property: the org's floor is the floor.
 
 Because policy is markdown and configuration in a git repo, changing policy *is* a pull request — attributed, reviewed, and permanently in history. Your audit trail is `git log`.

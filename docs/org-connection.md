@@ -203,8 +203,8 @@ repo in your terminal, it works in Claude Code. For background auto-updates, set
 **Mitigation for core updates:**
 ```bash
 # In the personas repo CI
-agentboot upgrade     # Pull latest core traits/personas
-agentboot build       # Rebuild with org customizations
+npm install -g agentboot@latest   # Update the CLI (automatic core refresh is on the roadmap)
+agentboot build                   # Rebuild with org customizations
 # Commit the rebuilt plugin to your private marketplace repo (a Git repo)
 # Developers get updates via /reload-plugins or next session
 ```
@@ -264,8 +264,7 @@ claude
 ```bash
 # In the personas repo CI (runs on merge to main)
 agentboot build
-agentboot sync --mode github-api
-# Creates PRs in every target repo updating .claude/
+agentboot sync   # with sync.pr.enabled set, opens a PR per target repo updating .claude/
 # Team champion merges the PR
 ```
 

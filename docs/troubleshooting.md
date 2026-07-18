@@ -70,9 +70,9 @@ A managed file was modified after sync. AgentBoot skips modified files to avoid 
 
 ## CLI Issues
 
-### `Unknown type: '<name>'. Use: persona, trait, gotcha, domain, hook`
+### `Unknown type: '<name>'. Use: persona, trait, gotcha, domain, hook, prompt, template`
 
-The `agentboot add` command only supports these five types. Check your spelling.
+The `agentboot add` command only supports these seven types. Check your spelling.
 
 ### `Name must be 1-64 lowercase alphanumeric chars with hyphens`
 
