@@ -30,6 +30,12 @@ feature tier, and the scope-layout unification fixes below.
   the hub's own `.claude/skills/` after every install build — the ab*.md files in
   `.claude/agents/` are subagent definitions and never registered slash commands, so the
   README quickstart failed precisely in the first repo a new user tried it in.
+- **`dist/skill` output now passes the official Agent Skills validator**: the provenance
+  header was emitted BEFORE the YAML frontmatter, failing `skills-ref validate` on every
+  persona (the spec requires SKILL.md to begin with `---`). Provenance now lands
+  immediately after the frontmatter — same fix applied to gotcha rules in the claude
+  output, where a leading comment could defeat `paths:` scoping. CI runs the official
+  validator against every emitted skill, plus an offline conformance test.
 - **Gitignore-conflict warning attributes its source** (UI-6 resolution): the earlier
   "false positive" was a correct warning triggered by the machine's GLOBAL gitignore.
   Detection now covers every ignore source again and names the file the matching rule
