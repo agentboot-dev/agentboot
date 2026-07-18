@@ -2219,6 +2219,25 @@ function writeHookScripts(scripts: HookScript[], dir: string): void {
  * scripts are consumed by every platform emitter (Claude Code, Codex, Copilot).
  */
 function buildComplianceHookScripts(config: AgentBootConfig): HookScript[] {
+  // B2/B3: org-pluggable scanners + output blocking. The scanner command is
+  // embedded verbatim in generated bash, so reject shell metacharacters at
+  // build time — the org config is the trust root, but a quoting accident
+  // must fail the build, not produce a broken (or injectable) hook.
+  const sanitizeScanner = (cmd: string | undefined, label: string): string => {
+    if (!cmd) return "";
+    if (/["'`$\n\r;|&<>]/.test(cmd)) {
+      throw new Error(
+        `compliance.${label}.scannerCommand contains shell metacharacters (quotes, backticks, $, ;, |, &, <, > or newlines) — not embeddable in the generated hook`
+      );
+    }
+    return cmd.trim();
+  };
+  const inputScanner = sanitizeScanner(config.compliance?.inputScan?.scannerCommand, "inputScan");
+  const inputFailClosed = config.compliance?.inputScan?.failMode === "closed";
+  const outputScanner = sanitizeScanner(config.compliance?.outputScan?.scannerCommand, "outputScan");
+  const outputFailClosed = config.compliance?.outputScan?.failMode === "closed";
+  const outputBlocking = config.compliance?.outputScan?.blocking === true;
+
   // AB-59: Input scanning hook (UserPromptSubmit)
   // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
   // Note: -e intentionally omitted because grep -q returns 1 on no-match
@@ -2254,7 +2273,22 @@ for pattern in "\${PATTERNS[@]}"; do
     exit 2
   fi
 done
-
+${inputScanner ? `
+# Org-supplied scanner (compliance.inputScan.scannerCommand).
+# Contract: content on stdin; exit 0 = allow, exit 2 = block, other = scanner failure.
+SCAN_OUT=$(printf '%s' "$PROMPT" | ${inputScanner} 2>&1)
+SCAN_STATUS=$?
+if [ "$SCAN_STATUS" -eq 2 ]; then
+  echo "AgentBoot scanner: $SCAN_OUT" >&2
+  echo '{"decision":"block","reason":"AgentBoot: the organization content scanner blocked this prompt. Remove the flagged content before proceeding."}'
+  exit 2
+elif [ "$SCAN_STATUS" -ne 0 ]; then${inputFailClosed ? `
+  echo "AgentBoot scanner failed (exit $SCAN_STATUS): $SCAN_OUT" >&2
+  echo '{"decision":"block","reason":"AgentBoot: the organization content scanner failed and inputScan.failMode is closed."}'
+  exit 2` : `
+  echo "AgentBoot: organization scanner failed (exit $SCAN_STATUS) — continuing on bundled patterns only (failMode: open)" >&2`}
+fi
+` : ""}
 exit 0
 `;
 
@@ -2283,11 +2317,34 @@ PATTERNS=(
   'BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY'
 )
 
+MATCHED=0
 for pattern in "\${PATTERNS[@]}"; do
   if printf '%s' "$RESPONSE" | grep -qiE "$pattern"; then
-    echo "AgentBoot WARNING: Potential credential in output — review before sharing" >&2
+    MATCHED=1
+    break
   fi
 done
+${outputScanner ? `
+# Org-supplied scanner (compliance.outputScan.scannerCommand).
+# Contract: content on stdin; exit 0 = allow, exit 2 = block, other = scanner failure.
+if [ "$MATCHED" -eq 0 ]; then
+  SCAN_OUT=$(printf '%s' "$RESPONSE" | ${outputScanner} 2>&1)
+  SCAN_STATUS=$?
+  if [ "$SCAN_STATUS" -eq 2 ]; then
+    echo "AgentBoot scanner: $SCAN_OUT" >&2
+    MATCHED=1
+  elif [ "$SCAN_STATUS" -ne 0 ]; then${outputFailClosed ? `
+    echo "AgentBoot scanner failed (exit $SCAN_STATUS): $SCAN_OUT" >&2
+    MATCHED=1` : `
+    echo "AgentBoot: organization scanner failed (exit $SCAN_STATUS) — continuing on bundled patterns only (failMode: open)" >&2`}
+  fi
+fi
+` : ""}
+if [ "$MATCHED" -eq 1 ]; then${outputBlocking ? `
+  echo '{"decision":"block","reason":"AgentBoot: potential credential or policy-flagged content detected in the response. Redact the flagged content, then finish again. (compliance.outputScan.blocking is enabled)"}'
+  exit 2` : `
+  echo "AgentBoot WARNING: Potential credential in output — review before sharing" >&2`}
+fi
 
 exit 0
 `;
@@ -2359,13 +2416,13 @@ printf '%s' "$INPUT" | node -e "
       const dev = process.env.DEV_ID || '';
       let entry = null;
       if (event === 'SubagentStart') {
-        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev};
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev,schema:1};
       } else if (event === 'SubagentStop') {
-        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev};
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev,schema:1};
       } else if (event === 'PostToolUse') {
-        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev};
+        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev,schema:1};
       } else if (event === 'SessionEnd') {
-        entry = {event:'session_summary',timestamp:ts,dev_id:dev};
+        entry = {event:'session_summary',timestamp:ts,dev_id:dev,schema:1};
       }
       if (entry) console.log(JSON.stringify(entry));
     } catch {}
@@ -2664,6 +2721,104 @@ function generateTelemetrySchema(distPath: string): void {
 // AB-61: Managed settings artifact generation
 // ---------------------------------------------------------------------------
 
+/**
+ * B8: Merge managed-settings fragments into ONE deployable artifact per scope.
+ *
+ * The `managed-settings.d/` fragments (00-org / 10-group / 20-team) are
+ * composition INPUTS; an MDM operator deploys a single file per fleet
+ * segment. This emits that file to dist/managed/scopes/<scope>/managed-settings.json.
+ *
+ * Merge semantics (documented in configuration.md):
+ *   - `permissions.deny`: UNION across scopes — a lower scope can add denies,
+ *     never remove the org's.
+ *   - `permissions.allow`: UNION — teams may extend what they allow.
+ *   - every other key: the HIGHER scope wins (org over group over team).
+ *   - "// source" comment keys are dropped from the merged artifact.
+ */
+function generateMergedManagedArtifacts(
+  distPath: string,
+  nodePaths: string[],
+): void {
+  const readFragment = (p: string): Record<string, unknown> | null => {
+    if (!fs.existsSync(p)) return null;
+    try { return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>; }
+    catch { return null; }
+  };
+
+  // Org-level inputs: the guardrail-derived deployable + the org fragment.
+  const guardrailBase = readFragment(path.join(distPath, "managed", "managed-settings.json")) ?? {};
+  const orgFragment = readFragment(path.join(distPath, "claude", "core", "managed-settings.d", "00-org.json")) ?? {};
+
+  const mergePermissions = (
+    higher: Record<string, unknown> | undefined,
+    lower: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined => {
+    if (!higher && !lower) return undefined;
+    const merged: Record<string, unknown> = { ...(lower ?? {}), ...(higher ?? {}) };
+    for (const key of ["deny", "allow"] as const) {
+      const h = (higher?.[key] as string[] | undefined) ?? [];
+      const l = (lower?.[key] as string[] | undefined) ?? [];
+      const union = [...new Set([...h, ...l])];
+      if (union.length > 0) merged[key] = union;
+    }
+    return merged;
+  };
+
+  /** Merge fragments ordered from HIGHEST precedence to lowest. */
+  const mergeScopes = (ordered: Array<Record<string, unknown>>): Record<string, unknown> => {
+    const merged: Record<string, unknown> = {};
+    // Apply lowest precedence first so higher scopes overwrite.
+    for (const frag of [...ordered].reverse()) {
+      for (const [k, v] of Object.entries(frag)) {
+        if (k.startsWith("//")) continue;
+        if (k === "permissions") continue; // handled below
+        merged[k] = v;
+      }
+    }
+    const permissions = ordered
+      .map((f) => f["permissions"] as Record<string, unknown> | undefined)
+      .filter((p): p is Record<string, unknown> => p !== undefined)
+      .reduce<Record<string, unknown> | undefined>((acc, p) => mergePermissions(acc, p), undefined);
+    if (permissions) merged["permissions"] = permissions;
+    return merged;
+  };
+
+  const writeMerged = (scope: string, merged: Record<string, unknown>, sources: string[]): void => {
+    if (Object.keys(merged).length === 0) return;
+    const outDir = path.join(distPath, "managed", "scopes", scope);
+    ensureDir(outDir);
+    fs.writeFileSync(
+      path.join(outDir, "managed-settings.json"),
+      JSON.stringify(merged, null, 2) + "\n",
+      "utf-8"
+    );
+    log(chalk.gray(`  → Merged managed artifact: scopes/${scope} (${sources.join(" + ")})`));
+  };
+
+  // Core scope: guardrail base wins over the org fragment (both org-authored;
+  // the guardrail channel is the harder statement of intent).
+  writeMerged("core", mergeScopes([guardrailBase, orgFragment]), ["guardrails", "00-org"]);
+
+  for (const nodePath of nodePaths) {
+    const parts = nodePath.split("/");
+    const fragments: Array<Record<string, unknown>> = [guardrailBase, orgFragment];
+    const sources = ["guardrails", "00-org"];
+    // Walk down the scope chain: group fragment, then team fragment.
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const ancestor = parts.slice(0, depth).join("/");
+      const fragName = depth === 1 ? "10-group.json" : "20-team.json";
+      const frag = readFragment(path.join(distPath, "claude", `nodes/${ancestor}`, "managed-settings.d", fragName));
+      if (frag) {
+        fragments.push(frag);
+        sources.push(`${fragName.replace(".json", "")}(${ancestor})`);
+      }
+    }
+    if (fragments.length > 2) {
+      writeMerged(`nodes/${nodePath}`, mergeScopes(fragments), sources);
+    }
+  }
+}
+
 function generateManagedSettings(config: AgentBootConfig, distPath: string): void {
   const managed = config.managed;
   if (!managed?.enabled) return;
@@ -2673,8 +2828,14 @@ function generateManagedSettings(config: AgentBootConfig, distPath: string): voi
   const managedDir = path.join(distPath, "managed");
   ensureDir(managedDir);
 
-  // Managed settings carry HARD guardrails only
+  // Managed settings carry HARD guardrails plus any pass-through settings keys
   const managedSettings: Record<string, unknown> = {};
+
+  // Arbitrary-key pass-through (claude.settings) first — lets an org reproduce an
+  // existing hand-written managed settings file 1:1 (enableAllProjectMcpServers,
+  // enabled/disabledMcpjsonServers, env, cleanupPeriodDays, includeCoAuthoredBy, ...).
+  // Guardrail-derived keys below win on collision.
+  if (config.claude?.settings) Object.assign(managedSettings, config.claude.settings);
 
   // Permissions: deny dangerous tools
   if (managed.guardrails?.denyTools && managed.guardrails.denyTools.length > 0) {
@@ -3008,10 +3169,13 @@ function main(): void {
 
     // AB-111: Generate managed-settings.d/ scope fragments
     // Alphabetical naming for scope precedence: 00-org wins over 10-group wins over 20-team
-    if (config.managed || config.claude?.permissions || config.claude?.hooks) {
+    if (config.managed || config.claude?.permissions || config.claude?.hooks || config.claude?.settings) {
       const managedDir = path.join(distPath, "claude", "core", "managed-settings.d");
       ensureDir(managedDir);
       const fragment: Record<string, unknown> = {};
+      // Arbitrary-key pass-through first, so the dedicated keys below win on collision
+      // (validation already rejects collisions; this is defense in depth).
+      if (config.claude?.settings) Object.assign(fragment, config.claude.settings);
       if (config.claude?.permissions) fragment["permissions"] = config.claude.permissions;
       if (config.claude?.hooks) fragment["hooks"] = config.claude.hooks;
       if (config.managed) {
@@ -3437,6 +3601,12 @@ function main(): void {
 
   generateManagedSettings(config, distPath);
 
+  // B8: single deployable managed artifact per scope, merged from the fragments
+  if (outputFormats.includes("claude")) {
+    const mergeNodePaths = scopeNodes ? flattenNodes(scopeNodes).map((n) => n.path) : [];
+    generateMergedManagedArtifacts(distPath, mergeNodePaths);
+  }
+
   // ---------------------------------------------------------------------------
   // 9. AB-25: Token budget estimation
   // ---------------------------------------------------------------------------
@@ -3444,13 +3614,28 @@ function main(): void {
   const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
   log(chalk.cyan("\nToken estimates:"));
 
+  // B11: prompt size is a budgeted resource — large personas cost latency,
+  // money, context room, and instruction adherence. warnAt keeps the advisory
+  // behavior; failAt (opt-in) turns a size regression into a CI failure. The
+  // per-persona sizes are also written to dist/persona-sizes.json so a hub PR
+  // diff SHOWS prompt-size changes instead of hiding them in compiled bodies.
+  const tokenFailAt = config.output?.tokenBudget?.failAt;
+  const sizeReport: Record<string, number> = {};
+  const overBudget: string[] = [];
+
   for (const result of allResults.filter((r) => r.platforms.length > 0)) {
     const skillPath = path.join(distPath, "skill", "core", result.persona, "SKILL.md");
     if (fs.existsSync(skillPath)) {
       const content = fs.readFileSync(skillPath, "utf-8");
+      // Heuristic: ~4 chars/token for English/markdown prose. Not a tokenizer —
+      // treat as a stable relative measure, not an exact count.
       const estimatedTokens = Math.ceil(content.length / 4);
+      sizeReport[result.persona] = estimatedTokens;
 
-      if (estimatedTokens > tokenBudget) {
+      if (tokenFailAt !== undefined && estimatedTokens > tokenFailAt) {
+        overBudget.push(`${result.persona} (~${estimatedTokens} tokens > failAt ${tokenFailAt})`);
+        log(chalk.red(`  ✗ [${result.persona}] estimated ${estimatedTokens} tokens exceeds tokenBudget.failAt (${tokenFailAt})`));
+      } else if (estimatedTokens > tokenBudget) {
         log(
           chalk.yellow(
             `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
@@ -3460,6 +3645,23 @@ function main(): void {
         log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
       }
     }
+  }
+
+  fs.writeFileSync(
+    path.join(distPath, "persona-sizes.json"),
+    JSON.stringify(
+      { "// note": "Estimated tokens per compiled persona (chars/4 heuristic). Diff this file in hub PRs to see prompt-size changes.", personas: sizeReport },
+      null, 2
+    ) + "\n",
+    "utf-8"
+  );
+
+  if (overBudget.length > 0) {
+    console.error(chalk.red(
+      `\n✗ ${overBudget.length} persona(s) exceed output.tokenBudget.failAt:\n  ${overBudget.join("\n  ")}\n` +
+      `  Trim the persona/traits or raise the budget deliberately.`
+    ));
+    process.exit(1);
   }
 
   // ---------------------------------------------------------------------------

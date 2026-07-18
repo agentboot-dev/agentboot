@@ -9,8 +9,65 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
-Enterprise-readiness quick wins from adopting-organization feedback (build-time secret-scan
-parity, supply-chain hardening, first-run fixes, security policy).
+Enterprise-readiness batch from adopting-organization feedback: quick wins (secret-scan
+parity, supply-chain hardening, first-run fixes, security policy) plus the enterprise
+feature tier below.
+
+### Added (enterprise features)
+- **`claude.settings` pass-through** — reproduce an existing hand-written managed settings
+  file 1:1 from hub config (`enableAllProjectMcpServers`, `enabled/disabledMcpjsonServers`,
+  `env`, `cleanupPeriodDays`, `includeCoAuthoredBy`, any future key); collisions with
+  dedicated keys rejected at validation.
+- **Pluggable content scanners** (`compliance.inputScan/outputScan.scannerCommand`) — plug
+  an org DLP wrapper or PHI classifier into the generated hooks (stdin content; exit 0
+  allow / 2 block / other = failure resolved by `failMode: open|closed`). Content never
+  leaves the machine. **`compliance.outputScan.blocking`** promotes the output scan from
+  warn-only to blocking with a redact instruction returned to the model.
+- **MCP read-only profile by default** — `agentboot mcp-server` now hides and rejects the
+  mutating tools (`build`, `sync`, `propose_change`) unless started with
+  `--profile maintainer` / `AGENTBOOT_MCP_PROFILE=maintainer`; all tools carry MCP
+  annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`). *Behavior change* for
+  MCP clients that relied on mutating tools by default.
+- **MCP identity pinning** — `mcp.approved` entries can pin `command`, `args` (package
+  version rides here), `url`, and `transport`; with `enforceApproved`, an approved *name*
+  may no longer front a different executable.
+- **Telemetry contract** — canonical versioned event schema
+  (`scripts/lib/telemetry-schema.ts`, `schema` field on every event), new
+  **`agentboot telemetry-inspect`** command showing exactly what would be emitted, and a
+  conformance test that executes the generated hook and fails on any schema drift or
+  content-bearing field. Hashed developer ids documented as **pseudonymous**, not anonymous.
+- **Policy exceptions with owners and expiry** — hub `agentboot-exceptions.json` (validated:
+  well-formed, owned, not expired) and spoke `.agentboot-exceptions.json`: drift covered by
+  an unexpired `drift:<glob>` exception reports as `excepted` (with its id) instead of
+  failing; expired exceptions are not honored, so drift resurfaces.
+- **Merged managed artifacts per scope** — `dist/managed/scopes/<scope>/managed-settings.json`
+  merges guardrails + 00-org/10-group/20-team fragments into the single file an MDM
+  deploys (deny/allow union across scopes, higher scope wins otherwise).
+- **Import-first sync safety** — a first sync onto pre-existing bespoke instruction files
+  stops with import-first guidance unless `--adopt-existing` is passed. *Behavior change*
+  for first syncs onto repos with hand-written CLAUDE.md/.cursorrules/AGENTS.md.
+- **Audit detectors completed** — `scope-shadow` (advertised, now implemented: error on
+  org-rule shadows, warn on preference shadows) and `dead-gotcha` (path globs matching
+  nothing in any locally-registered repo).
+- **Prompt-size discipline** — `output.tokenBudget.failAt` fails the build on size
+  regressions; `dist/persona-sizes.json` makes prompt-size changes reviewable in hub PRs.
+- **Doctor enforcement honesty** — a new Enforcement section classifies each configured
+  output platform (enforced / partial / FAIL-OPEN / ADVISORY) against your actual hard
+  policy; the capability matrix gains an enforcement-classification legend and states
+  plainly that prompt instructions are not a security boundary.
+- **SBOM + checksums on releases** — each GitHub Release now attaches a CycloneDX SBOM and
+  a SHA-256 checksum file; SECURITY.md documents the three-route verification procedure
+  (npm provenance, checksums, SBOM).
+- **New persona `/review-ai-security`** — AI-workflow threat review (prompt injection incl.
+  poisoned repo instructions, tool/MCP escalation, excessive agency, insecure output
+  handling, hallucinated-dependency installs), mapped to OWASP GenAI LLM Top 10; defers
+  classic appsec to `/review-security`.
+- **Healthcare domain starter pack** (`domains/healthcare-template/`) — generic phi-aware +
+  healthcare-engineering traits and baseline instruction with explicit
+  not-HIPAA-compliance disclaimers and a private-overlay extension model.
+- **Enterprise operations guide** (`docs/enterprise-operations.md`) — reference
+  architecture, hub controls, reproducible installs, onboarding/offboarding, emergency
+  disable/rollback, incident response, backup/restore, pilot runbook, risk assessment.
 
 ### Security
 - **Build-time secret scan now catches bare credential values** the runtime input-scan hook

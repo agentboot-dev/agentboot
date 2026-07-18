@@ -392,14 +392,15 @@ describe("MCP message handling", () => {
     expect(toolNames).toContain("agentboot_list_repos");
     expect(toolNames).toContain("agentboot_cost_estimate");
     expect(toolNames).toContain("agentboot_scan_for_import");
-    // Phase 10 execute tools
+    // Phase 10 execute tools (read-only tier)
     expect(toolNames).toContain("agentboot_validate");
     expect(toolNames).toContain("agentboot_lint");
     expect(toolNames).toContain("agentboot_doctor");
-    expect(toolNames).toContain("agentboot_build");
-    expect(toolNames).toContain("agentboot_sync");
-    // Phase 10 write tool
-    expect(toolNames).toContain("agentboot_propose_change");
+    // B4: mutating tools are HIDDEN in the default read-only profile —
+    // maintainer-profile exposure is covered in tests/band-b.test.ts
+    expect(toolNames).not.toContain("agentboot_build");
+    expect(toolNames).not.toContain("agentboot_sync");
+    expect(toolNames).not.toContain("agentboot_propose_change");
   });
 
   it("handles tools/call", () => {

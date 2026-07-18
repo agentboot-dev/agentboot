@@ -136,7 +136,7 @@ describe("AB-139: cost-estimate CLI command", () => {
     expect(parsed).toHaveProperty("personas");
     expect(parsed).toHaveProperty("totalMonthlyCostUsd");
     expect(Array.isArray(parsed.personas)).toBe(true);
-    expect(parsed.personas.length).toBe(4);
+    expect(parsed.personas.length).toBe(5);
   });
 
   it("JSON output persona entries have expected fields", () => {
@@ -189,7 +189,7 @@ describe("AB-139: cost-estimate human-readable table format", () => {
   });
 
   // Prove the default output shows all 4 persona names in the table
-  it("cost-estimate (no flags): output shows all 4 enabled persona names", () => {
+  it("cost-estimate (no flags): output shows all 5 enabled persona names", () => {
     const output = run("cost-estimate");
     expect(output).toContain("code-reviewer");
     expect(output).toContain("security-reviewer");

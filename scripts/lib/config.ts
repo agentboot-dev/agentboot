@@ -38,7 +38,10 @@ export interface AgentBootConfig {
     distPath?: string;
     provenanceHeaders?: boolean;
     failOnDirtyDist?: boolean;
-    tokenBudget?: { warnAt?: number };
+    /** B11: warnAt (default 8000) warns; failAt (opt-in) FAILS the build when a
+     * compiled persona's estimated size exceeds it — the CI gate for prompt-size
+     * regressions. Sizes are reported to dist/persona-sizes.json either way. */
+    tokenBudget?: { warnAt?: number; failAt?: number };
   };
   sync?: {
     repos?: string;
@@ -55,6 +58,18 @@ export interface AgentBootConfig {
     hooks?: Record<string, unknown>;
     permissions?: { allow?: string[]; deny?: string[] };
     mcpServers?: Record<string, unknown>;
+    /**
+     * Arbitrary additional Claude Code settings keys, passed through VERBATIM to
+     * the managed output (both dist/managed/managed-settings.json and the
+     * managed-settings.d fragments). This is how an org expresses settings that
+     * have no dedicated AgentBoot key — enableAllProjectMcpServers,
+     * enabledMcpjsonServers, disabledMcpjsonServers, env, cleanupPeriodDays,
+     * includeCoAuthoredBy, or any key Claude Code adds later — so an existing
+     * hand-written managed settings file can be reproduced 1:1 from hub config.
+     * Keys with dedicated config (permissions, hooks, mcpServers) are rejected
+     * at validation; use the dedicated key.
+     */
+    settings?: Record<string, unknown>;
   };
 
   // User-level (~/.claude) write SPI. AgentBoot is the default provider for this
@@ -113,6 +128,33 @@ export interface AgentBootConfig {
   validation?: {
     secretPatterns?: string[];
     strictMode?: boolean;
+  };
+
+  /**
+   * B2/B3: Compliance-hook behavior. The bundled regex patterns always run
+   * (fast path, fail-safe baseline); an org can additionally plug its own
+   * scanner into the same hook chain — a DLP endpoint wrapper, a PHI
+   * classifier, anything executable.
+   *
+   * Scanner contract: receives the content (prompt or response) on stdin;
+   * exit 0 = allow, exit 2 = block, any other exit = scanner failure, resolved
+   * by failMode ("open" = allow with a warning, "closed" = block; default
+   * "open"). Scanner stdout/stderr is surfaced to the developer, never sent
+   * anywhere. The command is embedded in the generated hook at build time and
+   * must not contain quotes, backticks, $( or newlines (validated).
+   */
+  compliance?: {
+    inputScan?: {
+      scannerCommand?: string;
+      failMode?: "open" | "closed";
+    };
+    outputScan?: {
+      scannerCommand?: string;
+      failMode?: "open" | "closed";
+      /** B3: promote the output scan from warn-only to blocking (exit 2 with a
+       * redact instruction back to the model). Default false (warn). */
+      blocking?: boolean;
+    };
   };
 }
 
@@ -291,8 +333,19 @@ export interface McpGovernanceConfig {
 export interface McpServerEntry {
   /** Server name/identifier */
   name: string;
-  /** Expected command or module path */
+  /**
+   * B5 identity pinning: when set, the configured server under this name must
+   * use EXACTLY this command — a trusted name may not front a different
+   * executable. Without it, approval is name-only (legacy, weaker).
+   */
   command?: string;
+  /** B5: exact expected argument vector (pin the package spec here, e.g.
+   * ["agentboot@0.12.0", "mcp-server"] — this is how a version is pinned). */
+  args?: string[];
+  /** B5: exact expected URL for remote (sse/http) servers. */
+  url?: string;
+  /** B5: expected transport ("stdio" | "sse" | "http" | ...). */
+  transport?: string;
   /** Description of what this server provides */
   description?: string;
   /** Scope: which level this server is approved at */

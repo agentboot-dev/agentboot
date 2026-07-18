@@ -186,6 +186,7 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 | `output.provenanceHeaders` | boolean | `true` | Add source-file + timestamp provenance headers to output. |
 | `output.failOnDirtyDist` | boolean | `false` | Fail the build if `dist/` already contains prior output (CI staleness guard). |
 | `output.tokenBudget.warnAt` | number | `8000` | Per-persona estimated-token warning threshold (informational — warns, never blocks). |
+| `output.tokenBudget.failAt` | number | — | Opt-in hard ceiling: the build **fails** when a compiled persona's estimated size exceeds it — the CI gate for prompt-size regressions. The build also writes `dist/persona-sizes.json` so hub PRs show size changes as a reviewable diff. Estimates use a chars/4 heuristic — a stable relative measure, not an exact tokenizer count. |
 
 > Which **platforms** to emit is controlled by `personas.outputFormats`, not `output`. There is no
 > `output.format`, `output.hooks`, `output.mcp`, `output.managed`, or `output.dir` key.
@@ -203,6 +204,7 @@ Claude Code-specific extras, emitted only for the `claude` format when set.
 | `claude.hooks` | object | Extra Claude Code hooks. |
 | `claude.permissions` | `{ allow?: string[]; deny?: string[] }` | Permission rules. |
 | `claude.mcpServers` | object | Additional MCP server entries. |
+| `claude.settings` | object | Arbitrary additional Claude Code settings keys, passed through **verbatim** to the managed output (`dist/managed/managed-settings.json` and the `managed-settings.d` fragments). Use for keys with no dedicated AgentBoot field — `enableAllProjectMcpServers`, `enabledMcpjsonServers`, `disabledMcpjsonServers`, `env`, `cleanupPeriodDays`, `includeCoAuthoredBy`, or any future Claude Code key — so an existing hand-written managed settings file can be reproduced 1:1 from hub config. Keys with dedicated config (`permissions`, `hooks`, `mcpServers`) are rejected at validation. |
 
 ### `userLevel` — user-scope install
 
@@ -267,11 +269,14 @@ Deployment flow:
    path for your MDM (the build prints the target path — e.g.
    `/Library/Application Support/Claude/` for Jamf/Kandji, `/etc/claude-code/` for Linux
    MDM, `C:\ProgramData\Claude\` for Intune).
-2. **Per-team policy:** merge the applicable fragments (org `00-*` first, then group
-   `10-*`, then team `20-*` — later keys must not override org rules; the org fragment
-   wins on conflict) into one `managed-settings.json` per fleet segment, and deploy that
-   merged file to each segment. Keep the merge in your MDM repo so it is reviewed like
-   any policy change.
+2. **Per-team policy:** the build performs the merge for you — every scope with policy
+   gets a single deployable file at `dist/managed/scopes/<scope>/managed-settings.json`
+   (e.g. `scopes/core/` for the org-wide fleet, `scopes/nodes/platform/api/` for a team
+   segment). Merge semantics: `permissions.deny` and `permissions.allow` are the UNION
+   across scopes (a team can add denies, never remove the org's), and every other key is
+   won by the higher scope (org over group over team). Deploy the merged file for each
+   fleet segment; the `managed-settings.d/` fragments remain available as the reviewable
+   composition inputs.
 3. **Verify after deployment** on one managed machine: start a Claude Code session and
    confirm (a) a denied tool from `guardrails.denyTools` is actually blocked, and
    (b) `--dangerously-skip-permissions` is rejected if `disableBypassPermissions` is set.
@@ -282,9 +287,17 @@ Deployment flow:
 
 | Field | Type | Description |
 |---|---|---|
-| `mcp.approved` | `McpServerEntry[]` | Allowed MCP servers (`{ name, command? }`). |
-| `mcp.enforceApproved` | boolean | Reject any MCP server in a target repo not on the approved list. |
+| `mcp.approved` | `McpServerEntry[]` | Allowed MCP servers. Beyond `name`, an entry can **pin the implementation identity**: `command`, `args` (pin the package spec here, e.g. `["company-tools@1.2.3", "serve"]` — this is how a version is pinned), `url`, and `transport`. With `enforceApproved`, a configured server must match every pinned field exactly — an approved *name* may not front a different executable. |
+| `mcp.enforceApproved` | boolean | Reject any configured MCP server not on the approved list, or whose identity differs from the approved pin. |
 | `mcp.required` | string[] | MCP servers required in all repos. |
+
+> **Approving a server is not approving every tool it exposes.** The allowlist governs which
+> server implementations may run; each server still surfaces its own tool set to the agent.
+> AgentBoot's own MCP server runs a **read-only profile by default** — the mutating tools
+> (`agentboot_build`, `agentboot_sync`, `agentboot_propose_change`) are hidden and rejected
+> unless the server is started with `agentboot mcp-server --profile maintainer` (or
+> `AGENTBOOT_MCP_PROFILE=maintainer`). Tool metadata carries MCP annotations
+> (`readOnlyHint`, `openWorldHint`) so clients can display what mutates.
 
 ### `privacy` — three-tier privacy model
 
@@ -300,6 +313,60 @@ Deployment flow:
 |---|---|---|---|
 | `validation.secretPatterns` | string[] | `[]` | Extra regex patterns that fail validation if found in a trait/persona (e.g. internal hostnames, account IDs). |
 | `validation.strictMode` | boolean | `false` | Treat validation warnings as build-blocking errors. |
+
+### `compliance` — pluggable content scanners
+
+The bundled credential regexes always run in the generated input/output scan hooks. An
+organization can additionally plug its **own scanner** — a DLP wrapper, a PHI classifier,
+any executable — into the same hook chain, and promote the output scan from warn to block.
+AgentBoot does not become a DLP engine; it gives your scanner a reliable integration point.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `compliance.inputScan.scannerCommand` | string | — | Executable invoked by the input-scan hook after the bundled patterns pass. Receives the prompt on stdin. Exit `0` = allow, `2` = block, anything else = scanner failure (see `failMode`). Embedded in the generated hook at build time; shell metacharacters are rejected. |
+| `compliance.inputScan.failMode` | `"open"\|"closed"` | `"open"` | What a scanner *failure* (not a block) does: `open` = allow with a stderr notice, `closed` = block. Note: a scanner that hangs is bounded by the hook's own timeout, which the platform may treat as fail-open — see the platform capability matrix. |
+| `compliance.outputScan.scannerCommand` | string | — | Same contract, applied to the response in the Stop-hook output scan. |
+| `compliance.outputScan.failMode` | `"open"\|"closed"` | `"open"` | As above, for the output scanner. |
+| `compliance.outputScan.blocking` | boolean | `false` | Promote the output scan from warn-only to **blocking**: on a match (bundled pattern or scanner), the hook exits 2 with a redact instruction returned to the model instead of printing a warning. |
+
+Scanner content never leaves the machine through AgentBoot: the hook pipes content to your
+command locally and surfaces its stdout/stderr to the developer only.
+
+### Policy exceptions — owners and expiration dates
+
+Enterprise policies always meet legitimate exceptions; unstructured exceptions become
+permanent bypasses. AgentBoot records exceptions as **owned, expiring, reviewable JSON**:
+
+- **Hub:** `agentboot-exceptions.json` at the hub root — validated by `agentboot validate`.
+- **Spoke repo:** `.agentboot-exceptions.json` at the repo root — consumed by
+  `agentboot drift-check`. A modified/missing managed file covered by an unexpired
+  `"policy": "drift:<path-or-glob>"` exception reports as **`excepted`** (with its
+  exception id) instead of failing the repo — approved drift is always *distinguished*
+  from unauthorized drift, never hidden. Living in the repo means the exception itself
+  is PR-reviewed history.
+
+```jsonc
+{
+  "exceptions": [
+    {
+      "id": "EX-2026-001",
+      "policy": "drift:.claude/settings.json",
+      "reason": "Vendor pilot needs a temporary permission override",
+      "approver": "security-lead",          // a person, not a team alias
+      "owner": "platform-lead",             // owns resolving it before expiry
+      "created": "2026-07-01",
+      "expires": "2026-10-01",              // REQUIRED — expired exceptions are NOT honored
+      "compensatingControl": "weekly manual review of the overridden file",
+      "link": "https://tickets.example.com/SEC-123"
+    }
+  ]
+}
+```
+
+Required fields: `id`, `policy`, `reason`, `approver`, `owner`, `created`, `expires`.
+An **expired** exception is treated as absent — the drift resurfaces, validation fails,
+and the report names the owner. Exceptions expiring within 14 days produce warnings.
+"Just this once" cannot silently become forever.
 
 ---
 
@@ -322,7 +389,14 @@ design invariant).
 ```
 
 The emitted telemetry record per persona invocation contains only:
-`{ event, persona_id, timestamp, status, dev_id }` — no prompt, model, token, or cost fields.
+`{ event, persona_id, timestamp, status, dev_id, schema }` — no prompt, model, token, or cost fields.
+
+The full event schema (three event types, every field, its source, and whether it can
+identify a person) is versioned in `scripts/lib/telemetry-schema.ts`, and a conformance
+test executes the generated hook against it — the hook cannot drift from the documented
+schema without failing CI. Run **`agentboot telemetry-inspect`** to see exactly what would
+be emitted under your current config, including sample events. Note that a `"hashed"`
+developer id is **pseudonymous, not anonymous** — see the privacy guide.
 
 ---
 

@@ -33,6 +33,27 @@ is not a control.
 | **Managed settings** (non-overridable) | ✅ `managed-settings.json` — MDM-deployable; overrides user and project settings | ❌ No native non-overridable settings layer. HARD guardrails are protected at build time (a lower scope cannot silently disable one) and ride in the emitted hooks/config | ❌ Same as Codex | ❌ Not available |
 | **MCP** | ✅ `.mcp.json` compiled and synced, with an approved-server allowlist filter | ✅ `.codex/config.toml` emitted with the AgentBoot MCP server entry (`[mcp_servers.agentboot]`) automatically | ⚠️ No MCP config emitted for Copilot — point it at the AgentBoot MCP server manually | ⚠️ Varies by tool; manual setup |
 
+## Enforcement classification
+
+Every security-relevant control above falls into exactly one of these classes per
+platform — when evaluating AgentBoot as a control, use the class, not the feature name:
+
+| Class | Meaning | Where it applies |
+|---|---|---|
+| **Hard-enforced** | The platform mechanically blocks the action; a developer cannot override it locally | Claude Code managed settings via MDM; Claude Code blocking hooks |
+| **Enforced, known bypasses** | Blocks in the normal path, but a documented gap exists | Codex hooks (partial tool coverage, trust-review requirement); Copilot exit-2 blocking (not yet empirically GA-verified) |
+| **Fail-open** | Enforces when healthy; a failure/timeout allows the action | Copilot command-hook timeouts; any hook if its runtime dependency (node) is missing |
+| **Advisory** | The agent receives the policy as instructions; nothing enforces it | Entire community tier; output-scan in default (warn) mode |
+| **Unsupported** | The control does not exist on the platform | Managed settings outside Claude Code; MCP allowlisting outside compiled configs |
+
+**Prompt instructions are not a security boundary.** An instruction saying "never do
+X" is behavior shaping; prompt injection or simple non-compliance can bypass it. Hard
+controls live outside the prompt: hooks, managed settings, platform permissions, and
+your organization's own perimeter (network egress, DLP, branch protection).
+`agentboot doctor` prints an **Enforcement** section that applies this classification
+to your actual config: if you have hard org policy configured and an output platform
+can only receive it as advisory instructions, doctor says so.
+
 ## Reading the matrix honestly
 
 - **Drift detection detects; it does not prevent.** A content-hash mismatch tells

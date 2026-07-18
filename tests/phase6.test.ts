@@ -504,7 +504,7 @@ describe("AB-118/119: Validate composition checks", () => {
     const output = runValidate();
     expect(output).toContain("Composition consistency");
     expect(output).toContain("Rule overrides");
-    expect(output).toContain("All 8 checks passed");
+    expect(output).toContain("All 10 checks passed");
   });
 });
 

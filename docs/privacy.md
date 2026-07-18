@@ -506,7 +506,7 @@ Frame everything as PERSONA improvement opportunities, not developer deficiencie
 {
   "telemetry": {
     "enabled": true,
-    "includeDevId": "hashed",   // false | "hashed" (SHA-256 of email) | "email" | "email-raw"
+    "includeDevId": "hashed",   // false | "hashed" (SHA-256 of email — pseudonymous, not anonymous) | "email" | "email-raw"
     "logPath": "~/.agentboot/telemetry.ndjson",
     "includeContent": false     // design invariant — raw prompt content is never included
   },
@@ -597,7 +597,7 @@ can support this **if the org explicitly configures it and communicates the poli
 {
   "telemetry": {
     // ⚠️ Opt-in. includeDevId's value IS the format (no separate devIdFormat field):
-    "includeDevId": "hashed"     // false | "hashed" (anonymized) | "email" (real identity)
+    "includeDevId": "hashed"     // false | "hashed" (pseudonymous) | "email" (real identity)
   }
 }
 ```
@@ -608,7 +608,7 @@ format:
 | Format | What the org sees | Use case |
 |--------|------------------|----------|
 | `false` (default) | No developer identity | Privacy-first (recommended) |
-| `"hashed"` | Consistent anonymous ID (same person = same hash, but not reversible to a name) | Usage patterns without names — "developer X7f3a uses 3x more Opus than average" |
+| `"hashed"` | Consistent **pseudonymous** ID — the same person always maps to the same hash, and anyone holding the org's email list can re-identify it. Treat it as personal data (GDPR-style regimes do), not as anonymous data. | Usage patterns without names in the dashboard — "developer X7f3a uses 3x more Opus than average" |
 | `"email"` | Real developer email | Full attribution — requires clear communication to the team |
 
 **AgentBoot's recommendation: start with `false` or `"hashed"`.** Full attribution
@@ -631,7 +631,7 @@ You know team-level patterns. You don't know individuals. This is sufficient
 for budget tracking and persona effectiveness. It's NOT sufficient for
 per-developer usage analysis.
 
-**`includeDevId: "hashed"`** (anonymous individual tracking):
+**`includeDevId: "hashed"`** (pseudonymous individual tracking — re-identifiable by anyone with the email roster, so announce it like any attribution policy):
 
 ```
 Org Dashboard:
