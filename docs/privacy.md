@@ -436,22 +436,20 @@ for how each optimization tool maps to these two types.
 
 ### What Gets Collected (Telemetry — Tier 3)
 
-The audit trail hooks collect only persona output metrics:
+The telemetry hook records only a minimal invocation event — no prompt content, tokens, cost, or
+findings:
 
 ```json
 {
   "event": "persona_invocation",
   "persona_id": "code-reviewer",
   "timestamp": "2026-03-19T14:30:00Z",
-  "model": "sonnet",
-  "input_tokens": 8400,
-  "output_tokens": 3200,
-  "duration_ms": 45000,
-  "cost_usd": 0.089,
-  "findings_count": { "CRITICAL": 0, "ERROR": 1, "WARN": 3, "INFO": 2 },
-  "scope": "team:platform/api"
+  "status": "completed",
+  "dev_id": "a1b2c3d4"
 }
 ```
+
+(`dev_id` is present only when `telemetry.includeDevId` is set; see [Configuration](configuration.md#telemetry).)
 
 **Note what's absent:** No developer ID. No prompt text. No conversation content.
 No file paths read. The telemetry is about the **persona**, not the developer.
@@ -502,37 +500,28 @@ Frame everything as PERSONA improvement opportunities, not developer deficiencie
 
 ### Configuration
 
+`telemetry` and `privacy` are **top-level** config keys (telemetry is not nested under privacy):
+
 ```jsonc
 {
+  "telemetry": {
+    "enabled": true,
+    "includeDevId": "hashed",   // false | "hashed" (SHA-256 of email) | "email" | "email-raw"
+    "logPath": "~/.agentboot/telemetry.ndjson",
+    "includeContent": false     // design invariant — raw prompt content is never included
+  },
   "privacy": {
-    "telemetry": {
-      "enabled": true,
-      "includeDevId": false,         // Default: no developer identity
-      "devIdFormat": "hashed",       // If includeDevId: true → "hashed" (anonymous) or "email" (attributed)
-      "includeCost": true,           // Cost tracking
-      "includeScope": true,          // Team-level attribution
-      "destination": "local"         // "local" = NDJSON file; "http" = webhook
-    },
-    "insights": {
-      "enabled": true,
-      "autoShareAnonymized": false,  // Developer must opt-in to share
-      "escalation": {
-        "enabled": true,
-        "categories": ["exfiltration", "guardrail-circumvention", "malware", "harassment"],
-        "contact": "security@acme-corp.com"
-      }
-    },
-    "rawPrompts": {
-      "collect": false,              // AgentBoot does not collect raw prompts
-      "transmit": false,             // AgentBoot does not transmit raw prompts
-      "surfaceToOrg": false          // AgentBoot does not surface raw prompts to org dashboards
-    }
+    "tier": "organizational",   // "private" | "privileged" | "organizational"
+    "rawPrompts": false,        // design invariant — raw prompts are never collected
+    "escalationEnabled": true   // category-flag-only escalation for genuinely harmful content
   }
 }
 ```
 
-The `rawPrompts` section has three `false` fields that cannot be set to `true`.
-They exist in the schema to make AgentBoot's design intent explicit.
+`privacy.rawPrompts` and `telemetry.includeContent` are `false` design invariants — they cannot be
+set to `true`, and exist to make AgentBoot's intent explicit. Note `includeDevId`'s value *is* the
+format (there is no separate `devIdFormat` field), and the telemetry record carries no cost, scope,
+or prompt fields.
 
 Note: these fields control what **AgentBoot** does. They do not (and cannot) control
 what the API provider (Anthropic) offers through its own Compliance API or what the
@@ -606,17 +595,15 @@ can support this **if the org explicitly configures it and communicates the poli
 
 ```jsonc
 {
-  "privacy": {
-    "telemetry": {
-      "includeDevId": true,        // ⚠️ Opt-in: org must set this explicitly
-      "devIdFormat": "hashed"      // "hashed" = anonymized ID; "email" = real identity
-    }
+  "telemetry": {
+    // ⚠️ Opt-in. includeDevId's value IS the format (no separate devIdFormat field):
+    "includeDevId": "hashed"     // false | "hashed" (anonymized) | "email" (real identity)
   }
 }
 ```
 
-When `includeDevId` is `true`, telemetry includes a developer identifier. The org
-chooses the format:
+Set `includeDevId` to a non-`false` value to include a developer identifier — its value *is* the
+format:
 
 | Format | What the org sees | Use case |
 |--------|------------------|----------|

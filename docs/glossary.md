@@ -27,7 +27,7 @@ Key terms used throughout AgentBoot documentation.
 
 **Compilation Target** — One of the output formats produced by `agentboot build`. Includes: cross-platform SKILL.md, CC-native `.claude/` directory, AGENTS.md universal standard, Copilot instructions, and Cursor rules.
 
-**Composition Type** — Determines precedence when the same artifact exists at multiple scope levels. `rule` = top-down (org wins, cannot be overridden by teams). `preference` = bottom-up (team wins, can customize org defaults). Defaults: gotcha=rule, persona=rule, persona-rule=rule, trait=preference, instruction=preference.
+**Composition Type** — Determines precedence when the same artifact exists at multiple scope levels. `rule` = top-down (org wins, cannot be overridden by teams). `preference` = bottom-up (team wins, can customize org defaults). Defaults: gotcha=rule, persona=rule, persona-rule=rule, lexicon=rule, trait=preference, instruction=preference.
 
 **Convention Over Configuration** — The principle that AgentBoot ships with sensible defaults for everything. Organizations configure only what is different about their situation, not everything from scratch.
 
@@ -71,7 +71,7 @@ Key terms used throughout AgentBoot documentation.
 
 **Prompts as Code** — The principle that AI agent behavior is treated as infrastructure: defined in files, stored in version control, reviewed in pull requests, tested, linted, and measured. Analogous to Infrastructure as Code.
 
-**Scope Hierarchy** — The four-level organizational model: Org, Group, Team, Repo. More specific scopes layer on top of general ones. Optional behaviors follow "most specific wins." Mandatory behaviors follow "most general wins."
+**Scope Hierarchy** — An N-tier scope tree (`nodes`) of arbitrary depth; the common shape is Org → Group → Team → Repo (the legacy flat `groups`/`teams` config still works and is converted to nodes). More specific scopes layer on top of general ones. Optional behaviors follow "most specific wins." Mandatory behaviors follow "most general wins."
 
 **Self-Improvement Reflections** — An optional mechanism where personas write brief reflections after completing their task. Reflections accumulate into a dataset revealing patterns for persona improvement.
 
@@ -87,6 +87,6 @@ Key terms used throughout AgentBoot documentation.
 
 **Trait** — A reusable behavioral building block for an AI persona. Captures a single aspect of how an agent should think or communicate. Composed at build time, never at runtime.
 
-**Trait Weight** — A calibration system for traits supporting variable intensity. Named weights (HIGH/MEDIUM/LOW) map to numeric values. The weight adjusts the threshold for action, not the type of action.
+**Trait Weight** — A calibration system for traits supporting variable intensity. Named weights (OFF/LOW/MEDIUM/HIGH/MAX) map to numeric values (0.0 / 0.3 / 0.5 / 0.7 / 1.0). The weight adjusts the threshold for action, not the type of action.
 
 **Two-Channel MDM Distribution** — Enterprise distribution model separating non-negotiable enforcement (Channel 1: MDM-deployed managed settings for HARD guardrails) from team-customizable configuration (Channel 2: Git-based hub-and-spoke for everything else).

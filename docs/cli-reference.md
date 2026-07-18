@@ -197,6 +197,28 @@ AGENTBOOT_ORG=acme npx agentboot install --non-interactive
 
 ---
 
+## `agentboot install-user`
+
+Install compiled skills/rules to your user scope (`~/.claude`), or stage them for an external
+manager. Controlled by `userLevel.mode` in `agentboot.config.json` (see [Configuration](configuration.md#userlevel--user-scope-install)).
+
+```
+agentboot install-user
+agentboot install-user --dry-run
+agentboot install-user --mode manifest
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Show what would be written/staged without changing anything |
+| `--mode <mode>` | Override the write mode: `auto` (default), `direct`, or `manifest` |
+
+`auto` writes `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns
+the slot (then it stages a handoff manifest); `direct` always writes; `manifest` never writes and only
+stages the resolved content plus a manifest for an external provider to apply.
+
+---
+
 ## `agentboot import`
 
 Scan and classify existing AI agent content (`.claude/`, CLAUDE.md, `.cursorrules`,
@@ -213,11 +235,13 @@ agentboot import --apply
 | Flag | Description |
 |------|-------------|
 | `--path <dir>` | Directory or repo to scan (default: cwd) |
+| `--url <github-url>` | Import from a GitHub URL (repo or raw file) |
 | `--parent <dir>` | Scan all subdirs of a parent directory (expanded import pipeline) |
 | `--hub-path <dir>` | Path to personas repo (auto-detected from siblings if omitted) |
 | `--overlap` | Run heuristic overlap analysis against hub and cross-import content |
 | `--apply` | Apply a previously generated import plan (`.agentboot-import-plan.json`) |
-| `--non-interactive` | Auto-apply high-confidence (>0.8) classifications without prompting |
+| `--retry-failed` | Retry files that previously timed out (`.agentboot-import-failed.json`) |
+| `--non-interactive` | Auto-apply items the classifier marks **high** confidence (categorical); medium/low are left for review |
 | `--isolated` | Test prompts without user Claude settings (uses temp config) |
 
 This is an **LLM-powered command** — it uses `claude -p` to classify content.
@@ -230,7 +254,7 @@ for the command classification model.
 
 Scaffold a new component. The `name` argument must be 1-64 lowercase alphanumeric
 characters with hyphens (e.g., `my-new-persona`). For the `prompt` type, `name` is
-the content or file path to classify.
+the content or file path to classify; for the `template` type, `name` is the template name.
 
 ```
 agentboot add persona my-reviewer
@@ -239,6 +263,7 @@ agentboot add gotcha database-rls
 agentboot add domain healthcare
 agentboot add hook compliance-gate
 agentboot add prompt ./path/to/file.md
+agentboot add template sdlc-orchestrator
 ```
 
 ### Supported types
@@ -251,6 +276,7 @@ agentboot add prompt ./path/to/file.md
 | `domain` | `domains/<name>/` directory with manifest, README, and subdirectories |
 | `hook` | `hooks/<name>.sh` (executable shell script with hook template) |
 | `prompt` | Classify a raw prompt or file using `import` (LLM-powered) |
+| `template` | Install a pre-packaged harness bundle from a shipped template (e.g. `sdlc-orchestrator`); applies all-or-nothing |
 
 ---
 
@@ -270,7 +296,7 @@ agentboot doctor --format json
 | Flag | Description |
 |------|-------------|
 | `--fix` | Attempt to auto-fix issues (e.g., rebuild stale dist/, set missing config fields) |
-| `-d, --dry-run` | Preview what `--fix` would do without making changes |
+| `--dry-run` | Preview what `--fix` would do without making changes |
 | `--format <fmt>` | Output format: `text` (default), `json` |
 
 When `--fix` is used, doctor reports `issuesFound`, `issuesFixed`, and `issuesRemaining`
@@ -278,6 +304,24 @@ counts. Issues that cannot be auto-fixed (e.g., missing Node.js) are reported wi
 manual remediation steps.
 
 Exit code `1` if any issues remain after fixing.
+
+---
+
+## `agentboot drift-check`
+
+Check spoke repos for drift against their sync manifest — reports files that were modified or removed
+since the last sync (drift is **detected, not prevented**).
+
+```
+agentboot drift-check
+agentboot drift-check --repo ~/work/my-service
+agentboot drift-check --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--repo <path>` | Check a specific repo (defaults to all repos in `repos.json`) |
+| `--format <type>` | Output format: `text` (default) or `json` |
 
 ---
 
@@ -378,6 +422,60 @@ agentboot uninstall --dry-run
 
 ---
 
+## `agentboot audit`
+
+Audit the hub itself for health issues — orphaned traits, dead gotchas, and scope shadows.
+
+```
+agentboot audit
+agentboot audit --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--format <type>` | Output format: `text` (default) or `json` |
+
+---
+
+## Hub management
+
+AgentBoot keeps a global registry of hubs (`~/.agentboot/config.json`) so `/ab` and the MCP server can
+resolve a hub from any repo. Override the registry location with the `AGENTBOOT_HOME` environment
+variable (its `.agentboot` directory is used; handy for isolation or a non-default location).
+
+### `agentboot hubs`
+
+List registered hubs.
+
+```
+agentboot hubs
+agentboot hubs --prune
+```
+
+| Flag | Description |
+|------|-------------|
+| `--prune` | Remove registered hubs whose path no longer exists on disk (and clear a dead default hub) |
+
+### `agentboot connect [path]`
+
+Register a hub (the directory must contain `agentboot.config.json`) and set it as the default.
+`path` defaults to the current directory.
+
+```
+agentboot connect
+agentboot connect ~/work/personas
+```
+
+### `agentboot use <path>`
+
+Switch the default hub to an already-registered hub.
+
+```
+agentboot use ~/work/personas
+```
+
+---
+
 ## `agentboot config [key] [value]`
 
 Read or write configuration values. Prints the full config, a specific dotted key path,
@@ -447,26 +545,27 @@ Reads from compiled `dist/skill/core/` when available, falls back to `core/` sou
 
 ## `agentboot optimize`
 
-Aggregate telemetry metrics and generate LLM-powered trait weight recommendations.
-Reads GELF telemetry data, computes per-persona metrics (invocations, token cost,
-rephrase rate, finding distribution), and optionally applies weight recommendations
-to `persona.config.json`.
+Analyze persona telemetry and generate optimization recommendations: aggregated usage
+metrics, per-persona **model** recommendations, and coverage-gap analysis. It reads local
+telemetry (`~/.agentboot/telemetry/`), prints a report, and can optionally write an HTML
+report. It does **not** modify `persona.config.json`, and needs no LLM/API provider.
 
 ```
 agentboot optimize
-agentboot optimize --persona code-reviewer
-agentboot optimize --report ./optimize-report.html
-agentboot optimize --apply
-agentboot optimize --apply --dry-run
+agentboot optimize --since 2026-01-01 --until 2026-03-31
+agentboot optimize --scope team:platform/*
+agentboot optimize --report --output-dir ./reports
+agentboot optimize --json
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--persona <name>` | Analyze a specific persona only |
-| `--report <path>` | Write HTML report to file (default: `agentboot-optimize-report.html`) |
-| `--apply` | Write recommended trait weight changes to `persona.config.json` |
-| `-d, --dry-run` | Preview changes without writing (use with `--apply`) |
-| `--json` | Output metrics in machine-readable JSON |
+| `--since <date>` | Start date (YYYY-MM-DD) |
+| `--until <date>` | End date (YYYY-MM-DD) |
+| `--scope <scope>` | Filter by scope (e.g. `team:platform/*`) |
+| `--report` | Write an HTML report to `agentboot-optimize-<date>.html` |
+| `--output-dir <path>` | Directory for the HTML report (default: `.`) |
+| `--json` | Output raw JSON (metrics, recommendations, gaps) |
 
-Requires telemetry data to have been collected. Uses `resolveProvider()` for the LLM
-recommendation step — requires an active Claude Code session or configured API provider.
+Requires telemetry to have been collected first (enable it in `agentboot.config.json` — see
+[Configuration](configuration.md#telemetry)). If no telemetry is found, the command exits cleanly.

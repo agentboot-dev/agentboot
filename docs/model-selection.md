@@ -35,13 +35,15 @@ Set model per persona in `persona.config.json`:
 }
 ```
 
-Or override at the agent level in `agents/{persona}.md` frontmatter:
+Set a per-persona model in the persona's `persona.config.json`:
 
-```yaml
----
-model: "opus"
----
+```json
+{ "model": "opus" }
 ```
+
+The compiler writes this into the generated `.claude/agents/{persona}.md` frontmatter on every
+build — that file is generated output, so don't hand-edit it (edits are overwritten). For
+team-scoped overrides, use the scope hierarchy.
 
 ## Decision Criteria
 

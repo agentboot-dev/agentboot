@@ -9,6 +9,30 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.11.4] — 2026-07-18
+
+Documentation accuracy & completeness pass (no code changes).
+
+### Documentation
+- **Configuration reference rewritten from the actual schema** — removed a fictional JSON Schema and
+  nonexistent keys (`extend`, `sync.mode`, `output.format/hooks/mcp/managed/dir`, snake_case PR
+  fields) and documented ~16 previously-missing fields (`nodes`, `personas.outputFormats`, `agents`,
+  `privacy`, `mcp`, `composition`, `userLevel`, `claude`, `managed`, `validation`, `ab.modelOverrides`).
+- **Config-key drift fixed** in extending / migration / privacy / org-connection / delivery-methods:
+  `output.platforms` → `personas.outputFormats`; `extend.*` → top-level `domains`/`instructions`;
+  corrected the telemetry schema; removed the nonexistent `agentboot sync --mode` flag and
+  `agentboot upgrade` command.
+- **CLI reference completeness** — rewrote the stale `optimize` section; documented six previously
+  undocumented commands (`install-user`, `drift-check`, `audit`, `hubs`/`connect`/`use`),
+  `add template`, `import --url`/`--retry-failed`, and the `AGENTBOOT_HOME` env var; corrected the
+  `doctor` dry-run flag.
+- **Platform capability accuracy** — corrected Codex MCP auto-emission, added Codex/Copilot hook
+  enforcement caveats (trust review, partial coverage, fail-open timeouts, not-yet-GA-verified), and
+  fixed the Codex managed-settings cell on the landing page; and clarified that community-tier tools (Cursor/Windsurf/Gemini) have hook surfaces AgentBoot doesn't bind (not "no hook surface").
+- README now discloses Beta status and splits official vs community platform tiers; concepts/glossary
+  updated for the N-tier `nodes` model, Codex/JetBrains outputs, and full composition/weight defaults;
+  removed a leftover Docusaurus stub page; assorted precision fixes.
+
 ## [0.11.3] — 2026-07-17
 
 Patch release: hub-registry isolation and cleanup.
@@ -146,7 +170,8 @@ way to v1.0 GA.
 - Security audit across path traversal, input validation, shell injection, and secret patterns;
   test-isolation crash guards; routing/behavioral-test corrections.
 
-[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/agentboot-dev/agentboot/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/agentboot-dev/agentboot/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/agentboot-dev/agentboot/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/agentboot-dev/agentboot/compare/v0.11.0...v0.11.1

@@ -139,6 +139,10 @@ AgentBoot ships generic. Your industry has specific requirements. Add domain-spe
 
 ## Project Status
 
+**AgentBoot is a public Beta (v0.11.x).** "Stable" below means feature-complete and tested end to
+end — not API-frozen. Breaking changes may still occur before **v1.0 GA**; see the
+[migration guide](docs/migration.md).
+
 | Component | Status |
 |---|---|
 | Core traits (6) | Stable |
@@ -149,7 +153,8 @@ AgentBoot ships generic. Your industry has specific requirements. Add domain-spe
 | Lint + token budgets | Stable |
 | Compliance domain template | Stable |
 | MCP server | Stable |
-| Cursor / Gemini / Codex output | Stable |
+| Claude Code / Codex / Copilot CLI output (official) | Stable |
+| Cursor / Gemini / Windsurf / JetBrains output (community) | Stable — advisory, not enforced |
 
 ## Contributing
 
