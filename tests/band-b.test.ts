@@ -319,6 +319,145 @@ describe("B8: merged managed artifacts per scope", () => {
 });
 
 // ---------------------------------------------------------------------------
+// B12: enforcement honesty — doctor warns when a platform cannot enforce policy
+// ---------------------------------------------------------------------------
+
+describe("B12: doctor enforcement honesty", () => {
+  it("warns per-platform when hard org policy meets advisory/fail-open platforms", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      personas: { enabled: [], outputFormats: ["claude", "copilot", "cursor"] },
+      managed: { enabled: true, guardrails: { denyTools: ["curl*"] } },
+    });
+    try {
+      let output = "";
+      try {
+        output = run(`${path.join(ROOT, "scripts", "cli.ts")} doctor`, hub);
+      } catch (err: any) {
+        output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      }
+      expect(output).toContain("Enforcement");
+      expect(output).toContain("claude: org policy is enforceable");
+      expect(output).toContain("copilot: org policy is FAIL-OPEN");
+      expect(output).toContain("cursor: org policy is ADVISORY");
+      expect(output).toContain("not a security boundary");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B11: prompt-size discipline — failAt gate + persona-sizes.json report
+// ---------------------------------------------------------------------------
+
+describe("B11: prompt-size budgets", () => {
+  function mkPersonaHub(failAt?: number): string {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      personas: { enabled: ["chatty"], outputFormats: ["skill"] },
+      output: failAt !== undefined ? { tokenBudget: { failAt } } : {},
+    });
+    const pDir = path.join(hub, "core", "personas", "chatty");
+    fs.mkdirSync(pDir, { recursive: true });
+    fs.writeFileSync(path.join(pDir, "persona.config.json"), JSON.stringify({
+      name: "Chatty", description: "long-winded", invocation: "/chatty", traits: {},
+    }));
+    fs.writeFileSync(path.join(pDir, "SKILL.md"),
+      "---\nname: chatty\ndescription: long\n---\n" + "wordy instruction line\n".repeat(200));
+    return hub;
+  }
+
+  it("build FAILS when a persona exceeds tokenBudget.failAt", () => {
+    const hub = mkPersonaHub(10);
+    try {
+      let output = "";
+      let failed = false;
+      try {
+        output = run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      } catch (err: any) {
+        failed = true;
+        output = (err.stdout?.toString() ?? "") + (err.stderr?.toString() ?? "");
+      }
+      expect(failed).toBe(true);
+      expect(output).toContain("failAt");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("writes dist/persona-sizes.json for PR diffing", () => {
+    const hub = mkPersonaHub();
+    try {
+      run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      const report = JSON.parse(fs.readFileSync(path.join(hub, "dist", "persona-sizes.json"), "utf-8"));
+      expect(report.personas.chatty).toBeGreaterThan(100);
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B10: audit detectors — scope shadows + dead gotchas
+// ---------------------------------------------------------------------------
+
+import { runAudit } from "../scripts/lib/audit.js";
+
+describe("B10: audit detectors", () => {
+  it("detects a team artifact shadowing an org RULE as error, preference shadow as warn", () => {
+    const hub = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-b10-"));
+    try {
+      // Core rule-type artifact (gotchas infer rule by path) + a preference trait
+      fs.mkdirSync(path.join(hub, "core", "gotchas"), { recursive: true });
+      fs.mkdirSync(path.join(hub, "core", "traits"), { recursive: true });
+      fs.writeFileSync(path.join(hub, "core", "gotchas", "no-prod-deploy.md"), "---\ndescription: d\n---\nrule");
+      fs.writeFileSync(path.join(hub, "core", "traits", "tone.md"), "---\ndescription: d\n---\npref");
+      // Team scope shadows both
+      fs.mkdirSync(path.join(hub, "teams", "platform", "api", "gotchas"), { recursive: true });
+      fs.mkdirSync(path.join(hub, "teams", "platform", "api", "traits"), { recursive: true });
+      fs.writeFileSync(path.join(hub, "teams", "platform", "api", "gotchas", "no-prod-deploy.md"), "shadowed!");
+      fs.writeFileSync(path.join(hub, "teams", "platform", "api", "traits", "tone.md"), "shadowed!");
+
+      const report = runAudit(hub);
+      const shadows = report.findings.filter((f) => f.type === "scope-shadow");
+      expect(shadows).toHaveLength(2);
+      expect(shadows.find((f) => f.file?.includes("no-prod-deploy"))?.severity).toBe("error");
+      expect(shadows.find((f) => f.file?.includes("tone"))?.severity).toBe("warn");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("detects a dead gotcha (glob matches nothing in registered repos) and passes a live one", () => {
+    const hub = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-b10d-"));
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-b10d-repo-"));
+    try {
+      fs.mkdirSync(path.join(repo, "src", "jobs"), { recursive: true });
+      fs.writeFileSync(path.join(repo, "src", "jobs", "reconcile.ts"), "code");
+      fs.mkdirSync(path.join(hub, "core", "gotchas"), { recursive: true });
+      fs.writeFileSync(path.join(hub, "core", "gotchas", "live.md"),
+        '---\ndescription: d\npaths: ["src/**/*.ts"]\n---\nbody');
+      fs.writeFileSync(path.join(hub, "core", "gotchas", "dead.md"),
+        '---\ndescription: d\npaths: ["legacy/cobol/**/*.cbl"]\n---\nbody');
+      fs.writeFileSync(path.join(hub, "agentboot.config.json"), JSON.stringify({
+        org: "acme", sync: { repos: "./repos.json" },
+      }));
+      fs.writeFileSync(path.join(hub, "repos.json"), JSON.stringify([{ path: repo }]));
+
+      const report = runAudit(hub);
+      const dead = report.findings.filter((f) => f.type === "dead-gotcha");
+      expect(dead).toHaveLength(1);
+      expect(dead[0]?.file).toContain("dead.md");
+      expect(dead[0]?.message).toContain("never activates");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // B9: import-first sync safety — first sync onto bespoke files needs opt-in
 // ---------------------------------------------------------------------------
 

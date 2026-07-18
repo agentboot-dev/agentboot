@@ -38,7 +38,10 @@ export interface AgentBootConfig {
     distPath?: string;
     provenanceHeaders?: boolean;
     failOnDirtyDist?: boolean;
-    tokenBudget?: { warnAt?: number };
+    /** B11: warnAt (default 8000) warns; failAt (opt-in) FAILS the build when a
+     * compiled persona's estimated size exceeds it — the CI gate for prompt-size
+     * regressions. Sizes are reported to dist/persona-sizes.json either way. */
+    tokenBudget?: { warnAt?: number; failAt?: number };
   };
   sync?: {
     repos?: string;

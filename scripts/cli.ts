@@ -1296,6 +1296,45 @@ program
           ok("Tool/format consistency (no agents.tools configured)");
         }
 
+        // B12: enforcement honesty — when the org has configured HARD policy
+        // (managed guardrails, deny lists, blocking output scan), say plainly
+        // which output platforms can actually enforce it and which only receive
+        // instructions. Ambiguity here is how compliance theater happens.
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Enforcement")); }
+        const hasHardPolicy =
+          Boolean(config.managed?.enabled) ||
+          Boolean(config.managed?.guardrails?.denyTools?.length) ||
+          Boolean(config.claude?.permissions?.deny?.length) ||
+          Boolean(config.compliance?.outputScan?.blocking);
+        const enforcementFormats = config.personas?.outputFormats ?? [];
+        const ENFORCEMENT_LEVELS: Record<string, { level: "enforced" | "partial" | "fail-open" | "advisory"; detail: string }> = {
+          claude: { level: "enforced", detail: "hooks block (exit 2); managed settings via the MDM channel are non-overridable" },
+          codex: { level: "partial", detail: "hooks emitted with partial event coverage; managed-settings ceiling is lower than Claude Code" },
+          copilot: { level: "fail-open", detail: "command hooks time out OPEN — a hung or slow hook does not block" },
+          cursor: { level: "advisory", detail: "instructions only — no hook binding, nothing is enforced" },
+          gemini: { level: "advisory", detail: "instructions only — no hook binding" },
+          windsurf: { level: "advisory", detail: "instructions only — no hook binding" },
+          jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
+          agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
+          skill: { level: "advisory", detail: "skill content is instructions only" },
+        };
+        if (hasHardPolicy) {
+          for (const fmt of enforcementFormats) {
+            const e = ENFORCEMENT_LEVELS[fmt];
+            if (!e) continue;
+            if (e.level === "enforced") {
+              ok(`${fmt}: org policy is enforceable — ${e.detail}`);
+            } else {
+              warn(
+                `${fmt}: org policy is ${e.level.toUpperCase()} on this platform — ${e.detail}. ` +
+                `Prompt instructions are not a security boundary; see docs/platform-capability-matrix.md`
+              );
+            }
+          }
+        } else {
+          ok("Enforcement (no hard org policy configured — nothing requires platform enforcement)");
+        }
+
       } catch (e: unknown) {
         fail(`Config parse error: ${e instanceof Error ? e.message : String(e)}`);
       }

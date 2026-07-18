@@ -3614,13 +3614,28 @@ function main(): void {
   const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
   log(chalk.cyan("\nToken estimates:"));
 
+  // B11: prompt size is a budgeted resource — large personas cost latency,
+  // money, context room, and instruction adherence. warnAt keeps the advisory
+  // behavior; failAt (opt-in) turns a size regression into a CI failure. The
+  // per-persona sizes are also written to dist/persona-sizes.json so a hub PR
+  // diff SHOWS prompt-size changes instead of hiding them in compiled bodies.
+  const tokenFailAt = config.output?.tokenBudget?.failAt;
+  const sizeReport: Record<string, number> = {};
+  const overBudget: string[] = [];
+
   for (const result of allResults.filter((r) => r.platforms.length > 0)) {
     const skillPath = path.join(distPath, "skill", "core", result.persona, "SKILL.md");
     if (fs.existsSync(skillPath)) {
       const content = fs.readFileSync(skillPath, "utf-8");
+      // Heuristic: ~4 chars/token for English/markdown prose. Not a tokenizer —
+      // treat as a stable relative measure, not an exact count.
       const estimatedTokens = Math.ceil(content.length / 4);
+      sizeReport[result.persona] = estimatedTokens;
 
-      if (estimatedTokens > tokenBudget) {
+      if (tokenFailAt !== undefined && estimatedTokens > tokenFailAt) {
+        overBudget.push(`${result.persona} (~${estimatedTokens} tokens > failAt ${tokenFailAt})`);
+        log(chalk.red(`  ✗ [${result.persona}] estimated ${estimatedTokens} tokens exceeds tokenBudget.failAt (${tokenFailAt})`));
+      } else if (estimatedTokens > tokenBudget) {
         log(
           chalk.yellow(
             `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
@@ -3630,6 +3645,23 @@ function main(): void {
         log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
       }
     }
+  }
+
+  fs.writeFileSync(
+    path.join(distPath, "persona-sizes.json"),
+    JSON.stringify(
+      { "// note": "Estimated tokens per compiled persona (chars/4 heuristic). Diff this file in hub PRs to see prompt-size changes.", personas: sizeReport },
+      null, 2
+    ) + "\n",
+    "utf-8"
+  );
+
+  if (overBudget.length > 0) {
+    console.error(chalk.red(
+      `\n✗ ${overBudget.length} persona(s) exceed output.tokenBudget.failAt:\n  ${overBudget.join("\n  ")}\n` +
+      `  Trim the persona/traits or raise the budget deliberately.`
+    ));
+    process.exit(1);
   }
 
   // ---------------------------------------------------------------------------
