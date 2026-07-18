@@ -62,10 +62,12 @@ export function detectGitignoreConflicts(
       const meta = line.slice(0, tab);          // <source>:<linenum>:<pattern> ("::" when non-matching)
       const file = line.slice(tab + 1).trim();
       if (!wanted.has(file)) continue;
-      const metaParts = meta.split(":");
-      const source = metaParts[0] ?? "";
-      const linenum = metaParts[1] ?? "";
-      if (!source) continue;                    // --non-matching entry: not ignored
+      // Parse from the linenum anchor, not a naive split — a Windows source
+      // like "C:/Users/x/global-gitignore" contains a colon of its own.
+      const m = /^(.+):(\d+):/.exec(meta);
+      if (!m) continue;                         // "::" --non-matching entry: not ignored
+      const source = m[1]!;
+      const linenum = m[2]!;
       // A rule source inside the repo is repo-relative (".gitignore",
       // ".git/info/exclude", "sub/.gitignore"); global/XDG sources come back
       // as absolute paths (or ~-prefixed).
