@@ -10,8 +10,49 @@ full PR-level detail; this file is the curated, human-readable summary.
 ## [Unreleased]
 
 Enterprise-readiness batch from adopting-organization feedback: quick wins (secret-scan
-parity, supply-chain hardening, first-run fixes, security policy) plus the enterprise
-feature tier below.
+parity, supply-chain hardening, first-run fixes, security policy), the enterprise
+feature tier, and the scope-layout unification fixes below.
+
+### Fixed (scope-layout unification — field reports UI-7/UI-8/UI-9)
+- **validate and compile now honor the SAME scope source layouts** (UI-7): one resolver
+  accepts canonical `nodes/<path>/`, nested `groups/<g>/teams/<t>/`, and sibling
+  `teams/<g>/<t>/` — previously a team persona in the validate-guarded nested layout
+  compiled to nothing, and a rogue HARD override in the sibling layout was invisible to
+  validate (both directions fixed; audit walks all three too).
+- **Team-scope content now reaches spokes' `.claude/`** (UI-8): sync reads the
+  `dist/{platform}/nodes/<g>[/<t>]/` layout compile actually writes (node output wins over
+  legacy dist dirs on conflict, still subject to rule-composition checks; composition
+  inputs like `managed-settings.d/` do not ship to spokes). Compile also warns LOUDLY when
+  scope-level trait/instruction/gotcha CONTENT files exist — those are not compiled at node
+  scope (only persona definitions + per-persona trait weights) and previously produced no
+  output with no warning.
+- **`/ab` now works in the hub itself** (UI-9): install copies the compiled skills into
+  the hub's own `.claude/skills/` after every install build — the ab*.md files in
+  `.claude/agents/` are subagent definitions and never registered slash commands, so the
+  README quickstart failed precisely in the first repo a new user tried it in.
+- **`dist/skill` output now passes the official Agent Skills validator**: the provenance
+  header was emitted BEFORE the YAML frontmatter, failing `skills-ref validate` on every
+  persona (the spec requires SKILL.md to begin with `---`). Provenance now lands
+  immediately after the frontmatter — same fix applied to gotcha rules in the claude
+  output, where a leading comment could defeat `paths:` scoping. CI runs the official
+  validator against every emitted skill, plus an offline conformance test.
+- **`dist/plugin` is now a loadable, spec-conformant Claude Code plugin**: the manifest
+  moved to `.claude-plugin/plugin.json` (a root-level `plugin.json` is invisible to the
+  plugin system — the official validator rejected the directory outright), `name` is
+  kebab-case (`<org>-personas`; the old `@scope/package` style predates the plugin spec),
+  `author` is an object (a bare string is a load error), and the compliance hooks are now
+  REGISTERED via a generated `hooks/hooks.json` using `${CLAUDE_PLUGIN_ROOT}` paths —
+  previously the scripts were copied but never wired, so an installed plugin carried them
+  as dead files. The AgentBoot inventory fields (`personas`/`traits`/`rules`/
+  `agentboot_version`) remain in the manifest deliberately (spec-tolerated warnings).
+  `claude plugin validate` runs in CI alongside the skills validator, plus offline
+  conformance tests. *Behavior change*: consumers reading `dist/plugin/plugin.json` must
+  read `dist/plugin/.claude-plugin/plugin.json`.
+- **Gitignore-conflict warning attributes its source** (UI-6 resolution): the earlier
+  "false positive" was a correct warning triggered by the machine's GLOBAL gitignore.
+  Detection now covers every ignore source again and names the file the matching rule
+  lives in (`rule: <source>:<line>`), calling out global-gitignore matches explicitly so
+  the fix hint points at the right file.
 
 ### Added (enterprise features)
 - **`claude.settings` pass-through** — reproduce an existing hand-written managed settings

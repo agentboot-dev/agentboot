@@ -223,6 +223,14 @@ function lowerScopeDirs(hubRoot: string): Array<{ scope: string; dir: string }> 
       const gDir = path.join(groupsDir, g);
       if (!fs.statSync(gDir).isDirectory()) continue;
       out.push({ scope: `groups/${g}`, dir: gDir });
+      // UI-7: nested team layout groups/<g>/teams/<t>/ is also a scope dir
+      const nestedTeams = path.join(gDir, "teams");
+      if (fs.existsSync(nestedTeams)) {
+        for (const t of fs.readdirSync(nestedTeams)) {
+          const tDir = path.join(nestedTeams, t);
+          if (fs.statSync(tDir).isDirectory()) out.push({ scope: `groups/${g}/teams/${t}`, dir: tDir });
+        }
+      }
     }
   }
   const teamsDir = path.join(hubRoot, "teams");

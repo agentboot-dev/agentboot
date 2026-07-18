@@ -115,6 +115,24 @@ function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
   ].join("\n");
 }
 
+/**
+ * Attach the provenance header WITHOUT breaking frontmatter-first formats.
+ * The Agent Skills spec (and Claude Code's own loaders) require SKILL.md to
+ * BEGIN with the YAML frontmatter delimiter — any content before `---` fails
+ * the official skills-ref validator. When the content opens with frontmatter,
+ * the provenance comment is inserted immediately AFTER the closing `---`
+ * (comments in the body are unrestricted); otherwise it is prepended as before.
+ */
+function withProvenance(content: string, sourceFile: string, config: AgentBootConfig): string {
+  if (config.output?.provenanceHeaders === false) return content;
+  const header = provenanceHeader(sourceFile, config);
+  const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---\r?\n)/);
+  if (fmMatch) {
+    return `${fmMatch[1]}${header}${content.slice(fmMatch[1]!.length)}`;
+  }
+  return `${header}${content}`;
+}
+
 // ---------------------------------------------------------------------------
 // Trait loading
 // ---------------------------------------------------------------------------
@@ -527,10 +545,7 @@ function buildSkillOutput(
   config: AgentBootConfig,
   skillPath: string
 ): string {
-  const provenanceEnabled = config.output?.provenanceHeaders !== false;
-  return provenanceEnabled
-    ? `${provenanceHeader(skillPath, config)}${composedContent}`
-    : composedContent;
+  return withProvenance(composedContent, skillPath, config);
 }
 
 /**
@@ -998,18 +1013,11 @@ function compileInstructions(
       let finalContent: string;
       if (!provenanceEnabled) {
         finalContent = content;
-      } else if (platform === "claude") {
-        // For CC rules, frontmatter must be the first thing in the file.
-        // Insert provenance after the closing --- of frontmatter.
-        const fmMatch = content.match(/^(---\n[\s\S]*?\n---\n)/);
-        if (fmMatch) {
-          const afterFm = content.slice(fmMatch[1]!.length);
-          finalContent = `${fmMatch[1]}\n${provenanceHeader(srcPath, config)}${afterFm}`;
-        } else {
-          finalContent = `${provenanceHeader(srcPath, config)}${content}`;
-        }
       } else {
-        finalContent = `${provenanceHeader(srcPath, config)}${content}`;
+        // Frontmatter-first formats (CC rules, SKILL.md, Cursor .mdc, Copilot
+        // .instructions.md) must open with the YAML delimiter — withProvenance
+        // places the header after the frontmatter when present.
+        finalContent = withProvenance(content, srcPath, config);
       }
       fs.writeFileSync(path.join(outDir, file), finalContent, "utf-8");
     }
@@ -1041,23 +1049,22 @@ function compileGotchas(
 
   for (const file of gotchaFiles) {
     const content = fs.readFileSync(path.join(gotchasDir, file), "utf-8");
-    const provenanceEnabled = config.output?.provenanceHeaders !== false;
-    const header = provenanceEnabled
-      ? provenanceHeader(path.join(gotchasDir, file), config)
-      : "";
+    // Gotchas carry paths: frontmatter — the provenance comment must land AFTER
+    // it (frontmatter-first formats; a comment before --- defeats path scoping).
+    const withHeader = withProvenance(content, path.join(gotchasDir, file), config);
 
     // Write to claude rules (gotchas are path-scoped rules)
     if (outputFormats.includes("claude")) {
       const rulesDir = path.join(distPath, "claude", scopePath, "rules");
       ensureDir(rulesDir);
-      fs.writeFileSync(path.join(rulesDir, file), `${header}${content}`, "utf-8");
+      fs.writeFileSync(path.join(rulesDir, file), withHeader, "utf-8");
     }
 
     // Write to skill output as well
     if (outputFormats.includes("skill")) {
       const gotchaOutDir = path.join(distPath, "skill", scopePath, "gotchas");
       ensureDir(gotchaOutDir);
-      fs.writeFileSync(path.join(gotchaOutDir, file), `${header}${content}`, "utf-8");
+      fs.writeFileSync(path.join(gotchaOutDir, file), withHeader, "utf-8");
     }
 
     // AB-129: Cursor output — gotchas become glob-scoped .mdc rules
@@ -2023,7 +2030,6 @@ function generatePluginOutput(
 
   const personas: PluginManifest["personas"] = [];
   const traitEntries: PluginManifest["traits"] = [];
-  const hookEntries: PluginManifest["hooks"] = [];
   const ruleEntries: PluginManifest["rules"] = [];
 
   // Copy agents and skills from claude output
@@ -2102,27 +2108,68 @@ function generatePluginOutput(
     });
   }
 
-  // Generate plugin.json
+  // Plugin-spec conformance: hooks/hooks.json registers the compliance hooks.
+  // The scripts were previously copied into hooks/ but never REGISTERED — an
+  // installed plugin carried them as dead files. Commands use the spec's
+  // ${CLAUDE_PLUGIN_ROOT} substitution; entry shape mirrors the settings.json
+  // emission (matcher/hooks/type/command/timeout/async), driven by the same
+  // canonical COMPLIANCE_HOOK_BINDINGS table so the two surfaces cannot drift.
+  const pluginHooksConfig: Record<string, unknown[]> = {};
+  for (const b of COMPLIANCE_HOOK_BINDINGS) {
+    if (b.requiresDenyTools && !denyToolsActive(config)) continue;
+    pluginHooksConfig[b.ccEvent] = pluginHooksConfig[b.ccEvent] ?? [];
+    pluginHooksConfig[b.ccEvent]!.push({
+      matcher: b.matcher,
+      hooks: [{
+        type: "command",
+        // Quoted per the reference examples — the plugin cache path may contain spaces.
+        command: `"\${CLAUDE_PLUGIN_ROOT}"/hooks/${b.script}`,
+        timeout: b.timeoutMs,
+        ...(b.async ? { async: true } : {}),
+      }],
+    });
+  }
+  fs.writeFileSync(
+    path.join(pluginHooksDir, "hooks.json"),
+    JSON.stringify({ hooks: pluginHooksConfig }, null, 2) + "\n",
+    "utf-8"
+  );
+
+  // Generate the manifest at the SPEC location: .claude-plugin/plugin.json.
+  // (A root-level plugin.json is invisible to the plugin system — the official
+  // validator rejects the directory outright.) Spec-recognized fields use
+  // spec types (kebab-case name, author as an object); the AgentBoot inventory
+  // fields (personas/traits/rules/agentboot_version) ride along deliberately —
+  // the spec tolerates unrecognized fields as warnings so one manifest can
+  // serve multiple ecosystems.
+  const pluginName = `${config.org}-personas`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
   const pluginManifest: PluginManifest = {
-    name: `@${config.org}/${config.org}-personas`,
+    name: pluginName,
+    displayName: `${config.orgDisplayName ?? config.org} Personas`,
     version: pkg.version,
     description: `Agentic personas for ${config.orgDisplayName ?? config.org}`,
-    author: config.orgDisplayName ?? config.org,
+    author: { name: config.orgDisplayName ?? config.org },
     license: "Apache-2.0",
+    hooks: "./hooks/hooks.json",
     agentboot_version: pkg.version,
     personas,
     traits: traitEntries,
-    hooks: hookEntries.length > 0 ? hookEntries : undefined,
     rules: ruleEntries.length > 0 ? ruleEntries : undefined,
   };
 
+  const manifestDir = path.join(pluginDir, ".claude-plugin");
+  ensureDir(manifestDir);
   fs.writeFileSync(
-    path.join(pluginDir, "plugin.json"),
+    path.join(manifestDir, "plugin.json"),
     JSON.stringify(pluginManifest, null, 2) + "\n",
     "utf-8"
   );
 
-  log(chalk.gray(`  → Plugin output written to dist/plugin/`));
+  log(chalk.gray(`  → Plugin output written to dist/plugin/ (.claude-plugin/plugin.json + hooks/hooks.json)`));
 }
 
 // ---------------------------------------------------------------------------
@@ -2819,6 +2866,42 @@ function generateMergedManagedArtifacts(
   }
 }
 
+/**
+ * UI-7: resolve a scope node's persona source directory. ONE resolver, used by
+ * every consumer, honoring every documented layout:
+ *   1. nodes/<path>/personas/            (canonical, AB-88)
+ *   2. groups/<g>/teams/<t>/personas/    (nested legacy — what validate always walked)
+ *   3. teams/<g>/<t>/personas/           (sibling legacy)
+ *   4. groups/<g>/personas/              (group scope)
+ * Before this, validate enforced layout 2 while compile only discovered 1/3/4 —
+ * the same hub content was guarded by one command and invisible to the other.
+ */
+function resolveNodePersonasDir(hubRoot: string, nodePath: string): string | null {
+  const parts = nodePath.split("/");
+  const candidates: Array<string | undefined> = [
+    path.join(hubRoot, "nodes", nodePath, "personas"),
+    parts.length === 2 ? path.join(hubRoot, "groups", parts[0]!, "teams", parts[1]!, "personas") : undefined,
+    parts.length === 2 ? path.join(hubRoot, "teams", parts[0]!, parts[1]!, "personas") : undefined,
+    parts.length === 1 ? path.join(hubRoot, "groups", parts[0]!, "personas") : undefined,
+  ];
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+/** UI-8: all existing scope ROOT dirs for a node (any accepted layout). */
+function listNodeScopeRoots(hubRoot: string, nodePath: string): string[] {
+  const parts = nodePath.split("/");
+  const candidates: Array<string | undefined> = [
+    path.join(hubRoot, "nodes", nodePath),
+    parts.length === 2 ? path.join(hubRoot, "groups", parts[0]!, "teams", parts[1]!) : undefined,
+    parts.length === 2 ? path.join(hubRoot, "teams", parts[0]!, parts[1]!) : undefined,
+    parts.length === 1 ? path.join(hubRoot, "groups", parts[0]!) : undefined,
+  ];
+  return candidates.filter((c): c is string => c !== undefined && fs.existsSync(c));
+}
+
 function generateManagedSettings(config: AgentBootConfig, distPath: string): void {
   const managed = config.managed;
   if (!managed?.enabled) return;
@@ -3408,25 +3491,28 @@ function main(): void {
     let nodePersonasFound = false;
 
     for (const { path: nodePath } of flatNodes) {
-      // Look for personas at nodes/{path}/personas/
-      const nodePersonasDir = path.join(HUB_ROOT, "nodes", nodePath, "personas");
-
-      // Also check legacy paths: groups/{name}/personas/ and teams/{group}/{team}/personas/
+      // UI-7: one resolver for every documented scope layout (see resolveNodePersonasDir)
       const parts = nodePath.split("/");
-      const legacyGroupDir = parts.length === 1
-        ? path.join(HUB_ROOT, "groups", parts[0]!, "personas")
-        : undefined;
-      const legacyTeamDir = parts.length === 2
-        ? path.join(HUB_ROOT, "teams", parts[0]!, parts[1]!, "personas")
-        : undefined;
+      const personasDir = resolveNodePersonasDir(HUB_ROOT, nodePath);
 
-      const personasDir = fs.existsSync(nodePersonasDir)
-        ? nodePersonasDir
-        : legacyGroupDir && fs.existsSync(legacyGroupDir)
-          ? legacyGroupDir
-          : legacyTeamDir && fs.existsSync(legacyTeamDir)
-            ? legacyTeamDir
-            : null;
+      // UI-8: loud diagnostic — scope-level CONTENT files (traits/instructions/
+      // gotchas) are not compiled at node scope in this version; scope overrides
+      // are node persona definitions + per-persona trait weights. Without this
+      // warning such files validate clean and silently produce no output.
+      for (const root of listNodeScopeRoots(HUB_ROOT, nodePath)) {
+        for (const category of ["traits", "instructions", "gotchas"] as const) {
+          const catDir = path.join(root, category);
+          if (!fs.existsSync(catDir)) continue;
+          const mdFiles = fs.readdirSync(catDir).filter((f) => f.endsWith(".md") && f !== "README.md");
+          if (mdFiles.length > 0) {
+            log(chalk.yellow(
+              `  ⚠ [${nodePath}] ${mdFiles.length} ${category} file(s) at ${path.relative(HUB_ROOT, catDir)} — ` +
+              `scope-level ${category} CONTENT is not compiled (only node personas and per-persona trait weights are). ` +
+              `These files currently produce NO output.`
+            ));
+          }
+        }
+      }
 
       if (!personasDir) continue;
 
@@ -3468,14 +3554,7 @@ function main(): void {
     if (outputFormats.includes("agents")) {
       for (const { path: nodePath } of flatNodes) {
         // Collect personas that exist at this node
-        const parts = nodePath.split("/");
-        const nodePersonasDir = path.join(HUB_ROOT, "nodes", nodePath, "personas");
-        const legacyGroupDir = parts.length === 1 ? path.join(HUB_ROOT, "groups", parts[0]!, "personas") : undefined;
-        const legacyTeamDir = parts.length === 2 ? path.join(HUB_ROOT, "teams", parts[0]!, parts[1]!, "personas") : undefined;
-        const personasDir = fs.existsSync(nodePersonasDir) ? nodePersonasDir
-          : legacyGroupDir && fs.existsSync(legacyGroupDir) ? legacyGroupDir
-          : legacyTeamDir && fs.existsSync(legacyTeamDir) ? legacyTeamDir
-          : null;
+        const personasDir = resolveNodePersonasDir(HUB_ROOT, nodePath);
         if (!personasDir) continue;
 
         const nodePersonaConfigs = new Map<string, PersonaConfig>();

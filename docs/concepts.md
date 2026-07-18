@@ -580,6 +580,12 @@ acme/personas/
 **Scope merge order with public repos:**
 `core/` → `groups/{g}/` → `teams/{g}/{t}/` → `public-repos/{repo}/`
 
+> **Accepted scope source layouts.** The canonical location for scope-level content is
+> `nodes/<path>/` (e.g. `nodes/platform/api/personas/`). Two legacy layouts are equally
+> honored by validate, compile, audit, and sync alike: nested `groups/<g>/teams/<t>/` and
+> sibling `teams/<g>/<t>/`. Pick one and stay consistent — all commands see all three, so
+> content can never be guarded by one command and invisible to another.
+
 The `public-repos/` scope is the most specific — it wins on filename conflict.
 
 **Developer experience is identical.** A developer inside a public repo runs the same

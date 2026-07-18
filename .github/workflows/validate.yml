@@ -53,6 +53,35 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Agent Skills spec conformance — run the OFFICIAL skills-ref validator
+      # against every emitted skill so the dist/skill tree cannot silently drift
+      # from agentskills.io compliance (regression: provenance header used to be
+      # emitted before the frontmatter and failed every persona).
+      - name: Agent Skills spec conformance (skills-ref)
+        shell: bash
+        run: |
+          found=0
+          for d in dist/skill/core/*/; do
+            [ -f "$d/SKILL.md" ] || continue
+            found=1
+            npx -y skills-ref validate "$d"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no skills found under dist/skill/core — build output layout changed?"
+            exit 1
+          fi
+
+      # Plugin-spec conformance — the OFFICIAL claude plugin validate against
+      # dist/plugin (manifest at .claude-plugin/plugin.json, spec field types,
+      # registered hooks). Linux leg only; the offline mirror in
+      # tests/agentskills-conformance.test.ts covers both platforms.
+      - name: Plugin spec conformance (claude plugin validate)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate ./dist/plugin
+
       - name: Run tests
         run: npm test
 
