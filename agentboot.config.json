@@ -58,6 +58,7 @@
     "enabled": [
       "code-reviewer",       // /review-code — PR and code quality reviews
       "security-reviewer",   // /review-security — vulnerability and risk analysis
+      "ai-security-reviewer", // /review-ai-security — AI-workflow threats (prompt injection, MCP escalation, excessive agency)
       "test-generator",      // /gen-tests — writes unit and integration tests
       "test-data-expert"     // /gen-testdata — generates synthetic test data
     ],

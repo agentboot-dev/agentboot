@@ -326,6 +326,46 @@ interface McpTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** B4: tools that build, write, or touch the network/remote. Excluded from the
+   * default read-only profile and annotated for MCP clients. */
+  mutating?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// B4: MCP profiles — read-only by default, maintainer opt-in
+// ---------------------------------------------------------------------------
+
+export type McpProfile = "read-only" | "maintainer";
+
+let activeProfile: McpProfile = "read-only";
+
+/** Resolve the profile from --profile argv or AGENTBOOT_MCP_PROFILE env.
+ * Default is READ-ONLY: inspection tools only. Mutating tools (build, sync,
+ * propose_change) require an explicit maintainer opt-in — an autonomous MCP
+ * client must not be able to push branches or rewrite dist/ just because
+ * someone wired up the default server entry. */
+export function resolveMcpProfile(argv: string[] = process.argv.slice(2)): McpProfile {
+  const idx = argv.indexOf("--profile");
+  const fromArgv = idx !== -1 ? argv[idx + 1] : undefined;
+  const raw = fromArgv ?? process.env["AGENTBOOT_MCP_PROFILE"] ?? "read-only";
+  if (raw !== "read-only" && raw !== "maintainer") {
+    process.stderr.write(`AgentBoot MCP: unknown profile "${raw}" — falling back to read-only\n`);
+    return "read-only";
+  }
+  return raw;
+}
+
+export function setMcpProfile(profile: McpProfile): void {
+  activeProfile = profile;
+}
+
+function toolAnnotations(tool: McpTool): Record<string, unknown> {
+  return {
+    readOnlyHint: !tool.mutating,
+    destructiveHint: false,
+    // propose_change pushes a branch + opens a PR — it reaches outside the machine.
+    openWorldHint: tool.name === "agentboot_propose_change",
+  };
 }
 
 const TOOLS: McpTool[] = [
@@ -490,6 +530,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: "agentboot_build",
+    mutating: true,
     description:
       "Run the AgentBoot compile pipeline to build dist/ from source personas and traits.",
     inputSchema: {
@@ -500,6 +541,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: "agentboot_sync",
+    mutating: true,
     description:
       "Sync compiled dist/ output to target repos. Optionally specify which repos to sync.",
     inputSchema: {
@@ -517,6 +559,7 @@ const TOOLS: McpTool[] = [
   // --- Story 3: Write tool ---
   {
     name: "agentboot_propose_change",
+    mutating: true,
     description:
       "Propose a change to the hub by creating a branch, committing a file, pushing, and opening a PR. Never pushes to main directly.",
     inputSchema: {
@@ -1659,9 +1702,19 @@ export function handleMessage(request: JsonRpcRequest): JsonRpcResponse | null {
       // No response needed for notifications
       return null;
 
-    // Tool discovery
-    case "tools/list":
-      return makeResponse(id ?? null, { tools: TOOLS });
+    // Tool discovery — B4: the read-only profile (default) exposes inspection
+    // tools only; annotations tell MCP clients which tools mutate.
+    case "tools/list": {
+      const visible = TOOLS
+        .filter((t) => activeProfile === "maintainer" || !t.mutating)
+        .map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+          annotations: toolAnnotations(t),
+        }));
+      return makeResponse(id ?? null, { tools: visible });
+    }
 
     // Tool invocation
     case "tools/call": {
@@ -1675,6 +1728,17 @@ export function handleMessage(request: JsonRpcRequest): JsonRpcResponse | null {
       const tool = TOOLS.find((t) => t.name === toolName);
       if (!tool) {
         return makeError(id ?? null, -32602, `Unknown tool: ${toolName}`);
+      }
+
+      // B4: defense in depth — reject mutating calls in read-only profile even
+      // if a client ignores the filtered tools/list.
+      if (tool.mutating && activeProfile !== "maintainer") {
+        return makeError(
+          id ?? null,
+          -32602,
+          `Tool ${toolName} is a mutating tool and this server is running the read-only profile. ` +
+            `Start the server with --profile maintainer (or AGENTBOOT_MCP_PROFILE=maintainer) to enable it.`
+        );
       }
 
       const result = handleToolCall(toolName, toolArgs);
@@ -1746,5 +1810,7 @@ function startStdioServer(): void {
 // Only start the server when run directly (not when imported for testing)
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
 if (isMainModule) {
+  setMcpProfile(resolveMcpProfile());
+  console.error(`[agentboot] MCP profile: ${activeProfile}${activeProfile === "read-only" ? " (mutating tools disabled — use --profile maintainer to enable build/sync/propose_change)" : ""}`);
   startStdioServer();
 }

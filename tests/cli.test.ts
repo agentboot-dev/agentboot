@@ -1445,7 +1445,7 @@ describe("AB-37: status command", () => {
     const output = run("status");
     expect(output).toContain("Your Organization");
     expect(output).toContain("code-reviewer");
-    expect(output).toContain("4 enabled");
+    expect(output).toContain("5 enabled");
   });
 
   it("--format json produces valid JSON", () => {
@@ -1897,7 +1897,7 @@ describe("AB-57: plugin structure", () => {
     expect(pluginJson.agentboot_version).toBeTruthy();
     expect(pluginJson.license).toBe("Apache-2.0");
     expect(pluginJson.personas).toBeInstanceOf(Array);
-    expect(pluginJson.personas.length).toBe(4);
+    expect(pluginJson.personas.length).toBe(5);
     expect(pluginJson.traits).toBeInstanceOf(Array);
     expect(pluginJson.traits.length).toBe(6);
   });
@@ -2513,8 +2513,8 @@ describe("AB-37: agentboot status command", () => {
     expect(output).toMatch(/your.org|Your Organization/i);
   });
 
-  // Prove status shows all 4 enabled persona names
-  it("status: output lists all 4 enabled personas", () => {
+  // Prove status shows all 5 enabled persona names
+  it("status: output lists all 5 enabled personas", () => {
     const output = run("status");
     expect(output).toContain("code-reviewer");
     expect(output).toContain("security-reviewer");

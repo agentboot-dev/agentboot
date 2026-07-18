@@ -41,6 +41,7 @@ import {
   resolveCompositionType,
   type CompositionType,
 } from "./lib/frontmatter.js";
+import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -709,14 +710,55 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
 
   // Validate that claude.mcpServers entries match approved list (if enforceApproved)
   if (mcpConfig.enforceApproved && config.claude?.mcpServers && mcpConfig.approved) {
-    const approvedNames = new Set(mcpConfig.approved.map(s => s.name));
-    for (const serverName of Object.keys(config.claude.mcpServers)) {
-      if (!approvedNames.has(serverName)) {
+    const approvedByName = new Map(mcpConfig.approved.map(s => [s.name, s]));
+    for (const [serverName, rawEntry] of Object.entries(config.claude.mcpServers)) {
+      const approved = approvedByName.get(serverName);
+      if (!approved) {
         fail(
           result,
           `MCP server "${serverName}" in claude.mcpServers is not in the approved list. ` +
           `Add it to mcp.approved or remove enforceApproved.`
         );
+        continue;
+      }
+
+      // B5: identity pinning — an approved NAME must not front an unapproved
+      // implementation. Whatever identity fields the approved entry pins
+      // (command, args, url, transport) must match the configured server exactly.
+      const entry = (rawEntry ?? {}) as Record<string, unknown>;
+      if (approved.command !== undefined && entry["command"] !== approved.command) {
+        fail(
+          result,
+          `MCP server "${serverName}": configured command "${String(entry["command"] ?? "(none)")}" does not match ` +
+          `the approved command "${approved.command}" — an approved name may not run a different executable.`
+        );
+      }
+      if (approved.args !== undefined) {
+        const configuredArgs = Array.isArray(entry["args"]) ? (entry["args"] as unknown[]).map(String) : [];
+        const match = configuredArgs.length === approved.args.length &&
+          configuredArgs.every((a, i) => a === approved.args![i]);
+        if (!match) {
+          fail(
+            result,
+            `MCP server "${serverName}": configured args [${configuredArgs.join(", ")}] do not match ` +
+            `the approved args [${approved.args.join(", ")}] — pin drift or substitution.`
+          );
+        }
+      }
+      if (approved.url !== undefined && entry["url"] !== approved.url) {
+        fail(
+          result,
+          `MCP server "${serverName}": configured url "${String(entry["url"] ?? "(none)")}" does not match the approved url "${approved.url}".`
+        );
+      }
+      if (approved.transport !== undefined) {
+        const configuredTransport = entry["transport"] ?? entry["type"] ?? (entry["url"] ? "sse" : "stdio");
+        if (configuredTransport !== approved.transport) {
+          fail(
+            result,
+            `MCP server "${serverName}": configured transport "${String(configuredTransport)}" does not match the approved transport "${approved.transport}".`
+          );
+        }
       }
     }
   }
@@ -734,6 +776,55 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
     }
   }
 
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// B1: claude.settings pass-through hygiene
+// ---------------------------------------------------------------------------
+
+function checkClaudeSettingsPassthrough(config: AgentBootConfig): CheckResult {
+  const result = check("claude.settings pass-through — no collisions with dedicated keys");
+  const settings = config.claude?.settings;
+  if (!settings) return result;
+
+  // These have dedicated, validated config surfaces — passing them through raw
+  // would silently bypass that validation (and the dedicated key wins at emit,
+  // so the pass-through copy would be dead config).
+  const dedicated: Record<string, string> = {
+    permissions: "claude.permissions",
+    hooks: "claude.hooks",
+    mcpServers: "claude.mcpServers",
+  };
+  for (const key of Object.keys(settings)) {
+    if (dedicated[key]) {
+      fail(
+        result,
+        `claude.settings.${key} collides with the dedicated config key ${dedicated[key]} — use that instead`
+      );
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// B7: policy exceptions — well-formed, owned, and not expired
+// ---------------------------------------------------------------------------
+
+function checkPolicyExceptions(configDir: string): CheckResult {
+  const result = check("Policy exceptions — well-formed, owned, and not expired");
+  const file = path.join(configDir, HUB_EXCEPTIONS_FILE);
+  if (!fs.existsSync(file)) return result;
+  let list;
+  try {
+    list = loadExceptionsFile(file);
+  } catch (e) {
+    fail(result, `${HUB_EXCEPTIONS_FILE}: unreadable — ${e instanceof Error ? e.message : String(e)}`);
+    return result;
+  }
+  const v = validateExceptions(list);
+  for (const e of v.errors) fail(result, e);
+  for (const w of v.warnings) warn(result, w);
   return result;
 }
 
@@ -862,6 +953,8 @@ async function main(): Promise<void> {
     checkCompositionConsistency(config, configDir),
     checkRuleOverrides(config, configDir),
     checkMcpGovernance(config),
+    checkClaudeSettingsPassthrough(config),
+    checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
   ];
 

@@ -202,6 +202,7 @@ program
   .option("--repos-file <path>", "path to repos.json")
   .option("-d, --dry-run", "preview changes without writing")
   .option("--force", "override drift detection (overwrite modified files)")
+  .option("--adopt-existing", "allow a FIRST sync to replace pre-existing bespoke instruction files (they are archived; consider import first)")
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const args = collectGlobalArgs({ config: globalOpts.config });
@@ -214,6 +215,9 @@ program
     }
     if (opts.force) {
       args.push("--force");
+    }
+    if (opts.adoptExisting) {
+      args.push("--adopt-existing");
     }
 
     runScript({
@@ -1292,6 +1296,45 @@ program
           ok("Tool/format consistency (no agents.tools configured)");
         }
 
+        // B12: enforcement honesty — when the org has configured HARD policy
+        // (managed guardrails, deny lists, blocking output scan), say plainly
+        // which output platforms can actually enforce it and which only receive
+        // instructions. Ambiguity here is how compliance theater happens.
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Enforcement")); }
+        const hasHardPolicy =
+          Boolean(config.managed?.enabled) ||
+          Boolean(config.managed?.guardrails?.denyTools?.length) ||
+          Boolean(config.claude?.permissions?.deny?.length) ||
+          Boolean(config.compliance?.outputScan?.blocking);
+        const enforcementFormats = config.personas?.outputFormats ?? [];
+        const ENFORCEMENT_LEVELS: Record<string, { level: "enforced" | "partial" | "fail-open" | "advisory"; detail: string }> = {
+          claude: { level: "enforced", detail: "hooks block (exit 2); managed settings via the MDM channel are non-overridable" },
+          codex: { level: "partial", detail: "hooks emitted with partial event coverage; managed-settings ceiling is lower than Claude Code" },
+          copilot: { level: "fail-open", detail: "command hooks time out OPEN — a hung or slow hook does not block" },
+          cursor: { level: "advisory", detail: "instructions only — no hook binding, nothing is enforced" },
+          gemini: { level: "advisory", detail: "instructions only — no hook binding" },
+          windsurf: { level: "advisory", detail: "instructions only — no hook binding" },
+          jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
+          agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
+          skill: { level: "advisory", detail: "skill content is instructions only" },
+        };
+        if (hasHardPolicy) {
+          for (const fmt of enforcementFormats) {
+            const e = ENFORCEMENT_LEVELS[fmt];
+            if (!e) continue;
+            if (e.level === "enforced") {
+              ok(`${fmt}: org policy is enforceable — ${e.detail}`);
+            } else {
+              warn(
+                `${fmt}: org policy is ${e.level.toUpperCase()} on this platform — ${e.detail}. ` +
+                `Prompt instructions are not a security boundary; see docs/platform-capability-matrix.md`
+              );
+            }
+          }
+        } else {
+          ok("Enforcement (no hard org policy configured — nothing requires platform enforcement)");
+        }
+
       } catch (e: unknown) {
         fail(`Config parse error: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -2019,10 +2062,17 @@ program
       } else {
         console.log(chalk.bold(`\n  Drift check: ${path.basename(report.repoPath)}\n`));
         for (const entry of report.entries) {
-          const icon = entry.status === "clean" ? chalk.green("✓") : entry.status === "unmanaged" ? chalk.yellow("?") : chalk.red("✗");
-          console.log(`    ${icon} ${entry.file} — ${entry.status}`);
+          const icon = entry.status === "clean" ? chalk.green("✓")
+            : entry.status === "unmanaged" ? chalk.yellow("?")
+            : entry.status === "excepted" ? chalk.cyan("◦")
+            : chalk.red("✗");
+          const suffix = entry.status === "excepted" ? ` (approved exception ${entry.exceptionId})` : "";
+          console.log(`    ${icon} ${entry.file} — ${entry.status}${suffix}`);
         }
-        console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.cleanCount} clean\n`);
+        if (report.exceptionIssues) {
+          for (const issue of report.exceptionIssues) console.log(chalk.yellow(`    ⚠ ${issue}`));
+        }
+        console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.exceptedCount} excepted (approved), ${report.summary.cleanCount} clean\n`);
       }
       process.exit(report.clean ? 0 : 1);
     } else {
@@ -2697,14 +2747,61 @@ program
 program
   .command("mcp-server")
   .description("Start the MCP server (JSON-RPC over stdio)")
-  .action((_opts, cmd) => {
+  .option(
+    "--profile <profile>",
+    "tool profile: read-only (default; inspection tools only) or maintainer (adds build/sync/propose_change)",
+  )
+  .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
+    const args = collectGlobalArgs(globalOpts);
+    if (opts["profile"]) args.push("--profile", opts["profile"] as string);
     runScript({
       script: "mcp-server.ts",
-      args: collectGlobalArgs(globalOpts),
+      args,
       verbose: globalOpts.verbose,
       quiet: globalOpts.quiet,
     });
+  });
+
+// ---- telemetry-inspect (B6) ------------------------------------------------
+
+program
+  .command("telemetry-inspect")
+  .description("Show exactly what telemetry would be emitted under the current config — schema, sample events, and log status")
+  .option("-c, --config <path>", "path to agentboot.config.json")
+  .action(async (opts) => {
+    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+    const { TELEMETRY_EVENTS, TELEMETRY_SCHEMA_VERSION, sampleEvents } = await import("./lib/telemetry-schema.js");
+    const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
+    const config = loadConfig(configPath);
+    const t = config.telemetry ?? {};
+    const enabled = t.enabled === true;
+    const devIdMode = (t.includeDevId ?? false) as false | string;
+
+    console.log(chalk.bold("\nAgentBoot — telemetry-inspect"));
+    console.log(chalk.gray(`Config: ${configPath}\n`));
+    console.log(`  Enabled:        ${enabled ? chalk.green("yes") : chalk.yellow("no (nothing is emitted)")}`);
+    console.log(`  Dev identifier: ${devIdMode === false ? "off (dev_id always empty)" : devIdMode === "hashed" ? "hashed (SHA-256 of git email — PSEUDONYMOUS, not anonymous)" : `${devIdMode} (raw email — identifies the developer)`}`);
+    console.log(`  Log path:       ${t.logPath ?? "~/.agentboot/telemetry.ndjson"} (local file; nothing is transmitted)`);
+    console.log(`  Schema version: ${TELEMETRY_SCHEMA_VERSION}\n`);
+
+    console.log(chalk.bold("  Event types and every field they may carry:"));
+    for (const [name, spec] of Object.entries(TELEMETRY_EVENTS)) {
+      console.log(`\n  ${chalk.cyan(name)} — ${spec.emittedOn}`);
+      for (const [field, f] of Object.entries(spec.fields)) {
+        console.log(`    ${field.padEnd(12)} ${f.type.padEnd(7)} ${f.purpose}${f.identifiesPerson ? chalk.yellow("  [may identify a person]") : ""}`);
+      }
+    }
+
+    console.log(chalk.bold("\n  Sample emissions under this config:"));
+    for (const ev of Object.values(sampleEvents(devIdMode))) {
+      console.log(`    ${JSON.stringify(ev)}`);
+    }
+    console.log(chalk.gray(
+      "\n  Prompts, responses, code, file paths, and tool arguments have no field in this\n" +
+      "  schema — they cannot be emitted. The conformance test (tests/band-b.test.ts)\n" +
+      "  executes the generated hook and fails if its output deviates from this schema.\n"
+    ));
   });
 
 // ---------------------------------------------------------------------------
