@@ -452,6 +452,8 @@ async function promptForPath(message: string, defaultPath?: string): Promise<str
 function detectGhAvailable(): boolean {
   try {
     const result = spawnSync("gh", ["--version"], {
+      timeout: 10_000,
+      env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -464,6 +466,8 @@ function detectGhAvailable(): boolean {
 function detectGhAuthenticated(): boolean {
   try {
     const result = spawnSync("gh", ["auth", "status"], {
+      timeout: 10_000,
+      env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" },
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });

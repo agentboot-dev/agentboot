@@ -1265,7 +1265,7 @@ function handleDoctor(): ToolResult {
 
   // Check gh CLI
   try {
-    execSync("gh --version", { encoding: "utf-8", stdio: "pipe" });
+    execSync("gh --version", { encoding: "utf-8", stdio: "pipe", timeout: 10_000, env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" } });
   } catch {
     issues.push({
       severity: "warn",
@@ -1502,14 +1502,14 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
 
   // Check gh is available
   try {
-    execSync("gh --version", { encoding: "utf-8", stdio: "pipe" });
+    execSync("gh --version", { encoding: "utf-8", stdio: "pipe", timeout: 10_000, env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" } });
   } catch {
     return toolError("gh CLI not found. Install it: https://cli.github.com/ then run 'gh auth login'");
   }
 
   // Check gh is authenticated
   try {
-    execSync("gh auth status", { encoding: "utf-8", stdio: "pipe", cwd: HUB_ROOT });
+    execSync("gh auth status", { encoding: "utf-8", stdio: "pipe", cwd: HUB_ROOT, timeout: 10_000, env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", GH_PROMPT_DISABLED: "1" } });
   } catch {
     return toolError("gh CLI not authenticated. Run 'gh auth login' first.");
   }
@@ -1523,6 +1523,7 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
   let defaultBranch = "main";
   try {
     const symbolicRef = execSync("git symbolic-ref refs/remotes/origin/HEAD", {
+      timeout: 10_000,
       cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe",
     }).trim();
     defaultBranch = symbolicRef.replace("refs/remotes/origin/", "");
@@ -1532,12 +1533,12 @@ function handleProposeChange(args: Record<string, unknown>): ToolResult {
 
   // Check if branch exists already — exact line match, not substring.
   try {
-    const localBranches = execSync("git branch --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" })
+    const localBranches = execSync("git branch --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe", timeout: 10_000 })
       .split("\n").map(b => b.replace(/^\*?\s+/, "").trim()).filter(Boolean);
     if (localBranches.includes(branchName)) {
       branchName = `${branchName}-${Date.now()}`;
     }
-    const remoteBranches = execSync("git branch -r --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe" })
+    const remoteBranches = execSync("git branch -r --list", { cwd: HUB_ROOT, encoding: "utf-8", stdio: "pipe", timeout: 10_000 })
       .split("\n").map(b => b.trim()).filter(Boolean);
     if (remoteBranches.includes(`origin/${branchName}`)) {
       branchName = `${branchName}-${Date.now()}`;

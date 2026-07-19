@@ -9,9 +9,9 @@ Where AgentBoot is headed. This page is forward‑looking — themes and intent,
 commitments**; priorities shift with what teams actually need. For the full record of what has
 already shipped, see the [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md).
 
-## Where we are today — v0.12.3 (public Beta)
+## Where we are today — v0.12.4 (public Beta)
 
-**AgentBoot v0.12.3 is a public Beta.** The full pipeline works end to end today: it compiles your
+**AgentBoot v0.12.4 is a public Beta.** The full pipeline works end to end today: it compiles your
 team's AI behavior — personas, traits, rules, gotchas, and domain layers — from one hub repo into
 native config for the **CLI surfaces** of **Claude Code**, **OpenAI Codex**, and **GitHub
 Copilot**, and delivers it to every repo as a reviewable pull request, with drift detection,
@@ -101,7 +101,7 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 The short version — full detail in the
 [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md):
 
-- **v0.12.3 — enterprise hardening (current).** The adopting‑organization batch: pluggable
+- **v0.12.4 — enterprise hardening (current).** The adopting‑organization batch: pluggable
   content scanners + blocking output scan; MCP read‑only profile + identity pinning; policy
   exceptions with owners and expiry; merged managed artifacts per scope; `claude.settings`
   pass‑through; import‑first sync safety; telemetry contract + `telemetry-inspect`;
