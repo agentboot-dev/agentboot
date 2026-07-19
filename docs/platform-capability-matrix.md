@@ -81,3 +81,8 @@ can only receive it as advisory instructions, doctor says so.
   *under your own branch protections.* AgentBoot never asks you to weaken them.
 
 > If a cell says advisory, treat it as advisory.
+
+> **Tested, not just documented:** `agentboot conformance` executes the compiled
+> hook scripts per platform and writes `dist/<platform>/enforcement-manifest.json`
+> recording declared level vs observed behavior. The classification in this matrix
+> is the same single source of truth the harness tests and `doctor` reports.

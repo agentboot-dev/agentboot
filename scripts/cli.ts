@@ -34,6 +34,7 @@ import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
+import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -1311,17 +1312,9 @@ program
           Boolean(config.claude?.permissions?.deny?.length) ||
           Boolean(config.compliance?.outputScan?.blocking);
         const enforcementFormats = config.personas?.outputFormats ?? [];
-        const ENFORCEMENT_LEVELS: Record<string, { level: "enforced" | "partial" | "fail-open" | "advisory"; detail: string }> = {
-          claude: { level: "enforced", detail: "hooks block (exit 2); managed settings via the MDM channel are non-overridable" },
-          codex: { level: "partial", detail: "hooks emitted with partial event coverage; managed-settings ceiling is lower than Claude Code" },
-          copilot: { level: "fail-open", detail: "command hooks time out OPEN — a hung or slow hook does not block" },
-          cursor: { level: "advisory", detail: "instructions only — no hook binding, nothing is enforced" },
-          gemini: { level: "advisory", detail: "instructions only — no hook binding" },
-          windsurf: { level: "advisory", detail: "instructions only — no hook binding" },
-          jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
-          agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
-          skill: { level: "advisory", detail: "skill content is instructions only" },
-        };
+        // D2: the classification is the conformance harness's SSOT — doctor
+        // reads the same table `agentboot conformance` tests empirically.
+        const ENFORCEMENT_LEVELS = PLATFORM_ENFORCEMENT;
         if (hasHardPolicy) {
           for (const fmt of enforcementFormats) {
             const e = ENFORCEMENT_LEVELS[fmt];
@@ -2071,6 +2064,65 @@ program
   });
 
 // ---- Phase 11: governance commands ----------------------------------------
+
+program
+  .command("conformance")
+  .description("Empirically test compiled enforcement (hooks: block/deny/timeouts/malformed input) per platform and write dist/<platform>/enforcement-manifest.json")
+  .option("--platform <name>", "test a single platform (default: all configured output formats)")
+  .option("--format <type>", "output format: text or json", "text")
+  .action(async (opts) => {
+    const { runConformance } = await import("./lib/conformance.js");
+    const cwd = process.cwd();
+    const configPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    if (!fs.existsSync(configPath)) {
+      console.error(chalk.red("No agentboot.config.json found — run conformance from the hub (or set AGENTBOOT_HUB)."));
+      process.exit(1);
+    }
+    const { loadConfig } = await import("./lib/config.js");
+    const config = loadConfig(configPath);
+    const hubDir = path.dirname(configPath);
+    const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
+    if (!fs.existsSync(distPath)) {
+      console.error(chalk.red(`dist/ not found at ${distPath} — run \`agentboot build\` first.`));
+      process.exit(1);
+    }
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
+    const configured = config.personas?.outputFormats ?? ["claude"];
+    const platforms = opts["platform"] ? [opts["platform"] as string] : configured;
+
+    const run = runConformance(distPath, platforms, config, pkg.version);
+
+    if (opts["format"] === "json") {
+      console.log(JSON.stringify({ bashAvailable: run.bashAvailable, failedPlatforms: run.failedPlatforms, manifests: run.manifests }, null, 2));
+      process.exit(run.failedPlatforms.length > 0 ? 1 : 0);
+    }
+
+    console.log(chalk.bold("\n  AgentBoot — platform conformance\n"));
+    if (!run.bashAvailable) {
+      console.log(chalk.yellow("  ⚠ bash not available — hook behavior recorded as UNTESTED, not assumed.\n"));
+    }
+    for (const m of run.manifests) {
+      const levelColor = m.declared.level === "enforced" ? chalk.green
+        : m.declared.level === "advisory" ? chalk.gray : chalk.yellow;
+      console.log(`  ${chalk.bold(m.platform)} — declared ${levelColor(m.declared.level.toUpperCase())}`);
+      for (const c of m.controls) {
+        const icon = c.status === "pass" ? chalk.green("✓")
+          : c.status === "fail" ? chalk.red("✗")
+          : c.status === "untested" ? chalk.yellow("?") : chalk.gray("–");
+        console.log(`    ${icon} ${c.control.padEnd(12)} ${c.status}${c.reason ? chalk.gray(` — ${c.reason}`) : ""}`);
+        for (const p of c.probes.filter((p) => !p.pass)) {
+          console.log(chalk.red(`        FAILED: ${p.probe} — expected ${p.expected}, observed ${p.observed}`));
+        }
+      }
+      console.log(chalk.gray(`    manifest: dist/${m.platform}/enforcement-manifest.json`));
+      console.log("");
+    }
+    if (run.failedPlatforms.length > 0) {
+      console.log(chalk.red(`  ✗ Conformance FAILED on: ${run.failedPlatforms.join(", ")}\n`));
+      process.exit(1);
+    }
+    console.log(chalk.green("  ✓ All probed controls behave as declared.\n"));
+  });
 
 program
   .command("verify-manifest")

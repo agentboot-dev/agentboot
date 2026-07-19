@@ -9,6 +9,30 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-18
+
+Tested enforcement — the platform capability matrix is now an empirically
+verified contract, not just honest documentation.
+
+### Added
+- **`agentboot conformance`**: executes the compiled hook scripts per platform
+  with crafted inputs — clean, secret-canary, malformed, oversized, and
+  deny-listed tool — and compares observed exit codes / blocking decisions
+  against the declared enforcement level. Non-zero exit on divergence.
+- **Per-platform enforcement manifest**: `dist/<platform>/enforcement-manifest.json`
+  records the declared level, each control's mechanism, and per-probe
+  expected-vs-observed results. Advisory platforms get a manifest stating
+  plainly that no enforcement mechanism exists.
+- **Honesty guarantees**: unprobeable controls (no bash, missing script) are
+  reported *untested* — never assumed to pass. Probe expectations derive from
+  the hub config (`outputScan.blocking` → block vs warn-only).
+- Conformance runs in AgentBoot's own CI on every build (both OS legs).
+
+### Changed
+- The per-platform enforcement classification is now a single source of truth
+  (`scripts/lib/conformance.ts`) shared by `doctor`, the harness, and the
+  capability matrix docs.
+
 ## [0.14.0] — 2026-07-18
 
 Verifiable sync — generated config reviewed like any change to CI or repo

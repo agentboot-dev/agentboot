@@ -393,6 +393,40 @@ agentboot drift-check --format json
 
 ---
 
+## `agentboot conformance`
+
+Empirically test compiled enforcement per platform and write a machine-readable
+**enforcement manifest** into the artifacts. The harness EXECUTES the compiled
+hook scripts with crafted inputs — clean, secret-bearing (canary), malformed,
+oversized, deny-listed tool — and compares observed exit codes and blocking
+decisions against the declared enforcement level.
+
+```
+agentboot conformance
+agentboot conformance --platform claude
+agentboot conformance --format json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--platform <name>` | Test a single platform (default: all configured output formats) |
+| `--format <type>` | `text` (default) or `json` |
+
+Results land in `dist/<platform>/enforcement-manifest.json`: the platform's
+declared level (the same single source of truth `doctor` reports), each
+control's mechanism, and per-probe expected vs observed outcomes.
+
+Honesty rules: a control that cannot be probed (no `bash`, script missing) is
+reported **untested**, never assumed to pass; advisory platforms (Cursor,
+Windsurf, Gemini, JetBrains, AGENTS.md, skills) get a manifest stating plainly
+that no enforcement mechanism exists. Exit code is non-zero when any probe's
+observed behavior diverges from the declaration — suitable as a CI gate (it
+runs in AgentBoot's own CI on every build). See
+[platform-capability-matrix](./platform-capability-matrix.md) for the
+classification this harness tests.
+
+---
+
 ## `agentboot status`
 
 Show deployment status: org info, enabled personas, traits, output formats, registered
