@@ -2977,6 +2977,63 @@ program
     ));
   });
 
+// ---- evidence-pack (auditor evidence export) --------------------------------
+
+program
+  .command("evidence-pack")
+  .description("Export a signed, digest-protected evidence bundle: enforcement state, drift, manifest trust postures, guardrails, telemetry chain")
+  .option("-c, --config <path>", "path to agentboot.config.json")
+  .option("--out <path>", "output file (default: agentboot-evidence-<date>.json)")
+  .option("--telemetry-batches <dir>", "shipped telemetry batch dir to include chain evidence for")
+  .action(async (opts) => {
+    const { buildEvidencePack } = await import("./lib/evidence-pack.js");
+    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+
+    const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
+    const config = loadConfig(configPath);
+    const hubPath = path.dirname(configPath);
+    const distPath = path.resolve(hubPath, config.output?.distPath ?? "./dist");
+
+    let repos: Array<{ path: string; platform?: string; group?: string; team?: string }> = [];
+    try {
+      const reposFile = path.resolve(hubPath, config.sync?.repos ?? "./repos.json");
+      repos = JSON.parse(fs.readFileSync(reposFile, "utf-8"));
+    } catch { /* no repos registered — hub-only evidence is still valid */ }
+
+    const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")).version as string;
+    const signKeyPath = config.sync?.signing?.enabled ? config.sync.signing.sshKeyPath : undefined;
+
+    console.log(chalk.bold("\n  AgentBoot — evidence-pack\n"));
+    const { pack, signingError } = buildEvidencePack({
+      hubPath, config, agentbootVersion: version, repos, distPath,
+      telemetryBatchDir: opts["telemetryBatches"] as string | undefined,
+      signKeyPath,
+    });
+
+    const out = path.resolve(
+      (opts["out"] as string | undefined) ??
+      `agentboot-evidence-${new Date().toISOString().slice(0, 10)}.json`,
+    );
+    fs.writeFileSync(out, JSON.stringify(pack, null, 2) + "\n", { mode: 0o600 });
+
+    console.log(`  Hub:        ${pack.hub.hub_commit ?? "(not a git repo)"}${pack.hub.hub_dirty ? chalk.yellow(" DIRTY") : ""}`);
+    console.log(`  Platforms:  ${Object.keys(pack.enforcement.manifests).length} with enforcement manifests` +
+      (pack.enforcement.unprobed_platforms.length ? chalk.yellow(` — UNPROBED: ${pack.enforcement.unprobed_platforms.join(", ")} (run \`agentboot conformance\`)`) : ""));
+    console.log(`  Repos:      ${pack.repos.length} (${pack.repos.filter((r) => r.drift.clean === true).length} drift-clean)`);
+    console.log(`  Exceptions: ${pack.guardrails.exceptions.length} (${pack.guardrails.exceptions.filter((e) => e.expired).length} expired)`);
+    if (pack.telemetry.chain) {
+      console.log(`  Telemetry:  ${pack.telemetry.chain.batches} batch(es), ${pack.telemetry.chain.signed} signed, ${pack.telemetry.chain.gaps.length} gap(s)`);
+    }
+    console.log(pack.integrity?.signature
+      ? chalk.green(`  ✓ Pack signed (${pack.integrity.pack_digest.slice(0, 12)}…)`)
+      : chalk.yellow(`  – Pack digest-only (${pack.integrity?.pack_digest.slice(0, 12)}…) — enable sync.signing for a signed pack`));
+    if (signingError) {
+      console.error(chalk.red(`  ✗ Signing FAILED: ${signingError}`));
+      process.exit(1);
+    }
+    console.log(chalk.gray(`\n  Written: ${out}\n`));
+  });
+
 // ---- telemetry-ship / telemetry-verify (D3) --------------------------------
 
 program
