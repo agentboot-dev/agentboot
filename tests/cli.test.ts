@@ -2006,19 +2006,27 @@ describe("AB-59/60/63: compliance and audit trail hooks", () => {
   });
 });
 
-// AB-64: Telemetry NDJSON schema
+// AB-64: Telemetry NDJSON schema (v0.16: generated from the canonical event
+// spec as a oneOf-per-event schema — the old hand-written flat schema required
+// persona_id on every event and so rejected session_summary events)
 describe("AB-64: telemetry NDJSON schema", () => {
   it("generates telemetry event JSON schema", () => {
     const schemaPath = path.join(ROOT, "dist", "schema", "telemetry-event.v1.json");
     expect(fs.existsSync(schemaPath)).toBe(true);
     const schema = JSON.parse(fs.readFileSync(schemaPath, "utf-8"));
     expect(schema.$id).toContain("telemetry-event");
-    expect(schema.required).toContain("event");
-    expect(schema.required).toContain("persona_id");
-    expect(schema.required).toContain("timestamp");
-    expect(schema.properties.event.enum).toContain("persona_invocation");
-    expect(schema.properties.event.enum).toContain("session_summary");
-    expect(schema.properties.findings_count).toBeDefined();
+    const events = schema.oneOf.map((b: any) => b.properties.event.const);
+    expect(events).toContain("persona_invocation");
+    expect(events).toContain("hook_execution");
+    expect(events).toContain("session_summary");
+    for (const branch of schema.oneOf) {
+      expect(branch.required).toContain("event");
+      expect(branch.required).toContain("timestamp");
+      expect(branch.additionalProperties).toBe(false);
+    }
+    // session_summary must NOT require persona_id (the old schema's defect).
+    const summary = schema.oneOf.find((b: any) => b.properties.event.const === "session_summary");
+    expect(summary.required).not.toContain("persona_id");
   });
 });
 

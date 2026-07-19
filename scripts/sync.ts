@@ -414,8 +414,11 @@ function archiveExistingContent(
     walk(targetBase, "");
   }
 
-  // BUG-6: Also archive repo-root files that sync will overwrite
-  const rootFiles = ["CLAUDE.md", ".mcp.json"];
+  // BUG-6: Also archive repo-root files that sync will overwrite.
+  // v0.16.0: the list must cover EVERY root artifact any platform sync can
+  // write — AGENTS.md and .cursorrules were previously destroyed with no
+  // archive on an --adopt-existing first sync (bespoke content, unrecoverable).
+  const rootFiles = ["CLAUDE.md", ".mcp.json", "AGENTS.md", ".cursorrules", "GEMINI.md"];
   for (const rootFile of rootFiles) {
     const absPath = path.join(repoPath, rootFile);
     if (fs.existsSync(absPath)) {

@@ -106,9 +106,11 @@ The short version — full detail in the
   emits an enforcement manifest into artifacts — the capability matrix is now a
   tested contract, gated in CI.
 - **v0.14.0 — verifiable sync.** Sync manifests carry hub provenance
-  (commit, config + policy hashes) and a tamper-evident content digest with optional
-  SSH signing; sync PRs carry a risk-classified change summary; `verify-manifest`
-  checks it all in spoke CI.
+  (commit, config + policy hashes) and a content digest; with SSH signing enabled
+  and the signer authenticated against an allowed-signers trust root (v0.16.0),
+  the manifest is tamper-evident — an unsigned digest detects accidental
+  corruption only. Sync PRs carry a risk-classified change summary;
+  `verify-manifest --require-signed --allowed-signers` checks it all in spoke CI.
 - **v0.13.0 — org-scale import.** Multi-repo import sweeps now converge
   boilerplate shared across repos onto one promoted org artifact carrying provenance
   from every contributing repo — duplicate content is never re-appended and never

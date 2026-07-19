@@ -974,10 +974,12 @@ program
 
     // 1. Environment
     if (!isJson) console.log(chalk.cyan("Environment"));
+    // The floor is package.json engines (>=22) — doctor must agree with it,
+    // not advertise a laxer one.
     const nodeV = process.version;
     const nodeMajor = parseInt(nodeV.slice(1), 10);
-    if (nodeMajor >= 18) ok(`Node.js ${nodeV}`);
-    else fail(`Node.js ${nodeV} — requires >=18`);
+    if (nodeMajor >= 22) ok(`Node.js ${nodeV}`);
+    else fail(`Node.js ${nodeV} — requires >=22 (package.json engines)`);
 
     const gitResult = spawnSync("git", ["--version"], { encoding: "utf-8", timeout: 10_000 });
     if (gitResult.status === 0) ok(gitResult.stdout.trim());
@@ -2126,9 +2128,12 @@ program
 
 program
   .command("verify-manifest")
-  .description("Verify a synced manifest: content digest, per-file hashes, SSH signature if present")
+  .description("Verify a synced manifest: content digest, per-file hashes, SSH signature, signer identity")
   .option("--repo <path>", "repo to verify (default: cwd)")
   .option("--manifest <path>", "explicit path to a .agentboot-manifest.json")
+  .option("--require-signed", "FAIL if the manifest carries no signature (the only defense against signature stripping — set this in CI when the hub signs)")
+  .option("--allowed-signers <path>", "OpenSSH allowed_signers file to authenticate the signer identity against")
+  .option("--signer <principal>", "expected signer principal in the allowed_signers file (default: discovered via find-principals)")
   .action(async (opts) => {
     const { verifyManifestFile } = await import("./lib/provenance.js");
     const { findManifestPath } = await import("./lib/drift.js");
@@ -2145,7 +2150,12 @@ program
     console.log(chalk.bold("\n  AgentBoot — verify-manifest\n"));
     console.log(chalk.gray(`  Manifest: ${manifestPath}\n`));
 
-    const v = verifyManifestFile(manifestPath, opts["manifest"] ? undefined : repoPath);
+    const v = verifyManifestFile(manifestPath, {
+      repoRoot: opts["manifest"] ? undefined : repoPath,
+      requireSignature: opts["requireSigned"] === true,
+      allowedSignersPath: opts["allowedSigners"] as string | undefined,
+      signerPrincipal: opts["signer"] as string | undefined,
+    });
 
     console.log(v.digestOk
       ? chalk.green(`  ✓ Content digest OK (sha256:${v.computedDigest.slice(0, 12)}…)`)
@@ -2166,15 +2176,34 @@ program
     } else if (v.signatureOk) {
       console.log(chalk.green("  ✓ SSH signature valid for the recorded digest"));
       if (v.signerPublicKey) console.log(chalk.gray(`      signer: ${v.signerPublicKey.split(" ").slice(0, 2).join(" ")}`));
-      console.log(chalk.gray("      (identity not checked — pin the signer via an allowed_signers file in CI)"));
     } else {
-      console.log(chalk.red("  ✗ SSH signature INVALID"));
+      console.log(chalk.red("  ✗ SSH signature INVALID or missing-but-required"));
+    }
+    if (v.signerVerified === true) {
+      console.log(chalk.green(`  ✓ Signer authenticated against allowed_signers (principal: ${v.signerPrincipal})`));
+    } else if (v.signerVerified === false) {
+      console.log(chalk.red("  ✗ Signer NOT authenticated against allowed_signers"));
     }
 
     for (const err of v.errors) console.log(chalk.yellow(`  ⚠ ${err}`));
-    console.log("");
 
-    const ok = v.digestOk && v.fileMismatches.length === 0 && v.signatureOk !== false;
+    // State the trust posture honestly — what this verification establishes.
+    const postureLine: Record<string, string> = {
+      "none": "no integrity data — pre-0.14 manifest, nothing established",
+      "integrity-only": "INTEGRITY ONLY — detects accidental modification. NOT tamper-evident: " +
+        "an editor can recompute the unsigned digest. Enable sync.signing and verify with " +
+        "--require-signed --allowed-signers for tamper evidence.",
+      "signed-unauthenticated": "SIGNED, signer unauthenticated — the signature is valid but the " +
+        "signer identity was not checked. Pass --allowed-signers to authenticate it.",
+      "signed-authenticated": "SIGNED + AUTHENTICATED — tamper-evident against the allowed_signers trust root.",
+    };
+    console.log(chalk.bold(`\n  Trust posture: ${postureLine[v.posture]}\n`));
+
+    const ok =
+      v.digestOk &&
+      v.fileMismatches.length === 0 &&
+      v.signatureOk !== false &&
+      v.signerVerified !== false;
     process.exit(ok ? 0 : 1);
   });
 

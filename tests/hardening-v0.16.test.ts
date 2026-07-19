@@ -281,3 +281,148 @@ describe("secret scan covers the full compiler input surface", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// verify-manifest tamper protection (signature stripping, signer identity,
+// honest trust posture) + adopt-existing archive completeness.
+// ---------------------------------------------------------------------------
+
+import { execSync as execSyncH } from "node:child_process";
+import {
+  computeManifestDigest,
+  signManifestDigest,
+  verifyManifestFile,
+} from "../scripts/lib/provenance.js";
+
+const sshAvailable = (() => {
+  try {
+    const r = spawnSync("ssh-keygen", ["-Y", "sign", "-h"], { stdio: "pipe", timeout: 10_000 });
+    return r.status !== 127 && r.error === undefined;
+  } catch { return false; }
+})();
+
+describe("verify-manifest tamper protection", () => {
+  function mkSignedManifest(dir: string, keyPath: string): string {
+    const repoFile = path.join(dir, "hello.md");
+    fs.writeFileSync(repoFile, "hello\n");
+    const fileHash = execSyncH(`shasum -a 256 "${repoFile}"`).toString().split(" ")[0];
+    const manifest: Record<string, unknown> = {
+      version: 1,
+      files: [{ path: "hello.md", hash: fileHash }],
+    };
+    const digest = computeManifestDigest(manifest);
+    const signed = signManifestDigest(digest, keyPath);
+    if ("error" in signed) throw new Error(signed.error);
+    manifest["integrity"] = { algorithm: "sha256", manifest_digest: digest, signature: signed.signature };
+    const sub = path.join(dir, ".claude");
+    fs.mkdirSync(sub, { recursive: true });
+    const manifestPath = path.join(sub, ".agentboot-manifest.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    return manifestPath;
+  }
+
+  it.skipIf(!sshAvailable)("STRIP ATTACK: removing the signature and re-digesting passes plain verify but FAILS with requireSignature", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-strip-"));
+    const keyPath = path.join(dir, "key");
+    execSyncH(`ssh-keygen -q -t ed25519 -N "" -f "${keyPath}"`, { timeout: 15_000 });
+    try {
+      const manifestPath = mkSignedManifest(dir, keyPath);
+      // Attacker: strip the signature, keep (valid) unsigned digest.
+      const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      delete m.integrity.signature;
+      m.integrity.manifest_digest = computeManifestDigest(m);
+      fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2));
+
+      const plain = verifyManifestFile(manifestPath, { repoRoot: dir });
+      expect(plain.digestOk).toBe(true);           // digest can't catch this
+      expect(plain.posture).toBe("integrity-only"); // but posture says so honestly
+
+      const strict = verifyManifestFile(manifestPath, { repoRoot: dir, requireSignature: true });
+      expect(strict.signatureOk).toBe(false);       // the strip is a FAILURE
+      expect(strict.errors.join(" ")).toContain("UNSIGNED");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!sshAvailable)("signer identity: authenticated against allowed_signers; an unlisted signer fails", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-signer-"));
+    const keyPath = path.join(dir, "key");
+    const rogueKeyPath = path.join(dir, "rogue");
+    execSyncH(`ssh-keygen -q -t ed25519 -N "" -f "${keyPath}"`, { timeout: 15_000 });
+    execSyncH(`ssh-keygen -q -t ed25519 -N "" -f "${rogueKeyPath}"`, { timeout: 15_000 });
+    try {
+      const manifestPath = mkSignedManifest(dir, keyPath);
+      const pub = fs.readFileSync(keyPath + ".pub", "utf-8").trim().split(" ").slice(0, 2).join(" ");
+      const allowed = path.join(dir, "allowed_signers");
+      fs.writeFileSync(allowed, `ci@example.com ${pub}\n`);
+
+      const ok = verifyManifestFile(manifestPath, {
+        repoRoot: dir, requireSignature: true, allowedSignersPath: allowed,
+      });
+      expect(ok.signatureOk).toBe(true);
+      expect(ok.signerVerified).toBe(true);
+      expect(ok.signerPrincipal).toBe("ci@example.com");
+      expect(ok.posture).toBe("signed-authenticated");
+
+      // Same manifest, but the trust root only lists a DIFFERENT signer.
+      const roguePub = fs.readFileSync(rogueKeyPath + ".pub", "utf-8").trim().split(" ").slice(0, 2).join(" ");
+      fs.writeFileSync(allowed, `ci@example.com ${roguePub}\n`);
+      const bad = verifyManifestFile(manifestPath, {
+        repoRoot: dir, requireSignature: true, allowedSignersPath: allowed,
+      });
+      expect(bad.signerVerified).toBe(false);
+      expect(bad.posture).toBe("signed-unauthenticated");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an unsigned manifest reports integrity-only posture — never tamper-evidence", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-posture-"));
+    try {
+      const manifest: Record<string, unknown> = { version: 1, files: [] };
+      manifest["integrity"] = { algorithm: "sha256", manifest_digest: computeManifestDigest(manifest) };
+      const sub = path.join(dir, ".claude");
+      fs.mkdirSync(sub, { recursive: true });
+      const manifestPath = path.join(sub, ".agentboot-manifest.json");
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+      const v = verifyManifestFile(manifestPath, { repoRoot: dir });
+      expect(v.posture).toBe("integrity-only");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("adopt-existing archives every root artifact sync can overwrite", () => {
+  it("AGENTS.md and .cursorrules are archived before first sync (previously destroyed)", () => {
+    const hub = mkTwoTeamHub();
+    const spoke = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-archive-spoke-"));
+    try {
+      fs.writeFileSync(path.join(spoke, "AGENTS.md"), "bespoke agents content PRECIOUS-A\n");
+      fs.writeFileSync(path.join(spoke, ".cursorrules"), "bespoke cursor rules PRECIOUS-B\n");
+      fs.writeFileSync(path.join(hub, "repos.json"), JSON.stringify([
+        { path: spoke, platform: "claude", group: "platform", team: "api" },
+      ]));
+      run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      run(`scripts/sync.ts --config ${path.join(hub, "agentboot.config.json")} --adopt-existing`);
+      const archiveRoot = path.join(spoke, ".claude", ".agentboot-archive");
+      expect(fs.existsSync(archiveRoot)).toBe(true);
+      const archived: string[] = [];
+      const walk = (d: string) => {
+        for (const e of fs.readdirSync(d)) {
+          const abs = path.join(d, e);
+          if (fs.statSync(abs).isDirectory()) walk(abs);
+          else archived.push(fs.readFileSync(abs, "utf-8"));
+        }
+      };
+      walk(archiveRoot);
+      expect(archived.some((c) => c.includes("PRECIOUS-A"))).toBe(true);
+      expect(archived.some((c) => c.includes("PRECIOUS-B"))).toBe(true);
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+      fs.rmSync(spoke, { recursive: true, force: true });
+    }
+  });
+});
