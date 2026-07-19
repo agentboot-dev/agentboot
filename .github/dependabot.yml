@@ -11,8 +11,27 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # js-yaml 5 breaks YAML block-scalar parsing in the behavioral test-runner
+      # (verified: PR #53 CI). Migrate deliberately, then remove this ignore.
+      - dependency-name: js-yaml
+        versions: [">=5"]
+      # TypeScript 6/7 is a toolchain migration, not a routine bump (PR #50 failed
+      # typecheck on both legs). Upgrade deliberately with the migration guide.
+      - dependency-name: typescript
+        versions: [">=6"]
+      # Types should track the supported runtime major (engines: node >=22).
+      - dependency-name: "@types/node"
+        versions: [">=23"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # release-drafter v7 is a major whose breaking changes are undocumented in
+      # its release notes, and a broken drafter blocks the whole release pipeline
+      # (drafter runs before npm publish). Upgrade deliberately after reading the
+      # v7 migration notes, then remove this ignore.
+      - dependency-name: release-drafter/release-drafter
+        versions: [">=7"]
