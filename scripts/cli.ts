@@ -480,7 +480,7 @@ program
         if (opts["apply"]) {
           const result = applyImportPlanV2(plan, resolvedHub, trustedSources);
           console.log(chalk.bold(
-            `\n  ✓ Created: ${result.created}, Applied: ${result.applied}, Skipped: ${result.skipped}` +
+            `\n  ✓ Created: ${result.created}, Updated: ${result.updated}, Applied: ${result.applied}, Skipped: ${result.skipped}` +
             (result.errors.length > 0 ? `, Errors: ${result.errors.length}` : "") + "\n"
           ));
           for (const err of result.errors) console.log(chalk.red(`    ${err}`));
