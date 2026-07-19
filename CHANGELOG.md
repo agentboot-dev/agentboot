@@ -9,6 +9,41 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-19
+
+Tamper-evident telemetry — the last of the original enterprise asks: an audit
+trail that survives local deletion, with the trust model stated honestly and
+no compromise of the no-phone-home stance.
+
+### Added
+- **Telemetry event hash chain (schema v2)**: every event carries `chain` =
+  sha256(previous event's chain + this event's canonical content), computed by
+  the generated hook at append time. Post-write edits, deletions and
+  reordering of the local log are detectable; concurrent-hook forks are
+  reported as warnings, distinct from tampering.
+- **`agentboot telemetry-ship`**: spools events (idempotent byte-offset
+  cursor) into sequence-numbered, digest-chained batches, SSH-signs batch
+  digests with the sync signing key, and POSTs them to the ORG'S OWN https
+  collector (`telemetry.sink` — there is no default endpoint). Order-
+  preserving retry; shipped batches keep a local audit copy.
+- **`agentboot telemetry-verify`**: verifies the local log's hash chain
+  (`--log`) and shipped batches' digest integrity, prev-digest linkage,
+  sequence continuity and signer authentication against an allowed_signers
+  trust root (`--batches --allowed-signers`).
+- **Org-wide sink distribution**: `telemetry.sink` compiles into
+  `telemetry-sink.json` in every platform core dir and syncs to spokes —
+  org-managed configuration, visible in every repo (never silent).
+- Assurance-claim register row 12 with executed tamper tests
+  (edit/delete/reorder detection, sequence-gap, rogue-signer rejection).
+
+### Changed
+- **Telemetry schema version 1 → 2** (the `chain` field). The published JSON
+  Schema artifact is now `dist/schema/telemetry-event.v2.json`.
+- privacy.md documents the sink disclosure plainly: shipped events are no
+  longer developer-deletable — that is the feature, and orgs enabling a sink
+  should tell their developers. Also removed a stale claim that telemetry
+  carries a `scope` field (it does not).
+
 ## [0.16.0] — 2026-07-19
 
 Hardened assurance — an adversarial audit of our own enforcement claims, then a
