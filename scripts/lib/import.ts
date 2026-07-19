@@ -1211,6 +1211,49 @@ export function addSourceAttribution(existing: string, newSource: string): strin
   return `${fm[1]}${newFmBody}${fm[3]}${existing.slice(fm[0].length)}`;
 }
 
+// ---------------------------------------------------------------------------
+// D1: org-scale cross-repo dedup. The same boilerplate block living in
+// N repos must converge on ONE promoted org artifact carrying provenance from
+// every contributing repo — never a silent last-repo-wins overwrite.
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the contributing repo's name from a scanned source file path.
+ * Strips platform config dirs (.claude/.github/.cursor) and the top-level
+ * skills/ layout so `repo/.claude/traits/x.md`, `repo/CLAUDE.md`, and
+ * `repo/skills/foo/SKILL.md` all attribute to `repo`. Windows-safe.
+ */
+export function repoNameForSource(sourceFile: string): string {
+  const dir = path.dirname(path.resolve(sourceFile)).replace(/\\/g, "/");
+  const repoRoot = dir
+    .replace(/\/\.(claude|github|cursor)(\/.*)?$/, "")
+    .replace(/\/skills(\/[^/]+)?$/, "");
+  return path.posix.basename(repoRoot);
+}
+
+export type MergeOutcome = "duplicate" | "merged";
+
+/**
+ * Merge candidate content into an existing artifact — the D1 write primitive.
+ * Duplicate content → provenance-only update (contributing repo recorded in
+ * frontmatter, nothing appended). Distinct content → appended, repo recorded.
+ * Existing content is NEVER overwritten.
+ */
+export function mergeIntoExistingArtifact(
+  destPath: string,
+  candidateBody: string,
+  repoName: string,
+): MergeOutcome {
+  const existing = fs.readFileSync(destPath, "utf-8");
+  const attributed = addSourceAttribution(existing, repoName);
+  if (isDuplicateContent(existing, candidateBody)) {
+    if (attributed !== existing) fs.writeFileSync(destPath, attributed, "utf-8");
+    return "duplicate";
+  }
+  fs.writeFileSync(destPath, attributed.trimEnd() + "\n\n" + candidateBody.trim() + "\n", "utf-8");
+  return "merged";
+}
+
 function applyPlan(
   plan: ImportPlan,
   trustedHub: string,
@@ -1298,26 +1341,20 @@ function applyPlan(
       try {
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
-        if (item.action === "merge" && fs.existsSync(destPath)) {
+        if (fs.existsSync(destPath)) {
           // UI-16: merging into an existing artifact previously APPENDED
-          // unconditionally and reported "Created" — verbatim-shared boilerplate
-          // across N repos duplicated inside one artifact on every import, and
-          // the later repos' provenance was dropped. Now: duplicate content is
-          // skipped (with the source still attributed), distinct content is
-          // appended and honestly labeled as an update.
-          const existing = fs.readFileSync(destPath, "utf-8");
-          const sourceDir = path.dirname(resolvedSource);
-          const mergeRepoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
-          if (isDuplicateContent(existing, sectionContent)) {
-            const attributed = addSourceAttribution(existing, mergeRepoName);
-            if (attributed !== existing) {
-              fs.writeFileSync(destPath, attributed, "utf-8");
-            }
+          // unconditionally and reported "Created". D1 extends the same
+          // rule to action=create colliding with an existing artifact — the
+          // cross-repo boilerplate case previously OVERWROTE, keeping only the
+          // last repo's copy and provenance. Both paths now converge on one
+          // artifact: duplicate content is skipped (source still attributed),
+          // distinct content is appended and honestly labeled as an update.
+          const mergeRepoName = repoNameForSource(resolvedSource);
+          const outcome = mergeIntoExistingArtifact(destPath, sectionContent, mergeRepoName);
+          if (outcome === "duplicate") {
             result.skipped++;
             console.log(chalk.gray(`    = ${item.suggested_path} (duplicate of existing content — skipped; source ${mergeRepoName} recorded)`));
           } else {
-            const attributed = addSourceAttribution(existing, mergeRepoName);
-            fs.writeFileSync(destPath, attributed.trimEnd() + "\n\n" + contentToWrite + "\n", "utf-8");
             result.updated++;
             console.log(chalk.cyan(`    ~ ${item.suggested_path} (merged into existing — source ${mergeRepoName} recorded)`));
           }
@@ -1977,7 +2014,8 @@ export interface WholeFileImport {
     invocation: string;
     traits: string[];
   };
-  action: "create" | "skip";
+  /** D1: "merge" folds this file into an already-planned/existing artifact with provenance. */
+  action: "create" | "skip" | "merge";
   composition_type: CompositionType;
   duplicate_of: string | null;
   confidence: "high" | "medium" | "low";
@@ -2040,6 +2078,11 @@ export function processWholeFileImports(
   const existingPersonas = new Set(inventory.personas.map(p => p.name));
   const existingGotchas = new Set(inventory.gotchas.map(g => g.name));
 
+  // D1: track targets already planned as "create" IN THIS RUN so a
+  // second repo contributing the same artifact becomes a provenance-carrying
+  // "merge" instead of a colliding "create" (which used to silently overwrite).
+  const plannedTargets = new Set<string>();
+
   for (const file of files) {
     const content = fs.readFileSync(file.absolutePath, "utf-8");
     const basename = path.basename(file.absolutePath, ".md");
@@ -2055,16 +2098,18 @@ export function processWholeFileImports(
         const isDuplicate = existingPersonas.has(name);
         const targetPath = `core/personas/${name}/SKILL.md`;
         const configPath = `core/personas/${name}/persona.config.json`;
+        const inRunDuplicate = !isDuplicate && plannedTargets.has(targetPath);
+        if (!isDuplicate) plannedTargets.add(targetPath);
 
         imports.push({
           source_file: file.absolutePath,
           import_type: "agent",
           target_path: targetPath,
-          generates: [configPath],
+          generates: inRunDuplicate ? [] : [configPath],
           persona_config: { name, description, invocation, traits },
-          action: isDuplicate ? "skip" : "create",
+          action: isDuplicate ? "skip" : inRunDuplicate ? "merge" : "create",
           composition_type: "rule",
-          duplicate_of: isDuplicate ? `core/personas/${name}` : null,
+          duplicate_of: isDuplicate || inRunDuplicate ? `core/personas/${name}` : null,
           confidence: "high",
         });
         break;
@@ -2074,15 +2119,18 @@ export function processWholeFileImports(
         // Trait → core/traits/{name}.md
         const name = slugify(basename);
         const isDuplicate = existingTraits.has(name);
+        const targetPath = `core/traits/${name}.md`;
+        const inRunDuplicate = !isDuplicate && plannedTargets.has(targetPath);
+        if (!isDuplicate) plannedTargets.add(targetPath);
 
         imports.push({
           source_file: file.absolutePath,
           import_type: "trait",
-          target_path: `core/traits/${name}.md`,
+          target_path: targetPath,
           generates: [],
-          action: isDuplicate ? "skip" : "create",
+          action: isDuplicate ? "skip" : inRunDuplicate ? "merge" : "create",
           composition_type: "preference",
-          duplicate_of: isDuplicate ? `core/traits/${name}.md` : null,
+          duplicate_of: isDuplicate || inRunDuplicate ? targetPath : null,
           confidence: "high",
         });
         break;
@@ -2092,15 +2140,18 @@ export function processWholeFileImports(
         // Rule with paths: → core/gotchas/{name}.md
         const name = slugify(basename);
         const isDuplicate = existingGotchas.has(name);
+        const targetPath = `core/gotchas/${name}.md`;
+        const inRunDuplicate = !isDuplicate && plannedTargets.has(targetPath);
+        if (!isDuplicate) plannedTargets.add(targetPath);
 
         imports.push({
           source_file: file.absolutePath,
           import_type: "rule",
-          target_path: `core/gotchas/${name}.md`,
+          target_path: targetPath,
           generates: [],
-          action: isDuplicate ? "skip" : "create",
+          action: isDuplicate ? "skip" : inRunDuplicate ? "merge" : "create",
           composition_type: "rule",
-          duplicate_of: isDuplicate ? `core/gotchas/${name}.md` : null,
+          duplicate_of: isDuplicate || inRunDuplicate ? targetPath : null,
           confidence: "high",
         });
         break;
@@ -2128,7 +2179,7 @@ export function applyWholeFileImports(
   imports: WholeFileImport[],
   hubPath: string,
   trustedSources?: Set<string>,
-): { created: number; skipped: number; errors: string[] } {
+): { created: number; updated: number; skipped: number; errors: string[] } {
   const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
   const resolvedHub = path.resolve(hubPath);
 
@@ -2150,6 +2201,25 @@ export function applyWholeFileImports(
       result.skipped++;
       if (imp.duplicate_of) {
         console.log(chalk.gray(`    ⊘ ${imp.target_path} (duplicate of ${imp.duplicate_of})`));
+        // D1: a skipped hub-duplicate still represents a repo carrying this
+        // content — record its provenance on the existing artifact when the
+        // content actually matches (name collisions with distinct content are
+        // NOT attributed). Guarded: plan files are user-editable.
+        try {
+          const dest = path.resolve(hubPath, imp.target_path);
+          const repoName = repoNameForSource(imp.source_file);
+          if (repoName && fs.existsSync(dest) && fs.existsSync(imp.source_file)) {
+            const body = stripFrontmatter(fs.readFileSync(imp.source_file, "utf-8"));
+            const existing = fs.readFileSync(dest, "utf-8");
+            if (isDuplicateContent(existing, body)) {
+              const attributed = addSourceAttribution(existing, repoName);
+              if (attributed !== existing) {
+                fs.writeFileSync(dest, attributed, "utf-8");
+                console.log(chalk.gray(`      source ${repoName} recorded on existing artifact`));
+              }
+            }
+          }
+        } catch { /* provenance recording is best-effort on skips */ }
       }
       continue;
     }
@@ -2193,8 +2263,26 @@ export function applyWholeFileImports(
 
       // Resolve attribution for the source file
       const sourceDir = path.dirname(imp.source_file);
-      const sourceRepoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+      const sourceRepoName = repoNameForSource(imp.source_file);
       const attr = resolveAttribution(imp.source_file, sourceDir, sourceRepoName);
+
+      // D1: when the target artifact already exists — a planned
+      // cross-repo "merge", or a "create" colliding with a file written earlier
+      // in this same run or pre-existing in the hub — NEVER overwrite. The
+      // artifact becomes the promoted org copy: duplicate content records the
+      // contributing repo's provenance only; distinct content is appended.
+      if (fs.existsSync(destPath)) {
+        const candidateBody = stripFrontmatter(content);
+        const outcome = mergeIntoExistingArtifact(destPath, candidateBody, sourceRepoName);
+        if (outcome === "duplicate") {
+          result.skipped++;
+          console.log(chalk.gray(`    = ${imp.target_path} (duplicate content — source ${sourceRepoName} recorded)`));
+        } else {
+          result.updated++;
+          console.log(chalk.cyan(`    ~ ${imp.target_path} (merged — source ${sourceRepoName} recorded)`));
+        }
+        continue;
+      }
 
       if (imp.import_type === "agent") {
         let body = stripFrontmatter(content);
@@ -2228,13 +2316,7 @@ export function applyWholeFileImports(
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         let body = stripFrontmatter(content);
         body = injectAttribution(body, attr);
-        // Linked skills append to existing SKILL.md instead of overwriting
-        if (fs.existsSync(destPath)) {
-          const existing = fs.readFileSync(destPath, "utf-8");
-          fs.writeFileSync(destPath, existing.trimEnd() + "\n\n" + body + "\n", "utf-8");
-        } else {
-          fs.writeFileSync(destPath, body + "\n", "utf-8");
-        }
+        fs.writeFileSync(destPath, body + "\n", "utf-8");
         if (imp.persona_config && imp.generates.length > 0) {
           const configDest = path.resolve(hubPath, imp.generates[0]!);
           fs.mkdirSync(path.dirname(configDest), { recursive: true });
@@ -2913,6 +2995,31 @@ export function deduplicateCrossPlatform(
 // AB-114: Staging file v2 format
 // ---------------------------------------------------------------------------
 
+/** D1: an artifact contributed by more than one repo in the same sweep. */
+export interface CrossRepoPromotion {
+  target_path: string;
+  repos: string[];
+}
+
+/**
+ * Group planned whole-file imports by target: any target fed by 2+ distinct
+ * repos is a cross-repo promotion — ONE org artifact, all sources attributed.
+ */
+export function computeCrossRepoPromotions(imports: WholeFileImport[]): CrossRepoPromotion[] {
+  const byTarget = new Map<string, Set<string>>();
+  for (const imp of imports) {
+    if (imp.action !== "create" && imp.action !== "merge") continue;
+    const repo = repoNameForSource(imp.source_file);
+    if (!repo) continue;
+    const set = byTarget.get(imp.target_path) ?? new Set<string>();
+    set.add(repo);
+    byTarget.set(imp.target_path, set);
+  }
+  return [...byTarget.entries()]
+    .filter(([, repos]) => repos.size > 1)
+    .map(([target_path, repos]) => ({ target_path, repos: [...repos].sort() }));
+}
+
 export interface ImportPlanV2 {
   version: 2;
   hub: string;
@@ -2930,6 +3037,8 @@ export interface ImportPlanV2 {
   whole_file_imports: WholeFileImport[];
   config_merges: ConfigMergeEntry[];
   deduplication: DeduplicationResult;
+  /** D1: absent on plans staged before v0.13.0. */
+  cross_repo_promotions?: CrossRepoPromotion[];
 }
 
 function writeStagingFileV2(
@@ -3023,11 +3132,24 @@ export function runExpandedImport(
   const allWholeFile = [...wholeFileImports, ...skillImports];
 
   if (allWholeFile.length > 0) {
-    const actionable = allWholeFile.filter(i => i.action === "create");
-    const skipped = allWholeFile.length - actionable.length;
-    console.log(chalk.green(`    ${actionable.length} to import, ${skipped} duplicates skipped`));
+    const creates = allWholeFile.filter(i => i.action === "create");
+    const merges = allWholeFile.filter(i => i.action === "merge");
+    const skipped = allWholeFile.length - creates.length - merges.length;
+    console.log(chalk.green(
+      `    ${creates.length} to import, ${merges.length} to merge (cross-repo), ${skipped} duplicates skipped`
+    ));
   } else {
     console.log(chalk.gray("    No whole-file imports found"));
+  }
+
+  // D1: surface cross-repo promotions — shared boilerplate across N
+  // repos converging on one org artifact with every source attributed.
+  const crossRepoPromotions = computeCrossRepoPromotions(allWholeFile);
+  if (crossRepoPromotions.length > 0) {
+    console.log(chalk.bold("\n  Cross-repo promotions (one org artifact, all sources attributed):\n"));
+    for (const promo of crossRepoPromotions) {
+      console.log(chalk.cyan(`    ${promo.target_path} ← ${promo.repos.join(", ")}`));
+    }
   }
 
   // 2. Config merges (free, security confirm for hooks)
@@ -3108,6 +3230,7 @@ export function runExpandedImport(
     whole_file_imports: allWholeFile,
     config_merges: configMerges,
     deduplication: dedup,
+    cross_repo_promotions: crossRepoPromotions,
   };
 
   return plan;
@@ -3120,14 +3243,15 @@ export function applyImportPlanV2(
   plan: ImportPlanV2,
   hubPath: string,
   trustedSources: Set<string>,
-): { created: number; skipped: number; applied: number; errors: string[] } {
-  const result = { created: 0, skipped: 0, applied: 0, errors: [] as string[] };
+): { created: number; updated: number; skipped: number; applied: number; errors: string[] } {
+  const result = { created: 0, updated: 0, skipped: 0, applied: 0, errors: [] as string[] };
 
   // Apply whole-file imports
   if (plan.whole_file_imports.length > 0) {
     console.log(chalk.cyan("\n  Applying whole-file imports..."));
     const wf = applyWholeFileImports(plan.whole_file_imports, hubPath, trustedSources);
     result.created += wf.created;
+    result.updated += wf.updated;
     result.skipped += wf.skipped;
     result.errors.push(...wf.errors);
   }
@@ -3150,8 +3274,19 @@ export function applyImportPlanV2(
       trustedSources,
     );
     result.created += cl.created;
+    result.updated += cl.updated;
     result.skipped += cl.skipped;
     result.errors.push(...cl.errors);
+  }
+
+  // D1: report the promoted org artifacts so the fleet-sweep outcome is
+  // explicit — which shared blocks converged and from which repos.
+  const promotions = plan.cross_repo_promotions ?? computeCrossRepoPromotions(plan.whole_file_imports);
+  if (promotions.length > 0) {
+    console.log(chalk.bold(`\n  Promoted ${promotions.length} cross-repo artifact(s):`));
+    for (const promo of promotions) {
+      console.log(chalk.cyan(`    ${promo.target_path} ← ${promo.repos.join(", ")}`));
+    }
   }
 
   return result;
