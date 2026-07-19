@@ -978,11 +978,11 @@ program
     if (nodeMajor >= 18) ok(`Node.js ${nodeV}`);
     else fail(`Node.js ${nodeV} — requires >=18`);
 
-    const gitResult = spawnSync("git", ["--version"], { encoding: "utf-8" });
+    const gitResult = spawnSync("git", ["--version"], { encoding: "utf-8", timeout: 10_000 });
     if (gitResult.status === 0) ok(gitResult.stdout.trim());
     else fail("git not found");
 
-    const claudeResult = spawnSync("claude", ["--version"], { encoding: "utf-8" });
+    const claudeResult = spawnSync("claude", ["--version"], { encoding: "utf-8", timeout: 10_000 });
     if (claudeResult.status === 0) ok(`Claude Code ${claudeResult.stdout.trim()}`);
     else warn("Claude Code not found (optional)");
 

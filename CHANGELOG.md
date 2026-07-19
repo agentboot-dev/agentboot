@@ -9,6 +9,18 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.12.4] — 2026-07-18
+
+### Fixed
+- **Intermittent hangs in external-binary probes** — the recurring "Windows CI flake"
+  was not slowness: `gh --version` / `gh auth status` / `claude --version` probes ran
+  with NO timeout, and a hung probe froze the synchronous doctor/MCP handlers
+  indefinitely (reproduced at a 20s test timeout after the earlier headroom fix was
+  falsified). All external-binary probes (gh, claude, git branch queries) are now
+  bounded at 10s, and gh probes run with `GH_NO_UPDATE_NOTIFIER`/`GH_PROMPT_DISABLED`
+  so the update checker and credential prompts cannot stall them. A timed-out probe
+  degrades to the tool-not-available path instead of hanging.
+
 ## [0.12.3] — 2026-07-18
 
 Dependency triage (dependabot batch #45–54) + CI robustness.
