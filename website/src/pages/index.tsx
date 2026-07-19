@@ -143,7 +143,7 @@ function HeroTerminal() {
           <span style={{ color: C.muted }}># compile the hub → native config</span>
         </div>
         <div style={{ color: C.muted, paddingLeft: '1.2rem', fontSize: '0.8rem', marginBottom: '0.6rem' }}>
-          ✓ 4 personas → Claude Code · Codex · Copilot
+          ✓ 5 personas → Claude Code · Codex · Copilot
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <span style={{ color: C.green }}>$</span><span style={{ color: C.text, fontWeight: 600 }}>agentboot sync</span>

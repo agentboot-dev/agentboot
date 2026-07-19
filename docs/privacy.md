@@ -381,7 +381,7 @@ code, a filed issue. The conversation that produced that output stays private.
 | Tool | What the developer sees | What the org sees |
 |------|------------------------|-------------------|
 | `/insights` | Personal patterns and suggestions | Nothing (unless developer opts in to share anonymized aggregate) |
-| Telemetry | N/A (developer doesn't see telemetry) | Persona invocation counts, cost, findings — no prompts, no developer IDs |
+| Telemetry | N/A (developer doesn't see telemetry) | Persona invocation counts and status — no prompts, no cost or finding data, no developer IDs by default |
 
 **There is no "after submit" state for developer prompts.** They are always in
 the private zone. AgentBoot's optimization tools for developer prompts operate
@@ -458,6 +458,10 @@ developer. See [Configuration](configuration.md#telemetry).)
 **Note what's absent:** No developer ID by default. No prompt text. No conversation
 content. No file paths read. The telemetry is about the **persona**, not the developer.
 
+Don't take this page's word for it — run **`agentboot telemetry-inspect`** to see
+exactly what every event type would emit for your configuration, field by field,
+including whether each field can identify a person.
+
 ### If the org configures a central sink
 
 By default telemetry is a local file and nothing is transmitted — AgentBoot has no
@@ -487,7 +491,10 @@ native private storage.
 
 ### What Gets Analyzed Locally (Privileged — Tier 2)
 
-The `/insights` skill (or `agentboot insights`) runs as a normal Claude API call:
+> **Status:** The `/insights` skill is designed but not yet implemented. This section
+> describes the target architecture for how private data analysis will work.
+
+The `/insights` skill (or `agentboot insights`) would run as a normal Claude API call:
 
 1. Reads local session transcripts (Tier 1 data)
 2. Sends them to Claude API for pattern extraction (Haiku for speed/cost, same
@@ -580,8 +587,8 @@ These measure whether the investment is being used at all.
 | **Seats active / seats licensed** | Adoption rate | API key usage (Anthropic Console) |
 | **Sessions per day (org-wide)** | Overall engagement | Telemetry aggregate |
 | **Persona invocations per day** | Which personas deliver value | SubagentStart/Stop hooks |
-| **Cost per team per month** | Budget tracking | Telemetry `scope` field |
-| **Model mix** (% Haiku/Sonnet/Opus) | Cost efficiency | Telemetry `model` field |
+| **Cost per team per month** | Budget tracking | Provider billing (e.g. Anthropic Console per-API-key usage) — **not** hook telemetry: events carry no cost or team/scope field, so team-level cost and adoption are not derivable from AgentBoot telemetry today |
+| **Model mix** (% Haiku/Sonnet/Opus) | Cost efficiency | Provider billing/usage reports — telemetry events carry no model field |
 
 These are anonymous by default. You know "the platform team ran 340 code reviews
 this month" — not which individual ran them.
@@ -635,6 +642,12 @@ explained why. Surprise surveillance destroys trust. Announced measurement build
 accountability.
 
 ### What Each Format Gives the Org
+
+> The dashboards below are **illustrative composites**: dollar figures come from
+> provider billing (telemetry events carry no cost or model fields), and any
+> team-level grouping requires the org to join on its own roster — events carry no
+> team or scope field. What AgentBoot telemetry itself contributes is invocation
+> counts, status, and (when configured) the `dev_id`.
 
 **`includeDevId: false`** (default — no individual tracking):
 

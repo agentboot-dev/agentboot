@@ -9,9 +9,9 @@ Where AgentBoot is headed. This page is forward‑looking — themes and intent,
 commitments**; priorities shift with what teams actually need. For the full record of what has
 already shipped, see the [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md).
 
-## Where we are today — v0.17.0 (public Beta)
+## Where we are today — v0.18.0 (public Beta)
 
-**AgentBoot v0.17.0 is a public Beta.** The full pipeline works end to end today: it compiles your
+**AgentBoot v0.18.0 is a public Beta.** The full pipeline works end to end today: it compiles your
 team's AI behavior — personas, traits, rules, gotchas, and domain layers — from one hub repo into
 native config for the **CLI surfaces** of **Claude Code**, **OpenAI Codex**, and **GitHub
 Copilot**, and delivers it to every repo as a reviewable pull request, with drift detection,
@@ -77,8 +77,11 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 
 ### Later — org scale & governance
 
-- **Domain layers** — packaged, opinionated compliance domains (healthcare, fintech, govtech):
-  traits + personas + gotchas + instructions, ready to adopt and tune.
+- **Domain layers** — fuller packaged, opinionated compliance domains (healthcare, fintech,
+  govtech): traits + personas + gotchas + instructions, ready to adopt and tune. A generic
+  **healthcare starter pack** ships today (`domains/healthcare-template/` — engineering
+  guardrails only; it does not establish HIPAA or any regulatory compliance); this item is
+  the deeper, multi-domain build-out.
 - **ADR governance** — an exception lifecycle for architectural decisions, with expiry validation
   so stale exceptions surface instead of lingering.
 - **Agent‑to‑Agent (A2A)** — expose personas as A2A‑callable services, complementing MCP for
@@ -101,7 +104,13 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 The short version — full detail in the
 [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md):
 
-- **v0.17.0 — tamper-evident telemetry (current).** Org-configured central sink:
+- **v0.18.0 — close-out sweep (current).** Auditor evidence-pack export
+  (`agentboot evidence-pack`: one signed bundle of enforcement, drift, trust
+  postures, guardrails, telemetry chain); AGENTS.md promoted to an officially
+  supported first-class output (advisory enforcement class, stated plainly); a
+  full docs/website truth-up pass; and the release process documented as a
+  verifiable contract (docs/release-process.md).
+- **v0.17.0 — tamper-evident telemetry.** Org-configured central sink:
   hash-chained events, digest-chained + SSH-signed shipped batches,
   `telemetry-ship`/`telemetry-verify`, honest trust model, no default endpoint —
   AgentBoot still never phones home.

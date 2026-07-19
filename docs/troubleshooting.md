@@ -68,6 +68,27 @@ The sync command reads `repos.json` for target repositories. Create it with `[]`
 
 A managed file was modified after sync. AgentBoot skips modified files to avoid data loss. If you want to force removal, delete the file manually.
 
+### First sync stops with an error about existing agent config
+
+A **first** sync onto a repo that already has hand-written instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`) hard-stops instead of replacing them — this is deliberate. Either run `agentboot import --path <repo>` first (recommended — the bespoke content is decomposed into hub artifacts, nothing is lost) and then sync, or run `agentboot sync --adopt-existing`, which archives everything it will overwrite to the repo's `.agentboot-archive/` (with an `archive-manifest.json`) before writing. `agentboot uninstall` restores the archive. See [CLI Reference § sync](cli-reference.md#first-sync-onto-a-repo-with-existing-agent-config).
+
+### A drift or validation failure came back that used to be excepted
+
+Policy exceptions **expire** (`expires` is a required field), and an expired exception is treated as absent — the covered drift or validation failure resurfaces and the report names the exception's `owner`. This is by design: "just this once" cannot silently become forever. Fix the underlying deviation, or renew the exception in `agentboot-exceptions.json` (hub) / `.agentboot-exceptions.json` (spoke) with a new expiry, approver, and reason via PR. Exceptions expiring within 14 days produce warnings first. See [configuration § Policy exceptions](configuration.md#policy-exceptions--owners-and-expiration-dates).
+
+### `verify-manifest` reports a mismatch
+
+Triage by which check failed:
+
+- **Manifest content digest mismatch** — the `.agentboot-manifest.json` itself was edited or corrupted after sync. Re-sync from the hub to regenerate it.
+- **File hash mismatch** — a managed file in the repo was modified after sync. If the change is intentional, cover it with a `drift:<path>` policy exception or reconcile it back through the hub; otherwise re-sync to restore the file.
+- **Signature invalid or missing** — the manifest was modified after signing, or the hub shipped unsigned while your CI requires `--require-signed`. Note that signature *validity* only proves the digest was signed by *some* key.
+- **Signer not in `allowed_signers`** — the signature is cryptographically valid but the signing key isn't in your trust root. Confirm whether the hub rotated its signing key (update `allowed_signers`) or whether an unauthorized party produced the manifest.
+
+### `conformance` fails (declared vs observed divergence)
+
+`agentboot conformance` executes the compiled hook scripts with crafted probes and compares **observed** blocking behavior against the platform's **declared** enforcement level. A failure means the artifacts do not enforce what the capability matrix declares — e.g. a hook script that is missing, not executable, mangled by local edits, or a stale `dist/` build. Rebuild (`agentboot build`) and re-run; a control reported **untested** (no `bash`, script missing) is an environment gap, not a pass. See [CLI Reference § conformance](cli-reference.md#agentboot-conformance).
+
 ## CLI Issues
 
 ### `Unknown type: '<name>'. Use: persona, trait, gotcha, domain, hook, prompt, template`

@@ -9,6 +9,42 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-19
+
+Close-out sweep: the evidence surface for auditors, AGENTS.md as a first-class
+output, and a full truth-up of the public docs and website.
+
+### Added
+- **`agentboot evidence-pack`**: exports one signed, digest-protected JSON
+  bundle of the org's governance state — hub provenance, declared enforcement
+  per platform plus the empirical enforcement manifests from the last
+  conformance run (unprobed platforms reported as such, never assumed green),
+  per-repo drift state and sync-manifest trust posture, managed deny lists,
+  policy exceptions with expiry status, and shipped-telemetry chain evidence.
+  Tampering the bundle breaks its digest; signing rides the sync key.
+- **docs/release-process.md**: the trunk-based, publish-decoupled-from-merge
+  release contract documented with evaluator-verifiable invariants.
+
+### Changed
+- **AGENTS.md is now an officially supported first-class output** (it was
+  community tier) — the industry converged on it as the cross-tool standard.
+  Stated precisely everywhere: officially supported, ADVISORY enforcement
+  class (instructions, not hooks); blocking enforcement remains Claude Code /
+  Codex / Copilot. The compile fallback output set now includes `agents`,
+  matching the install/export defaults.
+- Docs/website truth-up: command classification corrected (hidden/nonexistent
+  commands removed, deterministic vs LLM-backed fixed); telemetry docs show
+  the shipped minimal schema; exception governance documented as shipped
+  (design-future ADR flows bannered); Copilot's fail-open-on-timeout limit
+  stated wherever its tier is; healthcare starter-pack vs roadmap reconciled;
+  troubleshooting entries for first-sync stop, expired exceptions,
+  verify-manifest triage, conformance failures; trust page gains rows for
+  verify-manifest, conformance, SBOM/provenance, evidence-pack; llms.txt
+  covers the enterprise/verification surface; assurance-claims register
+  linked into site navigation; org-sink caveat added everywhere
+  "no telemetry transmission" was claimed (no default endpoint — the vendor
+  never receives anything; an org may configure its own collector).
+
 ## [0.17.0] — 2026-07-19
 
 Tamper-evident telemetry — the last of the original enterprise asks: an audit

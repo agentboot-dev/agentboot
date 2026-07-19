@@ -15,8 +15,15 @@ governance claim.
 blocking compliance hooks from one canonical set of portable hook scripts, kept in
 lock-step.
 
-**Community tier (advisory):** Cursor, Windsurf, Gemini, JetBrains, the universal
-`AGENTS.md` standard, and agentskills.io `SKILL.md` output. AgentBoot emits native
+**Officially supported output (advisory-enforcement):** the universal **`AGENTS.md`**
+standard — the industry-standard cross-tool instruction file. AgentBoot generates and
+maintains it as a first-class, officially supported output. Support tier is not
+enforcement tier: AGENTS.md is advisory by nature (the standard has no hook
+mechanism), so it never carries blocking enforcement — that remains a Claude Code /
+Codex / Copilot capability.
+
+**Community tier (advisory):** Cursor, Windsurf, Gemini, JetBrains, and
+agentskills.io `SKILL.md` output. AgentBoot emits native
 instruction files for these, and drift detection still covers the files — but
 AgentBoot does not emit enforcement hooks for them, so nothing *enforces* the
 content. (Several of these tools — Cursor, Windsurf, Gemini — do have hook surfaces
@@ -27,7 +34,7 @@ is not a control.
 
 | Capability | Claude Code | OpenAI Codex CLI | GitHub Copilot CLI | Community tier |
 |---|---|---|---|---|
-| **Compiled instructions** (personas, traits, gotchas → native config) | ✅ `CLAUDE.md`, skills, `settings.json` | ✅ `AGENTS.md`, `.agents/skills/` | ✅ `copilot-instructions.md`, path-scoped `.instructions.md`, agents, prompt files | ✅ Native files emitted (Cursor rules, Gemini, JetBrains, `AGENTS.md`, `SKILL.md`) — **advisory only** |
+| **Compiled instructions** (personas, traits, gotchas → native config) | ✅ `CLAUDE.md`, skills, `settings.json` | ✅ `AGENTS.md`, `.agents/skills/` | ✅ `copilot-instructions.md`, path-scoped `.instructions.md`, agents | ✅ Native files emitted (Cursor rules, Gemini, JetBrains, `SKILL.md`) — **advisory only**. The universal `AGENTS.md` file is an **officially supported output** (not community tier), but its enforcement class is the same: advisory |
 | **Blocking pre-tool-use / lifecycle hooks** | ✅ Full hook lifecycle (`PreToolUse`, `PostToolUse`, `Stop`, …), blocking on exit code 2, via `.claude/settings.json` | ✅ Blocking on exit code 2, via `.codex/hooks.json` — hooks require a trust review unless deployed as managed; tool coverage is partial (shell/patch/MCP, not WebSearch); `SessionEnd` unsupported | ⚠️ Blocking on exit code 2, via `.github/hooks/agentboot.json` — **lower ceiling**: fewer hook types; command-hook **timeouts fail open** (a slow hook does not block); exit-2 blocking is documented but **not yet empirically verified for GA** | ❌ AgentBoot emits no enforcement here — instructions only. (Cursor/Windsurf/Gemini have hook surfaces of their own; AgentBoot does not bind them today.) |
 | **Drift detection** | ✅ Content-hash manifest comparison flags any managed file that's been modified | ✅ Same mechanism | ✅ Same mechanism | ✅ Same mechanism — the files are still drift-checked, but nothing enforces their content |
 | **Managed settings** (non-overridable) | ✅ `managed-settings.json` — MDM-deployable; overrides user and project settings | ❌ No native non-overridable settings layer. HARD guardrails are protected at build time (a lower scope cannot silently disable one) and ride in the emitted hooks/config | ❌ Same as Codex | ❌ Not available |
@@ -43,7 +50,7 @@ platform — when evaluating AgentBoot as a control, use the class, not the feat
 | **Hard-enforced** | The platform mechanically blocks the action; a developer cannot override it locally | Claude Code managed settings via MDM; Claude Code blocking hooks |
 | **Enforced, known bypasses** | Blocks in the normal path, but a documented gap exists | Codex hooks (partial tool coverage, trust-review requirement); Copilot exit-2 blocking (not yet empirically GA-verified) |
 | **Fail-open** | Enforces when healthy; a failure/timeout allows the action | Copilot command-hook timeouts; any hook if its runtime dependency (node) is missing |
-| **Advisory** | The agent receives the policy as instructions; nothing enforces it | Entire community tier; output-scan in default (warn) mode |
+| **Advisory** | The agent receives the policy as instructions; nothing enforces it | Entire community tier; the officially supported `AGENTS.md` output; output-scan in default (warn) mode |
 | **Unsupported** | The control does not exist on the platform | Managed settings outside Claude Code; MCP allowlisting outside compiled configs |
 
 **Prompt instructions are not a security boundary.** An instruction saying "never do

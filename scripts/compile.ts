@@ -763,7 +763,9 @@ function compilePersona(
     personaName
   );
 
-  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+  // "agents" (AGENTS.md) is a first-class official output — the fallback must
+  // agree with the install/export defaults, which always include it.
+  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot", "agents"];
   const platforms: string[] = [];
 
   // Write to dist/{platform}/{scopePath}/{persona}/ (or skills/{name}/ for claude)

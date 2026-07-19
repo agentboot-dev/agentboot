@@ -5,10 +5,28 @@ sidebar_position: 1
 
 # AgentBoot Delivery Methods — Analysis & Recommendations
 
-How organizations install, configure, and use AgentBoot. AgentBoot compiles personas
-into platform-native formats (Claude Code, Copilot, Cursor, AGENTS.md) and distributes
-them across an org's repo fleet. This document evaluates delivery through the lens of
-the real adoption challenge: an org with power users, skeptics, and non-engineers.
+How organizations install, configure, and use AgentBoot.
+
+**The short, factual version:** AgentBoot compiles personas into platform-native
+formats (Claude Code, Codex, Copilot, and the officially supported cross-tool
+AGENTS.md output, plus community-tier formats like Cursor) and distributes them
+across an org's repo fleet. The shipped delivery channels today are:
+
+- **`agentboot sync`** — the hub writes generated files directly into target repos
+  ("the repo already has it"); works for every platform.
+- **Claude Code plugin** — `agentboot build` emits a loadable plugin at
+  `dist/plugin/`; orgs serve it from their own marketplace repo.
+- **Managed settings** — `dist/managed/` output for MDM-pushed HARD guardrails
+  (Claude Code only).
+
+See [Getting Started](getting-started.md) for setup and
+[Org Connection](org-connection.md) for the hub-and-spoke model.
+
+> **The rest of this page is strategy analysis, not a feature list.** It evaluates
+> delivery channels — including some that are design-intent rather than shipped —
+> through the lens of the real adoption challenge: an org with power users,
+> skeptics, and non-engineers. Where a mechanism is not yet implemented, the text
+> says so.
 
 ---
 
@@ -622,8 +640,10 @@ through different channels.
    AgentBoot generates these from gotchas rules and domain layers.
 
 4. **Prompt files (`.github/prompts/*.prompt.md`)** — Copilot's slash command
-   equivalent. AgentBoot generates these as the IDE invocation surface for personas.
-   Developers type `/review-code` in VS Code Copilot Chat.
+   equivalent (developers type `/review-code` in VS Code Copilot Chat). AgentBoot
+   does **not** generate these today; the generated `.agent.md` agents are the
+   current persona invocation surface. Prompt-file generation is a possible future
+   addition.
 
 5. **Agent Skills (`skills/{name}/SKILL.md`)** — The agentskills.io format is
    supported in Copilot CLI agent mode. AgentBoot's cross-platform SKILL.md output
@@ -634,8 +654,10 @@ through different channels.
    GitHub repo settings.
 
 7. **Custom instructions (org-level)** — Copilot Enterprise supports org-level
-   custom instructions that apply to all repos. AgentBoot generates these from
-   the org-scope always-on instructions.
+   custom instructions that apply to all repos. AgentBoot does **not** generate
+   this artifact today — org-scope instructions land in the generated
+   `copilot-instructions.md` and `.instructions.md` files synced per repo. Feeding
+   Copilot Enterprise's org-level channel directly is a possible future addition.
 
 8. **MCP servers** — Copilot supports MCP in VS Code (GA) and CLI. AgentBoot's
    MCP server (`agentboot mcp-server`, implemented in Phase 8) provides live persona

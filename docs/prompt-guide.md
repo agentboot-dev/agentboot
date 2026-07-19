@@ -56,6 +56,10 @@ agentboot cost-estimate                agentboot metrics (aggregate)
   Private to you.                        No individual attribution.
 ```
 
+(Illustrative of the principle — `lint`, `validate`, `test`, and `cost-estimate`
+ship today; `agentboot metrics`, `/insights`, and the org dashboard are planned
+V2 capabilities, covered later on this page.)
+
 This mirrors exactly how code works:
 - `eslint` locally → fix before anyone sees → CI catches what you missed → fair game
 - `npm test` locally → fix failures privately → CI runs on PR → results are public
@@ -377,11 +381,14 @@ The audit-trail trait (which all personas should compose) emits structured telem
 ```
 
 Emitted via async hooks so it doesn't slow down the developer, and appended to a
-**local NDJSON file only** (`telemetry.logPath`, default
+**local NDJSON file** (`telemetry.logPath`, default
 `~/.agentboot/telemetry.ndjson`). Telemetry is **disabled by default**, and there
-is **no network transmission** — no HTTP endpoint exists, nothing phones home. If
-you want the events in a central system, you ship the local file yourself with
-your own log-forwarding infrastructure. Note the sample event above is
+is **no default endpoint — nothing ever goes to the vendor**. An organization
+*may* configure its own collector via `telemetry.sink`
+(see [configuration.md](configuration.md#telemetry)); when set, `agentboot
+telemetry-ship` batches local events and POSTs them to that org-owned endpoint.
+Absent that explicit org configuration, events never leave the machine. Note the
+sample event above is
 illustrative of what a rich metrics pipeline could measure; the telemetry the
 generated hooks actually emit is deliberately minimal (persona id, event type,
 status, timestamp — no tokens, cost, prompts, or content; run
@@ -949,7 +956,11 @@ Write/Edit ──► Lint ──► Build ──► Deploy    │
 
 ### Weekly Review Process
 
-1. **Pull metrics:** `agentboot metrics --period 7d`
+1. **Pull metrics:** query the local telemetry log with `jq` (default
+   `~/.agentboot/telemetry.ndjson`; run `agentboot telemetry-inspect` to see the
+   exact event shapes), or run `agentboot optimize` for model-selection and
+   coverage recommendations. (`agentboot metrics --period 7d` is the planned V2
+   command for this step — see §4 above.)
 2. **Identify outliers:**
    - Personas with high false positive rates → tighten rules
    - Personas with high token usage → compress prompts

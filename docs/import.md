@@ -110,9 +110,12 @@ Inside Claude Code, `/ab` drives the same pipeline conversationally:
   the review step is for.
 - **Originals are never modified or deleted.** Import copies content into the hub;
   cleaning up the source repos afterward is your call (and usually a follow-up PR).
-- **It imports what exists, as it exists.** Import won't deduplicate wording,
-  merge overlapping rules into one, or improve prose. `--overlap` flags likely
-  duplicates; deciding is on you.
+- **It imports what exists, as it exists.** Exact-duplicate content across repos
+  *is* detected and converged onto one promoted org artifact with every source
+  attributed (see cross-repo promotion in
+  [CLI Reference § `agentboot import`](cli-reference.md#org-scale-sweeps-and-cross-repo-dedup)).
+  What import won't do is merge similar-but-different wording into one rule or
+  improve prose. `--overlap` flags likely near-duplicates; deciding is on you.
 - **`AGENTS.md` needs the explicit route** described above.
 
 ## Import and the first sync

@@ -626,13 +626,15 @@ AgentBoot's CLI has two classes of commands, separated by whether they invoke an
 They never call an LLM, never cost money, and never require a login beyond npm:
 
 `install`, `uninstall`, `build`, `validate`, `sync`, `doctor`, `add`, `lint`, `status`,
-`config`, `export`, `publish`
+`config`, `export`, `cost-estimate` (pricing arithmetic over published rates — no LLM
+call), `conformance`, `verify-manifest`, `drift-check`, `telemetry-inspect`,
+`telemetry-ship`, `telemetry-verify`, `evidence-pack`, `audit`
 
 **LLM-powered commands** use `claude -p` (Claude Code's non-interactive mode) to invoke
 the user's existing Claude Code session. They cost money (billed to the user's Claude
 subscription), produce non-deterministic output, and require an active Claude Code login:
 
-`import`, `test --behavioral`, `review`, `cost-estimate`
+`import`, `test --behavioral`
 
 The same features are also available as **interactive skills** (`/ab import`,
 `/ab test`) inside Claude Code sessions, using AgentBoot's MCP server as a bridge.
@@ -763,32 +765,41 @@ than promising universal enforcement.
 
 ---
 
-## ADR governance
+## Exception governance
 
-When a persona flags something, and the developer intentionally chose to do it
-differently, the organization needs a mechanism to say "this is an approved exception."
-Without this, every guardrail violation becomes a battle, and engineers start ignoring
-review findings.
+When a persona or policy check flags something, and the team intentionally chose to do
+it differently, the organization needs a mechanism to say "this is an approved
+exception." Without this, every guardrail violation becomes a battle, and engineers
+start ignoring findings.
 
-AgentBoot supports Architecture Decision Records (ADRs) as the exception governance
-mechanism. The lifecycle is:
+The shipped mechanism is the **policy-exception file** — owned, expiring, reviewable
+JSON (see [configuration.md § Policy exceptions](configuration.md#policy-exceptions--owners-and-expiration-dates)):
 
-1. **Review** — a persona flags a finding during review
-2. **Propose** — the developer uses `/create-adr` or `/propose-exception` to draft a
-   formal exception with rationale
-3. **Approve** — a designated reviewer (CODEOWNERS, tech lead) reviews the exception
-   PR and approves or rejects it
-4. **Commit** — the approved exception becomes a permanent record in the ADR index,
-   and the persona learns to accept the deviation for that specific case
+- **Hub:** `agentboot-exceptions.json` at the hub root, validated by
+  `agentboot validate`.
+- **Spoke repo:** `.agentboot-exceptions.json` at the repo root, consumed by
+  `agentboot drift-check`. A modified or missing managed file covered by an unexpired
+  `"policy": "drift:<path-or-glob>"` exception reports as **`excepted`** (with its
+  exception id) instead of failing — approved drift is distinguished from unauthorized
+  drift, never hidden.
 
-ADRs live in the personas repo (not the target repo) because they are governance
-artifacts, not code artifacts. They are tracked in an `adrs/index.json` that the
-build system can reference.
+Every exception requires an `id`, `policy`, `reason`, `approver`, `owner`, `created`,
+and `expires`. Because the file lives in git, proposing an exception is a PR, approval
+is a PR review, and the exception itself is reviewable history. **Expiry is enforced**:
+an expired exception is treated as absent — the drift or validation failure resurfaces
+and the report names the owner. Exceptions expiring within 14 days produce warnings.
+"Just this once" cannot silently become forever.
+
+> **Design intent, not shipped:** a fuller ADR-based lifecycle — `/create-adr` /
+> `/propose-exception` skills that draft formal Architecture Decision Records, an
+> `adrs/index.json` the build can reference, and personas that learn to accept an
+> approved deviation for a specific case — is a direction under consideration, not a
+> current feature.
 
 This is complementary to the temporary elevation pattern (where a developer needs a
-one-time bypass for debugging). ADRs handle *permanent, approved deviations*. Temporary
-elevation handles *emergency access with audit trail and auto-expiry*. A mature
-governance system needs both.
+one-time bypass for debugging). Policy exceptions handle *approved, time-bounded
+deviations*. Temporary elevation handles *emergency access with audit trail and
+auto-expiry*. A mature governance system needs both.
 
 ---
 
@@ -1007,37 +1018,39 @@ generate MCP configuration stanzas that get synced to target repos.
 
 Persona invocations should emit structured JSON logs from day one — not plain text.
 The difference matters when you need to answer questions like "which persona is invoked
-most often?", "what is the average token cost per review?", or "which teams use the
-security reviewer least?"
+most often?" or "is the security reviewer actually running?"
 
-AgentBoot specifies a telemetry format based on GELF (Graylog Extended Log Format) /
-NDJSON with defined fields:
+AgentBoot's shipped telemetry is NDJSON with a **deliberately minimal, versioned
+schema** (canonical in `scripts/lib/telemetry-schema.ts`). A `persona_invocation`
+event contains exactly:
 
 ```json
 {
-  "persona_id": "review-security",
-  "model": "claude-sonnet-4-6",
-  "scope": "team:platform/api",
-  "product": "my-app",
-  "session_id": "abc123",
-  "input_tokens": 4200,
-  "output_tokens": 1800,
-  "outcome": "completed",
-  "findings": { "CRITICAL": 0, "ERROR": 1, "WARN": 3, "INFO": 2 },
-  "duration_ms": 12400,
-  "timestamp": "2026-03-19T14:30:00Z"
+  "event": "persona_invocation",
+  "persona_id": "code-reviewer",
+  "status": "completed",
+  "timestamp": "2026-03-19T14:30:00Z",
+  "dev_id": "",
+  "schema": 2,
+  "chain": "…sha256 hash-chain link…"
 }
 ```
 
-This is emitted by the audit-trail trait (which all review personas should compose).
-The log is human-queryable with `jq` from day one — no dashboarding infrastructure
-required to start getting value.
+Content-bearing fields (prompts, responses, file paths, tool arguments, tokens, cost)
+are **prohibited by schema** — a conformance test fails if one appears. Run
+`agentboot telemetry-inspect` to see exactly what every event type would emit for your
+configuration. The log is human-queryable with `jq` from day one — no dashboarding
+infrastructure required to start getting value.
 
-Telemetry enables:
-- **Cost optimization** — identify which personas and models cost the most per finding
-- **Coverage tracking** — ensure security reviews are happening on every repo
-- **Quality feedback** — correlate finding severity with actual bug rates
-- **Adoption metrics** — measure which teams are using the system and which aren't
+Today's minimal schema supports:
+- **Coverage tracking** — ensure review personas are actually being invoked
+- **Adoption signal** — measure whether the system is in use at all
+- **Tamper-evidence** — the `chain` field makes post-write log edits detectable
+  (`agentboot telemetry-verify`)
+
+Richer analytics — token costs, finding counts, duration, per-team scoping — are a
+**design-future direction**, not something the shipped hooks emit. Any schema change
+must bump the schema version and be called out in release notes.
 
 Plain text log lines (`PERSONA_START agent=review-code`) are an anti-pattern. They
 cannot be queried, aggregated, or analyzed without parsing. Start structured.
