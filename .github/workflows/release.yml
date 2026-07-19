@@ -17,70 +17,69 @@ permissions:
   contents: write
   id-token: write
 
+# Stacked merges queue behind each other instead of racing. Never cancel a
+# release that has already started.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
     # Only run when a PR is actually merged (not just closed), or on manual dispatch.
-    # Also skip release commits to prevent infinite loops.
     if: >-
       (github.event_name == 'workflow_dispatch') ||
-      (github.event.pull_request.merged == true &&
-       !startsWith(github.event.pull_request.title, 'chore: release v'))
+      (github.event.pull_request.merged == true)
 
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # Pin to the exact commit that triggered this run (the PR's merge
+          # commit), so a queued release never silently publishes a later
+          # state of main. fetch-depth: 0 is required to see tags.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
-          # RELEASE_PAT allows the version bump commit to trigger CI workflows.
-          # GITHUB_TOKEN commits don't trigger workflows (prevents loops).
-          token: ${{ secrets.RELEASE_PAT }}
 
+      # Release contract: a release happens ONLY when package.json's version
+      # differs from the latest v* tag — i.e. the merged PR deliberately bumped
+      # it. Merges that don't bump the version (dependency updates, docs,
+      # refactors) are absorbed silently until the next deliberate release PR.
+      # No version-bump commit is ever pushed back to main by this workflow.
       - name: Determine release version
         id: version
         run: |
-          # Get the latest git tag (sorted by semver)
           LATEST_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           LATEST_TAG_VERSION="${LATEST_TAG#v}"
-          echo "latest_tag=${LATEST_TAG_VERSION}" >> "$GITHUB_OUTPUT"
-
-          # Get the version from package.json
           PKG_VERSION=$(node -p "require('./package.json').version")
-          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
 
           if [ -z "$LATEST_TAG_VERSION" ]; then
-            # No tags exist yet — use package.json version as-is
+            echo "release=true" >> "$GITHUB_OUTPUT"
             echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "bump=false" >> "$GITHUB_OUTPUT"
             echo "No existing tags. Will release v${PKG_VERSION}"
           elif [ "$PKG_VERSION" != "$LATEST_TAG_VERSION" ]; then
-            # package.json was manually bumped (major/minor) — use it as-is
+            echo "release=true" >> "$GITHUB_OUTPUT"
             echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "bump=false" >> "$GITHUB_OUTPUT"
-            echo "Manual version bump detected: ${LATEST_TAG_VERSION} → ${PKG_VERSION}"
+            echo "Version bump detected: ${LATEST_TAG_VERSION} → ${PKG_VERSION}"
           else
-            # package.json matches latest tag — auto-bump patch
-            MAJOR=$(echo "$PKG_VERSION" | cut -d. -f1)
-            MINOR=$(echo "$PKG_VERSION" | cut -d. -f2)
-            PATCH=$(echo "$PKG_VERSION" | cut -d. -f3)
-            NEW_PATCH=$((PATCH + 1))
-            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
-            echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-            echo "bump=true" >> "$GITHUB_OUTPUT"
-            echo "Auto-bump patch: ${PKG_VERSION} → ${NEW_VERSION}"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "package.json (${PKG_VERSION}) matches latest tag v${LATEST_TAG_VERSION} — nothing to release."
+            echo "no version bump in this merge — no release" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Check tag does not already exist
+        if: steps.version.outputs.release == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${VERSION} already exists — skipping release."
-            echo "SKIP=true" >> "$GITHUB_ENV"
+            echo "::error::Tag v${VERSION} already exists but package.json was bumped to ${VERSION}. Bump package.json to an unused version."
+            exit 1
           fi
 
       - name: Set up Node.js
-        if: env.SKIP != 'true'
+        if: steps.version.outputs.release == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -88,17 +87,11 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
-        if: env.SKIP != 'true'
+        if: steps.version.outputs.release == 'true'
         run: npm ci
 
-      - name: Configure git identity
-        if: env.SKIP != 'true'
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
       - name: Build and test
-        if: env.SKIP != 'true'
+        if: steps.version.outputs.release == 'true'
         run: npm run validate && npm run build && npm test
 
       # Hard gate: the public site/docs hardcode the release version in a few
@@ -106,39 +99,22 @@ jobs:
       # before any tag is cut — if they were not bumped to this version, so the
       # site can never advertise a version that isn't shipping.
       - name: Verify release version strings
-        if: env.SKIP != 'true'
+        if: steps.version.outputs.release == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: npx tsx scripts/check-version-strings.ts --version "$VERSION"
 
-      - name: Bump version in package.json (patch auto-bump only)
-        if: env.SKIP != 'true' && steps.version.outputs.bump == 'true'
+      - name: Tag the release commit
+        if: steps.version.outputs.release == 'true' && !inputs.dry-run
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          npm version "$VERSION" --no-git-tag-version
-
-      - name: Commit version bump and tag
-        if: env.SKIP != 'true' && !inputs.dry-run
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Only commit if there are changes (patch bump modifies package.json)
-          if ! git diff --quiet package.json; then
-            git add package.json package-lock.json
-            git commit -m "chore: release v${VERSION}"
-            git push origin main
-          fi
-
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
       - name: Create GitHub Release
         id: drafter
-        if: env.SKIP != 'true' && !inputs.dry-run
+        if: steps.version.outputs.release == 'true' && !inputs.dry-run
         uses: release-drafter/release-drafter@6a93d829887aa2e0748befe2e808c66c0ec6e4c7 # v6
         with:
           tag: "v${{ steps.version.outputs.version }}"
@@ -148,28 +124,68 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to npm
-        if: env.SKIP != 'true' && !inputs.dry-run
+        if: steps.version.outputs.release == 'true' && !inputs.dry-run
         env:
-          VERSION: ${{ steps.version.outputs.version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          # Ensure package.json has the correct version for publishing
-          CURRENT=$(node -p "require('./package.json').version")
-          if [ "$CURRENT" != "$VERSION" ]; then
-            npm version "$VERSION" --no-git-tag-version
-          fi
-          npm publish --provenance
+        run: npm publish --provenance
 
       # B13: attach an SBOM + checksums to the GitHub Release so enterprise
       # consumers get a verifiable route from an approved release to artifacts.
       # Verification procedure: SECURITY.md "Verifying a release".
+      #
+      # NOTE: the SBOM is deliberately NOT generated with `npm sbom --omit=dev`.
+      # npm's omit filter drops any package that has *any* inbound edge from a
+      # dev-only package — here a dev-only bundler declares peerDependencies on
+      # tsx and esbuild, which silently knocked the entire runtime-critical
+      # tsx → esbuild subtree (~31 packages) out of the published SBOM. Instead,
+      # strip devDependencies in a scratch dir, re-resolve a prod-only lockfile,
+      # and SBOM that tree — no omit flag needed, and a completeness guard
+      # fails the release if the SBOM does not cover the full prod closure.
       - name: Attach SBOM and checksums to the release
-        if: env.SKIP != 'true' && !inputs.dry-run
+        if: steps.version.outputs.release == 'true' && !inputs.dry-run
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npm sbom --sbom-format cyclonedx --omit dev > "agentboot-${VERSION}.sbom.cdx.json"
+          SBOM_DIR="$(mktemp -d)"
+          cp package.json package-lock.json "$SBOM_DIR/"
+          node -e '
+            const fs = require("fs")
+            const f = process.argv[1] + "/package.json"
+            const p = JSON.parse(fs.readFileSync(f, "utf8"))
+            delete p.devDependencies
+            fs.writeFileSync(f, JSON.stringify(p, null, 2))
+          ' "$SBOM_DIR"
+          (cd "$SBOM_DIR" && npm install --package-lock-only --ignore-scripts)
+          (cd "$SBOM_DIR" && npm sbom --sbom-format cyclonedx --package-lock-only) > "agentboot-${VERSION}.sbom.cdx.json"
+
+          # Completeness guard: every package in the prod-only lockfile must
+          # appear in the SBOM (name@version), and the runtime toolchain must
+          # be present. Fails the release on any gap.
+          node -e '
+            const fs = require("fs")
+            const [lockPath, sbomPath] = process.argv.slice(1)
+            const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"))
+            const sbom = JSON.parse(fs.readFileSync(sbomPath, "utf8"))
+            const have = new Set((sbom.components || []).map(c => `${c.name}@${c.version}`))
+            const want = Object.entries(lock.packages)
+              .filter(([p]) => p !== "")
+              .map(([p, e]) => `${p.replace(/^.*node_modules\//, "")}@${e.version}`)
+            const missing = want.filter(w => !have.has(w))
+            if (missing.length) {
+              console.error(`SBOM incomplete: ${missing.length} of ${want.length} production packages missing:`)
+              missing.forEach(m => console.error(`  - ${m}`))
+              process.exit(1)
+            }
+            for (const name of ["tsx", "esbuild"]) {
+              if (!want.some(w => w.startsWith(name + "@"))) {
+                console.error(`Runtime-critical package absent from prod closure: ${name}`)
+                process.exit(1)
+              }
+            }
+            console.log(`SBOM complete: ${have.size} components cover all ${want.length} production packages`)
+          ' "$SBOM_DIR/package-lock.json" "agentboot-${VERSION}.sbom.cdx.json"
+
           npm pack
           shasum -a 256 "agentboot-${VERSION}.tgz" "agentboot-${VERSION}.sbom.cdx.json" > "agentboot-${VERSION}.sha256"
           cat "agentboot-${VERSION}.sha256"
@@ -179,7 +195,7 @@ jobs:
             --clobber
 
       - name: Update Homebrew formula
-        if: env.SKIP != 'true' && !inputs.dry-run
+        if: steps.version.outputs.release == 'true' && !inputs.dry-run
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -214,7 +230,7 @@ jobs:
           git push
 
       - name: Summary
-        if: env.SKIP != 'true'
+        if: steps.version.outputs.release == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
