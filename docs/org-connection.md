@@ -213,12 +213,19 @@ agentboot build                   # Rebuild with org customizations
 
 ### Model B: Two-Layer Plugin (Core + Org Extension)
 
-Developer installs the generic AgentBoot plugin from the public marketplace, then
+Developer installs the generic AgentBoot plugin from a public marketplace, then
 installs the org plugin on top. The org plugin extends core, doesn't replace it.
 
-**Developer workflow:**
+> **Not available today:** the canonical public repo is
+> [`agentboot-dev/agentboot`](https://github.com/agentboot-dev/agentboot), but a
+> generic core plugin is not yet published to a public marketplace, so the first
+> half of this workflow has nothing to install. This model is described for
+> architectural comparison only — use Model A (single org plugin built from your
+> hub's `dist/plugin/` output) in practice.
+
+**Developer workflow (hypothetical):**
 ```bash
-/plugin marketplace add agentboot/agentboot-marketplace
+/plugin marketplace add agentboot-dev/agentboot    # core plugin not yet published
 /plugin install agentboot                          # Core personas
 
 /plugin marketplace add acme-corp/acme-personas

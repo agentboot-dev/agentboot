@@ -10,6 +10,114 @@ listed here are backward-compatible and require only a package update.
 
 ---
 
+## v0.11 → v0.15 (0.12.0 through 0.15.0)
+
+These four releases shipped together as an enterprise-hardening series. Your hub
+**source** (traits, personas, gotchas, config) does not need to be rewritten, but
+several **behaviors changed** — this is not a drop-in upgrade if you have automation
+or tooling built against the old behaviors. Read the list below, then follow the
+standard path: update the package, re-run `agentboot install` in the hub, rebuild,
+and resync.
+
+```bash
+npm install -g agentboot@latest
+cd /path/to/your-personas-hub
+agentboot install
+agentboot build
+agentboot sync
+```
+
+Expect the first post-upgrade sync to be **larger than usual** — the manifest format
+changed and scope-layout fixes may deliver content that previously compiled to
+nothing (see below).
+
+### Behavior changes in 0.12.0
+
+- **First sync onto existing agent config now hard-stops.** A first sync against a
+  repo that already has hand-written instruction files (`CLAUDE.md`, `AGENTS.md`,
+  `.cursorrules`, `.github/copilot-instructions.md`) refuses to run unless you pass
+  `sync --adopt-existing`. Without the flag, sync points you at
+  `agentboot import` (recommended — it decomposes the bespoke content into hub
+  artifacts). With the flag, pre-existing files that sync overwrites — including
+  root-level artifacts — are archived to `.claude/.agentboot-archive/` before
+  anything is written. **Action:** scripted first-time onboarding of repos with
+  existing config must either import first or add `--adopt-existing`.
+- **Sync now reads the `dist/<platform>/nodes/<group>[/<team>]/` scope layout**, and
+  node output wins over legacy dist directories on conflict. Team-scope personas
+  that previously compiled to nothing (or never reached spokes) now do — your first
+  rebuild + resync after upgrading can deliver genuinely new content to spokes.
+  **Action:** review the first post-upgrade sync PRs with that in mind.
+- **`dist/plugin` layout changed.** The plugin manifest moved from
+  `dist/plugin/plugin.json` to `dist/plugin/.claude-plugin/plugin.json` (required by
+  the plugin spec), the plugin name became kebab-case (`<org>-personas`), and
+  compliance hooks are now actually registered via a generated `hooks/hooks.json`.
+  **Action:** any tooling reading `dist/plugin/plugin.json` must read the new path;
+  installed plugins now enforce hooks that were previously dead files.
+- **The MCP server is read-only by default.** `agentboot mcp-server` hides and
+  rejects the mutating tools (`build`, `sync`, `propose_change`) unless started with
+  `--profile maintainer` or `AGENTBOOT_MCP_PROFILE=maintainer`. **Action:** MCP
+  clients that relied on mutating tools must opt in to the maintainer profile.
+- **The build-time secret scan got stricter.** `validate --strict` now catches bare
+  AWS access-key IDs, JWTs, and DSA private-key headers that previously only the
+  runtime input-scan hook blocked. **Action:** hub content (including test fixtures)
+  that previously passed validation may now fail; scrub or use placeholder values.
+- **Generated `npx agentboot` invocations are version-pinned.** MCP server entries
+  emitted into `.mcp.json`, `mcp.json`, and Codex `config.toml` pin the compiling
+  AgentBoot version instead of resolving `latest` at session start. **Action:**
+  spokes no longer pick up new versions until you rebuild and resync — deliberate,
+  but a change if you relied on floating `latest`.
+
+### Behavior changes in 0.13.0
+
+- **Import never overwrites an existing artifact.** Previously, two repos importing
+  the same trait/rule/persona slug in one sweep both planned `create`, and the
+  second write silently clobbered the first. Now: duplicate content becomes a
+  provenance-only update on the existing artifact; distinct content under the same
+  slug is appended and counted as an update; in a multi-repo `import --parent`
+  sweep, later copies of shared content are labeled `merge` and converge on one
+  promoted org artifact. **Action:** import plans and results look different — if
+  you post-process import output, expect `merge` actions, `Updated:` counts, and
+  `cross_repo_promotions` in the staging file.
+- **Imported artifacts carry multi-source provenance frontmatter**
+  (`source:` + `additional_sources:`) on whole-file imports and hub-duplicate skips,
+  not just section merges. **Action:** tooling parsing imported-artifact frontmatter
+  should tolerate the additional keys.
+
+### Behavior changes in 0.14.0
+
+- **`.agentboot-manifest.json` gained provenance and integrity fields**: the hub
+  commit (with a dirty-tree flag), AgentBoot version, sha256 hashes of the config
+  and policy-exception files, a sha256 digest over the manifest, and an optional
+  SSH signature. **Action:** custom tooling that parses spoke manifests must
+  tolerate the new fields; use `agentboot verify-manifest` rather than hand-rolled
+  checks.
+- **The manifest now inventories all managed files**, including files skipped as
+  already-identical on re-sync. Previously a re-sync over an up-to-date repo
+  produced a near-empty manifest and silently removed files from drift coverage.
+  **Action:** none required — but expect drift-check coverage to widen after the
+  first post-upgrade sync, which can surface pre-existing drift it was blind to.
+- **Sync PR bodies changed format.** The "Automated AgentBoot sync" boilerplate was
+  replaced by a provenance block and a risk-classified change summary. **Action:**
+  automation that keys on the old PR body text must be updated.
+- **A configured-but-failing signer is a sync error.** If `sync.signing` is set and
+  signing fails, sync fails — it never silently falls back to unsigned. **Action:**
+  ensure the signing key is available wherever sync runs (including CI).
+
+### Behavior changes in 0.15.0
+
+- **`agentboot conformance` and per-platform enforcement manifests.** Builds now
+  produce `dist/<platform>/enforcement-manifest.json` recording the declared
+  enforcement level and per-probe expected-vs-observed results; advisory platforms
+  get a manifest stating plainly that no enforcement mechanism exists. **Action:**
+  a new artifact appears in `dist/`; if you add `agentboot conformance` to CI
+  (recommended), it exits non-zero when observed hook behavior diverges from the
+  declared level — that is the point, but budget for triage when you first enable it.
+- **Enforcement classification has a single source of truth** shared by `doctor`,
+  the conformance harness, and the capability-matrix docs. **Action:** `doctor`
+  output wording for platform enforcement may differ from earlier releases.
+
+---
+
 ## v0.10 → v0.11
 
 > **v0.11 is a public Beta.** It's usable end to end, but breaking changes may still

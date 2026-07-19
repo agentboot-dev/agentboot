@@ -376,10 +376,19 @@ The audit-trail trait (which all personas should compose) emits structured telem
 }
 ```
 
-Emitted via an async `Stop` hook so it doesn't slow down the developer. Appended to
-a local NDJSON file or posted to an HTTP endpoint (configurable).
+Emitted via async hooks so it doesn't slow down the developer, and appended to a
+**local NDJSON file only** (`telemetry.logPath`, default
+`~/.agentboot/telemetry.ndjson`). Telemetry is **disabled by default**, and there
+is **no network transmission** — no HTTP endpoint exists, nothing phones home. If
+you want the events in a central system, you ship the local file yourself with
+your own log-forwarding infrastructure. Note the sample event above is
+illustrative of what a rich metrics pipeline could measure; the telemetry the
+generated hooks actually emit is deliberately minimal (persona id, event type,
+status, timestamp — no tokens, cost, prompts, or content; run
+`agentboot telemetry-inspect` to see exactly what would be emitted, and see
+[privacy.md](privacy.md) for the schema invariants).
 
-### `agentboot metrics`
+### `agentboot metrics` (planned — V2)
 
 ```bash
 agentboot metrics                        # Show all metrics
@@ -389,7 +398,11 @@ agentboot metrics --period 30d           # Last 30 days
 agentboot metrics --format json          # Machine-readable
 ```
 
-Reads from the NDJSON telemetry log. No external database required for V1.
+Would read from the local NDJSON telemetry log — no external database. This
+command is **not shipped yet** (see the build phases table at the end of this
+page). The telemetry-driven capability that exists today is `agentboot optimize`,
+which reads the local log and produces model-selection and coverage
+recommendations.
 
 ---
 

@@ -37,16 +37,27 @@ installer.
 marketplace (public or private). Bundles skills, agents, hooks, rules, and MCP
 servers into a single distributable unit.
 
-**How it works:**
-```bash
-# User adds the AgentBoot marketplace (once)
-/plugin marketplace add agentboot/agentboot-marketplace
+**How it works:** `agentboot build` emits a loadable, spec-conformant Claude Code
+plugin at `dist/plugin/`. The org commits it to its own marketplace repo (a plain
+Git repo carrying a `.claude-plugin/marketplace.json` — see
+[Org Connection](org-connection.md)), and developers install from there:
 
-# User installs the AgentBoot plugin
-/plugin install agentboot
+```bash
+# User adds the org's marketplace (once)
+/plugin marketplace add acme-corp/acme-personas
+
+# User installs the org plugin
+/plugin install acme
 
 # Or org IT force-enables it via managed settings
 ```
+
+> The canonical public AgentBoot repo is
+> [`agentboot-dev/agentboot`](https://github.com/agentboot-dev/agentboot) — the
+> registry's default public channel points there. A ready-made public plugin
+> marketplace (installing the generic core plugin without building it yourself) is
+> not yet published — see the roadmap phases below. Today the plugin channel means
+> *your* marketplace serving *your* built `dist/plugin/` output.
 
 **Plugin structure:**
 ```

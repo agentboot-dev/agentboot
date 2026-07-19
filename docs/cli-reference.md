@@ -119,6 +119,27 @@ agentboot sync --dry-run
 | `--repos-file <path>` | Path to repos.json (default: `./repos.json`) |
 | `-d, --dry-run` | Preview changes without writing |
 | `--force` | Override drift detection (overwrite modified files) |
+| `--adopt-existing` | Allow a FIRST sync to replace pre-existing bespoke instruction files (they are archived first; consider `import` instead) |
+
+### First sync onto a repo with existing agent config
+
+A **first** sync against a repo that already has hand-written instruction files
+(`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`)
+**stops with an error** instead of replacing them. That replacement has to be a
+deliberate choice:
+
+1. **Import first (recommended):** `agentboot import --path <repo>` decomposes the
+   bespoke content into hub artifacts, so nothing is lost by construction — then sync.
+2. **Replace anyway:** `agentboot sync --adopt-existing`. Before writing anything,
+   sync archives the pre-existing content it will overwrite — the target directory's
+   contents **and all root-level artifacts sync manages** (`CLAUDE.md`, `.mcp.json`,
+   `AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`) — to the target
+   directory's `.agentboot-archive/` (`.claude/.agentboot-archive/` by default),
+   alongside an `archive-manifest.json` recording what was archived and when. The
+   originals stay recoverable; `agentboot uninstall` restores them automatically.
+
+The archive is created only on the first sync to a repo; subsequent syncs are
+governed by drift detection against `.agentboot-manifest.json`.
 
 ### Provenance, risk summaries, and manifest integrity
 
