@@ -23,6 +23,7 @@ import os from "node:os";
 import {
   TELEMETRY_EVENTS,
   PROHIBITED_TELEMETRY_FIELDS,
+  TELEMETRY_SCHEMA_VERSION,
   buildTelemetryJsonSchema,
   sampleEvents,
 } from "../scripts/lib/telemetry-schema.js";
@@ -221,7 +222,7 @@ describe("telemetry schema is generated from the canonical event spec", () => {
       }));
       run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
       const written = JSON.parse(fs.readFileSync(
-        path.join(hub, "dist", "schema", "telemetry-event.v1.json"), "utf-8"));
+        path.join(hub, "dist", "schema", `telemetry-event.v${TELEMETRY_SCHEMA_VERSION}.json`), "utf-8"));
       expect(written).toEqual(JSON.parse(JSON.stringify(schema)));
     } finally {
       fs.rmSync(hub, { recursive: true, force: true });
@@ -254,8 +255,9 @@ describe("secret scan covers the full compiler input surface", () => {
     it(`catches a bare AWS key in ${rel}`, () => {
       const hub = mkHubWithSecretAt(rel);
       try {
-        const res = spawnSync(TSX, ["scripts/validate.ts", "--config", path.join(hub, "agentboot.config.json")], {
-          cwd: ROOT, encoding: "utf-8", timeout: 120_000,
+        // shell: true — the extensionless tsx shim is not directly spawnable on Windows
+      const res = spawnSync(`"${TSX}" "${path.join(ROOT, "scripts", "validate.ts")}" --config "${path.join(hub, "agentboot.config.json")}"`, {
+          cwd: ROOT, shell: true, encoding: "utf-8", timeout: 120_000, stdio: "pipe",
           env: { ...process.env, NODE_NO_WARNINGS: "1" },
         });
         const out = (res.stdout ?? "") + (res.stderr ?? "");
@@ -288,6 +290,7 @@ describe("secret scan covers the full compiler input surface", () => {
 // ---------------------------------------------------------------------------
 
 import { execSync as execSyncH } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   computeManifestDigest,
   signManifestDigest,
@@ -305,7 +308,7 @@ describe("verify-manifest tamper protection", () => {
   function mkSignedManifest(dir: string, keyPath: string): string {
     const repoFile = path.join(dir, "hello.md");
     fs.writeFileSync(repoFile, "hello\n");
-    const fileHash = execSyncH(`shasum -a 256 "${repoFile}"`).toString().split(" ")[0];
+    const fileHash = createHash("sha256").update(fs.readFileSync(repoFile)).digest("hex");
     const manifest: Record<string, unknown> = {
       version: 1,
       files: [{ path: "hello.md", hash: fileHash }],
