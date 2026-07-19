@@ -383,6 +383,12 @@ design invariant).
 | `telemetry.includeDevId` | `false \| "hashed" \| "email" \| "email-raw"` | `false` | Developer identification. The value *is* the format — `"hashed"` = SHA-256 of email, `"email"` = raw email, `false` = no dev ID. (There is no separate `devIdFormat` field.) |
 | `telemetry.logPath` | string | `~/.agentboot/telemetry.ndjson` | NDJSON log file path. |
 | `telemetry.includeContent` | `false` | `false` | Never include raw prompt content. Design invariant. |
+| `telemetry.sink` | object | — | **Org-configured central sink** (none by default — AgentBoot never phones home). When set, compile emits `telemetry-sink.json` into every platform's core dir (synced to spokes, org-managed) and `agentboot telemetry-ship` spools events into digest-chained, optionally SSH-signed batches and POSTs them to this endpoint. |
+| `telemetry.sink.url` | string | required | The org's own HTTPS collector. `https://` only. |
+| `telemetry.sink.headers` | object | — | Extra request headers. A value like `"$TOKEN_VAR"` resolves from the shipper's environment at ship time — never commit literal credentials. |
+| `telemetry.sink.batchSize` | number | `100` | Events per shipped batch (1–10000). |
+| `telemetry.sink.spoolDir` | string | `~/.agentboot/telemetry-spool` | Where batches wait to ship (and `shipped/` keeps the local audit copy). |
+| `telemetry.sink.sign` | boolean | `true` when signing enabled | Sign batch digests with `sync.signing.sshKeyPath`. |
 
 ```jsonc
 {
@@ -391,7 +397,19 @@ design invariant).
 ```
 
 The emitted telemetry record per persona invocation contains only:
-`{ event, persona_id, timestamp, status, dev_id, schema }` — no prompt, model, token, or cost fields.
+`{ event, persona_id, timestamp, status, dev_id, schema, chain }` — no prompt, model,
+token, or cost fields. `chain` is a hash-chain link (sha256 of the previous event's
+chain + this event's canonical content) making post-write edits, deletions, and
+reordering of the local log detectable; verify with `agentboot telemetry-verify --log`.
+
+**The sink's trust model, stated honestly:** the local chain is unkeyed — it detects
+modification but cannot prevent a full consistent rewrite. Tamper *evidence* comes from
+shipping: batches are digest-chained, sequence-numbered, and (with `sync.signing`)
+SSH-signed, so once shipped, forgery fails signature verification, deletion shows as a
+sequence gap, and local log deletion no longer erases history. The residual limit: a
+developer who controls the machine can suppress events *before* first shipment — bound
+that window with an org-controlled ship cadence (CI/cron running
+`agentboot telemetry-ship`) rather than trusting per-developer invocation.
 
 The full event schema (three event types, every field, its source, and whether it can
 identify a person) is versioned in `scripts/lib/telemetry-schema.ts`, and a conformance

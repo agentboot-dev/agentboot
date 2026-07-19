@@ -47,7 +47,7 @@ import {
   agentbootNpxSpec,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
-import { buildTelemetryJsonSchema } from "./lib/telemetry-schema.js";
+import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -2465,9 +2465,19 @@ INPUT=$(cat)
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ${devIdBlock}
 
-# Use node for safe JSON construction — prevents shell injection via agent_type/tool_name
-export TIMESTAMP DEV_ID
+# Use node for safe JSON construction — prevents shell injection via agent_type/tool_name.
+# D3: each event carries a hash-chain link (sha256 of the previous event's
+# chain + this event's canonical content) so post-write edits, deletions and
+# reordering of the local log are DETECTABLE (see docs: this is detection, not
+# prevention — signed shipped batches are the tamper-evident control).
+export TIMESTAMP DEV_ID TELEMETRY_LOG
 printf '%s' "$INPUT" | node -e "
+  const fs = require('fs');
+  const { createHash } = require('crypto');
+  const canonical = (v) => Array.isArray(v) ? '[' + v.map(canonical).join(',') + ']'
+    : (v !== null && typeof v === 'object')
+      ? '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}'
+      : JSON.stringify(v);
   let d='';
   process.stdin.on('data',c=>d+=c);
   process.stdin.on('end',()=>{
@@ -2478,18 +2488,27 @@ printf '%s' "$INPUT" | node -e "
       const dev = process.env.DEV_ID || '';
       let entry = null;
       if (event === 'SubagentStart') {
-        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev,schema:1};
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'started',dev_id:dev,schema:2};
       } else if (event === 'SubagentStop') {
-        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev,schema:1};
+        entry = {event:'persona_invocation',persona_id:input.agent_type||'',timestamp:ts,status:'completed',dev_id:dev,schema:2};
       } else if (event === 'PostToolUse') {
-        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev,schema:1};
+        entry = {event:'hook_execution',persona_id:input.agent_type||'',tool_name:input.tool_name||'',timestamp:ts,dev_id:dev,schema:2};
       } else if (event === 'SessionEnd') {
-        entry = {event:'session_summary',timestamp:ts,dev_id:dev,schema:1};
+        entry = {event:'session_summary',timestamp:ts,dev_id:dev,schema:2};
       }
-      if (entry) console.log(JSON.stringify(entry));
+      if (!entry) return;
+      const log = process.env.TELEMETRY_LOG;
+      let prev = 'agentboot-telemetry-genesis';
+      try {
+        const lines = fs.readFileSync(log,'utf-8').trim().split('\\n');
+        const last = JSON.parse(lines[lines.length-1]);
+        if (typeof last.chain === 'string') prev = last.chain;
+      } catch {}
+      entry.chain = createHash('sha256').update(prev + canonical(entry)).digest('hex');
+      fs.appendFileSync(log, JSON.stringify(entry) + '\\n', { mode: 0o600 });
     } catch {}
   });
-" >> "$TELEMETRY_LOG"
+"
 
 exit 0
 `;
@@ -2738,7 +2757,7 @@ function generateTelemetrySchema(distPath: string): void {
   const schemaDir = path.join(distPath, "schema");
   ensureDir(schemaDir);
   fs.writeFileSync(
-    path.join(schemaDir, "telemetry-event.v1.json"),
+    path.join(schemaDir, `telemetry-event.v${TELEMETRY_SCHEMA_VERSION}.json`),
     JSON.stringify(schema, null, 2) + "\n",
     "utf-8"
   );
@@ -3654,6 +3673,20 @@ function main(): void {
   // ---------------------------------------------------------------------------
 
   generateTelemetrySchema(distPath);
+
+  // D3: org telemetry sink config — compiled into every platform's core dir so
+  // sync delivers it to spokes (org-managed, not per-developer). The shipper
+  // (`agentboot telemetry-ship`) discovers it from the synced config dir.
+  if (config.telemetry?.sink) {
+    const sinkJson = JSON.stringify(config.telemetry.sink, null, 2) + "\n";
+    for (const platform of outputFormats) {
+      const coreDir = path.join(distPath, platform, "core");
+      if (fs.existsSync(coreDir)) {
+        fs.writeFileSync(path.join(coreDir, "telemetry-sink.json"), sinkJson, "utf-8");
+      }
+    }
+    log(chalk.gray(`  → Telemetry sink config emitted (org collector: ${config.telemetry.sink.url})`));
+  }
 
   // ---------------------------------------------------------------------------
   // 8. AB-61: Managed settings

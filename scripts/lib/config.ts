@@ -298,6 +298,31 @@ export interface TelemetryConfig {
   logPath?: string;
   /** Never include raw prompt content in telemetry. Design invariant. */
   includeContent?: false;
+  /**
+   * D3: org-configured central telemetry sink. OFF unless the org configures
+   * it — AgentBoot ships no default endpoint and never phones home. When set,
+   * `agentboot telemetry-ship` spools hash-chained events into signed batches
+   * and POSTs them to the ORG'S OWN endpoint; the sink config is compiled into
+   * synced artifacts so it is org-managed, not per-developer.
+   */
+  sink?: TelemetrySinkConfig;
+}
+
+export interface TelemetrySinkConfig {
+  /** HTTPS collector endpoint owned by the org. https:// only. */
+  url: string;
+  /**
+   * Extra request headers (e.g. auth). A value of the form "$VAR_NAME" is
+   * resolved from the shipper's environment at ship time — never commit
+   * literal credentials to the hub.
+   */
+  headers?: Record<string, string>;
+  /** Events per shipped batch. Default 100. */
+  batchSize?: number;
+  /** Spool directory. Default ~/.agentboot/telemetry-spool */
+  spoolDir?: string;
+  /** Sign batch digests with sync.signing.sshKeyPath (default: true when signing is enabled). */
+  sign?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -684,6 +709,21 @@ export function loadConfig(configPath: string): AgentBootConfig {
     }
     if (signing["enabled"] === true && !signing["sshKeyPath"]) {
       throw new Error('"sync.signing.enabled" requires "sync.signing.sshKeyPath"');
+    }
+  }
+  if (parsed.telemetry?.sink !== undefined) {
+    const sink = parsed.telemetry.sink as Record<string, unknown>;
+    if (typeof sink["url"] !== "string" || !sink["url"].startsWith("https://")) {
+      throw new Error('"telemetry.sink.url" must be an https:// URL (the org\'s own collector — AgentBoot has no default endpoint)');
+    }
+    if (sink["batchSize"] !== undefined &&
+        (typeof sink["batchSize"] !== "number" || sink["batchSize"] < 1 || sink["batchSize"] > 10_000)) {
+      throw new Error('"telemetry.sink.batchSize" must be a number between 1 and 10000');
+    }
+    if (sink["headers"] !== undefined) {
+      for (const [k, v] of Object.entries(sink["headers"] as Record<string, unknown>)) {
+        if (typeof v !== "string") throw new Error(`"telemetry.sink.headers.${k}" must be a string`);
+      }
     }
   }
 
