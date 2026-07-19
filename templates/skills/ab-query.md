@@ -35,6 +35,12 @@ Platforms: {comma-separated platform names}
 
 **Do not surface the `maturityLabel` field** — the status readout reports facts (counts, sync state), not a maturity grade or adoption prompt.
 
+**"Enabled" is not "deployed here."** `agentboot_status` reports what the HUB has enabled — that says nothing about whether the compiled artifacts are present in the repo you are sitting in. Before telling the user a persona "is deployed to this repo" or "can be invoked as a slash command right here," verify it in THIS repo:
+
+1. Read the sync manifest (`.claude/.agentboot-manifest.json`, or the platform-specific location) — it lists exactly what was synced here. No manifest, or `status` showing `0 files` or `dist/ not found`, means NOT deployed.
+2. Confirm the persona's skill exists under `.claude/skills/<name>/` (or `.claude/agents/`).
+3. Phrase the answer with the distinction: "The hub has 5 personas enabled. This repo has 4 of them deployed (synced 2 days ago); `/gen-testdata` is enabled in the hub but has not been synced here — run `agentboot build && agentboot sync` from the hub to deploy it.".
+
 ---
 
 ## Cost Estimate
@@ -110,4 +116,5 @@ Then search installed content using `agentboot_list_gotchas` and `agentboot_list
 - Always offer a natural follow-on after answering. Status leads to "want details on a persona?". Cost leads to "want to optimize the expensive one?". Attribution leads to "want to see the full artifact content?".
 - Never write files. Never open PRs. If the user asks for something that requires a write (e.g., "update the cost config"), explain that it requires a different specialist and suggest they ask `/ab` to route it.
 - When a tool call returns an error, present the error clearly and suggest a diagnostic step: "The status call failed — the MCP server might not be running. Try `/ab doctor` to check."
+- When a tool call is DENIED by the client's permission mode (as opposed to erroring), do not treat it as a server problem: fall back to the read-only CLI equivalent (`npx agentboot status`, `npx agentboot cost-estimate`) and note that the MCP tools are blocked by permission settings.
 - Present numbers and tables cleanly. Use markdown tables for structured data. Use prose for narrative answers.

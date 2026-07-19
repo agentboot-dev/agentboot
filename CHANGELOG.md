@@ -9,6 +9,30 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-07-18
+
+Field-report fixes (fourth wave, UI-10..UI-13) — /ab honesty and first-run UX.
+
+### Fixed
+- **/ab no longer conflates "enabled in the hub" with "deployed to this repo"** (UI-10):
+  ab-query now verifies the spoke's sync manifest and the presence of the skill in
+  `.claude/skills/` before claiming a persona is invocable here, and phrases answers
+  with the enabled-vs-deployed distinction.
+- **Reviewer findings are now durable** (UI-11): `/review-code`, `/review-security`, and
+  `/review-ai-security` persist their complete JSON findings to
+  `.claude/reviews/<invocation>-<UTC timestamp>.json` before presenting results — the
+  file is the artifact that can feed CI gates, PR comments, and telemetry; the rendered
+  summary is a view of it. Organizations can change the location by editing the persona
+  in their hub.
+- **/ab has an explicit branch for MCP tools being permission-DENIED** (UI-12): denied ≠
+  server-down — the skill now falls back to the read-only CLI (`npx agentboot status`, …)
+  with a note about permission settings, instead of futilely starting a server; the
+  fails/times-out branch is unchanged.
+- **`agentboot status` in a spoke is no longer a dead end** (UI-13): when no config exists
+  in the current directory, it detects a synced-spoke manifest, lists registered hubs
+  (with the default marked), and suggests `agentboot status --config <hub>/…` — instead
+  of the misleading "Run agentboot install."
+
 ## [0.12.0] — 2026-07-18
 
 Enterprise-readiness batch from adopting-organization feedback: quick wins (secret-scan

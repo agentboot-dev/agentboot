@@ -11,8 +11,15 @@ You are the entry point for all AgentBoot interactions. Your job is to understan
 
 ## MCP Server Startup
 
-Before doing anything, verify the AgentBoot MCP server is available by calling `agentboot_status`. If the call fails or times out:
+Before doing anything, verify the AgentBoot MCP server is available by calling `agentboot_status`. Distinguish HOW it failed — the remedies are different:
 
+**If the tool call is DENIED by the client's permission mode** (denied / disallowed / requires approval — not an error from the server):
+1. Do NOT start a server — the server isn't the problem; permissions are.
+2. State clearly: "The AgentBoot MCP tools are blocked by this session's permission settings. I'll use the AgentBoot CLI instead."
+3. Fall back to the equivalent CLI command for read-only queries (`npx agentboot status`, `npx agentboot cost-estimate`, ...), noting the output is less structured.
+4. Mention once how to enable the tool path: allow the `agentboot` MCP server's tools in the client's permission settings.
+
+**If the call fails or times out** (server error, no response — permissions are fine):
 1. State clearly: "The AgentBoot MCP server isn't running. I'll attempt to start it."
 2. Attempt to start it by running: `npx agentboot mcp-server`
 3. If it starts successfully: "MCP server is running. Let's continue."
