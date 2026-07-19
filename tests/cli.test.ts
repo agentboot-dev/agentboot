@@ -1085,7 +1085,9 @@ describe("AB-43: import — applyPlan", () => {
       classifications: [makeClassification({ action: "merge" })],
     };
     const result = applyPlan(plan, hubDir, new Set([path.resolve(sourceFile)]));
-    expect(result.created).toBe(1);
+    // UI-16: a merge into an EXISTING artifact is an update, not a creation
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(1);
     const content = fs.readFileSync(path.join(hubDir, "core/traits/test-trait.md"), "utf-8");
     expect(content).toContain("existing content");
     expect(content).toContain("line1");

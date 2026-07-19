@@ -607,11 +607,34 @@ export function stripJsoncComments(raw: string): string {
 // Config loading
 // ---------------------------------------------------------------------------
 
+/**
+ * UI-14: the ONE hub-resolution order, applied uniformly:
+ *   1. --config flag           (explicit always wins)
+ *   2. AGENTBOOT_HUB env var   (session-scoped override — same precedence the
+ *                               MCP server and doctor already honored; status,
+ *                               drift-check, and the other hub commands now do too)
+ *   3. cwd                     (you are in your hub)
+ *   4. command-specific fallback (package root for build-tool scripts; the hub
+ *      REGISTRY is consulted only by read-only commands, and only to SUGGEST)
+ */
+export function envHubConfig(): string | null {
+  const envHub = process.env["AGENTBOOT_HUB"];
+  if (!envHub) return null;
+  const p = path.join(path.resolve(envHub), "agentboot.config.json");
+  return fs.existsSync(p) ? p : null;
+}
+
 export function resolveConfigPath(argv: string[], root: string, cwd?: string): string {
   const idx = argv.indexOf("--config");
   if (idx !== -1 && argv[idx + 1]) {
     return path.resolve(argv[idx + 1]!);
   }
+
+  // AGENTBOOT_HUB: explicit session-scoped hub override (UI-14 — previously
+  // honored by mcp-server/doctor but ignored here, so a session with the env
+  // exported got answers from cwd/registry instead of the intended hub).
+  const fromEnv = envHubConfig();
+  if (fromEnv) return fromEnv;
 
   // Prefer cwd if it has a config (user is in their hub directory).
   // Fall back to the package root (for running from the build tool repo itself).

@@ -972,6 +972,8 @@ export function classifyScannedFiles(
 
 export interface ImportResult {
   created: number;
+  /** UI-16: merges into an EXISTING artifact (distinct content appended). */
+  updated: number;
   skipped: number;
   errors: string[];
   planPath: string | null; // path to saved plan if user declined
@@ -1003,14 +1005,14 @@ export function finalizeImport(
     console.log(chalk.gray(
       "  Review the file and run `agentboot import --apply` when ready.\n"
     ));
-    return { created: 0, skipped: 0, errors: [], planPath: stagingPath };
+    return { created: 0, updated: 0, skipped: 0, errors: [], planPath: stagingPath };
   }
 
   console.log(chalk.cyan("\n  Applying import...\n"));
   const result = applyPlan(plan, hubPath, trustedSources);
 
   console.log(chalk.bold(
-    `\n  ${chalk.green("✓")} Created: ${result.created}, Skipped: ${result.skipped}` +
+    `\n  ${chalk.green("✓")} Created: ${result.created}, Updated: ${result.updated ?? 0}, Skipped: ${result.skipped}` +
     (result.errors.length > 0 ? `, Errors: ${result.errors.length}` : "") + "\n"
   ));
   for (const err of result.errors) {
@@ -1164,12 +1166,57 @@ export function injectAttribution(content: string, attr: Attribution): string {
 /** Allowed target directories for classified content (defense in depth). */
 const ALLOWED_CLASSIFICATION_DIRS = ["core/lexicon/", "core/traits/", "core/gotchas/", "core/instructions/", "core/personas/"];
 
+// ---------------------------------------------------------------------------
+// UI-16: merge-into-existing must not silently duplicate content or drop the
+// second source's provenance.
+// ---------------------------------------------------------------------------
+
+/** Strip frontmatter and collapse whitespace for duplicate comparison. */
+function normalizedBody(text: string): string {
+  return text
+    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+    .replace(/^#+\s+[^\n]*\n/gm, "")   // section headers don't make content distinct
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** True when the existing artifact already contains the candidate content. */
+export function isDuplicateContent(existing: string, candidate: string): boolean {
+  const candidateNorm = normalizedBody(candidate);
+  if (candidateNorm.length === 0) return true;
+  return normalizedBody(existing).includes(candidateNorm);
+}
+
+/**
+ * Record an additional source repo in an existing artifact's frontmatter
+ * (multi-source attribution). Adds/extends `additional_sources:`; no-op when
+ * the source is already attributed or the file has no frontmatter.
+ */
+export function addSourceAttribution(existing: string, newSource: string): string {
+  const fm = existing.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n)/);
+  if (!fm) return existing;
+  const body = fm[2]!;
+  if (new RegExp(`(^|[\\s,"'])${newSource.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([\\s,"']|$)`).test(body)) {
+    return existing; // already attributed (source: or additional_sources:)
+  }
+  const addLine = body.match(/^additional_sources:\s*(.*)$/m);
+  let newFmBody: string;
+  if (addLine) {
+    newFmBody = body.replace(/^additional_sources:\s*(.*)$/m,
+      (_, list) => `additional_sources: ${String(list).trim().replace(/\s*$/, "")}, ${newSource}`);
+  } else {
+    newFmBody = `${body}\nadditional_sources: ${newSource}`;
+  }
+  return `${fm[1]}${newFmBody}${fm[3]}${existing.slice(fm[0].length)}`;
+}
+
 function applyPlan(
   plan: ImportPlan,
   trustedHub: string,
   trustedSources: Set<string>
-): { created: number; skipped: number; errors: string[] } {
-  const result = { created: 0, skipped: 0, errors: [] as string[] };
+): { created: number; updated: number; skipped: number; errors: string[] } {
+  const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
   const resolvedHub = path.resolve(trustedHub);
 
   // Cache source file contents by path
@@ -1252,14 +1299,33 @@ function applyPlan(
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
         if (item.action === "merge" && fs.existsSync(destPath)) {
+          // UI-16: merging into an existing artifact previously APPENDED
+          // unconditionally and reported "Created" — verbatim-shared boilerplate
+          // across N repos duplicated inside one artifact on every import, and
+          // the later repos' provenance was dropped. Now: duplicate content is
+          // skipped (with the source still attributed), distinct content is
+          // appended and honestly labeled as an update.
           const existing = fs.readFileSync(destPath, "utf-8");
-          fs.writeFileSync(destPath, existing.trimEnd() + "\n\n" + contentToWrite + "\n", "utf-8");
+          const sourceDir = path.dirname(resolvedSource);
+          const mergeRepoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+          if (isDuplicateContent(existing, sectionContent)) {
+            const attributed = addSourceAttribution(existing, mergeRepoName);
+            if (attributed !== existing) {
+              fs.writeFileSync(destPath, attributed, "utf-8");
+            }
+            result.skipped++;
+            console.log(chalk.gray(`    = ${item.suggested_path} (duplicate of existing content — skipped; source ${mergeRepoName} recorded)`));
+          } else {
+            const attributed = addSourceAttribution(existing, mergeRepoName);
+            fs.writeFileSync(destPath, attributed.trimEnd() + "\n\n" + contentToWrite + "\n", "utf-8");
+            result.updated++;
+            console.log(chalk.cyan(`    ~ ${item.suggested_path} (merged into existing — source ${mergeRepoName} recorded)`));
+          }
         } else {
           fs.writeFileSync(destPath, contentToWrite + "\n", "utf-8");
+          result.created++;
+          console.log(chalk.green(`    + ${item.suggested_path} (${item.classification})`));
         }
-
-        result.created++;
-        console.log(chalk.green(`    + ${item.suggested_path} (${item.classification})`));
       } catch (err) {
         result.errors.push(`Failed to write ${item.suggested_path}: ${err}`);
       }
@@ -1313,7 +1379,7 @@ export async function runImport(opts: ImportOptions): Promise<void> {
         console.log(chalk.cyan(`  Applying import plan (${plan.classifications.length} items)...\n`));
         const result = applyPlan(plan, trustedHub, trustedSources);
         console.log(chalk.bold(
-          `\n  ${chalk.green("✓")} Created: ${result.created}, Skipped: ${result.skipped}` +
+          `\n  ${chalk.green("✓")} Created: ${result.created}, Updated: ${result.updated ?? 0}, Skipped: ${result.skipped}` +
           (result.errors.length > 0 ? `, Errors: ${result.errors.length}` : "") + "\n"
         ));
         // Clean up staging + trusted files
@@ -1522,7 +1588,7 @@ export async function runImport(opts: ImportOptions): Promise<void> {
   const result = applyPlan(updatedPlan, hubPath, trustedSources);
 
   console.log(chalk.bold(
-    `\n  ${chalk.green("✓")} Created: ${result.created}, Skipped: ${result.skipped}` +
+    `\n  ${chalk.green("✓")} Created: ${result.created}, Updated: ${result.updated ?? 0}, Skipped: ${result.skipped}` +
     (result.errors.length > 0 ? `, Errors: ${result.errors.length}` : "") + "\n"
   ));
 
@@ -2063,7 +2129,7 @@ export function applyWholeFileImports(
   hubPath: string,
   trustedSources?: Set<string>,
 ): { created: number; skipped: number; errors: string[] } {
-  const result = { created: 0, skipped: 0, errors: [] as string[] };
+  const result = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
   const resolvedHub = path.resolve(hubPath);
 
   /** Validate a write target against hub boundary and allowlist. */
