@@ -1508,7 +1508,7 @@ program
   .command("status")
   .description("Show deployment status across synced repositories")
   .option("--format <fmt>", "output format: text, json", "text")
-  .action((opts, cmd) => {
+  .action(async (opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
     const configPath = globalOpts.config
@@ -1516,7 +1516,34 @@ program
       : path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
-      console.error(chalk.red("No agentboot.config.json found. Run `agentboot install`."));
+      // UI-13: "run install" is a dead end (and wrong) when this is a synced
+      // SPOKE or a hub is already registered — say what IS true and route there.
+      console.error(chalk.red("No agentboot.config.json found in this directory."));
+      const { findManifestPath } = await import("./lib/drift.js");
+      const spokeManifest = findManifestPath(cwd);
+      if (spokeManifest) {
+        console.error(chalk.gray(
+          `  This repo looks like a synced SPOKE (${path.relative(cwd, spokeManifest)} present) — ` +
+          `spokes don't carry a config; status runs against the hub.`
+        ));
+      }
+      try {
+        const { listHubs, getDefaultHub } = await import("./lib/registry.js");
+        const hubs = listHubs();
+        if (hubs.length > 0) {
+          const def = getDefaultHub();
+          console.error(chalk.gray(`  Registered hub${hubs.length > 1 ? "s" : ""} (agentboot hubs):`));
+          for (const h of hubs.slice(0, 5)) {
+            console.error(chalk.gray(`    - ${h.path}${def && path.resolve(h.path) === path.resolve(def) ? " (default)" : ""}`));
+          }
+          const target = def ?? hubs[0]!.path;
+          console.error(chalk.gray(`  Try: agentboot status --config ${path.join(target, "agentboot.config.json")}`));
+        } else {
+          console.error(chalk.gray("  No hubs registered. Run `agentboot install` to create one, or `agentboot connect <hub-path>` to register an existing hub."));
+        }
+      } catch {
+        console.error(chalk.gray("  Run `agentboot install` to create a hub, or `agentboot connect <hub-path>` to register one."));
+      }
       process.exit(1);
     }
 
