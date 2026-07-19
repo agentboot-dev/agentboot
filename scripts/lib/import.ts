@@ -1332,7 +1332,10 @@ function applyPlan(
       // Add source attribution to imported artifacts
       if (item.action === "create") {
         const sourceDir = path.dirname(resolvedSource);
-        const repoName = path.basename(sourceDir.replace(/\/\.claude.*$/, ""));
+        // D1: repoNameForSource, not a POSIX-only regex — on Windows the
+        // backslashed sourceDir never matched /\/\.claude.*$/ and the artifact
+        // was attributed to ".claude" instead of the repo.
+        const repoName = repoNameForSource(resolvedSource);
         const attr = resolveAttribution(resolvedSource, sourceDir, repoName);
         contentToWrite = injectAttribution(contentToWrite, attr);
       }
