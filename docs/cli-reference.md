@@ -120,6 +120,51 @@ agentboot sync --dry-run
 | `-d, --dry-run` | Preview changes without writing |
 | `--force` | Override drift detection (overwrite modified files) |
 
+### Provenance, risk summaries, and manifest integrity
+
+Every sync writes a `.agentboot-manifest.json` that is both the drift baseline
+and a provenance/integrity record:
+
+- **Provenance** — the hub commit (with a dirty-tree flag), AgentBoot version,
+  and sha256 hashes of `agentboot.config.json` and `agentboot-exceptions.json`,
+  so a spoke can always answer *which hub state produced these artifacts*.
+- **Integrity** — a sha256 content digest over the whole manifest, plus an SSH
+  signature when the hub sets `sync.signing` (see
+  [configuration](./configuration.md)). Verify either with
+  [`agentboot verify-manifest`](#agentboot-verify-manifest).
+- The manifest inventories **all managed files** delivered to the repo,
+  including files skipped as already-identical on re-sync.
+
+In PR mode (`sync.pr.enabled`), the PR body carries the provenance block and a
+**risk-classified change summary**: enforcement-affecting files (hooks, managed
+settings, MCP config, delivered executables) are listed individually for
+careful review; config wiring and advisory content are summarized by count.
+Generated config should be reviewed like any change to CI or repo settings.
+
+---
+
+## `agentboot verify-manifest`
+
+Verify a synced `.agentboot-manifest.json`: the manifest content digest, every
+listed file's hash, and the SSH signature when present. Exits non-zero on any
+mismatch — suitable as a CI step in spoke repos.
+
+```
+agentboot verify-manifest
+agentboot verify-manifest --repo ~/work/my-service
+agentboot verify-manifest --manifest .claude/.agentboot-manifest.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--repo <path>` | Repo to verify (default: cwd) |
+| `--manifest <path>` | Explicit manifest path |
+
+Signature verification checks cryptographic validity for the recorded digest
+(`ssh-keygen -Y check-novalidate`). Pinning WHO may sign is the org's CI
+concern — keep an `allowed_signers` file and check the manifest's
+`integrity.signature.signer_public_key` against it.
+
 ---
 
 ## `agentboot dev-build`

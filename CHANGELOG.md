@@ -9,6 +9,35 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-18
+
+Verifiable sync — generated config reviewed like any change to CI or repo
+settings, with provenance and tamper-evidence to back it.
+
+### Added
+- **Manifest provenance**: every `.agentboot-manifest.json` now records the hub
+  commit (with a dirty-working-tree flag), AgentBoot version, and sha256 hashes
+  of the config and policy-exception files that produced the artifacts.
+- **Manifest integrity**: a sha256 content digest over the manifest, plus an
+  optional SSH signature (`sync.signing` config, `ssh-keygen -Y sign`). A
+  configured-but-failing signer is a sync error, never a silent fallback.
+- **`agentboot verify-manifest`**: verifies the manifest digest, every listed
+  file's hash, and the signature when present; non-zero exit on mismatch —
+  drop-in CI step for spoke repos.
+- **Sync-PR provenance + risk summary**: PR-mode bodies replace "Automated
+  AgentBoot sync" with the provenance block and a risk-classified change
+  summary — enforcement-affecting files (hooks, managed settings, MCP config,
+  delivered executables) listed individually, config wiring and advisory
+  content summarized.
+- Dirty-hub warning at sync time (artifacts may not match the recorded commit).
+
+### Fixed
+- **Re-sync no longer guts the drift baseline**: the manifest was regenerated
+  from files *written this run* only, so a re-sync over an up-to-date repo
+  (e.g. `--force`) produced a near-empty manifest and silently removed files
+  from drift coverage. The manifest now inventories all managed files,
+  including already-identical skips.
+
 ## [0.13.0] — 2026-07-18
 
 Org-scale import with cross-repo dedup — the "same boilerplate in 16+ repos"

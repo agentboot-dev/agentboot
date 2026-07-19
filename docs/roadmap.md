@@ -9,9 +9,9 @@ Where AgentBoot is headed. This page is forward‑looking — themes and intent,
 commitments**; priorities shift with what teams actually need. For the full record of what has
 already shipped, see the [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md).
 
-## Where we are today — v0.13.0 (public Beta)
+## Where we are today — v0.14.0 (public Beta)
 
-**AgentBoot v0.13.0 is a public Beta.** The full pipeline works end to end today: it compiles your
+**AgentBoot v0.14.0 is a public Beta.** The full pipeline works end to end today: it compiles your
 team's AI behavior — personas, traits, rules, gotchas, and domain layers — from one hub repo into
 native config for the **CLI surfaces** of **Claude Code**, **OpenAI Codex**, and **GitHub
 Copilot**, and delivers it to every repo as a reviewable pull request, with drift detection,
@@ -101,7 +101,11 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 The short version — full detail in the
 [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md):
 
-- **v0.13.0 — org-scale import (current).** Multi-repo import sweeps now converge
+- **v0.14.0 — verifiable sync (current).** Sync manifests carry hub provenance
+  (commit, config + policy hashes) and a tamper-evident content digest with optional
+  SSH signing; sync PRs carry a risk-classified change summary; `verify-manifest`
+  checks it all in spoke CI.
+- **v0.13.0 — org-scale import.** Multi-repo import sweeps now converge
   boilerplate shared across repos onto one promoted org artifact carrying provenance
   from every contributing repo — duplicate content is never re-appended and never
   silently overwritten, and repo-specific residuals import normally.

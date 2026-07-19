@@ -2073,6 +2073,60 @@ program
 // ---- Phase 11: governance commands ----------------------------------------
 
 program
+  .command("verify-manifest")
+  .description("Verify a synced manifest: content digest, per-file hashes, SSH signature if present")
+  .option("--repo <path>", "repo to verify (default: cwd)")
+  .option("--manifest <path>", "explicit path to a .agentboot-manifest.json")
+  .action(async (opts) => {
+    const { verifyManifestFile } = await import("./lib/provenance.js");
+    const { findManifestPath } = await import("./lib/drift.js");
+
+    const repoPath = path.resolve((opts["repo"] as string | undefined) ?? process.cwd());
+    const manifestPath = opts["manifest"]
+      ? path.resolve(opts["manifest"] as string)
+      : findManifestPath(repoPath);
+    if (!manifestPath || !fs.existsSync(manifestPath)) {
+      console.error(chalk.red(`  ✗ No .agentboot-manifest.json found under ${repoPath}`));
+      process.exit(1);
+    }
+
+    console.log(chalk.bold("\n  AgentBoot — verify-manifest\n"));
+    console.log(chalk.gray(`  Manifest: ${manifestPath}\n`));
+
+    const v = verifyManifestFile(manifestPath, opts["manifest"] ? undefined : repoPath);
+
+    console.log(v.digestOk
+      ? chalk.green(`  ✓ Content digest OK (sha256:${v.computedDigest.slice(0, 12)}…)`)
+      : chalk.red(`  ✗ Content digest MISMATCH — manifest was modified after sync` +
+          (v.recordedDigest ? ` (recorded ${v.recordedDigest.slice(0, 12)}…, computed ${v.computedDigest.slice(0, 12)}…)` : "")));
+
+    if (v.fileMismatches.length === 0) {
+      console.log(chalk.green("  ✓ All listed files match their recorded hashes"));
+    } else {
+      console.log(chalk.red(`  ✗ ${v.fileMismatches.length} file(s) differ from the manifest:`));
+      for (const m of v.fileMismatches) {
+        console.log(chalk.red(`      ${m.path} ${m.actual === null ? "(missing)" : "(modified)"}`));
+      }
+    }
+
+    if (v.signatureOk === null) {
+      console.log(chalk.gray("  – No signature present (hub has sync.signing disabled)"));
+    } else if (v.signatureOk) {
+      console.log(chalk.green("  ✓ SSH signature valid for the recorded digest"));
+      if (v.signerPublicKey) console.log(chalk.gray(`      signer: ${v.signerPublicKey.split(" ").slice(0, 2).join(" ")}`));
+      console.log(chalk.gray("      (identity not checked — pin the signer via an allowed_signers file in CI)"));
+    } else {
+      console.log(chalk.red("  ✗ SSH signature INVALID"));
+    }
+
+    for (const err of v.errors) console.log(chalk.yellow(`  ⚠ ${err}`));
+    console.log("");
+
+    const ok = v.digestOk && v.fileMismatches.length === 0 && v.signatureOk !== false;
+    process.exit(ok ? 0 : 1);
+  });
+
+program
   .command("drift-check")
   .description("Check spoke repos for drift against their manifest")
   .option("--repo <path>", "Check a specific repo (defaults to all repos in repos.json)")

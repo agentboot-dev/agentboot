@@ -35,6 +35,14 @@ import {
   agentbootNpxSpec,
 } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
+import {
+  collectHubProvenance,
+  buildSyncPrBody,
+  computeManifestDigest,
+  signManifestDigest,
+  type HubProvenance,
+  type ManifestIntegrity,
+} from "./lib/provenance.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -42,6 +50,20 @@ import { detectGitignoreConflicts } from "./lib/gitignore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
+
+// ---------------------------------------------------------------------------
+// D6: per-run sync context — hub provenance collected once in main() and read
+// by manifest generation and PR creation. Null outside a full sync run (then
+// provenance degrades to version-only and manifests are unsigned).
+// ---------------------------------------------------------------------------
+
+interface SyncRunContext {
+  provenance: HubProvenance;
+  /** Resolved SSH private-key path when sync.signing is enabled; else null. */
+  signingKeyPath: string | null;
+}
+
+let syncRunContext: SyncRunContext | null = null;
 
 interface RepoEntry {
   // Absolute or relative path to the repo root.
@@ -1171,16 +1193,27 @@ function syncRepoTarget(
   }
 
   // AB-24: Generate manifest after all files are written.
-  const manifestRelPath = generateManifest(
+  // D6: the manifest is the drift/integrity BASELINE, so it must inventory
+  // every managed file delivered to this repo — including files skipped
+  // because their content was already identical. Building it from
+  // filesWritten alone meant a re-sync over an up-to-date repo (e.g. --force)
+  // regenerated a near-empty manifest and silently gutted drift coverage.
+  const managedFiles = [...new Set([...result.filesWritten, ...result.filesSkipped])];
+  const manifestOut = generateManifest(
     effectivePath,
     targetDir,
-    result.filesWritten,
+    managedFiles,
     entry.group,
     entry.team,
     dryRun
   );
   if (!dryRun) {
-    result.filesWritten.push(manifestRelPath);
+    result.filesWritten.push(manifestOut.relPath);
+  }
+  if (manifestOut.signingError) {
+    // D6: signing was configured but failed — surface as a sync error rather
+    // than silently delivering an unsigned manifest.
+    result.errors.push(`Manifest signing failed: ${manifestOut.signingError}`);
   }
 
   // B.1: flag managed files this repo's .gitignore would exclude. A synced file that
@@ -1375,7 +1408,7 @@ function generateManifest(
   group?: string,
   team?: string,
   dryRun?: boolean
-): string {
+): { relPath: string; signed: boolean; signingError: string | null } {
   // Read version from package.json
   const pkgJsonPath = path.join(ROOT, "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as { version: string };
@@ -1394,13 +1427,43 @@ function generateManifest(
     }
   }
 
-  const manifest = {
+  // D6: provenance travels IN the manifest — the spoke can always answer
+  // "which hub commit / config / policy set produced these artifacts".
+  const provenance: HubProvenance = syncRunContext?.provenance ?? {
+    agentboot_version: pkg.version,
+    hub_commit: null,
+    hub_dirty: false,
+    config_hash: null,
+    exceptions_hash: null,
+    generated_at: new Date().toISOString(),
+  };
+
+  const manifest: Record<string, unknown> = {
     managed_by: "agentboot",
     version: pkg.version,
     synced_at: new Date().toISOString(),
     scope: { group: group ?? null, team: team ?? null },
     files: fileEntries,
+    provenance,
   };
+
+  // D6: tamper-evidence — content digest always; SSH signature when configured.
+  const digest = computeManifestDigest(manifest);
+  const integrity: ManifestIntegrity = { algorithm: "sha256", manifest_digest: digest };
+  let signed = false;
+  let signingError: string | null = null;
+  if (syncRunContext?.signingKeyPath) {
+    const sig = signManifestDigest(digest, syncRunContext.signingKeyPath);
+    if ("signature" in sig) {
+      integrity.signature = sig.signature;
+      signed = true;
+    } else {
+      // Fail LOUD: a hub that configured signing must not silently ship
+      // unsigned manifests — the caller records this as a sync error.
+      signingError = sig.error;
+    }
+  }
+  manifest["integrity"] = integrity;
 
   const manifestRelPath = path.join(targetDir, ".agentboot-manifest.json");
   const manifestAbsPath = path.join(repoPath, manifestRelPath);
@@ -1410,7 +1473,7 @@ function generateManifest(
     fs.writeFileSync(manifestAbsPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
   }
 
-  return manifestRelPath;
+  return { relPath: manifestRelPath, signed, signingError };
 }
 
 // ---------------------------------------------------------------------------
@@ -1484,7 +1547,21 @@ function createSyncPR(
 
     run("git", ["commit", "-m", titleTemplate]);
     run("git", ["push", "-u", "origin", branch]);
-    const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", "Automated AgentBoot sync"]);
+    // D6: the PR body carries provenance (hub commit, versions, policy hashes)
+    // and a risk-classified change summary — generated config is reviewed like
+    // any change to CI or repo settings, not rubber-stamped as "automated".
+    const manifestPaths = writtenPaths
+      .filter((f) => f.replace(/\\/g, "/").endsWith(".agentboot-manifest.json"))
+      .map((f) => f.replace(/\\/g, "/"));
+    const prBody = syncRunContext
+      ? buildSyncPrBody({
+          provenance: syncRunContext.provenance,
+          filesWritten: writtenPaths,
+          manifestPaths,
+          signed: syncRunContext.signingKeyPath !== null,
+        })
+      : "Automated AgentBoot sync";
+    const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", prBody]);
     result.prUrl = prOutput;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -1604,6 +1681,24 @@ async function main(): Promise<void> {
   const config = loadConfig(configPath);
   const configDir = path.dirname(configPath);
   const dryRun = isDryRun || (config.sync?.dryRun ?? false);
+
+  // D6: collect hub provenance once per run; resolve the signing key when
+  // sync.signing is enabled (path relative to the hub config).
+  const pkgVersion = (JSON.parse(
+    fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
+  ) as { version: string }).version;
+  const signingCfg = config.sync?.signing;
+  syncRunContext = {
+    provenance: collectHubProvenance(configDir, pkgVersion),
+    signingKeyPath: signingCfg?.enabled && signingCfg.sshKeyPath
+      ? path.resolve(configDir, signingCfg.sshKeyPath)
+      : null,
+  };
+  if (syncRunContext.provenance.hub_dirty) {
+    console.log(chalk.yellow(
+      "  ⚠ Hub working tree is DIRTY — artifacts may not match the recorded hub commit. Commit hub changes before syncing for clean provenance.",
+    ));
+  }
 
   const reposPath = config.sync?.repos ?? "./repos.json";
   const distPath = path.resolve(
