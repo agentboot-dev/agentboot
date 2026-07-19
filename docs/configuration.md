@@ -148,8 +148,11 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 { "domains": ["./domains/my-domain"] }
 ```
 
-> Packaged, opinionated compliance domains (healthcare/fintech/govtech) are on the
-> [roadmap](roadmap.md). The `domains` mechanism and `add domain` scaffold exist today.
+> The `domains` mechanism and `add domain` scaffold exist today, and a generic
+> **healthcare starter pack** ships in `domains/healthcare-template/` (engineering
+> guardrails for health-data codebases — it does not establish HIPAA compliance or any
+> regulatory posture). Fuller packaged compliance domains (healthcare/fintech/govtech)
+> are on the [roadmap](roadmap.md).
 
 ---
 

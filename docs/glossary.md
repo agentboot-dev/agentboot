@@ -7,13 +7,15 @@ sidebar_position: 1
 
 Key terms used throughout AgentBoot documentation.
 
-**ADR (Architecture Decision Record)** — A formal exception governance mechanism. When a developer intentionally deviates from a persona's recommendation, an ADR documents the rationale, gets reviewer approval, and becomes a permanent record the persona learns to respect.
+**Adopt-Existing (`sync --adopt-existing`)** — The flag that lets a **first** sync replace pre-existing hand-written instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, Copilot instructions) in a repo. Without it, a first sync onto such a repo hard-stops. With it, everything the sync overwrites is archived to the repo's `.agentboot-archive/` first (restorable via `agentboot uninstall`). Running `agentboot import` first is the recommended alternative.
+
+**ADR (Architecture Decision Record)** — A design-intent exception governance mechanism (not yet shipped): an ADR would document an intentional deviation, get reviewer approval, and become a permanent record the persona learns to respect. The shipped exception mechanism today is the policy-exception file — see **Exception**.
 
 **Agent** — A custom AI assistant defined with rich configuration (model, permissions, tools, hooks, memory). In AgentBoot, personas are compiled into agents for Claude Code output.
 
 **Agent-Agnostic** — Content that works across multiple AI agent platforms without modification. Traits, personas (SKILL.md), and gotchas are agent-agnostic. Hooks, managed settings, and agent frontmatter are platform-specific.
 
-**AGENTS.md** — The universal standard for cross-tool agent configuration, stewarded by the Agentic AI Foundation (Linux Foundation). Natively consumed by Codex, Copilot, Cursor, Windsurf, Gemini CLI, Junie, and 60K+ projects. AgentBoot generates AGENTS.md as an output format alongside platform-native formats.
+**AGENTS.md** — The universal standard for cross-tool agent configuration, stewarded by the Agentic AI Foundation (Linux Foundation). Natively consumed by Codex, Copilot, Cursor, Windsurf, Gemini CLI, Junie, and 60K+ projects. AgentBoot generates AGENTS.md as an **officially supported, advisory-enforcement output** — the industry-standard cross-tool instruction file. Support tier is not enforcement tier: the standard has no hook mechanism, so AGENTS.md is advisory by nature and never carries blocking enforcement (that remains a Claude Code / Codex / Copilot capability).
 
 **agentskills.io** — An open standard for AI agent skill definitions using SKILL.md format (Markdown with YAML frontmatter). Supported by 26+ agent platforms. AgentBoot uses agentskills.io as its cross-platform persona format.
 
@@ -25,9 +27,11 @@ Key terms used throughout AgentBoot documentation.
 
 **CC-First Delivery** — The principle that Claude Code is the primary delivery target. Content is agent-agnostic and portable, but delivery leverages Claude Code's full feature surface (plugins, hooks, managed settings, MCP).
 
-**Compilation Target** — One of the output formats produced by `agentboot build`. Includes: cross-platform SKILL.md, CC-native `.claude/` directory, AGENTS.md universal standard, Copilot instructions, and Cursor rules.
+**Compilation Target** — One of the output formats produced by `agentboot build`. Officially supported: the CC-native `.claude/` directory, Codex `.codex/` output, Copilot `.github/` instructions, and the AGENTS.md universal standard (officially supported, advisory-enforcement). Community tier: Cursor rules, Windsurf, Gemini, JetBrains, and cross-platform SKILL.md.
 
 **Composition Type** — Determines precedence when the same artifact exists at multiple scope levels. `rule` = top-down (org wins, cannot be overridden by teams). `preference` = bottom-up (team wins, can customize org defaults). Defaults: gotcha=rule, persona=rule, persona-rule=rule, lexicon=rule, trait=preference, instruction=preference.
+
+**Conformance (`agentboot conformance`)** — The empirical enforcement test harness. It executes the compiled hook scripts per platform with crafted probes (clean, secret-bearing, malformed, oversized, deny-listed tool) and compares observed blocking behavior against the platform's declared enforcement level, writing the result to the enforcement manifest. Exits non-zero on any declared-vs-observed divergence — a CI gate that keeps the capability matrix a tested contract. Controls that cannot be probed are reported untested, never assumed to pass.
 
 **Convention Over Configuration** — The principle that AgentBoot ships with sensible defaults for everything. Organizations configure only what is different about their situation, not everything from scratch.
 
@@ -35,9 +39,13 @@ Key terms used throughout AgentBoot documentation.
 
 **Domain Layer** — A complete package of traits, personas, gotchas, and instructions for a specific compliance regime or technology stack (e.g., healthcare-compliance, fintech-compliance).
 
+**Enforcement Manifest** — The machine-readable record written by `agentboot conformance` to `dist/<platform>/enforcement-manifest.json`: the platform's declared enforcement level, each control's mechanism, and per-probe expected vs observed outcomes. Advisory platforms get a manifest stating plainly that no enforcement mechanism exists.
+
+**Exception (`agentboot-exceptions.json`)** — The shipped policy-exception workflow: owned, expiring, reviewable JSON recording approved deviations from policy. Lives at the hub root (`agentboot-exceptions.json`, validated by `agentboot validate`) and at spoke repo roots (`.agentboot-exceptions.json`, consumed by `agentboot drift-check`). Each entry requires `id`, `policy` (e.g. `"drift:<path-or-glob>"`), `reason`, `approver`, `owner`, `created`, and `expires`. Covered drift reports as `excepted` rather than failing; an expired exception is treated as absent, so the failure resurfaces and names the owner.
+
 **Frontmatter** — A YAML metadata block at the top of a Markdown file, delimited by `---`. Used in SKILL.md files for persona metadata (name, version, traits, scope) and in gotchas for path-scoping configuration.
 
-**GELF (Graylog Extended Log Format)** — A structured log format used alongside NDJSON for persona telemetry output. Provides standardized fields for log aggregation systems.
+**GELF (Graylog Extended Log Format)** — A structured log format referenced in AgentBoot's telemetry design discussion as a possible aggregation-friendly format. The shipped telemetry output is NDJSON only.
 
 **Gotcha (Gotchas Rule)** — A path-scoped instruction encoding hard-won operational knowledge. Activated only when a developer works on files matching the glob pattern, invisible otherwise. In Claude Code, gotchas compile to `.claude/rules/` files which are re-injected into the agent's context every time a matching file is accessed — making them the highest-impact artifact AgentBoot produces.
 
@@ -81,7 +89,7 @@ Key terms used throughout AgentBoot documentation.
 
 **SOFT Guardrail** — An important default that can be temporarily elevated. Elevation is time-bounded (default 30 minutes), creates an audit log entry, and automatically re-engages on expiry.
 
-**Structured Telemetry** — Persona invocation metrics emitted as structured JSON. Fields include persona ID, model, scope, token counts, cost, findings, duration, and timestamp. Contains no developer identity or prompt text by default.
+**Structured Telemetry** — Persona invocation events emitted as structured NDJSON against a deliberately minimal, versioned schema (`scripts/lib/telemetry-schema.ts`): event type, persona ID, status, timestamp, schema version, hash-chain link, and an optional developer ID. Content-bearing fields (prompts, tokens, cost, file paths) are prohibited by schema. Contains no developer identity or prompt text by default; run `agentboot telemetry-inspect` to see exactly what would be emitted.
 
 **Team Champion** — A designated engineer on each team (typically tech lead or senior IC) who manages sync, reviews sync PRs, files quality feedback, onboards teammates, and proposes governance improvements.
 
@@ -90,3 +98,5 @@ Key terms used throughout AgentBoot documentation.
 **Trait Weight** — A calibration system for traits supporting variable intensity. Named weights (OFF/LOW/MEDIUM/HIGH/MAX) map to numeric values (0.0 / 0.3 / 0.5 / 0.7 / 1.0). The weight adjusts the threshold for action, not the type of action.
 
 **Two-Channel MDM Distribution** — Enterprise distribution model separating non-negotiable enforcement (Channel 1: MDM-deployed managed settings for HARD guardrails) from team-customizable configuration (Channel 2: Git-based hub-and-spoke for everything else).
+
+**Verify-Manifest (`agentboot verify-manifest`)** — Verification of a synced `.agentboot-manifest.json`: the manifest's content digest, every listed file's hash, and the SSH signature when present. Exits non-zero on any mismatch — suitable as a CI step in spoke repos. Signature validity proves the digest was signed; pinning *who* may sign is done by checking the signer's public key against an `allowed_signers` trust root.

@@ -111,7 +111,7 @@ const config: Config = {
       // Keep the id stable across patch releases so a reader who dismissed the
       // bar is not re-shown it on every version bump. The version in the copy is
       // interpolated from package.json (see pkgVersion above).
-      id: 'beta-v0-11',
+      id: 'beta-v0-18',
       content:
         `🚧 AgentBoot v${pkgVersion} is in <strong>public Beta</strong> — try it and ` +
         '<a target="_blank" rel="noopener noreferrer" href="https://github.com/agentboot-dev/agentboot/issues">' +

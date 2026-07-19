@@ -507,7 +507,7 @@ When an org has CC, Copilot, AND Cursor users:
 agentboot sync
   │
   ├── CC repos:      .claude/ (full native — agents, skills, rules, hooks, MCP)
-  ├── Copilot repos: .github/ (instructions, prompts, skills)
+  ├── Copilot repos: .github/ (instructions, agents, path-scoped rules, compliance hooks)
   ├── Cursor repos:  .cursor/ (rules, skills)
   └── All repos:     skills/  (agentskills.io — cross-platform)
 ```
@@ -517,24 +517,27 @@ The MCP server is the equalizer — it works in all three platforms and provides
 same persona invocation regardless of which tool the developer uses.
 
 **The governance gap:** CC repos get hooks, managed settings, and plugin force-enable.
-Copilot and Cursor repos get instructions and prompt files — advisory only. There is
-no way to enforce HARD guardrails on non-CC platforms today. AgentBoot should be
-transparent about this gap rather than overpromising. The compliance story for non-CC
-is: instruction-based refusal + CI-based review (PR bots) + organizational policy.
+Copilot repos get blocking compliance hooks (`.github/hooks/agentboot.json`, exit
+code 2) but no managed-settings channel, and command-hook timeouts fail open. Cursor
+and other community-tier repos get instructions only — advisory. There is no
+managed-settings HARD-guardrail channel on non-CC platforms today. AgentBoot is
+transparent about this gap rather than overpromising (see the
+[platform capability matrix](platform-capability-matrix.md), and run
+`agentboot conformance` to test declared enforcement empirically). The compliance
+story beyond hooks is: instruction-based refusal + CI-based review (PR bots) +
+organizational policy.
 
 ---
 
-## What AgentBoot Needs to Build
+## Build Status
 
-| Component | Purpose | Phase |
-|-----------|---------|-------|
-| `agentboot export --format plugin` | Generate CC plugin from personas repo | V1 |
-| Private marketplace template | Scaffold a marketplace.json repo for the org | V1 |
-| `/agentboot:connect` skill | Self-service org connection | V1.5 |
-| Managed settings generator | Generate managed-settings.json for IT deployment | V1.5 |
-| `agentboot upgrade` | Pull latest core into org's personas repo | V1 |
-| Org detection (git remote) | Auto-detect org from repo context | V2 |
-| Plugin update notification | Notify developers when org plugin updates | V2 |
+The org-connection building blocks described on this page are shipped: `agentboot
+build` emits a loadable Claude Code plugin (`dist/plugin/`) and the managed-settings
+bundle (`dist/managed/`) for MDM deployment, `agentboot connect` / `agentboot hubs` /
+`agentboot use` handle hub linking, and `agentboot sync` distributes to the fleet.
+Remaining forward-looking pieces — a ready-made public marketplace, plugin update
+notifications, and further onboarding polish — are tracked on the
+[roadmap](roadmap.md), not here.
 
 ---
 

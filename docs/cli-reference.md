@@ -57,6 +57,12 @@ agentboot validate --strict
 
 Exit codes: `0` = pass, `1` = errors, `2` = warnings (with `--strict`).
 
+Validation also checks the hub's `agentboot-exceptions.json` (the policy-exception
+file): malformed or field-incomplete exceptions fail, expired exceptions are
+treated as absent (the underlying failure resurfaces), and exceptions expiring
+within 14 days produce warnings. See
+[configuration § Policy exceptions](configuration.md#policy-exceptions--owners-and-expiration-dates).
+
 ---
 
 ## `agentboot test`
@@ -78,6 +84,13 @@ agentboot test --regression --snapshot-file .agentboot-snapshot.json
 | `--regression` | Compare current `dist/` against saved snapshot |
 | `--test-dir <dir>` | Directory with behavioral test YAML files (default: `tests/behavioral`) |
 | `--snapshot-file <path>` | Path to snapshot baseline file (default: `.agentboot-snapshot.json`) |
+
+> **`--behavioral` is experimental.** The scenario YAML schema is still in flux,
+> and the runner does not yet parse the scenario set that ships with the repo —
+> expect to write scenarios against the current runner rather than reuse the
+> shipped ones. Do not wire it up as a supported CI gate yet; the
+> [roadmap](roadmap.md) tracks maturing the behavioral evaluation harness.
+> `--snapshot` / `--regression` are deterministic and CI-safe.
 
 ---
 
@@ -337,6 +350,13 @@ Every imported artifact carries `source:` (first contributing repo) and, when
 promoted, `additional_sources:` in its frontmatter — so "which repos rely on
 this rule" stays answerable from the artifact itself.
 
+Promotions are recorded in the staged import plan
+(`.agentboot-import-plan.json`) under the **`cross_repo_promotions`** field: an
+array of `{ "target_path": "<hub artifact path>", "repos": ["repoA", "repoB"] }`
+entries, one per hub artifact fed by two or more distinct repos in the sweep.
+The field is absent on plans staged before v0.13.0; `import --apply` recomputes
+promotions from the plan's whole-file imports in that case.
+
 ---
 
 ## `agentboot add <type> <name>`
@@ -411,6 +431,13 @@ agentboot drift-check --format json
 |------|-------------|
 | `--repo <path>` | Check a specific repo (defaults to all repos in `repos.json`) |
 | `--format <type>` | Output format: `text` (default) or `json` |
+
+Approved drift is expressed through the **policy-exception workflow**: a spoke's
+`.agentboot-exceptions.json` with an unexpired `"policy": "drift:<path-or-glob>"`
+entry makes the covered file report as `excepted` (with its exception id) instead
+of failing. Expired exceptions are ignored and the drift resurfaces, naming the
+owner. See
+[configuration § Policy exceptions](configuration.md#policy-exceptions--owners-and-expiration-dates).
 
 ---
 

@@ -81,11 +81,13 @@ Name it plainly, because it's real:
   structure than "a markdown file." The structure is what makes reuse and
   composition work, but it's a learning curve.
 - **Platform fidelity is tiered, not uniform.** Official support is the Claude
-  Code, OpenAI Codex, and GitHub Copilot CLI surfaces; other formats (Cursor,
-  Windsurf, Gemini, JetBrains, `AGENTS.md`) are community-tier output — your
-  content arrives, but on an advisory basis. The
-  [platform capability matrix](./platform-capability-matrix.md) has the exact
-  breakdown.
+  Code, OpenAI Codex, and GitHub Copilot CLI surfaces, plus the universal
+  `AGENTS.md` standard as an officially supported, advisory-enforcement output —
+  the industry-standard cross-tool instruction file (no hook mechanism, so it
+  carries no blocking enforcement). Other formats (Cursor, Windsurf, Gemini,
+  JetBrains) are community-tier output — your content arrives, but on an advisory
+  basis. The [platform capability matrix](./platform-capability-matrix.md) has the
+  exact breakdown.
 
 The crossover point is roughly: **(number of tools) × (number of repos) × (how
 often the content changes).** When that product is small, hand-maintained files

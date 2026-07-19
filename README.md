@@ -98,9 +98,12 @@ One build produces output for multiple platforms:
 | GitHub Copilot | copilot-instructions.md fragments, hooks | `.github/` |
 | agentskills.io | Cross-platform SKILL.md | Configurable |
 
-Official support targets the CLI surfaces of Claude Code, Codex, and GitHub Copilot.
-AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the universal
-`AGENTS.md` standard on a community-supported basis.
+Official support targets the CLI surfaces of Claude Code, Codex, and GitHub Copilot,
+plus the universal `AGENTS.md` standard as an officially supported, advisory-enforcement
+output — the industry-standard cross-tool instruction file (advisory by nature: AGENTS.md
+has no hook mechanism, so blocking enforcement remains a Claude Code / Codex / Copilot
+capability). AgentBoot additionally emits for Cursor, Gemini, Windsurf, and JetBrains on
+a community-supported basis.
 
 ### Build once, deploy everywhere
 

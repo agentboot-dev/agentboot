@@ -11,9 +11,9 @@ AgentBoot answers those three questions with a build tool. Policy is authored as
 
 The model decomposes the way a security reviewer would decompose it: **Set → Enforce → Verify.**
 
-## Set: one policy, four scopes
+## Set: one policy, layered scopes
 
-Behavior is defined once in the hub and merged down a four-level scope hierarchy:
+Behavior is defined once in the hub and merged down a scope hierarchy (commonly four levels; the scope tree supports arbitrary depth):
 
 ```
 org  →  group  →  team  →  repo
@@ -23,7 +23,7 @@ A team scope extends its group; a group extends the org. The payments team can t
 
 - **Personas** — agent role definitions (a code reviewer, a security reviewer, a test generator) composed from reusable **traits**. Change a trait once and every persona that uses it rebuilds.
 - **Gotchas** — path-scoped incident rules: the hard-won "never do X in this directory" knowledge that otherwise lives in one senior engineer's head.
-- **Domains** — an optional overlay for grouping domain-specific traits, personas, and gotchas (`agentboot add domain`). Packaged, opinionated compliance domains are on the [roadmap](/docs/roadmap).
+- **Domains** — an optional overlay for grouping domain-specific traits, personas, and gotchas (`agentboot add domain`). A generic healthcare starter pack ships today; fuller packaged, opinionated compliance domains are on the [roadmap](/docs/roadmap).
 - **Guardrails, marked HARD or SOFT.** SOFT guardrails are defaults a lower scope may adapt. **HARD guardrails cannot be silently disabled downstream** — the compiler detects attempted overrides (including case variations and comments-in-JSON tricks) and refuses to bury them. This is the MDM-style managed-settings property: the org's floor is the floor.
 
 Because policy is markdown and configuration in a git repo, changing policy *is* a pull request — attributed, reviewed, and permanently in history. Your audit trail is `git log`.
@@ -35,11 +35,12 @@ Enforcement claims are where tools in this space tend to inflate. Here is the ac
 | Tier | Platforms | What you get |
 |---|---|---|
 | **Official** (enforcement-grade) | **Claude Code**, **OpenAI Codex CLI**, **GitHub Copilot CLI** | Compiled compliance hooks emitted into each platform's native mechanism (`.claude/settings.json`, `.codex/hooks.json`, `.github/hooks/agentboot.json`), from one canonical set of portable hook scripts, all blocking on exit code 2 and kept in lock-step across the three platforms. |
-| **Community** (advisory) | Cursor, Windsurf, Gemini Code Assist, JetBrains AI, `AGENTS.md`, agentskills.io | Native config output is emitted and drift-checked, but there is no blocking-hook enforcement. Advisory means advisory. |
+| **Official** (advisory) | **`AGENTS.md`** | The industry-standard cross-tool instruction file, compiled and drift-checked as a first-class output. Officially supported — but it is instructions, not hooks, so it carries no blocking enforcement by design. |
+| **Community** (advisory) | Cursor, Windsurf, Gemini Code Assist, JetBrains AI, agentskills.io | Native config output is emitted and drift-checked, but there is no blocking-hook enforcement. Advisory means advisory. |
 
 Two caveats we'd rather you hear from us than discover in evaluation:
 
-- **Copilot's hook ceiling is lower than Claude Code's and Codex's.** The hooks are real and blocking within what the platform exposes, but the three platforms do not enforce identically, and we won't imply they do.
+- **Copilot's hook ceiling is lower than Claude Code's and Codex's.** The hooks are real and blocking within what the platform exposes, but Copilot command-hooks **fail open on timeout** — a hung or slow hook allows the action instead of blocking it. The three platforms do not enforce identically, and we won't imply they do.
 - **Enforcement binds tool surfaces, not people.** Blocking hooks constrain the supported CLIs. A developer working outside them isn't constrained by AgentBoot — that's a policy matter for your org, and it's why the third leg exists. The full statement of what AgentBoot does and doesn't defend against is on the [Trust & Architecture page](/trust).
 
 ## Verify: drift you can see

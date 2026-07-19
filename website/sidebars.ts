@@ -34,6 +34,7 @@ const sidebars: SidebarsConfig = {
         'hub-cicd',
         'enterprise-operations',
         'privacy',
+        'assurance-claims',
       ],
     },
     {

@@ -8,14 +8,17 @@ sidebar_position: 1
 AgentBoot is a harness engineering build tool that manages your AI agent behavior
 as source code — versioned, reviewed, tested, and deployed from a central personas
 repo to every project in your org. It compiles personas into platform-native formats.
-Official support targets the **CLI surfaces of Claude Code, Codex, and GitHub Copilot**;
-AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the universal
-`AGENTS.md` standard on a community-supported basis.
+Official support targets the **CLI surfaces of Claude Code, Codex, and GitHub Copilot**,
+plus the universal **`AGENTS.md`** standard as an officially supported,
+advisory-enforcement output — the industry-standard cross-tool instruction file
+(advisory by nature: no hook mechanism, so blocking enforcement remains a Claude
+Code / Codex / Copilot capability). AgentBoot additionally emits for Cursor, Gemini,
+Windsurf, and JetBrains on a community-supported basis.
 
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Beta notice:** AgentBoot **v0.17.0 is a public Beta**. It's usable end to end, but
+> **Beta notice:** AgentBoot **v0.18.0 is a public Beta**. It's usable end to end, but
 > breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
 > notes document all changes, and we do our best to minimize disruption — but stability
 > is not guaranteed until v1.0. If you hit a rough edge,

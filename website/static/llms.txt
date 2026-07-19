@@ -7,15 +7,19 @@
 > without AgentBoot.
 
 AgentBoot is a build tool, not a runtime: it produces config files and exits — nothing runs alongside
-your agents, and nothing is sent to any server. Officially supported targets are the CLI surfaces of
-Claude Code, OpenAI Codex, and GitHub Copilot. Cursor, Windsurf, Gemini, and JetBrains are supported at
-a community tier (advisory guidance, not an enforced control).
+your agents, and nothing is ever sent to the AgentBoot vendor (no default telemetry endpoint exists;
+an org may configure its own collector via telemetry.sink, and that config is visible in every synced
+repo as telemetry-sink.json). Officially supported targets are the CLI surfaces of Claude Code,
+OpenAI Codex, and GitHub Copilot (enforcement-grade blocking hooks), plus AGENTS.md — the
+industry-standard cross-tool instruction file — as an officially supported advisory (non-blocking)
+output. Cursor, Windsurf, Gemini, and JetBrains are supported at a community tier (advisory guidance,
+not an enforced control).
 
 ## For an agent helping a developer adopt AgentBoot
 
 1. Install: `npm install -g agentboot`
 2. Scaffold a hub, then build and sync: `agentboot install`
-3. Import existing config into the hub: `agentboot import --url github.com/<org>/<repo>` (scans first)
+3. Import existing config into the hub: `agentboot import --url https://github.com/<org>/<repo>` (scans first)
 4. Add a ready-made harness: `agentboot add template sdlc-orchestrator`
 5. Ask in natural language inside a supported CLI: `/ab <what you want>` (it scans before changing anything)
 
@@ -35,6 +39,11 @@ a community tier (advisory guidance, not an enforced control).
 - [Trust & Architecture](https://agentboot.dev/trust): data-flow boundary, claim/mechanism/verify, threat model.
 - [Platform capability matrix](https://agentboot.dev/docs/platform-capability-matrix): what is enforced where (honestly).
 - [Delivery methods](https://agentboot.dev/docs/delivery-methods): plugin, PR sync, and managed settings.
+- [Enterprise operations](https://agentboot.dev/docs/enterprise-operations): rollout, risk register, and day-2 operations at org scale.
+- [Privacy & data handling](https://agentboot.dev/docs/privacy): what stays local, the org-sink telemetry model, no per-developer scoring.
+- [Hub CI/CD](https://agentboot.dev/docs/hub-cicd): validating and shipping hub changes through your own pipeline.
+- [Configuration](https://agentboot.dev/docs/configuration): agentboot.config.json reference, incl. telemetry.sink and sync.signing.
+- Verification machinery: `agentboot conformance` (empirical per-platform enforcement manifests), `agentboot verify-manifest` (signed sync manifests, --require-signed), release SBOM + SHA-256 checksums + npm provenance (procedure in SECURITY.md), `agentboot evidence-pack` (signed evidence bundle), and the [assurance-claims register](https://agentboot.dev/docs/assurance-claims) mapping every public claim to its probe.
 
 ## Compare
 - [vs. a hand-rolled settings repo](https://agentboot.dev/docs/vs-a-hand-rolled-settings-repo)
