@@ -287,8 +287,10 @@ describe("D6 E2E: synced manifest is provenance-carrying and tamper-evident", ()
 
   it("CLI: agentboot verify-manifest exits 0 on a clean spoke and 1 on tamper", () => {
     const cli = path.join(ROOT, "scripts", "cli.ts");
-    const clean = spawnSync(TSX, [cli, "verify-manifest", "--repo", spoke],
-      { encoding: "utf-8", timeout: 60_000, stdio: "pipe" });
+    // shell: true — the extensionless tsx shim is not directly spawnable on Windows
+    const runCli = () => spawnSync(`"${TSX}" "${cli}" verify-manifest --repo "${spoke}"`,
+      { shell: true, encoding: "utf-8", timeout: 60_000, stdio: "pipe" });
+    const clean = runCli();
     expect(clean.stdout).toContain("Content digest OK");
     expect(clean.status).toBe(0);
 
@@ -298,8 +300,7 @@ describe("D6 E2E: synced manifest is provenance-carrying and tamper-evident", ()
     const original = fs.readFileSync(victimAbs, "utf-8");
     try {
       fs.appendFileSync(victimAbs, "\ntamper\n");
-      const dirty = spawnSync(TSX, [cli, "verify-manifest", "--repo", spoke],
-        { encoding: "utf-8", timeout: 60_000, stdio: "pipe" });
+      const dirty = runCli();
       expect(dirty.status).toBe(1);
       expect(dirty.stdout).toContain("differ from the manifest");
     } finally {
