@@ -42,6 +42,7 @@ import {
   type CompositionType,
 } from "./lib/frontmatter.js";
 import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
+import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -162,45 +163,6 @@ function checkPersonaExistence(config: AgentBootConfig, configDir: string): Chec
 // ---------------------------------------------------------------------------
 // Check 2: Trait references
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve config-referenced domain layers to their `traits/` and `personas/`
- * directories, mirroring the discovery + boundary check in compile.ts
- * (`compileDomains`). Only domains listed in `config.domains` are validated —
- * matching exactly what the compiler builds, so an unreferenced draft domain on
- * disk (e.g. one not yet added to config) never affects validation.
- */
-function resolveDomainDirs(
-  config: AgentBootConfig,
-  configDir: string
-): { name: string; traitsDir: string | null; personasDir: string | null }[] {
-  const out: { name: string; traitsDir: string | null; personasDir: string | null }[] = [];
-  const boundary = path.resolve(configDir);
-  for (const domainRef of config.domains ?? []) {
-    const domainPath =
-      typeof domainRef === "string"
-        ? path.resolve(configDir, domainRef)
-        : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
-    if (!fs.existsSync(domainPath)) continue;
-    // Path-traversal protection: resolve symlinks then check the project boundary.
-    let realDomainPath: string;
-    try {
-      realDomainPath = fs.realpathSync(domainPath);
-    } catch {
-      continue;
-    }
-    if (!realDomainPath.startsWith(boundary + path.sep) && realDomainPath !== boundary) continue;
-    const name = typeof domainRef === "string" ? path.basename(realDomainPath) : domainRef.name;
-    const traitsDir = path.join(realDomainPath, "traits");
-    const personasDir = path.join(realDomainPath, "personas");
-    out.push({
-      name,
-      traitsDir: fs.existsSync(traitsDir) ? traitsDir : null,
-      personasDir: fs.existsSync(personasDir) ? personasDir : null,
-    });
-  }
-  return out;
-}
 
 function checkTraitReferences(config: AgentBootConfig, configDir: string): CheckResult {
   const result = check(
@@ -452,28 +414,21 @@ export function buildSecretPatterns(config: AgentBootConfig): RegExp[] {
 }
 
 function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult {
-  const result = check("Secret scan — no credentials or keys in trait/persona definitions");
+  const result = check("Secret scan — no credentials or keys anywhere in the hub content surface");
   const patterns = buildSecretPatterns(config);
 
-  const scanRoots: string[] = [
-    path.join(configDir, "core", "traits"),
-    path.join(configDir, "core", "personas"),
-  ];
-
-  if (config.personas?.customDir) {
-    const ext = path.resolve(configDir, config.personas.customDir);
-    if (fs.existsSync(ext)) scanRoots.push(ext);
-  }
-  for (const d of resolveDomainDirs(config, configDir)) {
-    if (d.traitsDir) scanRoots.push(d.traitsDir);
-    if (d.personasDir) scanRoots.push(d.personasDir);
-  }
+  // Scan the FULL compiler input surface (scope-layout SSOT): core/ (traits,
+  // personas, instructions, gotchas, lexicon), groups/, teams/, nodes/, custom
+  // persona dirs, and referenced domains. Scanning less than the compiler
+  // reads means a credential in an unscanned dir passes "✓ Secret scan" and
+  // syncs to every spoke in cleartext.
+  const scanRoots = hubContentRoots(config, configDir);
 
   for (const root of scanRoots) {
     if (!fs.existsSync(root)) continue;
 
-    // Recursively find all .md and .json files.
-    const files = walkDir(root, [".md", ".json"]);
+    // Recursively find all .md, .json and .yaml files.
+    const files = walkDir(root, [".md", ".json", ".yaml", ".yml"]);
 
     for (const filePath of files) {
       const content = fs.readFileSync(filePath, "utf-8");

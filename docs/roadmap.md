@@ -9,9 +9,9 @@ Where AgentBoot is headed. This page is forward‑looking — themes and intent,
 commitments**; priorities shift with what teams actually need. For the full record of what has
 already shipped, see the [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md).
 
-## Where we are today — v0.15.0 (public Beta)
+## Where we are today — v0.16.0 (public Beta)
 
-**AgentBoot v0.15.0 is a public Beta.** The full pipeline works end to end today: it compiles your
+**AgentBoot v0.16.0 is a public Beta.** The full pipeline works end to end today: it compiles your
 team's AI behavior — personas, traits, rules, gotchas, and domain layers — from one hub repo into
 native config for the **CLI surfaces** of **Claude Code**, **OpenAI Codex**, and **GitHub
 Copilot**, and delivers it to every repo as a reviewable pull request, with drift detection,
@@ -38,7 +38,7 @@ things you can do:
 - **Contribute** — traits, gotchas, harness templates, and platform emitters are all welcome.
   Start a [discussion](https://github.com/agentboot-dev/agentboot/discussions) or send a pull request.
 
-Your feedback during v0.11 is what turns it into a v1.0 you can standardize on.
+Your feedback during the Beta is what turns it into a v1.0 you can standardize on.
 
 ---
 
@@ -51,8 +51,8 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 
 - **Beta feedback loop** — triage and fix what real‑world Beta use turns up. The fastest path to
   1.0 is issues from actual repos.
-- **Windows support hardening** — promote the Windows CI leg from advisory to enforced as the
-  remaining git‑bash/path edge cases are closed with real‑world feedback.
+- **Windows support hardening** — the Windows CI leg is now an enforced gate (v0.16.0);
+  remaining live-session git‑bash/path edge cases close with real‑world Beta feedback.
 - **Empirical hook verification** — prove blocking‑hook enforcement (exit‑code‑2 deny) end‑to‑end
   on each of the three official CLIs, not just the emitted shape.
 - **Import & onboarding refinement** — smoother first run and a sharper import classifier so
@@ -101,14 +101,26 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 The short version — full detail in the
 [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md):
 
-- **v0.15.0 — tested enforcement (current).** The platform conformance harness
+- **v0.16.0 — hardened assurance (current).** An adversarial audit of our own
+  enforcement claims, then fixes for everything it found: the Stop-hook output
+  scan now reads the payload the platform actually sends; sibling-scope content
+  can no longer leak into a spoke; the telemetry schema is generated from the
+  canonical event spec; verify-manifest gained signature-strip detection and
+  allowed-signers signer authentication with an honest trust-posture readout;
+  the secret scan covers the full compiler input surface; SBOMs cover the full
+  production closure; Windows is a true CI gate; publishing is decoupled from
+  merging; and every public assurance claim is now registered against the probe
+  that verifies it (docs/assurance-claims.md).
+- **v0.15.0 — tested enforcement.** The platform conformance harness
   executes compiled hooks (block/deny/malformed/oversized probes) per platform and
   emits an enforcement manifest into artifacts — the capability matrix is now a
   tested contract, gated in CI.
 - **v0.14.0 — verifiable sync.** Sync manifests carry hub provenance
-  (commit, config + policy hashes) and a tamper-evident content digest with optional
-  SSH signing; sync PRs carry a risk-classified change summary; `verify-manifest`
-  checks it all in spoke CI.
+  (commit, config + policy hashes) and a content digest; with SSH signing enabled
+  and the signer authenticated against an allowed-signers trust root (v0.16.0),
+  the manifest is tamper-evident — an unsigned digest detects accidental
+  corruption only. Sync PRs carry a risk-classified change summary;
+  `verify-manifest --require-signed --allowed-signers` checks it all in spoke CI.
 - **v0.13.0 — org-scale import.** Multi-repo import sweeps now converge
   boilerplate shared across repos onto one promoted org artifact carrying provenance
   from every contributing repo — duplicate content is never re-appended and never

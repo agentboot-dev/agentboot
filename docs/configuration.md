@@ -329,7 +329,7 @@ AgentBoot does not become a DLP engine; it gives your scanner a reliable integra
 | `compliance.inputScan.failMode` | `"open"\|"closed"` | `"open"` | What a scanner *failure* (not a block) does: `open` = allow with a stderr notice, `closed` = block. Note: a scanner that hangs is bounded by the hook's own timeout, which the platform may treat as fail-open — see the platform capability matrix. |
 | `compliance.outputScan.scannerCommand` | string | — | Same contract, applied to the response in the Stop-hook output scan. |
 | `compliance.outputScan.failMode` | `"open"\|"closed"` | `"open"` | As above, for the output scanner. |
-| `compliance.outputScan.blocking` | boolean | `false` | Promote the output scan from warn-only to **blocking**: on a match (bundled pattern or scanner), the hook exits 2 with a redact instruction returned to the model instead of printing a warning. |
+| `compliance.outputScan.blocking` | boolean | `false` | Promote the output scan from warn-only to **blocking**: on a match (bundled pattern or scanner), the hook exits 2 with a redact instruction returned to the model instead of printing a warning. Precisely stated: this cannot retract text already rendered on screen — it refuses to let the turn end until the model remediates (remediation-forcing, not display suppression). |
 
 Scanner content never leaves the machine through AgentBoot: the hook pipes content to your
 command locally and surfaces its stdout/stderr to the developer only.

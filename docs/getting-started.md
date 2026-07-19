@@ -15,7 +15,7 @@ AgentBoot additionally emits for Cursor, Gemini, Windsurf, JetBrains, and the un
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Beta notice:** AgentBoot **v0.15.0 is a public Beta**. It's usable end to end, but
+> **Beta notice:** AgentBoot **v0.16.0 is a public Beta**. It's usable end to end, but
 > breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
 > notes document all changes, and we do our best to minimize disruption — but stability
 > is not guaranteed until v1.0. If you hit a rough edge,
@@ -31,15 +31,20 @@ Before you start, you need:
    the command line and have it connect to your account.
    → Install: [docs.anthropic.com/claude-code](https://docs.anthropic.com/en/docs/claude-code/overview)
 
-2. **Node.js 18 or later.** Check with `node --version`. If you need to upgrade,
+2. **Node.js 22 or later.** Check with `node --version`. If you need to upgrade,
    use [nvm](https://github.com/nvm-sh/nvm) or download from [nodejs.org](https://nodejs.org).
 
-3. **GitHub account** with permission to create repositories in your org (or your
+3. **Git** installed and configured. The personas hub is a git repository — the
+   install wizard runs `git init` for you if the target directory isn't one yet,
+   and detects your org from the git remote when one exists.
+
+4. **GitHub account** with permission to create repositories in your org (or your
    personal account for solo use). If you don't have permission yet, see
    [Local evaluation](#local-evaluation-no-github-repo-required) below.
 
-4. **One target repository** that you want to deploy AgentBoot personas to. This is
-   any existing codebase where you want consistent AI agent behavior. You need write access.
+5. **One target repository** that you want to deploy AgentBoot personas to. This is
+   any existing codebase where you want consistent AI agent behavior. It must be a
+   git repository, and you need write access.
 
 ---
 
@@ -82,6 +87,16 @@ The wizard will:
 5. Build the personas automatically
 6. Offer to register your target repos (scans siblings, auto-discovers)
 7. Sync compiled personas to registered repos automatically
+
+> **Target repo already has agent config?** If a target repo has pre-existing
+> hand-written instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`,
+> `.github/copilot-instructions.md`), the **first sync deliberately stops** rather
+> than replace them. You choose: run `agentboot import` first (recommended — it
+> decomposes your existing content into hub artifacts so nothing is lost), or run
+> `agentboot sync --adopt-existing` to replace them. With `--adopt-existing`, every
+> pre-existing file the sync overwrites — including root-level artifacts — is
+> archived to `.claude/.agentboot-archive/` (with an archive manifest) before
+> anything is written, so the originals remain recoverable.
 
 The wizard generates `agentboot.config.json`. Edit it to customize — see [Configuration](configuration.md).
 
@@ -175,36 +190,43 @@ are present.
 
 ## Step 3: Add your first team-level customization
 
-Team-level customization lets you add personas or instructions that apply only to repos
-in a specific team, without affecting the rest of the org.
+Team-level customization lets you add personas that apply only to repos in a
+specific team, without affecting the rest of the org.
 
-In your personas repo, create a directory for your team's extensions:
-
-```
-personas/
-  platform/
-    api/
-      always-on.md        ← additional always-on instructions for the API team
-      personas/
-        api-contract-reviewer/
-          SKILL.md        ← a persona specific to the API team
-```
-
-Then register the extension in `agentboot.config.json`:
+First declare the scope in `agentboot.config.json`:
 
 ```jsonc
 {
-  "personas": {
-    "enabled": ["code-reviewer", "security-reviewer", "test-generator"],
-    "customDir": "./personas"
+  "groups": {
+    "platform": { "teams": ["api"] }
   }
 }
 ```
 
+Then create the team's persona under the scope tree in your personas repo:
+
+```
+nodes/
+  platform/
+    api/
+      personas/
+        api-contract-reviewer/
+          persona.config.json   ← model, invocation, trait weights
+          SKILL.md              ← a persona specific to the API team
+```
+
+(The nested `groups/platform/teams/api/` and sibling `teams/platform/api/` layouts
+are also accepted — `nodes/` is the canonical form.)
+
 Run `/ab build` then `/ab sync` (or `agentboot build && agentboot sync` from the terminal).
-Repos registered to the `api` team under `platform` will now receive the additional
-always-on instructions and the API contract reviewer persona, layered on top of the org
-defaults. Other repos are unaffected.
+Repos registered to the `api` team under `platform` will now receive the API contract
+reviewer persona, layered on top of the org defaults. Other repos are unaffected.
+
+> **What compiles at team scope today:** persona definitions and per-persona trait
+> weights. Scope-level trait/instruction/gotcha *content* files (e.g. a team-only
+> always-on instruction) are **not compiled at team scope yet** — the build warns
+> loudly if it finds any, so they can't silently produce no output. Org-wide
+> instructions live in `core/instructions/`.
 
 ---
 

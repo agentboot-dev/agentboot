@@ -115,6 +115,18 @@ Inside Claude Code, `/ab` drives the same pipeline conversationally:
   duplicates; deciding is on you.
 - **`AGENTS.md` needs the explicit route** described above.
 
+## Import and the first sync
+
+Import is also the recommended first step before syncing to a repo that already
+has hand-written agent config. A **first** `agentboot sync` onto a repo with
+pre-existing instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`,
+`.github/copilot-instructions.md`) **stops with an error** rather than replace
+them — import first so the content lives on in the hub, then sync. To replace
+without importing, pass `sync --adopt-existing`: everything the sync overwrites,
+including root-level artifacts, is archived to the target directory's
+`.agentboot-archive/` first, and `agentboot uninstall` restores it. See
+[CLI Reference § `agentboot sync`](cli-reference.md#agentboot-sync).
+
 ## When not to use this
 
 If you have one repo with one `CLAUDE.md` that works, leave it alone — a checked-in

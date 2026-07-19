@@ -2717,6 +2717,14 @@ export interface ParsedGitHubUrl {
 }
 
 /**
+ * GitHub owner/repo name allowlist. Both segments feed back into constructed
+ * URLs (raw fetch, git clone), so they must be plain identifier-ish names:
+ * leading alphanumeric prevents anything that could read as a CLI flag
+ * (`--upload-pack=…`), the rest is GitHub's legal name alphabet.
+ */
+const GITHUB_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
  * Parse a GitHub URL into its components.
  * Returns null for non-GitHub URLs, malformed URLs, or URLs with path traversal.
  */
@@ -2734,6 +2742,7 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
     if (parsed.hostname === "raw.githubusercontent.com") {
       const parts = parsed.pathname.replace(/^\//, "").split("/");
       if (parts.length < 4) return null;
+      if (!GITHUB_NAME_RE.test(parts[0]!) || !GITHUB_NAME_RE.test(parts[1]!)) return null;
       return {
         type: "raw-file",
         owner: parts[0]!,
@@ -2750,9 +2759,13 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
     if (parts.length < 2) return null;
     const owner = parts[0]!;
     const repo = parts[1]!.replace(/\.git$/, "");
+    if (!GITHUB_NAME_RE.test(owner) || !GITHUB_NAME_RE.test(repo)) return null;
 
-    // Blob file: github.com/{owner}/{repo}/blob/{branch}/{path}
-    if (parts.length >= 5 && parts[2] === "blob") {
+    // File URLs: github.com/{owner}/{repo}/blob/{branch}/{path} (the web UI
+    // address bar) and github.com/{owner}/{repo}/raw/{branch}/{path} (the
+    // "Raw" button link). Both name a single file; the /raw/ form used to
+    // fall through to the repo branch and hard-fail as a bogus `git clone`.
+    if (parts.length >= 5 && (parts[2] === "blob" || parts[2] === "raw")) {
       return {
         type: "blob-file",
         owner,
@@ -2776,6 +2789,20 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
 function toRawUrl(parsed: ParsedGitHubUrl): string {
   const branch = parsed.branch ?? "main";
   return `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${branch}/${parsed.filePath}`;
+}
+
+/**
+ * Canonical clone URL for a parsed GitHub URL.
+ *
+ * The clone must NOT use the raw user-supplied string: documented forms like
+ * tree URLs (github.com/{owner}/{repo}/tree/{branch}/{path}), trailing
+ * slashes, www. hosts, or query strings are valid *references* to a repo but
+ * are not clonable URLs — `git clone <tree-url>` hard-fails with a confusing
+ * git error. Reconstructing from the validated owner/repo also guarantees the
+ * string passed to git is exactly `https://github.com/<name>/<name>.git`.
+ */
+export function toCloneUrl(parsed: ParsedGitHubUrl): string {
+  return `https://github.com/${parsed.owner}/${parsed.repo}.git`;
 }
 
 const MAX_FETCH_SIZE = 1_048_576; // 1MB cap on fetched content
@@ -2856,7 +2883,10 @@ export async function importFromUrl(
     } else {
       // SECURITY: Use execFileSync with args array — NEVER string interpolation.
       // (Phase 11 audit finding: CRITICAL severity)
-      execFileSync("git", ["clone", "--depth", "1", "--single-branch", url, tempDir], {
+      // Clone the canonical reconstructed URL, not the raw user string — see
+      // toCloneUrl. Tree URLs, trailing slashes, and query strings all resolve
+      // to the same validated owner/repo pair.
+      execFileSync("git", ["clone", "--depth", "1", "--single-branch", toCloneUrl(parsed), tempDir], {
         stdio: "pipe",
         timeout: 30_000,
       });

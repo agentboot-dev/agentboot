@@ -47,6 +47,7 @@ import {
   agentbootNpxSpec,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
+import { buildTelemetryJsonSchema } from "./lib/telemetry-schema.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -2218,7 +2219,10 @@ interface ComplianceHookBinding {
 
 const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
   { script: "agentboot-input-scan.sh",  ccEvent: "UserPromptSubmit", matcher: "",                timeoutMs: 5000 },
-  { script: "agentboot-output-scan.sh", ccEvent: "Stop",             matcher: "",                timeoutMs: 5000, async: true },
+  // NOT async: an async Stop hook cannot deliver a blocking decision — its
+  // exit code / stdout are ignored by the platform. Blocking output scan
+  // requires a synchronous binding.
+  { script: "agentboot-output-scan.sh", ccEvent: "Stop",             matcher: "",                timeoutMs: 5000 },
   { script: "agentboot-telemetry.sh",   ccEvent: "SubagentStart",    matcher: "",                timeoutMs: 3000, async: true },
   { script: "agentboot-telemetry.sh",   ccEvent: "SubagentStop",     matcher: "",                timeoutMs: 3000, async: true },
   { script: "agentboot-telemetry.sh",   ccEvent: "PostToolUse",      matcher: "Edit|Write|Bash", timeoutMs: 3000, async: true },
@@ -2341,6 +2345,17 @@ exit 0
 
   // AB-60: Output scanning hook (Stop)
   // Phase 11 A2: Replaced jq with node -e for Windows/git-bash portability
+  //
+  // Payload truth (v0.16.0 hardening): the platform's Stop payload carries the
+  // assistant's final text as `last_assistant_message` (never `response` — the
+  // pre-0.16 hook read a field that does not exist and scanned the empty
+  // string on every invocation). Fallback: extract the last assistant message
+  // from the JSONL transcript at `transcript_path` for older platforms.
+  //
+  // Blocking semantics, honestly stated: a Stop-hook block cannot retract
+  // output that is already displayed. It forces a corrective continuation —
+  // the model is told what was flagged and must redact/rotate before the turn
+  // can end. That is remediation-forcing, not display suppression.
   const outputScanHook = `#!/bin/bash
 # AgentBoot compliance hook — output scanning (AB-60)
 # Event: Stop
@@ -2351,7 +2366,7 @@ HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")
 command -v node >/dev/null 2>&1 || exit 0
 
 INPUT=$(cat)
-RESPONSE=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.response||'')}catch{process.stdout.write('')}})") || exit 0
+RESPONSE=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);if(typeof j.last_assistant_message==='string'&&j.last_assistant_message){process.stdout.write(j.last_assistant_message);return;}if(j.transcript_path){const fs=require('fs');const lines=fs.readFileSync(j.transcript_path,'utf-8').split('\\n');for(let i=lines.length-1;i>=0;i--){const l=lines[i].trim();if(!l)continue;try{const e=JSON.parse(l);const m=(e.message&&e.message.role==='assistant')?e.message:null;if(m){const c=m.content;const t=typeof c==='string'?c:(Array.isArray(c)?c.filter(p=>p&&p.type==='text').map(p=>p.text).join('\\n'):'');process.stdout.write(t);return;}}catch(_){}}}process.stdout.write('');}catch(_){process.stdout.write('')}})") || exit 0
 
 # Scan for accidental credential exposure in output
 PATTERNS=(
@@ -2714,45 +2729,11 @@ function generatePersonaHooks(
 // ---------------------------------------------------------------------------
 
 function generateTelemetrySchema(distPath: string): void {
-  const schema = {
-    $schema: "http://json-schema.org/draft-07/schema#",
-    $id: "https://agentboot.dev/schema/telemetry-event/v1",
-    title: "AgentBoot Telemetry Event",
-    type: "object",
-    required: ["event", "persona_id", "timestamp"],
-    properties: {
-      event: {
-        type: "string",
-        enum: ["persona_invocation", "persona_error", "hook_execution", "session_summary"],
-        description: "Event type",
-      },
-      persona_id: { type: "string", description: "Persona identifier" },
-      persona_version: { type: "string", description: "Persona version" },
-      model: { type: "string", description: "Model used" },
-      scope: { type: "string", description: "Scope path: 'org:group:team'" },
-      input_tokens: { type: "integer" },
-      output_tokens: { type: "integer" },
-      thinking_tokens: { type: "integer" },
-      tool_calls: { type: "integer" },
-      duration_ms: { type: "integer" },
-      cost_usd: { type: "number" },
-      findings_count: {
-        type: "object",
-        properties: {
-          CRITICAL: { type: "integer" },
-          ERROR: { type: "integer" },
-          WARN: { type: "integer" },
-          INFO: { type: "integer" },
-        },
-      },
-      suggestions: { type: "integer" },
-      timestamp: { type: "string", format: "date-time" },
-      session_id: { type: "string" },
-      dev_id: { type: "string", description: "Developer identifier (hashed or email per config)" },
-      status: { type: "string", enum: ["started", "completed", "error"] },
-      tool_name: { type: "string", description: "Tool name for hook_execution events" },
-    },
-  };
+  // v0.16.0 hardening: the schema artifact is DERIVED from the canonical
+  // event spec (scripts/lib/telemetry-schema.ts) — previously a second,
+  // hand-written schema shipped here that rejected the product's own
+  // session_summary events and permitted fields the hooks never emit.
+  const schema = buildTelemetryJsonSchema();
 
   const schemaDir = path.join(distPath, "schema");
   ensureDir(schemaDir);
@@ -2761,7 +2742,7 @@ function generateTelemetrySchema(distPath: string): void {
     JSON.stringify(schema, null, 2) + "\n",
     "utf-8"
   );
-  log(chalk.gray(`  → Telemetry schema written to dist/schema/`));
+  log(chalk.gray(`  → Telemetry schema written to dist/schema/ (generated from the canonical event spec)`));
 }
 
 // ---------------------------------------------------------------------------

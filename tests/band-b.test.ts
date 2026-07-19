@@ -175,10 +175,10 @@ describe("B2/B3: pluggable scanners + output blocking", () => {
       run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
       const hook = path.join(hub, "dist", "claude", "core", "hooks", "agentboot-output-scan.sh");
       const cred = ["AKIA", "IOSFODNN7EXAMPLE"].join(""); // assembled — see secret-parity.test.ts
-      const blocked = runHook(hook, { response: `the key is ${cred}` });
+      const blocked = runHook(hook, { hook_event_name: "Stop", last_assistant_message: `the key is ${cred}` });
       expect(blocked.status).toBe(2);
       expect(blocked.stdout).toContain('"decision":"block"');
-      const clean = runHook(hook, { response: "nothing sensitive here" });
+      const clean = runHook(hook, { hook_event_name: "Stop", last_assistant_message: "nothing sensitive here" });
       expect(clean.status).toBe(0);
     } finally {
       fs.rmSync(hub, { recursive: true, force: true });
@@ -191,7 +191,7 @@ describe("B2/B3: pluggable scanners + output blocking", () => {
       run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
       const hook = path.join(hub, "dist", "claude", "core", "hooks", "agentboot-output-scan.sh");
       const cred = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
-      const warned = runHook(hook, { response: `the key is ${cred}` });
+      const warned = runHook(hook, { hook_event_name: "Stop", last_assistant_message: `the key is ${cred}` });
       expect(warned.status).toBe(0);
       expect(warned.stderr).toContain("AgentBoot WARNING");
     } finally {

@@ -64,6 +64,30 @@ The loop, end to end:
    drift-check` compares spokes against their manifest and reports modified or
    removed files. Drift is **detected, not prevented** — see
    [Platform capability matrix](platform-capability-matrix.md).
+4. **Verify** — two commands turn "trust the pipeline" into checked claims:
+   - **`agentboot verify-manifest`** verifies a spoke's manifest end to end: the
+     manifest's own sha256 content digest, every listed file's hash, and the SSH
+     signature when the hub sets `sync.signing`. Non-zero exit on any mismatch —
+     drop it into each spoke's CI as a tamper check on synced configuration. The
+     manifest also carries **provenance**: the hub commit (with a dirty-tree
+     flag), the AgentBoot version, and hashes of the config and policy-exception
+     files that produced the artifacts, so any spoke can answer *which reviewed
+     hub state produced this*.
+   - **`agentboot conformance`** empirically tests the compiled enforcement:
+     it executes the built hook scripts per platform with crafted inputs (clean,
+     secret canary, malformed, oversized, deny-listed tool) and compares observed
+     blocking behavior against the declared enforcement level, writing the result
+     to `dist/<platform>/enforcement-manifest.json`. Advisory platforms get a
+     manifest stating plainly that no enforcement mechanism exists; unprobeable
+     controls are reported *untested*, never assumed to pass. Run it in hub CI so
+     "hooks block secrets on platform X" is a tested claim, not an assumption.
+
+**Signed sync manifests.** If your threat model includes tampering between hub CI
+and spoke review, enable `sync.signing` (an SSH key via `ssh-keygen -Y sign`) so
+every manifest is signed by hub CI. A configured-but-failing signer fails the sync
+— never a silent fallback. Pin *who* may sign by keeping an `allowed_signers` file
+in your CI and checking the manifest's recorded signer key against it — see
+[CLI Reference § verify-manifest](cli-reference.md#agentboot-verify-manifest).
 
 **Managed settings ride a separate channel.** HARD guardrails (denied tools, bypass
 disable, forced plugins) are compiled into `dist/managed/` and deployed by your MDM to
@@ -132,13 +156,17 @@ guardrail, and the person who ships the managed settings are three different peo
 An unpinned toolchain is the easiest supply-chain hole to close. Pin the AgentBoot
 version at every point where it is installed or invoked:
 
-**Hub `package.json`.** Install AgentBoot as a devDependency at an exact version, and
+**Hub `package.json`.** Install AgentBoot as a devDependency at an exact version and
 use `npm ci` in CI (as the [Hub CI/CD](hub-cicd.md) workflow already does) so the
 lockfile is authoritative:
 
 ```json
-{ "devDependencies": { "agentboot": "0.11.4" } }
+{ "devDependencies": { "agentboot": "X.Y.Z" } }
 ```
+
+(Use the exact version you have vetted — check the current release with
+`agentboot --version` or the [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md);
+the examples on this page use `X.Y.Z` as a placeholder.)
 
 **Reusable CI workflow.** If you use the reusable workflow
 (`.github/workflows/agentboot-ci.yml` in the AgentBoot repo), pin its
@@ -150,7 +178,7 @@ jobs:
   agentboot:
     uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@main
     with:
-      agentboot-version: "0.11.4"
+      agentboot-version: "X.Y.Z"
       forbid-latest: true
 ```
 
@@ -169,12 +197,27 @@ internal mirror/proxy (Artifactory, Verdaccio, Nexus) and vet versions into it b
 they become installable.
 
 **Restricted-network installs.** On networks with no registry access, use `npm pack
-agentboot@0.11.4` on a connected machine, transfer the tarball, and install it
-offline (`npm install ./agentboot-0.11.4.tgz`).
+agentboot@X.Y.Z` on a connected machine, transfer the tarball, and install it
+offline (`npm install ./agentboot-X.Y.Z.tgz`).
 
-**Provenance verification.** AgentBoot releases are published with npm provenance
-(`npm publish --provenance`), so `npm audit signatures` in your install environment
-verifies registry signatures and provenance attestations for the installed tree.
+**Release verification.** Every release provides three independent verification
+routes, documented in
+[SECURITY.md § Verifying a release](https://github.com/agentboot-dev/agentboot/blob/main/SECURITY.md):
+
+1. **npm provenance** — packages are published with `npm publish --provenance`
+   (Sigstore attestation linking the package to the exact GitHub Actions run and
+   commit); `npm audit signatures` in your install environment verifies registry
+   signatures and provenance attestations for the installed tree.
+2. **Checksums** — each GitHub Release attaches `agentboot-<version>.sha256`
+   covering the npm tarball and the SBOM; verify a transferred tarball with
+   `shasum -a 256 -c` before an offline install.
+3. **SBOM** — each GitHub Release attaches a CycloneDX SBOM
+   (`agentboot-<version>.sbom.cdx.json`) of the production dependency tree, for
+   ingestion into your dependency-tracking tooling.
+
+For restricted-network installs, verify the checksum and ingest the SBOM **before**
+the tarball crosses the boundary — that is the point where provenance is otherwise
+lost.
 
 ---
 
@@ -265,7 +308,11 @@ file, a tampered hook, a bad upstream package version, or a rogue MCP server ent
 2. **Identify scope.** Every synced spoke carries `.agentboot-manifest.json` with
    SHA-256 hashes of exactly what was delivered; `agentboot drift-check --format
    json` across the fleet tells you which repos hold which content, and the hub's git
-   history tells you which commit introduced it and which sync runs shipped it.
+   history tells you which commit introduced it and which sync runs shipped it. Run
+   `agentboot verify-manifest` per spoke to distinguish *delivered-as-reviewed*
+   content (manifest digest, file hashes, and signature all check out — the
+   manifest's provenance block names the hub commit to investigate) from *tampered*
+   content (verification fails — widen the investigation beyond the hub).
 3. **Roll back.** Revert the hub commit (or the version pin, for a bad upstream
    release), rebuild, resync the fleet (Section 5). For MCP: remove the server from
    `mcp.approved` — with `mcp.enforceApproved` set, the allowlist is the control
@@ -371,7 +418,9 @@ found by drift-check, and sync-PR merge latency.
   personas via `ab/*` PRs.
 - **Weeks 3–4 — governance loop.** Enable the review-posture split from
   [GitHub Bot Setup](github-bot.md) (auto-merge instruction-only, owner review for
-  sensitive paths). Run `agentboot drift-check` on a schedule. If piloting MDM, add
+  sensitive paths). Run `agentboot drift-check` on a schedule, add
+  `agentboot verify-manifest` to the spokes' CI, and run `agentboot conformance` in
+  hub CI so declared enforcement is empirically tested. If piloting MDM, add
   the managed channel on a small device group and run the denied-action verification.
 - **Week 5 — failure drills.** Run all three deliberately, timed:
   1. **Drift drill:** hand-edit a managed file in a spoke; confirm drift-check flags
@@ -407,7 +456,7 @@ re-score, and the mitigations column is honest about what AgentBoot does *not* c
 | 1 | Malicious/poisoned instruction content reaches spokes via the hub | Low | High | Hub branch protection + CODEOWNERS split (Section 2); `validate --strict` + `validation.secretPatterns`; spoke review posture; drills (Section 9). Residual: prompt instructions are **not a security boundary** — an agent can ignore them; enforcement requires hooks, and only on the three official CLI platforms. |
 | 2 | Compromised AgentBoot package version executes in CI and via npx | Low | High | Exact version pins everywhere + `forbid-latest` (Section 3); generated MCP config pins the building version; internal registry vetting; `npm audit signatures` provenance check; version-pin rollback (Section 5). |
 | 3 | Developer edits or deletes managed files in a spoke (drift) | Medium | Medium | Drift-check flags it via SHA-256 manifests — but **detection only, not prevention**; drift you can see, not drift that cannot occur. Revert-through-git; managed settings (CC only) for the non-negotiables. |
-| 4 | Hook enforcement assumed on a platform that doesn't provide it | Medium | Medium | [Capability matrix](platform-capability-matrix.md) is the contract: community-tier platforms get **instructions without enforcement**; Copilot CLI hook timeouts fail open. Verify the specific control on the specific platform before relying on it (pilot's contrasting-repo design exists for this). |
+| 4 | Hook enforcement assumed on a platform that doesn't provide it | Medium | Medium | [Capability matrix](platform-capability-matrix.md) is the contract: community-tier platforms get **instructions without enforcement**; Copilot CLI hook timeouts fail open. `agentboot conformance` tests the declared level empirically per platform (`dist/<platform>/enforcement-manifest.json`) — run it in hub CI rather than assuming (pilot's contrasting-repo design exists for this too). |
 | 5 | Hub CI token (cross-repo write) leaked or abused | Low | High | Least-privilege GitHub App or scoped PAT; rotate on offboarding and incidents (Sections 4, 6); spoke branch protections mean the token can open PRs, not push to main. |
 | 6 | Incident forensics gap — telemetry missing or tampered | Medium | Low–Medium | Telemetry is **local, opt-in, and developer-deletable** ([privacy.md](privacy.md)) — treat as best-effort. The durable trail is git (hub history, sync PRs, manifests). Non-repudiable logging must come from infrastructure outside AgentBoot. |
 | 7 | Rogue MCP server configured in a spoke | Low | High | `mcp.approved` allowlist + `mcp.enforceApproved` at build/sync; sync PR review on `.mcp.json` (a security-sensitive path). Residual: enforcement applies to synced config — a developer adding a server outside managed scope is drift/policy territory. |

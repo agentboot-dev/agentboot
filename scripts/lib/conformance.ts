@@ -169,10 +169,15 @@ function probeOutputScan(bashPath: string, script: string, sandbox: string, fail
   const probes: ProbeResult[] = [];
   const timeoutMs = 5000;
 
-  const clean = runHook(bashPath, script, JSON.stringify({ response: "here is the refactored parser" }), timeoutMs, sandbox);
+  // Probe with the REAL Stop payload shape: the platform delivers the final
+  // text as `last_assistant_message`. (The pre-0.16 harness probed a phantom
+  // `response` field the platform never sends — matching the pre-0.16 hook's
+  // identical bug, so a scan that read nothing tested green. Probes must
+  // mirror the platform contract, not the implementation under test.)
+  const clean = runHook(bashPath, script, JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "here is the refactored parser" }), timeoutMs, sandbox);
   probes.push({ probe: "clean output passes", expected: "exit 0", observed: describeRun(clean), pass: clean.status === 0 });
 
-  const secret = runHook(bashPath, script, JSON.stringify({ response: `creds: ${secretCanary()}` }), timeoutMs, sandbox);
+  const secret = runHook(bashPath, script, JSON.stringify({ hook_event_name: "Stop", last_assistant_message: `creds: ${secretCanary()}` }), timeoutMs, sandbox);
   if (failMode === "closed") {
     probes.push({
       probe: "secret in output BLOCKS (outputScan.blocking enabled)",
@@ -188,6 +193,23 @@ function probeOutputScan(bashPath: string, script: string, sandbox: string, fail
       pass: secret.status === 0 && secret.stderr.includes("WARNING"),
     });
   }
+
+  // Older platform versions omit last_assistant_message — the hook must fall
+  // back to extracting the last assistant message from the JSONL transcript.
+  const transcriptPath = path.join(sandbox, "conformance-transcript.jsonl");
+  fs.writeFileSync(transcriptPath, [
+    JSON.stringify({ type: "user", message: { role: "user", content: "hi" } }),
+    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: `creds: ${secretCanary()}` }] } }),
+  ].join("\n") + "\n");
+  const viaTranscript = runHook(bashPath, script, JSON.stringify({ hook_event_name: "Stop", transcript_path: transcriptPath }), timeoutMs, sandbox);
+  probes.push({
+    probe: "secret detected via transcript_path fallback (no inline message field)",
+    expected: failMode === "closed" ? "exit 2" : "exit 0 + warning on stderr",
+    observed: describeRun(viaTranscript),
+    pass: failMode === "closed"
+      ? viaTranscript.status === 2
+      : viaTranscript.status === 0 && viaTranscript.stderr.includes("WARNING"),
+  });
 
   const malformed = runHook(bashPath, script, "not json", timeoutMs, sandbox);
   probes.push({

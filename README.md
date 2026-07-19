@@ -140,14 +140,15 @@ AgentBoot ships generic. Your industry has specific requirements. Add domain-spe
 
 ## Project Status
 
-**AgentBoot is a public Beta (v0.11.x).** "Stable" below means feature-complete and tested end to
-end — not API-frozen. Breaking changes may still occur before **v1.0 GA**; see the
-[migration guide](docs/migration.md).
+**AgentBoot is a public Beta.** For the current version, run `agentboot --version` or see the
+[CHANGELOG](CHANGELOG.md) and [GitHub releases](https://github.com/agentboot-dev/agentboot/releases).
+"Stable" below means feature-complete and tested end to end — not API-frozen. Breaking changes
+may still occur before **v1.0 GA**; see the [migration guide](docs/migration.md).
 
 | Component | Status |
 |---|---|
 | Core traits (6) | Stable |
-| V1 personas (4) | Stable |
+| V1 personas (5) | Stable |
 | Build pipeline (validate, compile, sync) | Stable |
 | CLI | Stable |
 | Scope hierarchy + distribution | Stable |

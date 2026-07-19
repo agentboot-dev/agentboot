@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         'org-connection',
         'platform-capability-matrix',
         'hub-cicd',
+        'enterprise-operations',
         'privacy',
       ],
     },

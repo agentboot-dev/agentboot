@@ -81,9 +81,13 @@ const CACHE_DIR = path.join(os.homedir(), ".agentboot", "registry", "cache");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const ALLOWED_LICENSES = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unlicense"];
 const REJECTED_LICENSES = ["GPL-2.0", "GPL-3.0", "AGPL-3.0", "GPL-2.0-only", "GPL-3.0-only", "AGPL-3.0-only", "LGPL-2.0", "LGPL-2.1", "LGPL-3.0"];
+// NOTE: the default channel must point at a repo that actually exists —
+// github.com/agentboot/marketplace was never created, so every command that
+// surfaced the default channel referenced a 404. agentboot-dev/agentboot is
+// the canonical public repo.
 const DEFAULT_CHANNEL: RegistryChannel = {
   name: "public",
-  url: "https://github.com/agentboot/marketplace",
+  url: "https://github.com/agentboot-dev/agentboot",
   priority: 1,
 };
 

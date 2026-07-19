@@ -204,6 +204,36 @@ export function signManifestDigest(
   }
 }
 
+export interface VerifyManifestOptions {
+  repoRoot?: string | undefined;
+  /**
+   * Treat a missing signature as a verification FAILURE. This is the only
+   * defense against signature stripping: nothing inside a manifest can prove
+   * it was supposed to be signed (an attacker who edits the manifest can
+   * remove any such marker and recompute the unsigned digest), so the
+   * expectation must come from outside — this flag, set by the org's CI.
+   */
+  requireSignature?: boolean | undefined;
+  /** Path to an OpenSSH allowed_signers file to authenticate the signer. */
+  allowedSignersPath?: string | undefined;
+  /**
+   * Principal to verify against (an identity from the allowed_signers file).
+   * When omitted with allowedSignersPath set, the principal is discovered via
+   * `ssh-keygen -Y find-principals`.
+   */
+  signerPrincipal?: string | undefined;
+}
+
+export type ManifestTrustPosture =
+  /** No digest at all (pre-0.14 manifest). */
+  | "none"
+  /** Digest only. Detects accidental modification, NOT tampering: an editor can recompute the digest. */
+  | "integrity-only"
+  /** Valid signature, but the signer was not authenticated against allowed signers. */
+  | "signed-unauthenticated"
+  /** Valid signature from a signer authenticated against the allowed_signers file. */
+  | "signed-authenticated";
+
 export interface ManifestVerification {
   digestOk: boolean;
   computedDigest: string;
@@ -211,6 +241,12 @@ export interface ManifestVerification {
   /** null = no signature present; true/false = signature checked. */
   signatureOk: boolean | null;
   signerPublicKey: string | null;
+  /** null = no allowed-signers check performed; true/false = signer authenticated. */
+  signerVerified: boolean | null;
+  /** The principal the signature verified against (allowed-signers check). */
+  signerPrincipal: string | null;
+  /** What this verification actually establishes — reported honestly. */
+  posture: ManifestTrustPosture;
   /** Per-file hash mismatches against the manifest's files list. */
   fileMismatches: Array<{ path: string; expected: string; actual: string | null }>;
   errors: string[];
@@ -218,18 +254,28 @@ export interface ManifestVerification {
 
 /**
  * Verify a written manifest: recompute the content digest, re-hash every
- * listed file, and (when a signature is present) check it with
- * `ssh-keygen -Y check-novalidate`. Full signer-identity verification against
- * an allowed-signers file is the org's CI concern; this checks that the
- * signature is cryptographically valid for the recorded digest.
+ * listed file, check the signature (`ssh-keygen -Y check-novalidate`), and —
+ * when an allowed_signers file is supplied — authenticate the signer identity
+ * (`ssh-keygen -Y verify`). The result's `posture` states exactly what was
+ * established; an unsigned manifest is "integrity-only" (accidental-corruption
+ * detection), never "tamper-evident".
  */
-export function verifyManifestFile(manifestPath: string, repoRoot?: string): ManifestVerification {
+export function verifyManifestFile(
+  manifestPath: string,
+  repoRootOrOptions?: string | VerifyManifestOptions,
+): ManifestVerification {
+  const options: VerifyManifestOptions =
+    typeof repoRootOrOptions === "string" ? { repoRoot: repoRootOrOptions } : (repoRootOrOptions ?? {});
+  const repoRoot = options.repoRoot;
   const result: ManifestVerification = {
     digestOk: false,
     computedDigest: "",
     recordedDigest: null,
     signatureOk: null,
     signerPublicKey: null,
+    signerVerified: null,
+    signerPrincipal: null,
+    posture: "none",
     fileMismatches: [],
     errors: [],
   };
@@ -274,9 +320,10 @@ export function verifyManifestFile(manifestPath: string, repoRoot?: string): Man
       sigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-sigcheck-"));
       const sigFile = path.join(sigDir, "manifest.sig");
       fs.writeFileSync(sigFile, integrity.signature.signature, "utf-8");
+      const namespace = integrity.signature.namespace ?? MANIFEST_SIG_NAMESPACE;
       const check = spawnSync(
         "ssh-keygen",
-        ["-Y", "check-novalidate", "-n", integrity.signature.namespace ?? MANIFEST_SIG_NAMESPACE, "-s", sigFile],
+        ["-Y", "check-novalidate", "-n", namespace, "-s", sigFile],
         // The signed message is the RECORDED digest — a tampered manifest fails
         // the digest comparison above even if its signature self-verifies.
         { input: result.recordedDigest ?? "", encoding: "utf-8", stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
@@ -285,13 +332,67 @@ export function verifyManifestFile(manifestPath: string, repoRoot?: string): Man
       if (!result.signatureOk) {
         result.errors.push(`Signature check failed: ${(check.stderr ?? "").trim().split("\n")[0]}`);
       }
+
+      // Signer authentication against an allowed_signers file — the step that
+      // turns "a valid signature exists" into "the RIGHT party signed it".
+      if (result.signatureOk && options.allowedSignersPath) {
+        const allowedSigners = path.resolve(options.allowedSignersPath);
+        if (!fs.existsSync(allowedSigners)) {
+          result.signerVerified = false;
+          result.errors.push(`allowed_signers file not found: ${allowedSigners}`);
+        } else {
+          let principal = options.signerPrincipal ?? null;
+          if (!principal) {
+            const found = spawnSync(
+              "ssh-keygen",
+              ["-Y", "find-principals", "-f", allowedSigners, "-s", sigFile],
+              { encoding: "utf-8", stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
+            );
+            principal = found.status === 0 ? (found.stdout ?? "").trim().split("\n")[0] || null : null;
+            if (!principal) {
+              result.signerVerified = false;
+              result.errors.push("Signer is not listed in the allowed_signers file (find-principals matched nothing)");
+            }
+          }
+          if (principal) {
+            const verify = spawnSync(
+              "ssh-keygen",
+              ["-Y", "verify", "-f", allowedSigners, "-I", principal, "-n", namespace, "-s", sigFile],
+              { input: result.recordedDigest ?? "", encoding: "utf-8", stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
+            );
+            result.signerVerified = verify.status === 0;
+            result.signerPrincipal = principal;
+            if (!result.signerVerified) {
+              result.errors.push(
+                `Signer authentication failed for principal "${principal}": ${(verify.stderr ?? "").trim().split("\n")[0]}`,
+              );
+            }
+          }
+        }
+      }
     } catch (err) {
       result.signatureOk = false;
       result.errors.push(`ssh-keygen unavailable for signature check: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       if (sigDir) fs.rmSync(sigDir, { recursive: true, force: true });
     }
+  } else if (options.requireSignature) {
+    // Stripping the signature (or never signing) must be a FAILURE when the
+    // verifier expects one. This expectation can only live outside the
+    // manifest — anything inside it can be removed and re-digested.
+    result.signatureOk = false;
+    result.errors.push(
+      "Manifest is UNSIGNED but a signature is required (--require-signed). " +
+      "An unsigned digest detects accidental corruption only — it is not tamper evidence.",
+    );
   }
+
+  // Honest posture: what did this verification actually establish?
+  result.posture =
+    result.recordedDigest === null ? "none"
+    : !integrity?.signature?.signature ? "integrity-only"
+    : result.signatureOk && result.signerVerified === true ? "signed-authenticated"
+    : "signed-unauthenticated";
 
   return result;
 }

@@ -568,6 +568,19 @@ function searchGitHubOrg(org: string): string | null {
 // Scaffold helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Turn a directory name into a valid npm package name for the scaffolded
+ * hub's package.json ("personas" fallback if nothing survives sanitizing).
+ */
+export function sanitizeNpmName(dirName: string): string {
+  const name = dirName
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[._-]+/, "")
+    .replace(/[._-]+$/, "");
+  return name.length > 0 ? name.slice(0, 214) : "personas";
+}
+
 export interface ScaffoldOptions {
   agentTools?: string[];
   primaryAgent?: string;
@@ -631,6 +644,43 @@ export function scaffoldHub(targetDir: string, orgSlug: string, orgDisplayName?:
       ".DS_Store",
       "",
     ].join("\n"), "utf-8");
+  }
+
+  // package.json + package-lock.json
+  //
+  // The hub CI/CD guide has users drop a GitHub Actions workflow into the hub
+  // that runs `actions/setup-node` with `cache: 'npm'` followed by `npm ci`.
+  // Both hard-fail in a repo without a lockfile ("Dependencies lock file is
+  // not found" / "npm ci can only install with an existing package-lock.json"),
+  // so a freshly scaffolded hub must ship a valid manifest + lockfile pair.
+  //
+  // Written deterministically — no `npm` invocation, no network — so the
+  // scaffold works offline. A zero-dependency manifest with a matching
+  // lockfileVersion-3 lockfile is all `npm ci` needs to succeed; the
+  // workflow's `npx agentboot …` steps fetch the CLI themselves, exactly as
+  // documented. If the directory already has its own package.json, we leave
+  // the npm setup entirely alone (writing a lockfile for a manifest we don't
+  // own risks a lockfile/manifest mismatch, which `npm ci` rejects).
+  const pkgPath = path.join(targetDir, "package.json");
+  const lockPath = path.join(targetDir, "package-lock.json");
+  if (!fs.existsSync(pkgPath) && !fs.existsSync(lockPath)) {
+    const pkgName = sanitizeNpmName(path.basename(targetDir));
+    fs.writeFileSync(pkgPath, JSON.stringify({
+      name: pkgName,
+      version: "0.0.0",
+      private: true,
+      description: `AgentBoot personas hub for ${orgDisplayName ?? orgSlug}`,
+    }, null, 2) + "\n", "utf-8");
+    // name/version must match package.json exactly or `npm ci` rejects the pair.
+    fs.writeFileSync(lockPath, JSON.stringify({
+      name: pkgName,
+      version: "0.0.0",
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        "": { name: pkgName, version: "0.0.0" },
+      },
+    }, null, 2) + "\n", "utf-8");
   }
 
   // Initialize git repo if not already one
@@ -803,6 +853,40 @@ function runSync(hubDir: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * Decide whether an existing directory counts as "already has content" for
+ * hub-scaffolding purposes.
+ *
+ * A bare `.git` directory on its own does NOT count. Running `git init` first
+ * (or creating the directory with `git init personas`) is a normal opening
+ * move of the getting-started journey, and `scaffoldHub` fully supports
+ * pre-initialized repos: it skips `git init` when `.git` exists and still
+ * creates the initial commit when the repo has zero commits. The old check
+ * counted `.git` as content, which bounced brand-new users on a freshly
+ * `git init`-ed empty directory into the "that looks like an existing
+ * project — create a personas subdirectory instead?" flow.
+ *
+ * What DOES count: at least one visible (non-dot) entry combined with a
+ * project marker (`.git`, `package.json`, or `src/`) — that shape suggests a
+ * real existing project we should not scaffold into.
+ */
+export function checkHubTargetContent(hubDir: string): {
+  hasExistingContent: boolean;
+  visibleEntryCount: number;
+} {
+  if (!fs.existsSync(hubDir)) {
+    return { hasExistingContent: false, visibleEntryCount: 0 };
+  }
+  const visibleEntries = fs.readdirSync(hubDir).filter(e => !e.startsWith("."));
+  const hasGit = fs.existsSync(path.join(hubDir, ".git"));
+  const hasPackageJson = fs.existsSync(path.join(hubDir, "package.json"));
+  const hasSrc = fs.existsSync(path.join(hubDir, "src"));
+  return {
+    hasExistingContent: visibleEntries.length > 0 && (hasGit || hasPackageJson || hasSrc),
+    visibleEntryCount: visibleEntries.length,
+  };
+}
+
+/**
  * Validate and potentially adjust the hub target directory.
  *
  * If the target directory exists and looks like it already has content (a git
@@ -829,12 +913,7 @@ async function validateHubTarget(initialDir: string): Promise<string> {
 
     // Check if the directory has existing content that suggests it's not an
     // empty directory intended for a new personas repo.
-    const entries = fs.readdirSync(hubDir).filter(e => !e.startsWith(".") || e === ".git");
-    const hasGit = fs.existsSync(path.join(hubDir, ".git"));
-    const hasPackageJson = fs.existsSync(path.join(hubDir, "package.json"));
-    const hasSrc = fs.existsSync(path.join(hubDir, "src"));
-
-    const hasExistingContent = entries.length > 0 && (hasGit || hasPackageJson || hasSrc);
+    const { hasExistingContent, visibleEntryCount } = checkHubTargetContent(hubDir);
 
     if (!hasExistingContent) {
       // Empty or near-empty directory — fine to use directly.
@@ -846,7 +925,7 @@ async function validateHubTarget(initialDir: string): Promise<string> {
     const personasPath = path.join(hubDir, "personas");
 
     console.log(chalk.yellow(
-      `\n  "${dirName}" already has content (${entries.length} items).` +
+      `\n  "${dirName}" already has content (${visibleEntryCount} items).` +
       `\n  That looks like an existing project — the personas repo should be` +
       `\n  a separate sibling repo, not nested inside another project.\n`
     ));

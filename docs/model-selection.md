@@ -77,9 +77,11 @@ For a team of 10 developers with ~5 PRs/day each:
 | Test Data Expert | Haiku | 10 | ~$0.10 |
 | **Total** | | **90** | **~$7.30/day** |
 
-Monthly estimate: ~$165 for 4 personas across a 10-person team.
+Monthly estimate: ~$165 for the four personas in this example across a 10-person team.
+(The stock set also includes a fifth persona, AI Security Reviewer — add a row for it
+if your org enables `/review-ai-security`.)
 
-Use `agentboot cost-estimate` (Phase 4) for projections based on your actual config.
+Use `agentboot cost-estimate` for projections based on your actual config.
 
 ## Escalation Pattern
 

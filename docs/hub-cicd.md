@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npx agentboot validate --strict
@@ -58,7 +58,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npx agentboot build
@@ -70,6 +70,16 @@ jobs:
 **What this does:**
 - On every PR: runs `agentboot validate --strict` to catch errors before merge.
 - On merge to `main`: validates, builds compiled output, and syncs to spoke repos.
+
+> **Hub scaffolded by a pre-0.16 AgentBoot?** Older versions of `agentboot install`
+> did not write a `package.json`/`package-lock.json` pair, and both `npm ci` and
+> `setup-node`'s `cache: 'npm'` hard-fail without a lockfile. If your hub predates
+> v0.16 and has no `package-lock.json`, run `npm install` once and commit the
+> resulting files — or replace `npm ci` with `npm install` in the workflow and drop
+> the `cache: 'npm'` lines. Hubs scaffolded by v0.16+ ship the manifest + lockfile
+> pair, so the workflow above works as-is. To pin AgentBoot itself, add it as an
+> exact-version devDependency — see
+> [Enterprise Operations § Pinned, reproducible installs](enterprise-operations.md#3-pinned-reproducible-installs).
 
 ---
 
