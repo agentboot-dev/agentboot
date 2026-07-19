@@ -73,11 +73,8 @@ Every release provides three independent verification routes:
 Advisories in AgentBoot's dependency tree that are known and deliberately dispositioned
 (rather than silently ignored) are listed here:
 
-- **esbuild ≤0.28.0 — arbitrary file read via the esbuild development server on Windows**
-  (GHSA-g7r4-m6w7-qqqr, low): esbuild reaches AgentBoot transitively via `tsx` (runtime TS
-  execution) and `vitest` (dev). AgentBoot never starts the esbuild development server — the
-  vulnerable code path is not reachable in any AgentBoot workflow. Will be resolved when the
-  upstream dependencies move past the affected range.
+- *(none currently — the previously-dispositioned esbuild advisory, GHSA-g7r4-m6w7-qqqr,
+  was resolved in v0.12.3 by the tsx 4.23.1 upgrade; `npm audit` is clean.)*
 
 ## What AgentBoot's own security model covers
 
