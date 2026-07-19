@@ -13,7 +13,9 @@
  * conformance test fails if one appears.
  */
 
-export const TELEMETRY_SCHEMA_VERSION = 1;
+// v2 (0.17.0): every event gains a `chain` field — a hash-chain link making
+// post-write edits/deletions/reordering of the local log detectable.
+export const TELEMETRY_SCHEMA_VERSION = 2;
 
 export interface TelemetryFieldSpec {
   /** Field data type as emitted. */
@@ -43,6 +45,15 @@ const COMMON_FIELDS: Record<string, TelemetryFieldSpec> = {
     type: "string",
     purpose: "UTC time of the event (ISO-8601)",
     source: "date -u at emission",
+    identifiesPerson: false,
+  },
+  chain: {
+    type: "string",
+    purpose:
+      "Hash-chain link: sha256(previous event's chain + this event's canonical " +
+      "content). Detection, not prevention — see telemetry-sink docs for the " +
+      "honest trust model (signed shipped batches are the tamper-evident control).",
+    source: "computed by the hook at append time; genesis for the first event",
     identifiesPerson: false,
   },
   dev_id: {
@@ -136,7 +147,7 @@ export function buildTelemetryJsonSchema(): {
 
   return {
     $schema: "http://json-schema.org/draft-07/schema#",
-    $id: "https://agentboot.dev/schema/telemetry-event/v1",
+    $id: `https://agentboot.dev/schema/telemetry-event/v${TELEMETRY_SCHEMA_VERSION}`,
     title: "AgentBoot Telemetry Event",
     description:
       "Generated from the canonical telemetry event spec " +
@@ -152,9 +163,10 @@ export function sampleEvents(devIdMode: false | string): Record<string, Record<s
   const dev = devIdMode === false ? "" :
     devIdMode === "hashed" ? "4f4a9…(sha-256 of git email — pseudonymous)" : "dev@example.com";
   const ts = "2026-01-01T00:00:00Z";
+  const chain = "0".repeat(64) + " (illustrative)";
   return {
-    persona_invocation: { event: "persona_invocation", persona_id: "code-reviewer", timestamp: ts, status: "completed", dev_id: dev, schema: TELEMETRY_SCHEMA_VERSION },
-    hook_execution: { event: "hook_execution", persona_id: "code-reviewer", tool_name: "Edit", timestamp: ts, dev_id: dev, schema: TELEMETRY_SCHEMA_VERSION },
-    session_summary: { event: "session_summary", timestamp: ts, dev_id: dev, schema: TELEMETRY_SCHEMA_VERSION },
+    persona_invocation: { event: "persona_invocation", persona_id: "code-reviewer", timestamp: ts, status: "completed", dev_id: dev, schema: TELEMETRY_SCHEMA_VERSION, chain },
+    hook_execution: { event: "hook_execution", persona_id: "code-reviewer", tool_name: "Edit", timestamp: ts, dev_id: dev, schema: TELEMETRY_SCHEMA_VERSION, chain },
+    session_summary: { event: "session_summary", timestamp: ts, dev_id: dev, schema: TELEMETRY_SCHEMA_VERSION, chain },
   };
 }

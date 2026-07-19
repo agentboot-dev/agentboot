@@ -25,6 +25,7 @@ without a row (or a row without a real probe) should be treated as a review bloc
 | 9 | Windows is a gated, tested platform | `windows-latest` matrix leg in `.github/workflows/validate.yml` (required, no `continue-on-error`); `tests/release-workflow.test.ts` pins the absence of the mask | CI-level validation; the beta Windows-adopter pass for live-session behaviors is still open. |
 | 10 | Drift between a spoke and its manifest is detectable | `tests/lib.test.ts` drift suites; `templates/ci/drift-check.yml` | Detects divergence from the last synced manifest; cannot attribute intent (hotfix vs tamper) — see enterprise-operations.md. |
 | 11 | Releases are verifiable end to end | `.github/workflows/release.yml` (npm `--provenance`, SHA-256 checksums + SBOM attached to the release); procedure in SECURITY.md | Verifies artifact ↔ release binding; trusting the release channel itself is the consumer's trust decision. |
+| 12 | Telemetry is tamper-evident once shipped to the org sink; local logs are edit/deletion-detectable | `tests/band-d3.test.ts` (executed edit/delete/reorder detection, batch digest-chain + sequence-gap + rogue-signer rejection); `scripts/lib/telemetry-sink.ts` | Local chain is unkeyed — detects modification, cannot prevent a full consistent rewrite. Tamper evidence requires signed shipped batches; a machine-controlling developer can suppress events before first shipment (bound with an org-controlled ship cadence). No default endpoint exists — the sink is opt-in and org-owned. |
 
 ## Maintenance
 

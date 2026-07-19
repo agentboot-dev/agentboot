@@ -445,17 +445,35 @@ findings:
   "persona_id": "code-reviewer",
   "timestamp": "2026-03-19T14:30:00Z",
   "status": "completed",
-  "dev_id": "a1b2c3d4"
+  "dev_id": "a1b2c3d4",
+  "schema": 2,
+  "chain": "9f2ab6…"
 }
 ```
 
-(`dev_id` is present only when `telemetry.includeDevId` is set; see [Configuration](configuration.md#telemetry).)
+(`dev_id` is present only when `telemetry.includeDevId` is set; `chain` is a hash-chain
+link over the event's own content — integrity metadata, not new information about the
+developer. See [Configuration](configuration.md#telemetry).)
 
-**Note what's absent:** No developer ID. No prompt text. No conversation content.
-No file paths read. The telemetry is about the **persona**, not the developer.
+**Note what's absent:** No developer ID by default. No prompt text. No conversation
+content. No file paths read. The telemetry is about the **persona**, not the developer.
 
-If the org needs to know adoption by team (not individual), the `scope` field
-provides that without identifying who within the team invoked the persona.
+### If the org configures a central sink
+
+By default telemetry is a local file and nothing is transmitted — AgentBoot has no
+default endpoint and never phones home. An organization MAY configure
+`telemetry.sink` (its **own** HTTPS collector); then `agentboot telemetry-ship`
+sends events there in digest-chained, optionally signed batches. Two things
+developers deserve to know, plainly:
+
+- **What ships is the same minimal schema above** — the sink changes where events
+  go, never what they contain. Content-bearing fields remain structurally
+  impossible.
+- **Shipped events are no longer developer-deletable.** That is the feature the
+  org is buying (an audit trail that survives local deletion) and it is a real
+  change from the local-only posture — an org enabling a sink should disclose it
+  to its developers, and the config is visible in the synced
+  `telemetry-sink.json` in every repo, so it is never silent.
 
 ### What Stays Local (Private — Tier 1)
 

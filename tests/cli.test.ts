@@ -2011,7 +2011,7 @@ describe("AB-59/60/63: compliance and audit trail hooks", () => {
 // persona_id on every event and so rejected session_summary events)
 describe("AB-64: telemetry NDJSON schema", () => {
   it("generates telemetry event JSON schema", () => {
-    const schemaPath = path.join(ROOT, "dist", "schema", "telemetry-event.v1.json");
+    const schemaPath = path.join(ROOT, "dist", "schema", "telemetry-event.v2.json");
     expect(fs.existsSync(schemaPath)).toBe(true);
     const schema = JSON.parse(fs.readFileSync(schemaPath, "utf-8"));
     expect(schema.$id).toContain("telemetry-event");

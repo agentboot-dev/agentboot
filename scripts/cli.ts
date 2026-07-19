@@ -2952,7 +2952,10 @@ program
     console.log(chalk.gray(`Config: ${configPath}\n`));
     console.log(`  Enabled:        ${enabled ? chalk.green("yes") : chalk.yellow("no (nothing is emitted)")}`);
     console.log(`  Dev identifier: ${devIdMode === false ? "off (dev_id always empty)" : devIdMode === "hashed" ? "hashed (SHA-256 of git email — PSEUDONYMOUS, not anonymous)" : `${devIdMode} (raw email — identifies the developer)`}`);
-    console.log(`  Log path:       ${t.logPath ?? "~/.agentboot/telemetry.ndjson"} (local file; nothing is transmitted)`);
+    console.log(`  Log path:       ${t.logPath ?? "~/.agentboot/telemetry.ndjson"} (local file${t.sink ? "" : "; nothing is transmitted"})`);
+    if (t.sink) {
+      console.log(`  Org sink:       ${t.sink.url} ${chalk.yellow("(org-configured — batches ship there via `agentboot telemetry-ship`; AgentBoot itself has no default endpoint)")}`);
+    }
     console.log(`  Schema version: ${TELEMETRY_SCHEMA_VERSION}\n`);
 
     console.log(chalk.bold("  Event types and every field they may carry:"));
@@ -2972,6 +2975,147 @@ program
       "  schema — they cannot be emitted. The conformance test (tests/band-b.test.ts)\n" +
       "  executes the generated hook and fails if its output deviates from this schema.\n"
     ));
+  });
+
+// ---- telemetry-ship / telemetry-verify (D3) --------------------------------
+
+program
+  .command("telemetry-ship")
+  .description("Spool hash-chained telemetry events into digest-chained (optionally signed) batches and POST them to the org's configured sink")
+  .option("-c, --config <path>", "path to agentboot.config.json (hub side)")
+  .option("--sink-config <path>", "explicit telemetry-sink.json (spoke side; default: nearest .claude/telemetry-sink.json)")
+  .option("--log <path>", "telemetry log to ship (default: config logPath or ~/.agentboot/telemetry.ndjson)")
+  .option("--spool-only", "build batches but do not POST (spool for a later run)")
+  .action(async (opts) => {
+    const { spoolTelemetry, shipSpool, findSinkConfig, defaultSpoolDir } = await import("./lib/telemetry-sink.js");
+    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+
+    // Resolve config: hub config if present, else the synced sink JSON.
+    let sink = null;
+    let logPath = opts["log"] as string | undefined;
+    let signKeyPath: string | null = null;
+    try {
+      const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
+      const config = loadConfig(configPath);
+      sink = config.telemetry?.sink ?? null;
+      logPath = logPath ?? config.telemetry?.logPath;
+      if (config.sync?.signing?.enabled && config.sync.signing.sshKeyPath && (sink?.sign ?? true)) {
+        signKeyPath = config.sync.signing.sshKeyPath;
+      }
+    } catch { /* no hub config here — spoke side */ }
+    if (!sink) sink = findSinkConfig(opts["sinkConfig"] as string | undefined);
+
+    if (!sink) {
+      console.error(chalk.red("  ✗ No telemetry sink configured — set telemetry.sink in the hub config (there is no default endpoint)."));
+      process.exit(1);
+    }
+    const resolvedLog = (logPath ?? path.join(os.homedir(), ".agentboot", "telemetry.ndjson"))
+      .replace(/^~\//, os.homedir() + "/");
+    const spoolDir = sink.spoolDir ?? defaultSpoolDir();
+
+    console.log(chalk.bold("\n  AgentBoot — telemetry-ship\n"));
+    console.log(chalk.gray(`  Log:   ${resolvedLog}`));
+    console.log(chalk.gray(`  Spool: ${spoolDir}`));
+    console.log(chalk.gray(`  Sink:  ${sink.url} (org-configured)\n`));
+
+    const spool = spoolTelemetry(resolvedLog, spoolDir, {
+      batchSize: sink.batchSize ?? 100,
+      signKeyPath,
+    });
+    console.log(`  Spooled ${spool.eventsSpooled} event(s) into ${spool.batchesWritten} batch(es)${spool.signed ? chalk.green(" [signed]") : ""}`);
+    if (spool.signingError) {
+      console.error(chalk.red(`  ✗ Signing FAILED: ${spool.signingError} — batches written unsigned; fix the key before shipping evidence.`));
+      process.exit(1);
+    }
+
+    if (opts["spoolOnly"]) {
+      console.log(chalk.gray("  --spool-only: not shipping.\n"));
+      return;
+    }
+    const ship = await shipSpool(spoolDir, sink);
+    console.log(`  Shipped ${ship.shipped} batch(es)` + (ship.failed ? chalk.red(` — ${ship.failed} failed (kept in spool for retry)`) : ""));
+    for (const e of ship.errors) console.error(chalk.yellow(`  ⚠ ${e}`));
+    console.log("");
+    process.exit(ship.failed > 0 ? 1 : 0);
+  });
+
+program
+  .command("telemetry-verify")
+  .description("Verify the hash chain of a local telemetry log and/or the digest chain, sequence continuity and signatures of shipped batches")
+  .option("--log <path>", "NDJSON telemetry log to verify")
+  .option("--batches <dir>", "directory of batch files to verify (e.g. the spool's shipped/ dir or the sink's store)")
+  .option("--allowed-signers <path>", "OpenSSH allowed_signers file to authenticate batch signatures against")
+  .option("--signer <principal>", "expected signer principal")
+  .action(async (opts) => {
+    const { verifyTelemetryLog, verifyBatchChain, TELEMETRY_SIG_NAMESPACE } = await import("./lib/telemetry-sink.js");
+    if (!opts["log"] && !opts["batches"]) {
+      console.error(chalk.red("  ✗ Nothing to verify — pass --log and/or --batches."));
+      process.exit(1);
+    }
+    let failed = false;
+    console.log(chalk.bold("\n  AgentBoot — telemetry-verify\n"));
+
+    if (opts["log"]) {
+      const v = verifyTelemetryLog(path.resolve(opts["log"] as string));
+      console.log(`  Log: ${v.lines} line(s) — ${v.chained} chained, ${v.unchained} pre-chain, ${v.forks} fork(s)`);
+      if (v.forks > 0) console.log(chalk.yellow("    forks = concurrent hook writes chaining off the same parent — a warning, not tampering"));
+      for (const f of v.failures) console.log(chalk.red(`    ✗ line ${f.line}: ${f.reason}`));
+      console.log(v.ok
+        ? chalk.green("  ✓ Log chain verifies — no post-write edits, deletions, or reordering detected")
+        : chalk.red("  ✗ Log chain FAILED"));
+      console.log(chalk.gray("    (The chain is unkeyed: it detects modification, it cannot prevent a full consistent rewrite — signed shipped batches are the tamper-evident control.)\n"));
+      failed = failed || !v.ok;
+    }
+
+    if (opts["batches"]) {
+      const dir = path.resolve(opts["batches"] as string);
+      const v = verifyBatchChain(dir);
+      console.log(`  Batches: ${v.batches} — ${v.signed} signed`);
+      if (v.gaps.length > 0) console.log(chalk.red(`    ✗ sequence gap(s): batch ${v.gaps.join(", ")} missing — deleted or never delivered`));
+      for (const f of v.failures) console.log(chalk.red(`    ✗ ${f.file}: ${f.reason}`));
+
+      // Signature verification against a trust root, when requested.
+      if (opts["allowedSigners"]) {
+        const { verifyManifestFile: _unused } = await import("./lib/provenance.js");
+        void _unused;
+        const { spawnSync } = await import("node:child_process");
+        const fsx = await import("node:fs");
+        const osx = await import("node:os");
+        const allowed = path.resolve(opts["allowedSigners"] as string);
+        let sigOk = 0, sigFail = 0;
+        for (const f of fsx.readdirSync(dir).filter((x) => /^batch-\d{8}\.json$/.test(x)).sort()) {
+          const batch = JSON.parse(fsx.readFileSync(path.join(dir, f), "utf-8"));
+          if (!batch.signature?.signature) continue;
+          const tmp = fsx.mkdtempSync(path.join(osx.tmpdir(), "agentboot-batchsig-"));
+          try {
+            const sigFile = path.join(tmp, "b.sig");
+            fsx.writeFileSync(sigFile, batch.signature.signature);
+            let principal = opts["signer"] as string | undefined;
+            if (!principal) {
+              const found = spawnSync("ssh-keygen", ["-Y", "find-principals", "-f", allowed, "-s", sigFile], { encoding: "utf-8", timeout: 10_000 });
+              principal = found.status === 0 ? (found.stdout ?? "").trim().split("\n")[0] : undefined;
+            }
+            const check = principal
+              ? spawnSync("ssh-keygen", ["-Y", "verify", "-f", allowed, "-I", principal, "-n", batch.signature.namespace ?? TELEMETRY_SIG_NAMESPACE, "-s", sigFile], { input: batch.digest ?? "", encoding: "utf-8", timeout: 10_000 })
+              : null;
+            if (check && check.status === 0) sigOk++;
+            else { sigFail++; console.log(chalk.red(`    ✗ ${f}: signature does not verify against allowed_signers`)); }
+          } finally {
+            fsx.rmSync(tmp, { recursive: true, force: true });
+          }
+        }
+        console.log(`    signatures: ${sigOk} authenticated${sigFail ? chalk.red(`, ${sigFail} FAILED`) : ""}`);
+        failed = failed || sigFail > 0;
+      }
+
+      console.log(v.ok
+        ? chalk.green("  ✓ Batch chain verifies — digests intact, sequence continuous")
+        : chalk.red("  ✗ Batch chain FAILED"));
+      console.log("");
+      failed = failed || !v.ok;
+    }
+
+    process.exit(failed ? 1 : 0);
   });
 
 // ---------------------------------------------------------------------------

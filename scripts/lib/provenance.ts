@@ -145,7 +145,7 @@ export interface ManifestIntegrity {
 }
 
 /** Deterministic serialization: recursively sorted object keys. */
-function canonicalize(value: unknown): string {
+export function canonicalize(value: unknown): string {
   if (Array.isArray(value)) {
     return "[" + value.map(canonicalize).join(",") + "]";
   }
@@ -172,6 +172,7 @@ export function computeManifestDigest(manifest: Record<string, unknown>): string
 export function signManifestDigest(
   digest: string,
   sshKeyPath: string,
+  namespace: string = MANIFEST_SIG_NAMESPACE,
 ): { signature: ManifestSignature } | { error: string } {
   const resolvedKey = path.resolve(sshKeyPath);
   if (!fs.existsSync(resolvedKey)) {
@@ -180,7 +181,7 @@ export function signManifestDigest(
   try {
     const sign = spawnSync(
       "ssh-keygen",
-      ["-Y", "sign", "-f", resolvedKey, "-n", MANIFEST_SIG_NAMESPACE, "-"],
+      ["-Y", "sign", "-f", resolvedKey, "-n", namespace, "-"],
       { input: digest, encoding: "utf-8", stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
     );
     if (sign.status !== 0 || !sign.stdout?.includes("BEGIN SSH SIGNATURE")) {
