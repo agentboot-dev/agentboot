@@ -165,7 +165,9 @@ export function aggregateMetrics(events: TelemetryEvent[]): PersonaMetrics[] {
   // Group by persona x scope x model
   const groups = new Map<string, TelemetryEvent[]>();
   for (const event of invocations) {
-    const key = `${event.persona_id}|${event.scope ?? "unknown"}|${event.model ?? "unknown"}`;
+    // UI-15: hook-emitted events (the privacy-first default) carry no scope/model
+    // by design — label the absence honestly instead of a mysterious "unknown".
+    const key = `${event.persona_id || "(no persona id)"}|${event.scope ?? "(not collected)"}|${event.model ?? "(not collected)"}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(event);
   }
@@ -333,12 +335,33 @@ export function printOptimizeReport(
   metrics: PersonaMetrics[],
   recommendations: ModelRecommendation[],
   gaps: CoverageGap[],
-  _options: OptimizeOptions
+  _options: OptimizeOptions,
+  /** UI-15: events that carry cost/token fields vs hook-only events. */
+  eventMix?: { total: number; withCost: number }
 ): void {
   const totalCost = metrics.reduce((s, m) => s + m.totalCostUsd, 0);
   const totalInvocations = metrics.reduce((s, m) => s + m.invocations, 0);
 
   console.log(chalk.bold(`\nAnalyzing ${totalInvocations} invocations...\n`));
+
+  // UI-15: the generated hooks deliberately emit a minimal, content-free schema
+  // (persona id, timestamps, status — no tokens, cost, model, or scope). When
+  // the log is hook-only, a "$0.00 / unknown" report is misleading noise — say
+  // plainly what the data can and cannot support.
+  if (eventMix && eventMix.total > 0 && eventMix.withCost === 0) {
+    console.log(chalk.yellow(
+      "  Note: all " + eventMix.total + " event(s) are hook-emitted (privacy-first schema v1):\n" +
+      "  they carry invocation counts only — token, cost, model, and scope fields are not\n" +
+      "  collected by hooks (see `agentboot telemetry-inspect`). Invocation counts below are\n" +
+      "  real; cost figures and model recommendations REQUIRE API-level telemetry, which is\n" +
+      "  not present in this log. Do not read $0.00 as \"free\".\n"
+    ));
+  } else if (eventMix && eventMix.withCost < eventMix.total) {
+    console.log(chalk.yellow(
+      `  Note: ${eventMix.total - eventMix.withCost} of ${eventMix.total} event(s) are hook-emitted and carry no cost/token/scope fields —\n` +
+      "  cost figures below reflect only the API-level events.\n"
+    ));
+  }
 
   // Cost table
   console.log(chalk.bold("=== Cost Analysis ===\n"));

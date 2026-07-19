@@ -443,6 +443,18 @@ AgentBoot keeps a global registry of hubs (`~/.agentboot/config.json`) so `/ab` 
 resolve a hub from any repo. Override the registry location with the `AGENTBOOT_HOME` environment
 variable (its `.agentboot` directory is used; handy for isolation or a non-default location).
 
+### Hub resolution order (uniform across commands)
+
+Every hub-reading command resolves its hub the same way (UI-14 — previously
+`mcp-server`/`doctor` honored `AGENTBOOT_HUB` while `status`/`drift-check` ignored it):
+
+1. **`--config <path>`** — explicit flag always wins.
+2. **`AGENTBOOT_HUB`** — session-scoped hub override (points at the hub directory).
+3. **Current directory** — you are in your hub.
+4. **Fallback** — build scripts fall back to the package root; read-only commands
+   (`status`) consult the hub **registry** only to *suggest* a hub, never to silently
+   act on one.
+
 ### `agentboot hubs`
 
 List registered hubs.
@@ -579,6 +591,14 @@ Analyze persona telemetry and generate optimization recommendations: aggregated 
 metrics, per-persona **model** recommendations, and coverage-gap analysis. It reads local
 telemetry (`~/.agentboot/telemetry/`), prints a report, and can optionally write an HTML
 report. It does **not** modify `persona.config.json`, and needs no LLM/API provider.
+
+> **What hook telemetry can and cannot feed.** The generated hooks deliberately emit a
+> minimal, content-free schema — persona id, timestamps, status; **no token, cost, model,
+> or scope fields** (see `agentboot telemetry-inspect`). Over hook-only logs, `optimize`
+> reports real invocation counts, labels the absent fields "(not collected)", and states
+> up front that **cost figures and model recommendations require API-level telemetry**
+> (events carrying `cost_usd`/`input_tokens`, e.g. from a wrapper that records API usage).
+> A `$0.00` total over hook events means "not measured", never "free".
 
 ```
 agentboot optimize
