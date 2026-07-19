@@ -735,10 +735,15 @@ The model has three layers, in decreasing order of enforcement strength:
    deterministic — the model may not recognize all violations. But it is active in
    every interaction and costs nothing when not triggered.
 
-3. **Output hook (advisory):** A post-response hook that scans the model's output for
-   compliance violations. This layer can log and warn but **cannot block** — in Claude
-   Code, the Stop hook fires after the response has already rendered to the developer.
-   This is an architectural constraint, not a bug. Document it honestly.
+3. **Output hook (remediation-forcing):** A post-response hook that scans the model's
+   final message (delivered to the Stop hook as `last_assistant_message`, with a
+   transcript-file fallback). What blocking means here, stated precisely: the hook
+   **cannot retract text that has already rendered** to the developer's screen, but with
+   `outputScan.blocking` enabled it can refuse to let the turn end — the model receives
+   the flagged reason and must redact and, where applicable, trigger rotation before it
+   can finish. Without blocking, this layer logs and warns only. The render-then-scan
+   ordering is an architectural constraint of the platform, not a bug. Document it
+   honestly: this is remediation-forcing, not display suppression.
 
 The three layers are complementary. The input hook catches what it can deterministically.
 The instruction catches what the model can recognize. The output hook provides audit

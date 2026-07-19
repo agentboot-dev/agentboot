@@ -34,6 +34,7 @@ import {
   loadConfig,
   agentbootNpxSpec,
 } from "./lib/config.js";
+import { childScopeNames } from "./lib/scope-layout.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import {
   collectHubProvenance,
@@ -856,16 +857,36 @@ function syncRepoTarget(
       !f.relativePath.split("/").includes("managed-settings.d")
     );
 
+  // Child-scope subtrees must be excluded from a parent-scope walk by the
+  // authoritative scope layout, not by the one registered child. Filtering
+  // only `entry.team` leaked every SIBLING team's subtree into this spoke —
+  // a cross-team confidentiality breach the signed manifest then certified.
+  const dropChildScopes = (files: ScopedFile[], parentScopePath: string): ScopedFile[] => {
+    const children = childScopeNames(config, parentScopePath);
+    if (children.length === 0) return files;
+    return files.filter(
+      (f) => !children.some((c) => f.relativePath.startsWith(`${c}/`))
+    );
+  };
+
   const coreFiles = collectScopeFiles(coreDir, "core");
   const groupFiles = [
     ...(groupDir ? collectScopeFiles(groupDir, "group") : []),
-    ...(nodeGroupDir ? dropNodeArtifacts(collectScopeFiles(nodeGroupDir, "group"))
-      // Exclude the team subtree from the group-level collection — it is its own scope.
-      .filter((f) => !(entry.team && f.relativePath.startsWith(`${entry.team}/`))) : []),
+    ...(nodeGroupDir
+      ? dropChildScopes(
+          dropNodeArtifacts(collectScopeFiles(nodeGroupDir, "group")),
+          entry.group!,
+        )
+      : []),
   ];
   const teamFiles = [
     ...(teamDir ? collectScopeFiles(teamDir, "team") : []),
-    ...(nodeTeamDir ? dropNodeArtifacts(collectScopeFiles(nodeTeamDir, "team")) : []),
+    ...(nodeTeamDir
+      ? dropChildScopes(
+          dropNodeArtifacts(collectScopeFiles(nodeTeamDir, "team")),
+          `${entry.group}/${entry.team}`,
+        )
+      : []),
   ];
 
   if (coreFiles.length === 0) {

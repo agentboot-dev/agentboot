@@ -91,6 +91,62 @@ export const PROHIBITED_TELEMETRY_FIELDS = [
   "file_path", "filePath", "path", "diff", "patch", "code", "text", "body",
 ];
 
+/**
+ * Build the machine-readable JSON Schema (draft-07) for telemetry events —
+ * generated from TELEMETRY_EVENTS so it cannot contradict what the hooks
+ * actually emit.
+ *
+ * v0.16.0 hardening: dist/schema/telemetry-event.v1.json used to be a second,
+ * hand-written schema that required `persona_id` on every event (rejecting the
+ * product's own `session_summary` events) and permitted fields the hooks never
+ * emit. There is exactly one telemetry contract; this derives the validator
+ * artifact from it.
+ */
+export function buildTelemetryJsonSchema(): {
+  $schema: string;
+  $id: string;
+  title: string;
+  description: string;
+  oneOf: Array<{
+    type: string;
+    properties: Record<string, unknown>;
+    required: string[];
+    additionalProperties: boolean;
+  }>;
+} {
+  const branches = Object.entries(TELEMETRY_EVENTS).map(([eventName, spec]) => {
+    const properties: Record<string, unknown> = {};
+    for (const [field, fieldSpec] of Object.entries(spec.fields)) {
+      properties[field] =
+        field === "event"
+          ? { const: eventName, description: fieldSpec.purpose }
+          : field === "schema"
+            ? { const: TELEMETRY_SCHEMA_VERSION, description: fieldSpec.purpose }
+            : { type: fieldSpec.type, description: fieldSpec.purpose };
+    }
+    return {
+      type: "object",
+      properties,
+      // Hooks emit EXACTLY these shapes — every declared field is present on
+      // every event (dev_id is "" when disabled), and nothing else is allowed.
+      required: Object.keys(spec.fields),
+      additionalProperties: false,
+    };
+  });
+
+  return {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    $id: "https://agentboot.dev/schema/telemetry-event/v1",
+    title: "AgentBoot Telemetry Event",
+    description:
+      "Generated from the canonical telemetry event spec " +
+      "(scripts/lib/telemetry-schema.ts). Every event the generated hooks " +
+      "emit validates against exactly one branch; content-carrying fields " +
+      "are structurally impossible (additionalProperties: false).",
+    oneOf: branches,
+  };
+}
+
 /** Build one illustrative sample event per type (for `telemetry-inspect`). */
 export function sampleEvents(devIdMode: false | string): Record<string, Record<string, unknown>> {
   const dev = devIdMode === false ? "" :
