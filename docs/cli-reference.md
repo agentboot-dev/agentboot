@@ -248,6 +248,29 @@ This is an **LLM-powered command** — it uses `claude -p` to classify content.
 Requires an active Claude Code login. See [concepts](./concepts.md#llm-and-deterministic-commands)
 for the command classification model.
 
+### Org-scale sweeps and cross-repo dedup
+
+`import --parent` scans every repo under a directory in one sweep. When the same
+content lives in multiple repos — the classic "identical boilerplate in 16 repos"
+problem — the sweep converges it onto **one promoted org artifact** instead of
+importing N copies:
+
+- The first repo's copy is planned as `create`; later copies of the same artifact
+  are planned as `merge`. The plan and apply output list each promotion as
+  `<artifact> ← repoA, repoB`.
+- **Duplicate content is never re-appended and never overwritten.** A later copy
+  whose content matches records its repo in the artifact's frontmatter
+  (`additional_sources:`) and counts as *Skipped*; a later copy with **distinct**
+  content under the same name is appended and counts as *Updated*.
+- A copy matching an artifact **already in the hub** (from an earlier sweep) is
+  skipped, but its repo is still recorded as a source — re-running the sweep
+  across the fleet accretes provenance instead of losing it.
+- Repo-specific content ("residuals") imports normally, attributed to its repo.
+
+Every imported artifact carries `source:` (first contributing repo) and, when
+promoted, `additional_sources:` in its frontmatter — so "which repos rely on
+this rule" stays answerable from the artifact itself.
+
 ---
 
 ## `agentboot add <type> <name>`

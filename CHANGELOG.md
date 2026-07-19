@@ -9,6 +9,39 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-18
+
+Org-scale import with cross-repo dedup — the "same boilerplate in 16+ repos"
+problem. A multi-repo import sweep (`import --parent`) now converges shared
+content onto **one promoted org artifact** carrying provenance from every
+contributing repo.
+
+### Added
+- **Cross-repo promotion**: when 2+ repos contribute the same artifact in one
+  sweep, the plan labels later copies `merge` (new whole-file action), the
+  staging file records `cross_repo_promotions`, and the CLI reports
+  `<artifact> ← repoA, repoB` at plan and apply time.
+- **Multi-source provenance everywhere**: the frontmatter attribution model
+  (`source:` + `additional_sources:`) introduced for section merges in 0.12.x
+  now applies to whole-file imports and to hub-duplicate skips — a skipped
+  duplicate still records the contributing repo on the existing artifact when
+  the content actually matches.
+- `Updated:` counter in the `import --parent --apply` summary for
+  distinct-content merges.
+
+### Fixed
+- **Silent last-repo-wins overwrite eliminated**: two repos importing the same
+  trait/rule/persona slug previously both planned `create` and the second
+  write clobbered the first — content and provenance of earlier repos was
+  dropped. Both apply paths (whole-file and LLM classification) now never
+  overwrite an existing artifact: duplicate content is a provenance-only
+  update; distinct content under the same slug is appended and honestly
+  counted as an update.
+- Repo-name attribution now derives correctly for content under `.github/`,
+  `.cursor/`, and top-level `skills/` layouts (previously only `.claude/` was
+  stripped, so a Copilot instructions file attributed to `.github`), and is
+  Windows-path-safe.
+
 ## [0.12.4] — 2026-07-18
 
 ### Fixed

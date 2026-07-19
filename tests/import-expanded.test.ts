@@ -1240,7 +1240,9 @@ describe("Security: applyWholeFileImports hardening", () => {
     }];
 
     const result = applyWholeFileImports(imports, hubPath);
-    expect(result.created).toBe(1);
+    // D1: appending into an existing artifact is an update, not a create
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(1);
 
     const content = fs.readFileSync(
       path.join(hubPath, "core/personas/my-agent/SKILL.md"), "utf-8"
