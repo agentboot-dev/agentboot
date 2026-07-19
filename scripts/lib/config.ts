@@ -53,6 +53,13 @@ export interface AgentBootConfig {
       branchPrefix?: string;
       titleTemplate?: string;
     };
+    /** D6: SSH-sign the sync manifest digest (`ssh-keygen -Y sign`). The key
+     * path resolves relative to the hub config. A configured-but-failing
+     * signer is a sync ERROR — the hub never silently ships unsigned. */
+    signing?: {
+      enabled?: boolean;
+      sshKeyPath?: string;
+    };
   };
   claude?: {
     hooks?: Record<string, unknown>;
@@ -666,6 +673,18 @@ export function loadConfig(configPath: string): AgentBootConfig {
   }
   if (parsed.sync?.targetDir !== undefined && typeof parsed.sync.targetDir !== "string") {
     throw new Error('"sync.targetDir" must be a string');
+  }
+  if (parsed.sync?.signing !== undefined) {
+    const signing = parsed.sync.signing as Record<string, unknown>;
+    if (signing["enabled"] !== undefined && typeof signing["enabled"] !== "boolean") {
+      throw new Error('"sync.signing.enabled" must be a boolean');
+    }
+    if (signing["sshKeyPath"] !== undefined && typeof signing["sshKeyPath"] !== "string") {
+      throw new Error('"sync.signing.sshKeyPath" must be a string');
+    }
+    if (signing["enabled"] === true && !signing["sshKeyPath"]) {
+      throw new Error('"sync.signing.enabled" requires "sync.signing.sshKeyPath"');
+    }
   }
 
   // Reject path-type fields containing traversal segments

@@ -164,6 +164,8 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 | `sync.pr.enabled` | boolean | `false` | Open a PR per repo instead of writing directly (requires the `gh` CLI). |
 | `sync.pr.branchPrefix` | string | `agentboot/sync-` | Branch name prefix for sync PRs. |
 | `sync.pr.titleTemplate` | string | — | PR title template. |
+| `sync.signing.enabled` | boolean | `false` | SSH-sign the sync manifest digest (`ssh-keygen -Y sign`). Requires `sshKeyPath`. A configured-but-failing signer is a sync **error** — the hub never silently ships unsigned. |
+| `sync.signing.sshKeyPath` | string | — | Path to the SSH private key (relative paths resolve against the hub config). Verify with `agentboot verify-manifest`. |
 
 ```jsonc
 {
