@@ -9,6 +9,84 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-19
+
+Hardened assurance — an adversarial audit of our own enforcement claims, then a
+release that fixes everything it found. The recurring defect class was
+"assurance artifact claims more than its mechanism delivers"; this release
+retires the class structurally, not just the instances.
+
+### Fixed
+- **Output-scan Stop hook read a payload field that does not exist** (`response`)
+  and therefore scanned the empty string on every invocation while documented
+  as blocking. It now reads `last_assistant_message` (the field the platform
+  actually sends), falls back to extracting the last assistant message from the
+  JSONL transcript, and its hook binding is synchronous so a blocking decision
+  can actually be delivered. Conformance probes now use the real payload shape
+  (they previously probed the same phantom field, so the no-op tested green).
+- **Sibling-scope content leaked into every spoke**: the parent-scope sync walk
+  excluded only the registered team's subtree, so every *other* team's content
+  shipped to every repo in the group — and the signed manifest certified it.
+  Parent-scope walks now exclude all child scopes via the new scope-layout
+  SSOT; a two-team regression test proves the repro catches the old behavior.
+- **The published telemetry JSON Schema rejected the product's own events**
+  (`session_summary` lacked the schema's required `persona_id`) and permitted
+  fields the hooks never emit. The schema artifact is now generated from the
+  canonical event spec — one contract, `additionalProperties: false`.
+- **Secret scan covered a fraction of the compiler input surface**: a bare AWS
+  key in a gotcha, instruction, or scope layout passed "✓ Secret scan" and
+  synced to spokes in cleartext. The scan now enumerates the full input
+  surface via the scope-layout SSOT (core, instructions, gotchas, lexicon,
+  all scope layouts, domains; .yaml included).
+- **`--adopt-existing` destroyed bespoke root files**: AGENTS.md, .cursorrules
+  and GEMINI.md are now archived to `.agentboot-archive/` before overwrite,
+  like the rest of the managed root artifacts.
+- **First-run journey breaks**: a freshly `git init`-ed empty directory no
+  longer trips the install wizard; the scaffold emits a deterministic
+  package.json + package-lock.json so the documented hub CI (`npm ci`) works;
+  `import --url` accepts GitHub `/raw/` links and rebuilds repo-clone URLs
+  from validated components (allowlist strengthened); the marketplace default
+  channel points at a repository that exists; doctor's Node floor agrees with
+  `engines` (>=22).
+- **SBOM omitted the runtime tsx→esbuild subtree** (29 of 58 production
+  packages) due to npm's any-dev-edge filtering — vite's peerDependencies
+  poisoned the prod nodes. SBOMs are now generated from a prod-only lockfile
+  resolution, with a completeness guard that fails the release on any missing
+  production package.
+- **Windows CI leg was required yet `continue-on-error`** — failures were
+  masked. The mask is removed; Windows is a true gate.
+
+### Added
+- **`verify-manifest` tamper protection**: `--require-signed` makes a missing
+  signature a failure (the only defense against signature stripping);
+  `--allowed-signers`/`--signer` authenticate the signer identity against an
+  OpenSSH allowed_signers trust root; output states the honest trust posture
+  (integrity-only / signed-unauthenticated / signed-authenticated) and the
+  command exits non-zero on any failed dimension.
+- **Assurance-claim register** (`docs/assurance-claims.md`): every public
+  enforcement/integrity/coverage claim maps to the executable probe that
+  verifies it, with an honest limits column; CI fails if a referenced probe
+  disappears. New public assurance claims require a register row.
+- **Scope-layout SSOT** (`scripts/lib/scope-layout.ts`): one authority for
+  the hub content surface and scope-tree children, used by sync and validate.
+
+### Changed
+- **Publishing is decoupled from merging**: a release now happens only when a
+  merged PR deliberately bumps `package.json` past the latest tag; all other
+  merges (including dependency bumps) land silently with no release. The
+  release workflow gained a concurrency group, checks out the exact triggering
+  merge commit, no longer pushes a bot version-bump commit, and fails loudly
+  on tag collision. Tool installs inside CI gates are pinned exact.
+- Docs truth-up across README (version-agnostic Beta status, 5 personas),
+  getting-started (Node 22+, canonical team-scope layout, git prerequisites),
+  migration (honest per-version behavior-changes list for 0.12→0.15),
+  prompt-guide (no phantom HTTP telemetry endpoint — telemetry is a local
+  file), enterprise-operations (de-staled, linked into the sidebar, covers
+  verify-manifest/conformance/SBOM), and blocking semantics stated precisely
+  everywhere (remediation-forcing, not display suppression).
+- Dependabot vulnerability alerts + automated security fixes enabled for the
+  repository.
+
 ## [0.15.0] — 2026-07-18
 
 Tested enforcement — the platform capability matrix is now an empirically
