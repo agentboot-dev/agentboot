@@ -82,6 +82,14 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude plugin validate ./dist/plugin
 
+      # D2: enforcement conformance — execute the compiled hook scripts with
+      # crafted inputs (clean / secret canary / malformed / oversized) and fail
+      # the build if observed behavior diverges from the declared enforcement
+      # level. Also writes dist/<platform>/enforcement-manifest.json.
+      - name: Enforcement conformance (hook behavior)
+        shell: bash
+        run: npx tsx scripts/cli.ts conformance
+
       - name: Run tests
         run: npm test
 
