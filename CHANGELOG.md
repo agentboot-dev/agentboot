@@ -9,6 +9,24 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-07-18
+
+Dependency triage (dependabot batch #45–54) + CI robustness.
+
+### Changed
+- **Dependencies updated**: commander 15, tsx 4.23.1, @inquirer/prompts 8.5.2;
+  GitHub Actions checkout/setup-node → v7, upload-pages-artifact/deploy-pages → v5
+  (SHA-pinned, incl. the reusable CI workflow and the drift-check template).
+  `npm audit` is now **clean** — the tsx bump resolved the last (esbuild, low)
+  advisory, closing out the SECURITY.md disposition.
+- **Deliberately held with dependabot ignores** (documented in dependabot.yml):
+  js-yaml 5 (breaks YAML block-scalar parsing in the behavioral test-runner),
+  TypeScript 6/7 (toolchain migration, failed typecheck), @types/node >22 (types
+  track the supported runtime), release-drafter 7 (undocumented breaking changes
+  in a component that gates the release pipeline).
+- **CI flake fix**: vitest testTimeout raised to 20s — the subprocess-spawning
+  integration tests hit the 5s default three times today on slow Windows runners.
+
 ## [0.12.2] — 2026-07-18
 
 Field-report fixes (fifth wave, UI-14..UI-16) — resolution consistency, telemetry honesty,
