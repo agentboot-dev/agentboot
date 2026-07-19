@@ -59,9 +59,9 @@ export class ClaudeCodeProvider implements LLMProvider {
 
   isAvailable(): boolean {
     try {
-      const version = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      const version = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
       if (version.status !== 0) return false;
-      const auth = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      const auth = spawnSync("claude", ["auth", "status"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
       return auth.status === 0;
     } catch {
       return false;
@@ -70,7 +70,7 @@ export class ClaudeCodeProvider implements LLMProvider {
 
   unavailableReason(): string {
     try {
-      const version = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+      const version = spawnSync("claude", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 });
       if (version.status !== 0) return "Claude Code is not installed. Install from https://claude.ai/code";
     } catch {
       return "Claude Code is not installed. Install from https://claude.ai/code";
