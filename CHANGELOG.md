@@ -9,6 +9,32 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-07-18
+
+Field-report fixes (fifth wave, UI-14..UI-16) — resolution consistency, telemetry honesty,
+and the org-scale import sharp edge.
+
+### Fixed
+- **One hub-resolution order, applied uniformly** (UI-14): `--config` > `AGENTBOOT_HUB` >
+  cwd > fallback. The env var was honored by `mcp-server`/`doctor` but ignored by
+  `status`, `drift-check`, and other hub commands, so an exported AGENTBOOT_HUB session
+  got answers from a stale registry entry. Ten CLI sites unified via one resolver; the
+  order is documented in the CLI reference. Read-only commands consult the registry only
+  to SUGGEST a hub, never to silently act on one.
+- **`optimize` is honest about hook-only telemetry** (UI-15): hook events deliberately
+  carry no token/cost/model/scope fields — optimize now labels them "(not collected)"
+  instead of "unknown", and when the log is hook-only it states up front that invocation
+  counts are real but cost figures and model recommendations REQUIRE API-level telemetry
+  ("do not read $0.00 as free"). Documented in the CLI reference.
+- **Import no longer silently duplicates content into an existing artifact** (UI-16): a
+  merge into an existing same-name artifact previously appended unconditionally — even
+  verbatim-identical boilerplate — reported it as "Created", and dropped the second
+  repo's provenance. Now duplicate content is detected (whitespace/header-insensitive)
+  and skipped, the additional repo is recorded in `additional_sources:` frontmatter
+  (multi-source attribution), distinct content appends are labeled honestly, and the
+  summary reports Created / Updated / Skipped separately. This was the sharp edge of
+  org-scale import: N repos sharing boilerplate compounded a duplicate on every import.
+
 ## [0.12.1] — 2026-07-18
 
 Field-report fixes (fourth wave, UI-10..UI-13) — /ab honesty and first-run UX.

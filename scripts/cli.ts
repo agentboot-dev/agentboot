@@ -31,7 +31,7 @@ import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 
@@ -387,7 +387,7 @@ program
     }
     const { installUserLevel } = await import("./lib/user-scope.js");
     const cwd = process.cwd();
-    const configPath = path.join(cwd, "agentboot.config.json");
+    const configPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
     const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
     if (!fs.existsSync(distCore)) {
@@ -992,7 +992,7 @@ program
     if (!isJson) console.log(chalk.cyan("Configuration"));
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
 
     if (fs.existsSync(configPath)) {
       ok(`agentboot.config.json found`);
@@ -1396,7 +1396,7 @@ program
     } = await import("./lib/test-runner.js");
 
     const cwd = process.cwd();
-    const configPath = path.join(cwd, "agentboot.config.json");
+    const configPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : null;
     const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
 
@@ -1513,7 +1513,7 @@ program
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
       // UI-13: "run install" is a dead end (and wrong) when this is a synced
@@ -1649,7 +1649,7 @@ program
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
       console.error(chalk.red("No agentboot.config.json found."));
@@ -2110,7 +2110,7 @@ program
       // Check all repos from repos.json
       const configPath = globalOpts.config
         ? path.resolve(globalOpts.config)
-        : path.join(cwd, "agentboot.config.json");
+        : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
       const config = loadConfig(configPath);
       const reposPath = config.sync?.repos ? path.resolve(path.dirname(configPath), config.sync.repos) : path.join(path.dirname(configPath), "repos.json");
       let repos: Array<{ path: string; label?: string }> = [];
@@ -2144,7 +2144,7 @@ program
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const hubRoot = path.dirname(configPath);
 
     const report = runAudit(hubRoot);
@@ -2246,7 +2246,7 @@ program
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
       console.error(chalk.red("No agentboot.config.json found."));
@@ -2346,7 +2346,7 @@ program
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
       console.error(chalk.red("No agentboot.config.json found. Run `agentboot install`."));
@@ -2674,7 +2674,7 @@ program
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
-      : path.join(cwd, "agentboot.config.json");
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
 
     if (!fs.existsSync(configPath)) {
       console.error(chalk.red("No agentboot.config.json found. Run `agentboot install`."));
@@ -3077,7 +3077,12 @@ program
     const knownScopes = metrics.map((m: any) => m.scope).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
     const gaps = analyzeCoverage(metrics, enabledPersonas, knownScopes);
     if (opts.json) { console.log(JSON.stringify({ metrics, recommendations, gaps }, null, 2)); return; }
-    printOptimizeReport(metrics, recommendations, gaps, {});
+    // UI-15: tell the report how many events actually carry cost/token fields
+    const eventMix = {
+      total: events.length,
+      withCost: events.filter((e: any) => e.cost_usd !== undefined || e.input_tokens !== undefined).length,
+    };
+    printOptimizeReport(metrics, recommendations, gaps, {}, eventMix);
     if (opts.report) {
       const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"));
       const html = generateHtmlReport(metrics, recommendations, gaps, {}, pkg.version);
