@@ -90,6 +90,14 @@ jobs:
         if: steps.version.outputs.release == 'true'
         run: npm ci
 
+      # Required by the test suite (pipeline tests create commits in temp
+      # repos), not for any bot commit — the workflow itself never commits.
+      - name: Configure git identity (required by tests)
+        if: steps.version.outputs.release == 'true'
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@agentboot.dev"
+
       - name: Build and test
         if: steps.version.outputs.release == 'true'
         run: npm run validate && npm run build && npm test
