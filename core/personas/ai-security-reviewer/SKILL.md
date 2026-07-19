@@ -159,6 +159,16 @@ LLM05 Supply Chain Vulnerabilities) — where RAG/vector stores are in scope
 
 ## Output Format
 
+### Persist the findings (always)
+
+Before presenting results, write the complete JSON findings object to
+`.claude/reviews/review-ai-security-<UTC timestamp, e.g. 2026-07-18T2030Z>.json` in the repo root
+(create the directory if needed), then tell the user the path. A review that exists
+only in session scrollback cannot feed CI gates, PR comments, or telemetry — the file
+is the durable artifact; the rendered summary is a view of it. Organizations can change
+the location by editing this persona in their hub.
+
+
 Produce a single JSON object. Do not wrap in markdown fences unless the caller
 explicitly asks for formatted output.
 
