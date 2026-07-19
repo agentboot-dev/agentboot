@@ -186,8 +186,9 @@ describe("D2: enforcement manifests in artifacts", () => {
 
   it("CLI: agentboot conformance --format json exits 0 with no failed platforms", () => {
     const cli = path.join(ROOT, "scripts", "cli.ts");
-    const r = spawnSync(TSX, [cli, "conformance", "--format", "json"], {
-      cwd: hub, encoding: "utf-8", timeout: 120_000, stdio: "pipe",
+    // shell: true — the extensionless tsx shim is not directly spawnable on Windows
+    const r = spawnSync(`"${TSX}" "${cli}" conformance --format json`, {
+      cwd: hub, shell: true, encoding: "utf-8", timeout: 120_000, stdio: "pipe",
       env: { ...process.env, AGENTBOOT_HUB: hub },
     });
     expect(r.status, r.stderr).toBe(0);
