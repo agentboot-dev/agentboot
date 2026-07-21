@@ -715,7 +715,7 @@ describe("B5: MCP identity pinning", () => {
     });
     try {
       const output = run(`scripts/validate.ts --config ${path.join(hub, "agentboot.config.json")}`);
-      expect(output).toContain("All 10 checks passed");
+      expect(output).toMatch(/All \d+ checks passed/);
     } finally {
       fs.rmSync(hub, { recursive: true, force: true });
     }

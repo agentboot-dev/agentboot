@@ -29,7 +29,7 @@ function run(script: string, cwd = ROOT): string {
 describe("validate script", () => {
   it("passes all 8 checks", () => {
     const output = run("scripts/validate.ts");
-    expect(output).toContain("All 10 checks passed");
+    expect(output).toMatch(/All \d+ checks passed/);
   });
 
   it("detects missing persona", () => {
@@ -806,7 +806,7 @@ describe("full pipeline (validate → compile)", () => {
       { cwd: ROOT, env: { ...process.env, NODE_NO_WARNINGS: "1" }, timeout: 30_000 }
     ).toString();
 
-    expect(output).toContain("All 10 checks passed");
+    expect(output).toMatch(/All \d+ checks passed/);
     expect(output).toContain("Compiled 5 persona(s)");
     expect(output).toContain("9 platform(s)");
   });

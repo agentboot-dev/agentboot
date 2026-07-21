@@ -9,6 +9,46 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-21
+
+Industry-bar gap closures, driven by the quarterly competitive re-survey:
+MCP rug-pull defense, standards-shaped attestation, and AGENTS.md as a
+first-class import input.
+
+### Added
+- **MCP digest pinning (`mcp.approved[].toolsDigest`)**: identity/version pins
+  cannot stop a mutable server changing its tool descriptions under a fixed
+  name — the digest pin (sha256 over canonicalized `tools/list` definitions)
+  can. `agentboot mcp-pin --write` records pins (per-tool hashes in a sidecar
+  for actionable diffs); `agentboot mcp-verify` re-fetches definitions (stdio
+  and https transports, no SDK dependency) and names the added/removed/changed
+  tools on mismatch — run it in CI or before rollout. Pins compile into
+  `mcp-pins.json` in every platform core dir so spokes can verify without the
+  hub (`mcp-verify --pins .claude/mcp-pins.json`). `mcp.approved[].registry`
+  records reference provenance (official-registry / vetted / vendor /
+  unvetted); validate warns on unpinned or provenance-less approved servers.
+- **Optional in-toto/DSSE attestation (`sync.signing.emitInToto`)**: signed
+  syncs can emit `.agentboot-manifest.intoto.json` — an in-toto v1 Statement
+  (subjects = per-file digests + the manifest digest; predicate = hub
+  provenance incl. git context) in a DSSE envelope signed over the PAE bytes
+  with the hub SSH key. `verify-manifest` verifies statement shape, subject/
+  manifest agreement, the SSHSIG, and signer identity. Posture stated
+  honestly in the envelope itself: standard predicate + SSHSIG, NOT a
+  Sigstore bundle (no transparency log, no CI-identity certificate);
+  Sigstore keyless is the documented next step.
+- **AGENTS.md import discovery, root and nested**: the scanner now walks the
+  repo for nested AGENTS.md files (the spec's monorepo pattern), skipping
+  vendored/build trees — previously the industry-standard instruction file
+  was not auto-discovered at all.
+
+### Fixed
+- `--config` was silently ignored by `telemetry-inspect`, `telemetry-ship`,
+  and `evidence-pack` (the program-level `-c/--config` global captured the
+  value; the commands fell back to cwd discovery). All commands now read the
+  merged option view.
+- Assurance-claim register rows updated (attestation limits on row 3; new
+  row 13 for MCP rug-pull detection with honest limits).
+
 ## [0.18.0] — 2026-07-19
 
 Close-out sweep: the evidence surface for auditors, AGENTS.md as a first-class

@@ -3676,6 +3676,23 @@ function main(): void {
 
   generateTelemetrySchema(distPath);
 
+  // v0.19.0: MCP digest pins — compiled into every platform's core dir so a
+  // SPOKE (or its CI) can run the use-time rug-pull check without the hub
+  // config: `agentboot mcp-verify --pins .claude/mcp-pins.json`. Only emitted
+  // when the org has an approved-server list; entries carry identity pins,
+  // toolsDigest, and registry provenance verbatim.
+  if ((config.mcp?.approved?.length ?? 0) > 0) {
+    const pinsJson = JSON.stringify({ approved: config.mcp!.approved }, null, 2) + "\n";
+    for (const platform of outputFormats) {
+      const coreDir = path.join(distPath, platform, "core");
+      if (fs.existsSync(coreDir)) {
+        fs.writeFileSync(path.join(coreDir, "mcp-pins.json"), pinsJson, "utf-8");
+      }
+    }
+    const pinned = config.mcp!.approved!.filter((s) => s.toolsDigest).length;
+    log(chalk.gray(`  → MCP pins emitted (${pinned}/${config.mcp!.approved!.length} servers digest-pinned)`));
+  }
+
   // D3: org telemetry sink config — compiled into every platform's core dir so
   // sync delivers it to spokes (org-managed, not per-developer). The shipper
   // (`agentboot telemetry-ship`) discovers it from the synced config dir.

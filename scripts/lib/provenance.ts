@@ -463,3 +463,257 @@ export function buildSyncPrBody(opts: SyncPrBodyOptions): string {
   lines.push("");
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// v0.19.0: standards-shaped attestation — in-toto Statement in a DSSE envelope
+// ---------------------------------------------------------------------------
+//
+// Honest posture, stated once and linked from every consumer: this gives
+// policy tooling a STANDARD predicate (in-toto v1 subjects + a typed
+// predicate carrying hub provenance incl. git context) and signs the DSSE
+// PAE bytes with the hub's SSH key (SSHSIG). It is verifiable with
+// `agentboot verify-manifest` or ssh-keygen against an allowed_signers trust
+// root. It is NOT a Sigstore bundle: no transparency log, no CI-identity
+// certificate — "signed, with a standard predicate", not full supply-chain
+// attestation. Sigstore keyless emission is the documented next step.
+
+export const INTOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
+export const INTOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
+export const MANIFEST_PREDICATE_TYPE = "https://agentboot.dev/attestation/sync-manifest/v1";
+export const ATTESTATION_SIG_NAMESPACE = "agentboot-attestation";
+
+export interface InTotoStatement {
+  _type: typeof INTOTO_STATEMENT_TYPE;
+  subject: Array<{ name: string; digest: { sha256: string } }>;
+  predicateType: typeof MANIFEST_PREDICATE_TYPE;
+  predicate: {
+    provenance: HubProvenance;
+    manifest_digest: string;
+    scope: unknown;
+    synced_at: unknown;
+  };
+}
+
+export interface DsseEnvelope {
+  payloadType: typeof INTOTO_PAYLOAD_TYPE;
+  /** base64 of the JSON-serialized in-toto statement. */
+  payload: string;
+  signatures: Array<{
+    /** The signer's public key line, for identification (not a trust root). */
+    keyid: string;
+    /** base64 of the armored SSHSIG block over the DSSE PAE bytes. */
+    sig: string;
+  }>;
+  /** Non-standard extension declaring the signature format honestly. */
+  x_agentboot: {
+    signature_format: "sshsig";
+    namespace: typeof ATTESTATION_SIG_NAMESPACE;
+    note: string;
+  };
+}
+
+/** DSSE Pre-Authentication Encoding: "DSSEv1 SP len(type) SP type SP len(body) SP body". */
+export function dssePae(payloadType: string, payload: Buffer): Buffer {
+  return Buffer.concat([
+    Buffer.from(`DSSEv1 ${payloadType.length} ${payloadType} ${payload.length} `, "utf-8"),
+    payload,
+  ]);
+}
+
+/** Build the in-toto statement for a written manifest object. */
+export function buildInTotoStatement(manifest: Record<string, unknown>): InTotoStatement {
+  const files = (manifest["files"] ?? []) as Array<{ path: string; hash: string }>;
+  const integrity = manifest["integrity"] as ManifestIntegrity | undefined;
+  const provenance = (manifest["provenance"] ?? {}) as HubProvenance;
+  const manifestDigest = integrity?.manifest_digest ?? computeManifestDigest(manifest);
+  return {
+    _type: INTOTO_STATEMENT_TYPE,
+    subject: [
+      ...files.map((f) => ({ name: f.path, digest: { sha256: f.hash } })),
+      { name: ".agentboot-manifest.json", digest: { sha256: manifestDigest } },
+    ],
+    predicateType: MANIFEST_PREDICATE_TYPE,
+    predicate: {
+      provenance,
+      manifest_digest: manifestDigest,
+      scope: manifest["scope"] ?? null,
+      synced_at: manifest["synced_at"] ?? null,
+    },
+  };
+}
+
+/**
+ * Build and SSH-sign the DSSE envelope for a manifest. Returns the envelope
+ * or an error (never throws) — a configured-but-failing attestation signer
+ * surfaces loudly, like manifest signing.
+ */
+export function buildDsseEnvelope(
+  manifest: Record<string, unknown>,
+  sshKeyPath: string,
+): { envelope: DsseEnvelope } | { error: string } {
+  const statement = buildInTotoStatement(manifest);
+  const payload = Buffer.from(JSON.stringify(statement), "utf-8");
+  const pae = dssePae(INTOTO_PAYLOAD_TYPE, payload);
+
+  const resolvedKey = path.resolve(sshKeyPath);
+  if (!fs.existsSync(resolvedKey)) return { error: `Attestation signing key not found: ${resolvedKey}` };
+  try {
+    const sign = spawnSync(
+      "ssh-keygen",
+      ["-Y", "sign", "-f", resolvedKey, "-n", ATTESTATION_SIG_NAMESPACE, "-"],
+      { input: pae, stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
+    );
+    const stdout = sign.stdout?.toString("utf-8") ?? "";
+    if (sign.status !== 0 || !stdout.includes("BEGIN SSH SIGNATURE")) {
+      const stderr = (sign.stderr?.toString("utf-8") ?? "").trim().split("\n")[0] ?? "unknown error";
+      return { error: `ssh-keygen -Y sign (attestation) failed: ${stderr}` };
+    }
+    let publicKey = "";
+    try {
+      publicKey = fs.readFileSync(resolvedKey + ".pub", "utf-8").trim();
+    } catch { /* no .pub — keyid stays empty */ }
+    return {
+      envelope: {
+        payloadType: INTOTO_PAYLOAD_TYPE,
+        payload: payload.toString("base64"),
+        signatures: [{ keyid: publicKey, sig: Buffer.from(stdout, "utf-8").toString("base64") }],
+        x_agentboot: {
+          signature_format: "sshsig",
+          namespace: ATTESTATION_SIG_NAMESPACE,
+          note:
+            "SSHSIG over the DSSE PAE bytes. Verifiable via `agentboot verify-manifest` or " +
+            "ssh-keygen -Y verify with an allowed_signers trust root. Not a Sigstore bundle: " +
+            "no transparency log, no CI-identity certificate.",
+        },
+      },
+    };
+  } catch (err) {
+    return { error: `ssh-keygen unavailable for attestation: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+export interface AttestationVerification {
+  statementOk: boolean;
+  /** Subjects in the statement match the manifest's files + digest. */
+  subjectsMatchManifest: boolean | null;
+  signatureOk: boolean | null;
+  signerVerified: boolean | null;
+  signerPrincipal: string | null;
+  errors: string[];
+}
+
+/**
+ * Verify a written attestation file against its manifest: payload parses as
+ * an in-toto statement, subjects match the manifest's file digests + manifest
+ * digest, SSHSIG verifies over the recomputed PAE, and (optionally) the
+ * signer authenticates against an allowed_signers file.
+ */
+export function verifyAttestationFile(
+  attestationPath: string,
+  manifestPath: string | null,
+  options: { allowedSignersPath?: string | undefined; signerPrincipal?: string | undefined } = {},
+): AttestationVerification {
+  const result: AttestationVerification = {
+    statementOk: false,
+    subjectsMatchManifest: null,
+    signatureOk: null,
+    signerVerified: null,
+    signerPrincipal: null,
+    errors: [],
+  };
+
+  let envelope: DsseEnvelope;
+  let payload: Buffer;
+  let statement: InTotoStatement;
+  try {
+    envelope = JSON.parse(fs.readFileSync(attestationPath, "utf-8")) as DsseEnvelope;
+    payload = Buffer.from(envelope.payload, "base64");
+    statement = JSON.parse(payload.toString("utf-8")) as InTotoStatement;
+    result.statementOk =
+      statement._type === INTOTO_STATEMENT_TYPE &&
+      Array.isArray(statement.subject) &&
+      statement.predicateType === MANIFEST_PREDICATE_TYPE;
+    if (!result.statementOk) result.errors.push("Payload is not a well-formed in-toto v1 statement");
+  } catch (err) {
+    result.errors.push(`Cannot read attestation: ${err instanceof Error ? err.message : String(err)}`);
+    return result;
+  }
+
+  if (manifestPath && fs.existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<string, unknown>;
+      const expected = buildInTotoStatement(manifest);
+      const key = (s: Array<{ name: string; digest: { sha256: string } }>) =>
+        s.map((x) => `${x.name}@${x.digest.sha256}`).sort().join("|");
+      result.subjectsMatchManifest = key(expected.subject) === key(statement.subject);
+      if (!result.subjectsMatchManifest) {
+        result.errors.push("Attestation subjects do not match the manifest's file digests — one of them changed after signing");
+      }
+    } catch (err) {
+      result.errors.push(`Cannot compare against manifest: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const sigB64 = envelope.signatures?.[0]?.sig;
+  if (!sigB64) {
+    result.signatureOk = false;
+    result.errors.push("Envelope carries no signature");
+    return result;
+  }
+  const pae = dssePae(envelope.payloadType, payload);
+  let sigDir: string | null = null;
+  try {
+    sigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-attcheck-"));
+    const sigFile = path.join(sigDir, "att.sig");
+    fs.writeFileSync(sigFile, Buffer.from(sigB64, "base64"));
+    const check = spawnSync(
+      "ssh-keygen",
+      ["-Y", "check-novalidate", "-n", ATTESTATION_SIG_NAMESPACE, "-s", sigFile],
+      { input: pae, stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
+    );
+    result.signatureOk = check.status === 0;
+    if (!result.signatureOk) {
+      result.errors.push(`Attestation signature check failed: ${(check.stderr?.toString("utf-8") ?? "").trim().split("\n")[0]}`);
+    }
+    if (result.signatureOk && options.allowedSignersPath) {
+      const allowed = path.resolve(options.allowedSignersPath);
+      if (!fs.existsSync(allowed)) {
+        result.signerVerified = false;
+        result.errors.push(`allowed_signers file not found: ${allowed}`);
+      } else {
+        let principal = options.signerPrincipal ?? null;
+        if (!principal) {
+          const found = spawnSync(
+            "ssh-keygen",
+            ["-Y", "find-principals", "-f", allowed, "-s", sigFile],
+            { encoding: "utf-8", stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
+          );
+          principal = found.status === 0 ? (found.stdout ?? "").trim().split("\n")[0] || null : null;
+          if (!principal) {
+            result.signerVerified = false;
+            result.errors.push("Attestation signer is not listed in the allowed_signers file");
+          }
+        }
+        if (principal) {
+          const verify = spawnSync(
+            "ssh-keygen",
+            ["-Y", "verify", "-f", allowed, "-I", principal, "-n", ATTESTATION_SIG_NAMESPACE, "-s", sigFile],
+            { input: pae, stdio: "pipe", timeout: PROBE_TIMEOUT_MS },
+          );
+          result.signerVerified = verify.status === 0;
+          result.signerPrincipal = principal;
+          if (!result.signerVerified) {
+            result.errors.push(`Attestation signer authentication failed for principal "${principal}"`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    result.signatureOk = false;
+    result.errors.push(`ssh-keygen unavailable for attestation check: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (sigDir) fs.rmSync(sigDir, { recursive: true, force: true });
+  }
+
+  return result;
+}
