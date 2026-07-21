@@ -169,6 +169,7 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 | `sync.pr.titleTemplate` | string | — | PR title template. |
 | `sync.signing.enabled` | boolean | `false` | SSH-sign the sync manifest digest (`ssh-keygen -Y sign`). Requires `sshKeyPath`. A configured-but-failing signer is a sync **error** — the hub never silently ships unsigned. |
 | `sync.signing.sshKeyPath` | string | — | Path to the SSH private key (relative paths resolve against the hub config). Verify with `agentboot verify-manifest`. |
+| `sync.signing.emitInToto` | boolean | `false` | Also write `.agentboot-manifest.intoto.json` next to the manifest: an **in-toto v1 Statement** (subjects = per-file sha256 digests + the manifest digest; predicate = hub provenance incl. git context) in a **DSSE envelope**, signed over the DSSE PAE bytes with the same SSH key. Honest posture: gives policy tooling a standard predicate and is verifiable via `verify-manifest` or ssh-keygen — but the signature is SSHSIG, **not a Sigstore bundle** (no transparency log, no CI-identity certificate); Sigstore keyless is the documented next step. |
 
 ```jsonc
 {
@@ -293,8 +294,10 @@ Deployment flow:
 | Field | Type | Description |
 |---|---|---|
 | `mcp.approved` | `McpServerEntry[]` | Allowed MCP servers. Beyond `name`, an entry can **pin the implementation identity**: `command`, `args` (pin the package spec here, e.g. `["company-tools@1.2.3", "serve"]` — this is how a version is pinned), `url`, and `transport`. With `enforceApproved`, a configured server must match every pinned field exactly — an approved *name* may not front a different executable. |
-| `mcp.enforceApproved` | boolean | Reject any configured MCP server not on the approved list, or whose identity differs from the approved pin. |
+| `mcp.enforceApproved` | boolean | Reject any configured MCP server not on the approved list, or whose identity differs from the approved pin. `validate` additionally warns for approved servers without a `toolsDigest` or `registry`. |
 | `mcp.required` | string[] | MCP servers required in all repos. |
+| `mcp.approved[].toolsDigest` | string | **Digest pin (v0.19.0):** sha256 over the server's canonicalized `tools/list` definitions. Identity/version pins alone do not stop a mutable server changing its tool descriptions under a fixed name (the rug-pull class) — the digest does. Record with `agentboot mcp-pin --write`; check with `agentboot mcp-verify` (in CI or pre-rollout), which names the added/removed/changed tools on mismatch. Pins compile into `mcp-pins.json` in every platform core dir, so a spoke can run `agentboot mcp-verify --pins .claude/mcp-pins.json` without the hub. |
+| `mcp.approved[].registry` | string | Provenance of the server reference: `official-registry:<namespace>`, `vetted:<catalog>`, `vendor:<name>`, or `unvetted`. Surfaced by validate warnings, `mcp-pin` output, and the evidence pack. |
 
 > **Approving a server is not approving every tool it exposes.** The allowlist governs which
 > server implementations may run; each server still surfaces its own tool set to the agent.

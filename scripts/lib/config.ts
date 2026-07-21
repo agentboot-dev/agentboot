@@ -59,6 +59,18 @@ export interface AgentBootConfig {
     signing?: {
       enabled?: boolean;
       sshKeyPath?: string;
+      /**
+       * v0.19.0: also emit a standards-shaped attestation next to the manifest
+       * (.agentboot-manifest.intoto.json): an in-toto v1 Statement (subjects =
+       * per-file sha256 digests + the manifest digest; predicate = hub
+       * provenance) in a DSSE envelope, signed over the DSSE PAE bytes with
+       * the same SSH key. Honest posture: this gives policy tooling a standard
+       * predicate to consume and binds git context into the predicate, but the
+       * signature is SSHSIG (verifiable via `agentboot verify-manifest` /
+       * ssh-keygen), NOT a Sigstore bundle — no transparency log, no
+       * CI-identity certificate. Sigstore keyless is the documented next step.
+       */
+      emitInToto?: boolean;
     };
   };
   claude?: {
@@ -382,6 +394,25 @@ export interface McpServerEntry {
   description?: string;
   /** Scope: which level this server is approved at */
   scope?: "org" | "group" | "team" | "repo";
+  /**
+   * v0.19.0 digest pinning: sha256 over the server's canonicalized tool
+   * definitions (the full tools/list surface — names, descriptions, input
+   * schemas). Version pins alone do not stop a mutable server mutating its
+   * tool descriptions under a fixed name (the rug-pull class); the digest
+   * does. Record with `agentboot mcp-pin`, check with `agentboot mcp-verify`.
+   */
+  toolsDigest?: string;
+  /** When the toolsDigest was recorded (ISO datetime), for staleness display. */
+  toolsDigestRecordedAt?: string;
+  /**
+   * Provenance of this server reference — where the org got it and what
+   * vetting stands behind it. Free-form but conventionally one of:
+   * "official-registry:<namespace>" (MCP Registry, namespace-authenticated),
+   * "vetted:<registry name>" (curated registry, e.g. an org-internal or
+   * vendor-vetted catalog), "vendor:<name>", or "unvetted". Surfaces in
+   * validate warnings and the evidence pack.
+   */
+  registry?: string;
 }
 
 /** A trait weight value: named string, numeric 0.0–1.0, or boolean. */

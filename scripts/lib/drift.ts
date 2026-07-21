@@ -176,8 +176,9 @@ export function checkDrift(repoPath: string): DriftReport {
     const dirPath = path.join(absPath, dir);
     if (!fs.existsSync(dirPath)) continue;
     walkDir(dirPath, absPath, (relPath) => {
-      // Skip manifest files themselves and archives
+      // Skip manifest files themselves, attestations, and archives
       if (relPath.endsWith(".agentboot-manifest.json")) return;
+      if (relPath.endsWith(".agentboot-manifest.intoto.json")) return;
       if (relPath.includes(".agentboot-archive")) return;
       if (!managedPaths.has(relPath)) {
         entries.push({ file: relPath, status: "unmanaged" });

@@ -22,6 +22,7 @@ the full plan, and writes **nothing** until you approve it.
 |---|---|
 | `.claude/` directory contents | skills, agents, rules, `settings.json`, `.mcp.json` |
 | Root `CLAUDE.md` | project instructions |
+| `AGENTS.md` — root **and nested** | project/package instructions (the industry-standard file; nested files are the spec's monorepo pattern, so the scanner walks the tree for them, skipping `node_modules`/build/vendored dirs) |
 | `.cursorrules` | Cursor rules |
 | `.github/copilot-instructions.md` | Copilot instructions |
 | `.github/prompts/*.prompt.md` | Copilot prompt files |
@@ -30,13 +31,6 @@ the full plan, and writes **nothing** until you approve it.
 
 Binary files and symlinked directories are skipped — the scanner never follows a
 symlink out of the repo.
-
-**Not auto-detected:** a root-level `AGENTS.md`. To classify one (or any single
-file), point the classifier at it directly:
-
-```bash
-agentboot add prompt ./AGENTS.md
-```
 
 ## The CLI flow
 

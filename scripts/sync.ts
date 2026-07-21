@@ -39,6 +39,7 @@ import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import {
   collectHubProvenance,
   buildSyncPrBody,
+  buildDsseEnvelope,
   computeManifestDigest,
   signManifestDigest,
   type HubProvenance,
@@ -62,6 +63,8 @@ interface SyncRunContext {
   provenance: HubProvenance;
   /** Resolved SSH private-key path when sync.signing is enabled; else null. */
   signingKeyPath: string | null;
+  /** v0.19.0: also emit the in-toto/DSSE attestation next to the manifest. */
+  emitInToto: boolean;
 }
 
 let syncRunContext: SyncRunContext | null = null;
@@ -400,7 +403,7 @@ function archiveExistingContent(
     function walk(dir: string, relBase: string): void {
       for (const entry of fs.readdirSync(dir)) {
         // Skip agentboot artifacts
-        if (relBase === "" && (entry === ".agentboot-archive" || entry === ".agentboot-manifest.json")) continue;
+        if (relBase === "" && (entry === ".agentboot-archive" || entry === ".agentboot-manifest.json" || entry === ".agentboot-manifest.intoto.json")) continue;
         const absPath = path.join(dir, entry);
         const relPath = relBase ? `${relBase}/${entry}` : entry;
         const stat = fs.statSync(absPath);
@@ -506,7 +509,7 @@ function detectDrift(
   const drifted: string[] = [];
   for (const entry of manifest.files ?? []) {
     // Skip the manifest's own entry (it contains a timestamp so it always "drifts")
-    if (entry.path.endsWith(".agentboot-manifest.json")) continue;
+    if (entry.path.endsWith(".agentboot-manifest.json") || entry.path.endsWith(".agentboot-manifest.intoto.json")) continue;
 
     const fullPath = path.resolve(repoPath, entry.path);
     if (!fs.existsSync(fullPath)) {
@@ -720,7 +723,7 @@ function isRepoUpToDate(
   // Also check: manifest shouldn't have files we wouldn't write (deleted files)
   // Skip the manifest file itself
   for (const [manifestPath] of manifestPosix) {
-    if (manifestPath.endsWith(".agentboot-manifest.json")) continue;
+    if (manifestPath.endsWith(".agentboot-manifest.json") || manifestPath.endsWith(".agentboot-manifest.intoto.json")) continue;
     if (!wouldWritePosix.has(manifestPath)) return false;
   }
 
@@ -1497,6 +1500,22 @@ function generateManifest(
     fs.writeFileSync(manifestAbsPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
   }
 
+  // v0.19.0: standards-shaped attestation (in-toto Statement in a DSSE
+  // envelope, SSHSIG-signed) next to the manifest, when configured. A
+  // configured-but-failing attestation is a sync error like manifest signing.
+  if (!dryRun && signed && syncRunContext?.emitInToto && syncRunContext.signingKeyPath) {
+    const att = buildDsseEnvelope(manifest, syncRunContext.signingKeyPath);
+    if ("envelope" in att) {
+      fs.writeFileSync(
+        path.join(repoPath, targetDir, ".agentboot-manifest.intoto.json"),
+        JSON.stringify(att.envelope, null, 2) + "\n",
+        "utf-8",
+      );
+    } else if (!signingError) {
+      signingError = att.error;
+    }
+  }
+
   return { relPath: manifestRelPath, signed, signingError };
 }
 
@@ -1717,6 +1736,7 @@ async function main(): Promise<void> {
     signingKeyPath: signingCfg?.enabled && signingCfg.sshKeyPath
       ? path.resolve(configDir, signingCfg.sshKeyPath)
       : null,
+    emitInToto: signingCfg?.enabled === true && signingCfg.emitInToto === true,
   };
   if (syncRunContext.provenance.hub_dirty) {
     console.log(chalk.yellow(

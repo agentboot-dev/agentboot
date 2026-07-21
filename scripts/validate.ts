@@ -735,6 +735,43 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// v0.19.0: MCP digest-pinning coverage (warn-only — incremental adoption)
+// ---------------------------------------------------------------------------
+
+export function checkMcpPinning(config: AgentBootConfig): CheckResult {
+  const result = check("MCP digest pinning — approved servers carry toolsDigest + registry provenance");
+  const mcpConfig = config.mcp;
+
+  // Only meaningful when the org actually enforces the approved list.
+  if (!mcpConfig?.enforceApproved || !mcpConfig.approved) return result;
+
+  for (const server of mcpConfig.approved) {
+    // Name-only entries have no transport to hash — the identity-pinning check
+    // (checkMcpGovernance) already flags those as the weaker legacy form.
+    if (!server.command && !server.url) continue;
+
+    if (!server.toolsDigest) {
+      warn(
+        result,
+        `MCP approved server "${server.name}" has no toolsDigest — a mutable server can change its ` +
+          `tool definitions (the rug-pull class) under this approved name without failing any check. ` +
+          `Record a pin with \`agentboot mcp-pin --server ${server.name} --write\`.`
+      );
+    }
+    if (!server.registry) {
+      warn(
+        result,
+        `MCP approved server "${server.name}" has no registry provenance — set mcp.approved[].registry ` +
+          `(e.g. "official-registry:<namespace>", "vetted:<name>", or "unvetted") so reviewers know ` +
+          `where this server reference came from.`
+      );
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // B1: claude.settings pass-through hygiene
 // ---------------------------------------------------------------------------
 
@@ -923,6 +960,7 @@ async function main(): Promise<void> {
     checkCompositionConsistency(config, configDir),
     checkRuleOverrides(config, configDir),
     checkMcpGovernance(config),
+    checkMcpPinning(config),
     checkClaudeSettingsPassthrough(config),
     checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),

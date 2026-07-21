@@ -2126,6 +2126,172 @@ program
     console.log(chalk.green("  ✓ All probed controls behave as declared.\n"));
   });
 
+// ---- v0.19.0: MCP tool-definition digest pinning (rug-pull defense) --------
+
+program
+  .command("mcp-pin")
+  .description("Record a sha256 digest over each approved MCP server's live tool definitions — the pin `agentboot mcp-verify` re-checks for rug-pulls")
+  .option("-c, --config <path>", "path to agentboot.config.json")
+  .option("--server <name>", "pin a single approved server (default: every approved server with a command or url)")
+  .option("--write", "update agentboot.config.json in place (toolsDigest + toolsDigestRecordedAt; per-tool hashes go to agentboot.mcp-pins.json)")
+  .action(async (_opts, cmd: Command) => {
+    const { resolveConfigPath } = await import("./lib/config.js");
+    const { pinServer, pinSidecarPath, loadPinSidecar, savePinSidecar } = await import("./lib/mcp-pin.js");
+
+    // -c/--config is also a program-level global; commander 15 binds the value
+    // there, so read the merged view.
+    const opts = cmd.optsWithGlobals();
+    const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
+    const config = loadConfig(configPath);
+    const approved = config.mcp?.approved ?? [];
+    const wanted = opts["server"] as string | undefined;
+    const targets = approved.filter((s) => (s.command || s.url) && (!wanted || s.name === wanted));
+
+    if (targets.length === 0) {
+      if (wanted) {
+        console.error(chalk.red(`  ✗ No approved MCP server named "${wanted}" with a command or url in ${configPath}`));
+        process.exit(1);
+      }
+      console.log(chalk.yellow("\n  No approved MCP servers with a command or url — nothing to pin.\n"));
+      return;
+    }
+
+    console.log(chalk.bold("\n  AgentBoot — mcp-pin\n"));
+    const write = opts["write"] === true;
+    const sidecarPath = pinSidecarPath(configPath);
+    const sidecar = loadPinSidecar(sidecarPath);
+    const pins = new Map<string, { digest: string; recordedAt: string }>();
+    let failures = 0;
+
+    for (const server of targets) {
+      const r = await pinServer(server);
+      if ("error" in r) {
+        failures++;
+        console.log(chalk.red(`  ✗ ${server.name} — ${r.error}`));
+        continue;
+      }
+      console.log(`  ${chalk.green("✓")} ${server.name} — sha256:${r.digest.slice(0, 16)}… (${r.toolCount} tool${r.toolCount === 1 ? "" : "s"})`);
+      console.log(chalk.gray(`      registry: ${server.registry ?? "unvetted — set mcp.approved[].registry"}`));
+      if (server.toolsDigest && server.toolsDigest !== r.digest) {
+        console.log(chalk.yellow(`      replaces previous pin ${server.toolsDigest.slice(0, 16)}… (recorded ${server.toolsDigestRecordedAt ?? "unknown"})`));
+      }
+      pins.set(server.name, { digest: r.digest, recordedAt: r.recordedAt });
+      sidecar[server.name] = { digest: r.digest, recordedAt: r.recordedAt, toolHashes: r.toolHashes };
+      if (!write) {
+        console.log(chalk.gray(`      would record toolsDigest=${r.digest} (run with --write)`));
+      }
+    }
+
+    if (write && pins.size > 0) {
+      const raw = JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8"))) as Record<string, unknown>;
+      const mcp = raw["mcp"] as Record<string, unknown> | undefined;
+      const rawApproved = Array.isArray(mcp?.["approved"]) ? (mcp["approved"] as Array<Record<string, unknown>>) : [];
+      for (const entry of rawApproved) {
+        const pin = pins.get(String(entry["name"]));
+        if (pin) {
+          entry["toolsDigest"] = pin.digest;
+          entry["toolsDigestRecordedAt"] = pin.recordedAt;
+        }
+      }
+      fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + "\n");
+      savePinSidecar(sidecarPath, sidecar);
+      console.log(chalk.green(`\n  Wrote ${pins.size} pin${pins.size === 1 ? "" : "s"} to ${path.basename(configPath)} + ${path.basename(sidecarPath)}`));
+      console.log(chalk.yellow("  Note: --write re-serializes the config with JSON.stringify(…, 2) — JSONC comments are not preserved."));
+    }
+
+    console.log("");
+    if (failures > 0) process.exit(1);
+  });
+
+program
+  .command("mcp-verify")
+  .description("Re-hash each approved MCP server's live tool definitions against its recorded toolsDigest — the use-time rug-pull check (run in CI / before rollout)")
+  .option("-c, --config <path>", "path to agentboot.config.json")
+  .option("--server <name>", "verify a single approved server")
+  .option("--strict", "unpinned approved servers FAIL instead of warn")
+  .option("--pins <path>", "spoke side: verify against a synced mcp-pins.json (e.g. .claude/mcp-pins.json) instead of a hub config")
+  .action(async (_opts, cmd: Command) => {
+    const { resolveConfigPath } = await import("./lib/config.js");
+    const { verifyServer, pinSidecarPath, loadPinSidecar } = await import("./lib/mcp-pin.js");
+
+    // -c/--config is also a program-level global; commander 15 binds the value
+    // there, so read the merged view.
+    const opts = cmd.optsWithGlobals();
+    let approved: NonNullable<NonNullable<import("./lib/config.js").AgentBootConfig["mcp"]>["approved"]>;
+    let configPath: string;
+    if (opts["pins"]) {
+      // Spoke side: the compiled pins artifact (synced into the platform config
+      // dir) IS the approved list — no hub config needed to run the rug-pull check.
+      configPath = path.resolve(opts["pins"] as string);
+      const pinsFile = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { approved?: typeof approved };
+      approved = pinsFile.approved ?? [];
+    } else {
+      configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
+      const config = loadConfig(configPath);
+      approved = config.mcp?.approved ?? [];
+    }
+    const wanted = opts["server"] as string | undefined;
+    const targets = approved.filter((s) => (s.command || s.url) && (!wanted || s.name === wanted));
+
+    if (targets.length === 0) {
+      if (wanted) {
+        console.error(chalk.red(`  ✗ No approved MCP server named "${wanted}" with a command or url in ${configPath}`));
+        process.exit(1);
+      }
+      console.log(chalk.yellow("\n  No approved MCP servers with a command or url — nothing to verify.\n"));
+      return;
+    }
+
+    const describeAge = (iso: string): string => {
+      const ms = Date.now() - Date.parse(iso);
+      if (Number.isNaN(ms)) return `at ${iso}`;
+      const days = Math.floor(ms / 86_400_000);
+      return days <= 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`;
+    };
+
+    console.log(chalk.bold("\n  AgentBoot — mcp-verify\n"));
+    const sidecar = loadPinSidecar(pinSidecarPath(configPath));
+    let okCount = 0, mismatched = 0, unpinned = 0, errors = 0;
+
+    for (const server of targets) {
+      if (!server.toolsDigest) {
+        unpinned++;
+        const msg = `${server.name} — not pinned (no toolsDigest). Record one: agentboot mcp-pin --server ${server.name} --write`;
+        console.log(opts["strict"] === true ? chalk.red(`  ✗ ${msg}`) : chalk.yellow(`  ⚠ ${msg}`));
+        continue;
+      }
+      const baseline = sidecar[server.name]?.toolHashes;
+      const r = await verifyServer(server, baseline ? { baselineToolHashes: baseline } : {});
+      if ("error" in r) {
+        errors++;
+        console.log(chalk.red(`  ✗ ${server.name} — ${r.error}`));
+        continue;
+      }
+      if (r.ok) {
+        okCount++;
+        const age = server.toolsDigestRecordedAt ? ` (pinned ${describeAge(server.toolsDigestRecordedAt)})` : "";
+        console.log(`  ${chalk.green("✓")} ${server.name} — tool definitions match the pin${age} (${r.toolCount} tool${r.toolCount === 1 ? "" : "s"})`);
+        continue;
+      }
+      mismatched++;
+      console.log(chalk.red(`  ✗ ${server.name} — TOOL DEFINITIONS CHANGED since the pin`));
+      console.log(chalk.red(`      expected sha256:${r.expected.slice(0, 16)}…  actual sha256:${r.actual.slice(0, 16)}…`));
+      if (r.added.length > 0) console.log(chalk.red(`      added:   ${r.added.join(", ")}`));
+      if (r.removed.length > 0) console.log(chalk.red(`      removed: ${r.removed.join(", ")}`));
+      if (r.changed.length > 0) console.log(chalk.red(`      changed: ${r.changed.join(", ")}`));
+      if (r.added.length + r.removed.length + r.changed.length === 0) {
+        console.log(baseline
+          ? chalk.yellow("      no per-tool difference identified — the baseline may predate the current pin; re-pin with --write")
+          : chalk.yellow(`      per-tool diff unavailable — no baseline in ${path.basename(pinSidecarPath(configPath))}; re-pin with --write to record one`));
+      }
+    }
+
+    const summary = `${okCount} ok, ${mismatched} mismatched, ${unpinned} unpinned, ${errors} error${errors === 1 ? "" : "s"}`;
+    const failed = mismatched > 0 || errors > 0 || (opts["strict"] === true && unpinned > 0);
+    console.log(failed ? chalk.red(`\n  ✗ mcp-verify: ${summary}\n`) : chalk.green(`\n  ✓ mcp-verify: ${summary}\n`));
+    if (failed) process.exit(1);
+  });
+
 program
   .command("verify-manifest")
   .description("Verify a synced manifest: content digest, per-file hashes, SSH signature, signer identity")
@@ -2187,6 +2353,43 @@ program
 
     for (const err of v.errors) console.log(chalk.yellow(`  ⚠ ${err}`));
 
+    // v0.19.0: verify the in-toto/DSSE attestation when the hub emitted one.
+    let attestationFailed = false;
+    const attestationPath = manifestPath.replace(/\.agentboot-manifest\.json$/, ".agentboot-manifest.intoto.json");
+    if (attestationPath !== manifestPath && fs.existsSync(attestationPath)) {
+      const { verifyAttestationFile } = await import("./lib/provenance.js");
+      const a = verifyAttestationFile(attestationPath, manifestPath, {
+        allowedSignersPath: opts["allowedSigners"] as string | undefined,
+        signerPrincipal: opts["signer"] as string | undefined,
+      });
+      console.log("");
+      console.log(a.statementOk
+        ? chalk.green("  ✓ Attestation: well-formed in-toto v1 statement")
+        : chalk.red("  ✗ Attestation payload malformed"));
+      if (a.subjectsMatchManifest !== null) {
+        console.log(a.subjectsMatchManifest
+          ? chalk.green("  ✓ Attestation subjects match the manifest's file digests")
+          : chalk.red("  ✗ Attestation subjects DIVERGE from the manifest"));
+      }
+      if (a.signatureOk !== null) {
+        console.log(a.signatureOk
+          ? chalk.green("  ✓ Attestation SSHSIG valid over the DSSE PAE")
+          : chalk.red("  ✗ Attestation signature INVALID"));
+      }
+      if (a.signerVerified === true) {
+        console.log(chalk.green(`  ✓ Attestation signer authenticated (principal: ${a.signerPrincipal})`));
+      } else if (a.signerVerified === false) {
+        console.log(chalk.red("  ✗ Attestation signer NOT authenticated"));
+      }
+      for (const err of a.errors) console.log(chalk.yellow(`  ⚠ ${err}`));
+      console.log(chalk.gray(
+        "    (Standard in-toto predicate, SSHSIG signature — verifiable here or via ssh-keygen; " +
+        "not a Sigstore bundle: no transparency log, no CI-identity certificate.)"));
+      attestationFailed =
+        !a.statementOk || a.subjectsMatchManifest === false ||
+        a.signatureOk === false || a.signerVerified === false;
+    }
+
     // State the trust posture honestly — what this verification establishes.
     const postureLine: Record<string, string> = {
       "none": "no integrity data — pre-0.14 manifest, nothing established",
@@ -2203,7 +2406,8 @@ program
       v.digestOk &&
       v.fileMismatches.length === 0 &&
       v.signatureOk !== false &&
-      v.signerVerified !== false;
+      v.signerVerified !== false &&
+      !attestationFailed;
     process.exit(ok ? 0 : 1);
   });
 
@@ -2939,7 +3143,9 @@ program
   .command("telemetry-inspect")
   .description("Show exactly what telemetry would be emitted under the current config — schema, sample events, and log status")
   .option("-c, --config <path>", "path to agentboot.config.json")
-  .action(async (opts) => {
+  .action(async (_opts, cmd: Command) => {
+    // Merged view — the program-level -c/--config global captures the value.
+    const opts = cmd.optsWithGlobals();
     const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
     const { TELEMETRY_EVENTS, TELEMETRY_SCHEMA_VERSION, sampleEvents } = await import("./lib/telemetry-schema.js");
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
@@ -2985,7 +3191,9 @@ program
   .option("-c, --config <path>", "path to agentboot.config.json")
   .option("--out <path>", "output file (default: agentboot-evidence-<date>.json)")
   .option("--telemetry-batches <dir>", "shipped telemetry batch dir to include chain evidence for")
-  .action(async (opts) => {
+  .action(async (_opts, cmd: Command) => {
+    // Merged view — the program-level -c/--config global captures the value.
+    const opts = cmd.optsWithGlobals();
     const { buildEvidencePack } = await import("./lib/evidence-pack.js");
     const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
 
@@ -3043,7 +3251,10 @@ program
   .option("--sink-config <path>", "explicit telemetry-sink.json (spoke side; default: nearest .claude/telemetry-sink.json)")
   .option("--log <path>", "telemetry log to ship (default: config logPath or ~/.agentboot/telemetry.ndjson)")
   .option("--spool-only", "build batches but do not POST (spool for a later run)")
-  .action(async (opts) => {
+  .action(async (_opts, cmd: Command) => {
+    // -c/--config is also a program-level global; commander binds the value
+    // there, so read the merged view (a bare opts["config"] is always empty).
+    const opts = cmd.optsWithGlobals();
     const { spoolTelemetry, shipSpool, findSinkConfig, defaultSpoolDir } = await import("./lib/telemetry-sink.js");
     const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
 

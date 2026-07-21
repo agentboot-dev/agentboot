@@ -59,7 +59,7 @@ interface ScannedFile {
   path: string;
   relativePath: string;
   lines: number;
-  type: "claude-md" | "skill" | "agent" | "trait" | "rule" | "settings" | "mcp" |
+  type: "claude-md" | "agents-md" | "skill" | "agent" | "trait" | "rule" | "settings" | "mcp" |
         "cursorrules" | "copilot-instructions" | "copilot-prompt" | "other";
 }
 
@@ -136,6 +136,7 @@ function scanPath(targetPath: string): ScanResult {
 
     let type: ScannedFile["type"] = "other";
     if (basename === "CLAUDE.md") type = "claude-md";
+    else if (basename === "AGENTS.md") type = "agents-md";
     else if (basename === "SKILL.md") type = "skill";
     else if (dir.includes("agents")) type = "agent";
     else if (dir.includes("traits")) type = "trait";
@@ -186,6 +187,37 @@ function scanPath(targetPath: string): ScanResult {
   if (fs.existsSync(rootClaude)) {
     const scanned = classifyFile(rootClaude, "CLAUDE.md");
     if (scanned) files.push(scanned);
+  }
+
+  // AGENTS.md — root AND nested (v0.19.0). The industry-standard instruction
+  // file is explicitly nested in monorepos (nearest file wins per the spec),
+  // so an importer that only reads the root file misses most of a large
+  // repo's instruction content. Bounded walk; skips vendored/build trees and
+  // symlinked dirs.
+  {
+    const SKIP_DIRS = new Set([
+      "node_modules", ".git", "dist", "build", "out", "vendor", "target",
+      ".claude", ".agentboot-archive",
+    ]);
+    const walkAgents = (dir: string, rel: string, depth: number): void => {
+      if (depth > 6) return;
+      let entries: string[];
+      try { entries = fs.readdirSync(dir); } catch { return; }
+      for (const entry of entries) {
+        const abs = path.join(dir, entry);
+        const relPath = rel ? `${rel}/${entry}` : entry;
+        let st: fs.Stats;
+        try { st = fs.lstatSync(abs); } catch { continue; }
+        if (st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          if (!SKIP_DIRS.has(entry) && !entry.startsWith(".")) walkAgents(abs, relPath, depth + 1);
+        } else if (entry === "AGENTS.md") {
+          const scanned = classifyFile(abs, relPath);
+          if (scanned) files.push(scanned);
+        }
+      }
+    };
+    walkAgents(resolved, "", 0);
   }
 
   // .cursorrules
@@ -423,6 +455,7 @@ export function categorizeByStrategy(manifest: ScanManifest): CategorizedScan {
         result.configMerge.push(file);
         break;
       case "claude-md":
+      case "agents-md":
       case "skill":
       case "cursorrules":
       case "copilot-instructions":
@@ -898,7 +931,7 @@ export function classifyScannedFiles(
 
   // Filter to classifiable file types
   const classifiable = manifest.files.filter(f =>
-    ["claude-md", "skill", "agent", "rule", "cursorrules", "copilot-instructions", "copilot-prompt"].includes(f.type)
+    ["claude-md", "agents-md", "skill", "agent", "rule", "cursorrules", "copilot-instructions", "copilot-prompt"].includes(f.type)
   );
 
   if (classifiable.length === 0) {
@@ -1526,7 +1559,7 @@ export async function runImport(opts: ImportOptions): Promise<void> {
 
     // Filter to classifiable files (skip settings, mcp, etc.)
     classifiable = scan.files.filter(f =>
-      ["claude-md", "skill", "agent", "rule", "cursorrules", "copilot-instructions", "copilot-prompt"].includes(f.type)
+      ["claude-md", "agents-md", "skill", "agent", "rule", "cursorrules", "copilot-instructions", "copilot-prompt"].includes(f.type)
     );
 
     if (classifiable.length === 0) {
