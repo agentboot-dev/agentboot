@@ -43,6 +43,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'vs-a-hand-rolled-settings-repo',
         'vs-per-tool-rules-files',
+        'vs-rule-distributors',
       ],
     },
     {
