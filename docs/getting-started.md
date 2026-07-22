@@ -18,7 +18,7 @@ Windsurf, and JetBrains on a community-supported basis.
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Beta notice:** AgentBoot **v0.19.0 is a public Beta**. It's usable end to end, but
+> **Beta notice:** AgentBoot **v0.20.0 is a public Beta**. It's usable end to end, but
 > breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
 > notes document all changes, and we do our best to minimize disruption — but stability
 > is not guaranteed until v1.0. If you hit a rough edge,
