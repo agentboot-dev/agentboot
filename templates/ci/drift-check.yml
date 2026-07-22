@@ -34,5 +34,5 @@ jobs:
           node-version: '22'
       # Pinned agentboot version for reproducible, auditable CI. Keep in step with
       # the version your hub builds with; bump deliberately, like any dependency.
-      # (npm accepts either form: agentboot@v0.20.0 and agentboot@0.20.0 are the same.)
-      - run: npx agentboot@v0.20.0 drift-check --format json
+      # (npm accepts either form: agentboot@v0.20.1 and agentboot@0.20.1 are the same.)
+      - run: npx agentboot@v0.20.1 drift-check --format json

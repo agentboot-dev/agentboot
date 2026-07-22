@@ -9,6 +9,15 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-07-21
+
+Documentation fixups.
+
+### Fixed
+- Refreshed the Claude Code install link to `code.claude.com/docs`.
+- Repaired the CHANGELOG comparison-link footer, which was frozen at v0.11.4 —
+  every release from v0.12.0 onward now has a working compare link.
+
 ## [0.20.0] — 2026-07-21
 
 Assurance hardening driven by a GA-readiness audit: every verifier the product
@@ -730,7 +739,21 @@ way to v1.0 GA.
 - Security audit across path traversal, input validation, shell injection, and secret patterns;
   test-isolation crash guards; routing/behavioral-test corrections.
 
-[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/agentboot-dev/agentboot/compare/v0.20.0...v0.20.1
+[0.20.0]: https://github.com/agentboot-dev/agentboot/compare/v0.19.0...v0.20.0
+[0.19.0]: https://github.com/agentboot-dev/agentboot/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/agentboot-dev/agentboot/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/agentboot-dev/agentboot/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/agentboot-dev/agentboot/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/agentboot-dev/agentboot/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/agentboot-dev/agentboot/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/agentboot-dev/agentboot/compare/v0.12.4...v0.13.0
+[0.12.4]: https://github.com/agentboot-dev/agentboot/compare/v0.12.3...v0.12.4
+[0.12.3]: https://github.com/agentboot-dev/agentboot/compare/v0.12.2...v0.12.3
+[0.12.2]: https://github.com/agentboot-dev/agentboot/compare/v0.12.1...v0.12.2
+[0.12.1]: https://github.com/agentboot-dev/agentboot/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/agentboot-dev/agentboot/compare/v0.11.4...v0.12.0
 [0.11.4]: https://github.com/agentboot-dev/agentboot/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/agentboot-dev/agentboot/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/agentboot-dev/agentboot/compare/v0.11.1...v0.11.2
