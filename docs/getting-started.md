@@ -18,7 +18,7 @@ Windsurf, and JetBrains on a community-supported basis.
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Beta notice:** AgentBoot **v0.20.0 is a public Beta**. It's usable end to end, but
+> **Beta notice:** AgentBoot **v0.20.1 is a public Beta**. It's usable end to end, but
 > breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
 > notes document all changes, and we do our best to minimize disruption — but stability
 > is not guaranteed until v1.0. If you hit a rough edge,
@@ -32,7 +32,7 @@ Before you start, you need:
 
 1. **Claude Code** installed and configured. You should be able to run `claude` from
    the command line and have it connect to your account.
-   → Install: [docs.anthropic.com/claude-code](https://docs.anthropic.com/en/docs/claude-code/overview)
+   → Install: [code.claude.com/docs](https://code.claude.com/docs/en/overview)
 
 2. **Node.js 22 or later.** Check with `node --version`. If you need to upgrade,
    use [nvm](https://github.com/nvm-sh/nvm) or download from [nodejs.org](https://nodejs.org).
