@@ -8,6 +8,16 @@ on:
       - 'website/**'
       - '.github/workflows/deploy-docs.yml'
 
+  # Build (but do not deploy) on PRs that touch the docs/site, so a website that
+  # fails `docusaurus build` is caught BEFORE merge — Validate does not run the
+  # production build, so a build-breaking dependency change otherwise only
+  # surfaces here after merge, leaving the published site stale.
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'website/**'
+      - '.github/workflows/deploy-docs.yml'
+
   workflow_dispatch:
 
 permissions:
@@ -27,7 +37,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
 
@@ -40,11 +50,14 @@ jobs:
         run: npm run build
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: website/build
 
   deploy:
+    # PRs build only (the build job above); deployment happens on push/dispatch.
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
