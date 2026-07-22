@@ -182,7 +182,7 @@ const config: Config = {
           items: [
             {label: 'GitHub', href: 'https://github.com/agentboot-dev/agentboot'},
             {label: 'Issues', href: 'https://github.com/agentboot-dev/agentboot/issues'},
-            {label: 'Discussions', href: 'https://github.com/agentboot-dev/agentboot/discussions'},
+            {label: 'Issues', href: 'https://github.com/agentboot-dev/agentboot/issues'},
             {label: 'Roadmap', to: '/docs/roadmap'},
           ],
         },

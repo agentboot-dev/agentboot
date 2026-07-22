@@ -664,7 +664,7 @@ through different channels.
    serving.
 
 **What Copilot lacks vs. CC:**
-- Fewer hook types than CC — AgentBoot emits Copilot compliance hooks (`.github/hooks/agentboot.json`, blocking on exit code 2) and maps `PreToolUse`/`PostToolUse`/`Stop`, but `SubagentStart` is not in Copilot's event set, and command-hook timeouts fail open (a slow hook does not block)
+- Fewer hook types than CC — AgentBoot emits Copilot compliance hooks (`.github/hooks/agentboot.json`; exit-2 blocking is documented but not yet empirically verified for GA) and maps `PreToolUse`/`PostToolUse`/`Stop`, but `SubagentStart` is not in Copilot's event set, and command-hook timeouts fail open (a slow hook does not block)
 - No managed settings/MDM — no HARD guardrail channel
 - No per-persona model selection — Copilot chooses the model
 - No agent memory — no self-improvement reflections

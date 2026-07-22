@@ -320,23 +320,44 @@ file, a tampered hook, a bad upstream package version, or a rogue MCP server ent
 4. **Rotate credentials.** Rotate the hub CI token (the cross-repo PAT or GitHub App
    credential used by `agentboot sync`), and any secrets available to hub CI (e.g.
    `ANTHROPIC_API_KEY` if behavioral tests are enabled).
-5. **Review local telemetry where available.** If telemetry was enabled, each
+5. **Review telemetry where available.** If telemetry was enabled, each
    developer machine has an NDJSON log (`telemetry.logPath`, default
    `~/.agentboot/telemetry.ndjson`) of persona invocations — useful for answering
-   "was the poisoned persona actually invoked, and when."
+   "was the poisoned persona actually invoked, and when." If the org configured a
+   `telemetry.sink`, prefer the shipped batches at the org's own collector: they
+   survive local deletion and can be integrity-checked with
+   `agentboot telemetry-verify --batches <dir> --require-signed`.
 6. **Post-incident.** Feed the root cause back into controls: a CODEOWNERS gap, a
    missing `validation.secretPatterns` entry, an unpinned install, an over-broad
    `repos.json`.
 
 **Where the audit trail lives, and its limits.** The durable, trustworthy trail is
 **git**: hub history (what was authored and by whom), sync PRs in each spoke (what
-was delivered and when), and the manifests (what should be on disk now). Telemetry is
-different: it is **local to each developer's machine and developer-writable /
-deletable** — it records only minimal invocation events (persona id, timestamp,
-status; no prompts, by design invariant — see [privacy.md](privacy.md)). Treat
-telemetry as a best-effort investigation aid, not tamper-proof evidence. If your
-compliance regime needs a non-repudiable log, that requirement must be met by
-infrastructure outside AgentBoot.
+was delivered and when), and the manifests (what should be on disk now). Telemetry
+records only minimal invocation events (persona id, timestamp, status; no prompts,
+by design invariant — see [privacy.md](privacy.md)), and its trust posture depends
+on how you run it:
+
+- **Local-only (the default):** the NDJSON log is local to each developer's machine
+  and developer-writable / deletable. Its hash chain makes post-write edits,
+  deletions, and reordering *detectable* (`agentboot telemetry-verify --log`), but
+  the chain is unkeyed — it cannot prevent a full consistent rewrite. Treat a
+  local-only log as a best-effort investigation aid, not tamper-proof evidence.
+- **With an org sink configured (`telemetry.sink`):** `agentboot telemetry-ship`
+  ships events to the org's **own** HTTPS collector — there is no default endpoint
+  and nothing ever goes to the AgentBoot vendor — as sequence-numbered,
+  digest-chained batches, SSH-signed when `sync.signing` is enabled. Shipped
+  batches survive local deletion, and their tamper-evidence is checkable with
+  `agentboot telemetry-verify --batches <dir> --require-signed --allowed-signers
+  <file>` (`--require-signed` is the actual defense — without it, stripped
+  signatures pass).
+
+The honest residual limit: a developer who controls the machine can suppress events
+**before first shipment** (bound this with an org-controlled ship cadence, e.g. a
+scheduled `telemetry-ship` outside the developer's editable config), and the local
+chain alone is not non-repudiable. See
+[assurance-claims.md](assurance-claims.md) rows 6 and 12 for the precise claims and
+their executed probes.
 
 ---
 
@@ -355,7 +376,7 @@ Everything else is regenerable:
 | `dist/` | Compiled output | `agentboot build` — never backed up, always rebuilt |
 | Spoke `.claude/` etc. | Compiled output + in each spoke's own git history | Re-run `agentboot sync` |
 | `~/.agentboot/config.json` | Machine-local hub registry (convenience for `/ab` and the MCP server) | Re-run `agentboot connect <hub-path>`; nothing unique is lost |
-| `~/.agentboot/` telemetry | Machine-local, optional | Not restorable; by design not centrally collected |
+| `~/.agentboot/` telemetry | Machine-local, optional | Local log not restorable. With `telemetry.sink` configured, shipped batches live on the org's own collector (org-owned infrastructure — back it up like any org datastore); events not yet shipped are lost with the machine |
 | Managed artifacts in MDM | Copies of `dist/managed/` output | Rebuild from hub; keep the merged per-fleet files in a reviewed MDM repo |
 
 The one thing to actively protect is the hub repo. Everything downstream is a build
@@ -458,7 +479,7 @@ re-score, and the mitigations column is honest about what AgentBoot does *not* c
 | 3 | Developer edits or deletes managed files in a spoke (drift) | Medium | Medium | Drift-check flags it via SHA-256 manifests — but **detection only, not prevention**; drift you can see, not drift that cannot occur. Revert-through-git; managed settings (CC only) for the non-negotiables. |
 | 4 | Hook enforcement assumed on a platform that doesn't provide it | Medium | Medium | [Capability matrix](platform-capability-matrix.md) is the contract: community-tier platforms get **instructions without enforcement**; Copilot CLI hook timeouts fail open. `agentboot conformance` tests the declared level empirically per platform (`dist/<platform>/enforcement-manifest.json`) — run it in hub CI rather than assuming (pilot's contrasting-repo design exists for this too). |
 | 5 | Hub CI token (cross-repo write) leaked or abused | Low | High | Least-privilege GitHub App or scoped PAT; rotate on offboarding and incidents (Sections 4, 6); spoke branch protections mean the token can open PRs, not push to main. |
-| 6 | Incident forensics gap — telemetry missing or tampered | Medium | Low–Medium | Telemetry is **local, opt-in, and developer-deletable** ([privacy.md](privacy.md)) — treat as best-effort. The durable trail is git (hub history, sync PRs, manifests). Non-repudiable logging must come from infrastructure outside AgentBoot. |
+| 6 | Incident forensics gap — telemetry missing or tampered | Medium | Low–Medium | Telemetry is **opt-in** and, without a sink, **local and developer-deletable** ([privacy.md](privacy.md)) — treat local-only logs as best-effort. Configure `telemetry.sink` + `sync.signing` and ship on an org-controlled cadence: shipped batches are digest-chained, signed, and survive local deletion; verify with `telemetry-verify --require-signed`. Residual: a machine-controlling developer can suppress events before first shipment, and the local chain is unkeyed. The durable trail for *content* remains git (hub history, sync PRs, manifests). |
 | 7 | Rogue MCP server configured in a spoke | Low | High | `mcp.approved` allowlist + `mcp.enforceApproved` at build/sync; sync PR review on `.mcp.json` (a security-sensitive path). Residual: enforcement applies to synced config — a developer adding a server outside managed scope is drift/policy territory. |
 | 8 | Developer works outside the governed tooling entirely | Medium | Medium | Out of AgentBoot's scope by design — hooks bind the agent surface, not the developer. Pair with normal repo-level controls: branch protection, CI, human review. |
 

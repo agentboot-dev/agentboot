@@ -10,6 +10,104 @@ listed here are backward-compatible and require only a package update.
 
 ---
 
+## v0.15 → v0.19 (0.16.0 through 0.19.0)
+
+The GA-hardening series: an adversarial audit of AgentBoot's own enforcement claims
+(0.16.0), tamper-evident telemetry (0.17.0), the auditor-facing evidence surface and
+AGENTS.md promotion (0.18.0), and MCP digest pinning plus optional in-toto
+attestation (0.19.0). Hub **source** does not need rewriting. The standard path
+applies: update the package, rebuild, resync — then read the per-release notes
+below, because several fixes change what the first post-upgrade build and sync do.
+
+```bash
+npm install -g agentboot@latest
+cd /path/to/your-personas-hub
+agentboot build
+agentboot sync
+```
+
+### Behavior changes in 0.16.0
+
+- **The output-scan Stop hook now actually blocks.** It previously read a payload
+  field the platform never sends (`response`) and scanned the empty string on every
+  invocation — a documented-as-blocking no-op. It now reads the real field
+  (`last_assistant_message`, with a transcript fallback) and its binding is
+  synchronous. **Action:** rebuild + resync, then expect Stop-hook blocks that never
+  fired before; if `outputScan.blocking` is set, budget for triage.
+- **Sibling-scope content no longer leaks to every spoke.** The parent-scope sync
+  walk previously shipped every *other* team's content to every repo in a group.
+  **Action:** the first post-upgrade sync PR may *remove* content from spokes —
+  that content should never have been there; review with that in mind.
+- **The published telemetry JSON Schema is now generated from the canonical event
+  spec** (`additionalProperties: false`) — the old artifact rejected the product's
+  own `session_summary` events and permitted fields the hooks never emit.
+  **Action:** tooling that validates events against the shipped schema must adopt
+  the regenerated artifact.
+- **The secret scan now covers the full compiler input surface** (core,
+  instructions, gotchas, lexicon, all scope layouts, domains; `.yaml` included).
+  **Action:** hub content that previously passed `validate` may now fail; scrub or
+  use placeholders.
+- **`sync --adopt-existing` archives more root files.** `AGENTS.md`, `.cursorrules`,
+  and `GEMINI.md` are now archived to `.agentboot-archive/` before overwrite instead
+  of being destroyed. **Action:** none — strictly safer.
+- **`verify-manifest` gained tamper-protection flags**: `--require-signed` makes a
+  missing signature a failure (the defense against signature stripping) and
+  `--allowed-signers`/`--signer` authenticate signer identity. **Action:** spoke CI
+  that runs `verify-manifest` should adopt `--require-signed` once signing is on.
+- **Node.js floor is 22** (`doctor` now agrees with `engines`). **Action:** upgrade
+  runtimes below Node 22.
+
+### Behavior changes in 0.17.0
+
+- **Telemetry event schema v1 → v2.** Every event now carries a `chain` field
+  (sha256 hash chain computed at append time), and the published schema artifact is
+  now **`dist/schema/telemetry-event.v2.json`**. **Action:** tooling pinned to the
+  v1 schema path or schema must move to v2 and tolerate the `chain` field.
+- **New commands `telemetry-ship` / `telemetry-verify`** ship digest-chained,
+  optionally SSH-signed batches to an org-configured collector and verify
+  log/batch integrity. **Opt-in:** nothing ships unless you set `telemetry.sink`
+  in the hub config — there is no default endpoint.
+- **`telemetry.sink` compiles into `telemetry-sink.json` in every platform core dir
+  and syncs to spokes.** **Action:** if you enable a sink, the next sync delivers a
+  new visible artifact to every repo; shipped events are no longer
+  developer-deletable — disclose this to your developers (see
+  [privacy.md](privacy.md)).
+
+### Behavior changes in 0.18.0
+
+- **AGENTS.md is now an officially supported, first-class output** (previously
+  community tier; enforcement class is ADVISORY — instructions, not hooks). The
+  compile fallback output set now includes `agents`. **Action:** hubs building
+  without an explicit `personas.outputFormats` list may emit — and the next sync
+  may deliver — an `AGENTS.md` spokes didn't previously receive; repos with a
+  hand-written `AGENTS.md` hit the first-sync stop / `--adopt-existing` flow.
+- **New command `evidence-pack`** exports a signed, digest-protected bundle of the
+  org's governance state for auditors. Opt-in; no migration required.
+- Docs and website truth-up only otherwise — no other user-facing changes.
+
+### Behavior changes in 0.19.0
+
+- **MCP digest pinning.** `agentboot mcp-pin --write` records a sha256 pin over each
+  approved server's live tool definitions (`mcp.approved[].toolsDigest`, per-tool
+  hashes in an `agentboot.mcp-pins.json` sidecar); `agentboot mcp-verify` re-checks
+  them for rug-pulls. Pins compile into **`mcp-pins.json` in every platform core
+  dir**, so spokes can verify without the hub (`mcp-verify --pins
+  .claude/mcp-pins.json`). **Action:** a new synced artifact appears in spokes;
+  `validate` now warns on approved servers that are unpinned or lack the new
+  `mcp.approved[].registry` provenance field — pin your servers or expect warnings.
+- **Optional in-toto/DSSE attestation.** With `sync.signing.emitInToto` set, signed
+  syncs emit `.agentboot-manifest.intoto.json` and `verify-manifest` verifies it.
+  Opt-in; no action unless enabled (then expect the new artifact in sync PRs).
+- **AGENTS.md import discovery, root and nested.** `import` now auto-discovers
+  nested `AGENTS.md` files (the spec's monorepo pattern). **Action:** re-running an
+  import sweep may surface files earlier sweeps missed.
+- **Fixed:** `--config` was silently ignored by `telemetry-inspect`,
+  `telemetry-ship`, and `evidence-pack` (they fell back to cwd discovery).
+  **Action:** scripts that passed `--config` to these commands and relied on the
+  buggy cwd fallback now get the config they asked for.
+
+---
+
 ## v0.11 → v0.15 (0.12.0 through 0.15.0)
 
 These four releases shipped together as an enterprise-hardening series. Your hub

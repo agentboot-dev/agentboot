@@ -10,7 +10,8 @@ AgentBoot is a build tool, not a runtime: it produces config files and exits —
 your agents, and nothing is ever sent to the AgentBoot vendor (no default telemetry endpoint exists;
 an org may configure its own collector via telemetry.sink, and that config is visible in every synced
 repo as telemetry-sink.json). Officially supported targets are the CLI surfaces of Claude Code,
-OpenAI Codex, and GitHub Copilot (enforcement-grade blocking hooks), plus AGENTS.md — the
+OpenAI Codex, and GitHub Copilot (enforcement-grade blocking hooks; Copilot's exit-2 blocking is
+documented but not yet empirically verified — see the capability matrix), plus AGENTS.md — the
 industry-standard cross-tool instruction file — as an officially supported advisory (non-blocking)
 output. Cursor, Windsurf, Gemini, and JetBrains are supported at a community tier (advisory guidance,
 not an enforced control).

@@ -162,7 +162,19 @@ function HeroTerminal() {
 
 // ─── Trust strip ──────────────────────────────────────────────────────────────
 function TrustStrip() {
-  const signals = ['Self-hosted', 'Zero data transmitted', 'Apache-2.0', 'Plain files out', 'Delivered by pull request'];
+  // "by default": there is no default endpoint and no phone-home — nothing ever
+  // reaches the AgentBoot vendor. An org MAY configure its own telemetry sink
+  // (telemetry.sink), in which case batches ship to that org-owned collector.
+  const signals: Array<{ label: string; title?: string }> = [
+    { label: 'Self-hosted' },
+    {
+      label: 'Zero data transmitted by default',
+      title: 'No default endpoint, no phone-home — nothing ever reaches the AgentBoot vendor. If your org configures its own telemetry sink, batches ship only to that org-owned collector.',
+    },
+    { label: 'Apache-2.0' },
+    { label: 'Plain files out' },
+    { label: 'Delivered by pull request' },
+  ];
   return (
     <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}` }}>
       <div style={{
@@ -170,8 +182,8 @@ function TrustStrip() {
         gap: '0.75rem 2.5rem', padding: '1.25rem 1.5rem',
       }}>
         {signals.map((s) => (
-          <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', color: C.muted, fontSize: '0.88rem', fontWeight: 500 }}>
-            <span style={{ color: C.green }}>✓</span>{s}
+          <span key={s.label} title={s.title} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', color: C.muted, fontSize: '0.88rem', fontWeight: 500 }}>
+            <span style={{ color: C.green }}>✓</span>{s.label}
           </span>
         ))}
       </div>
@@ -406,7 +418,8 @@ function Governance() {
           <p style={{ color: C.muted, fontSize: '0.8rem', marginTop: '0.75rem', lineHeight: 1.6 }}>
             Official support today covers each tool’s <strong>CLI surface</strong>. Broader surface support — IDE and editor
             extensions, and additional platforms — is <Link to="/docs/roadmap" style={{ color: C.primary }}>on the roadmap</Link>.
-            {' '}* Copilot’s hook surface is narrower than Claude Code’s and Codex’s — real, but lower-ceiling; we say so on purpose.
+            {' '}* Copilot’s hook surface is narrower than Claude Code’s and Codex’s — real, but lower-ceiling, and its
+            exit-2 blocking is documented rather than yet empirically verified; we say so on purpose.
             Cursor, Windsurf, Gemini, and JetBrains are supported at a <strong>community tier</strong> — advisory guidance,
             not an enforced control. If a cell says advisory, treat it as advisory.
           </p>

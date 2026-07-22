@@ -36,7 +36,7 @@ things you can do:
 - **Tell us about your platform** — especially if you live in an IDE/editor extension or a
   community‑tier tool. Real usage shapes what graduates to enforced support first.
 - **Contribute** — traits, gotchas, harness templates, and platform emitters are all welcome.
-  Start a [discussion](https://github.com/agentboot-dev/agentboot/discussions) or send a pull request.
+  Open an [issue](https://github.com/agentboot-dev/agentboot/issues) or send a pull request.
 
 Your feedback during the Beta is what turns it into a v1.0 you can standardize on.
 

@@ -365,6 +365,12 @@ export interface VerifyBatchChainOptions {
    * org's verifier/CI.
    */
   requireSigned?: boolean | undefined;
+  /**
+   * Cryptographically verify signatures and COUNT the verified ones, without
+   * failing on unsigned batches (for reporting, e.g. the evidence pack). Implied
+   * by requireSigned / allowedSignersPath.
+   */
+  verifySignatures?: boolean | undefined;
   /** Path to an OpenSSH allowed_signers file to authenticate each batch signer. */
   allowedSignersPath?: string | undefined;
   /** Principal to authenticate against (discovered via find-principals when omitted). */
@@ -433,7 +439,7 @@ export function verifyBatchChain(dir: string, options: VerifyBatchChainOptions =
     result.failures.push({ file: dir, reason: "directory not found" });
     return result;
   }
-  const wantSigCheck = options.requireSigned === true || options.allowedSignersPath !== undefined;
+  const wantSigCheck = options.requireSigned === true || options.allowedSignersPath !== undefined || options.verifySignatures === true;
   const files = fs.readdirSync(dir).filter((f) => /^batch-\d{8}\.json$/.test(f)).sort();
   let prevSeq: number | null = null;
   let prevDigest: string | null = null;
