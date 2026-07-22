@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://agentboot.dev
+    about: Getting-started, CLI reference, and troubleshooting guides.
+  - name: Security vulnerability
+    url: https://github.com/agentboot-dev/agentboot/blob/main/SECURITY.md
+    about: Report vulnerabilities privately — do NOT open a public issue.
+  - name: Support & questions
+    url: https://github.com/agentboot-dev/agentboot/blob/main/SUPPORT.md
+    about: How to get help and what to include in a report.

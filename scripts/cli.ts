@@ -381,14 +381,17 @@ program
   .description("Install compiled skills/rules to ~/.claude (or stage for an external manager)")
   .option("--dry-run", "show what would be written/staged without changing anything")
   .option("--mode <mode>", "override the write mode: auto (default), direct, or manifest")
-  .action(async (opts) => {
+  .action(async (opts, cmd) => {
     if (opts.mode && !["auto", "direct", "manifest"].includes(opts.mode)) {
       console.error(chalk.red("--mode must be one of: auto, direct, manifest"));
       process.exit(1);
     }
     const { installUserLevel } = await import("./lib/user-scope.js");
+    const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
-    const configPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config as string)
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
     const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
     if (!fs.existsSync(distCore)) {
@@ -544,14 +547,18 @@ program
   .description("Scaffold a persona, trait, gotcha, domain, hook, or template — or classify a prompt")
   .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt, template")
   .argument("<name>", "name for the new item (lowercase-with-hyphens); for template, the template name")
-  .action(async (type: string, name: string) => {
+  .action(async (type: string, name: string, _opts, cmd) => {
     // Validate name format (skip for prompt type — name is content/path, not an identifier)
     if (type !== "prompt" && !/^[a-z][a-z0-9-]{0,63}$/.test(name)) {
       console.error(chalk.red(`Name must be 1-64 lowercase alphanumeric chars with hyphens: got '${name}'`));
       process.exit(1);
     }
 
-    const cwd = process.cwd();
+    // Scaffold into the resolved hub, not blindly cwd: honor --config /
+    // AGENTBOOT_HUB so `add persona foo --config <hub>` writes into <hub>.
+    const globalOpts = cmd.optsWithGlobals();
+    const hubConfig = globalOpts.config ? path.resolve(globalOpts.config as string) : envHubConfig();
+    const cwd = hubConfig ? path.dirname(hubConfig) : process.cwd();
 
     if (type === "persona") {
       const personaDir = path.join(cwd, "core", "personas", name);
@@ -1384,14 +1391,19 @@ program
   .addOption(new Option("--verbose", "show detailed rationale per dimension (for --judge)").hideHelp())
   .addOption(new Option("--min-score <score>", "minimum passing score for --judge (default: 3.0)").argParser(parseFloat).hideHelp())
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
-  .action(async (opts) => {
+  .action(async (opts, cmd) => {
     const {
       runBehavioralTests, createSnapshot, compareSnapshots,
       saveSnapshot, loadSnapshot, printSnapshotDiff,
     } = await import("./lib/test-runner.js");
 
+    // -c/--config is a program-level global; read the merged view and let the
+    // explicit flag win (the documented "explicit flag always wins" contract).
+    const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
-    const configPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config as string)
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : null;
     const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
 
@@ -2072,10 +2084,13 @@ program
   .description("Empirically test compiled enforcement (hooks: block/deny/timeouts/malformed input) per platform and write dist/<platform>/enforcement-manifest.json")
   .option("--platform <name>", "test a single platform (default: all configured output formats)")
   .option("--format <type>", "output format: text or json", "text")
-  .action(async (opts) => {
+  .action(async (opts, cmd) => {
     const { runConformance } = await import("./lib/conformance.js");
+    const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
-    const configPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    const configPath = globalOpts.config
+      ? path.resolve(globalOpts.config as string)
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     if (!fs.existsSync(configPath)) {
       console.error(chalk.red("No agentboot.config.json found — run conformance from the hub (or set AGENTBOOT_HUB)."));
       process.exit(1);
@@ -2249,6 +2264,12 @@ program
       return days <= 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`;
     };
 
+    // Fail-closed on the CI/spoke path: verifying against a compiled --pins
+    // artifact, an entry with no toolsDigest means the pin was never recorded or
+    // was STRIPPED — either way the rug-pull check is a no-op for that server,
+    // which must not read as "verified". Hub-side interactive runs stay warn-only
+    // for incremental adoption unless --strict.
+    const strict = opts["strict"] === true || opts["pins"] !== undefined;
     console.log(chalk.bold("\n  AgentBoot — mcp-verify\n"));
     const sidecar = loadPinSidecar(pinSidecarPath(configPath));
     let okCount = 0, mismatched = 0, unpinned = 0, errors = 0;
@@ -2257,7 +2278,7 @@ program
       if (!server.toolsDigest) {
         unpinned++;
         const msg = `${server.name} — not pinned (no toolsDigest). Record one: agentboot mcp-pin --server ${server.name} --write`;
-        console.log(opts["strict"] === true ? chalk.red(`  ✗ ${msg}`) : chalk.yellow(`  ⚠ ${msg}`));
+        console.log(strict ? chalk.red(`  ✗ ${msg}`) : chalk.yellow(`  ⚠ ${msg}`));
         continue;
       }
       const baseline = sidecar[server.name]?.toolHashes;
@@ -2287,9 +2308,19 @@ program
     }
 
     const summary = `${okCount} ok, ${mismatched} mismatched, ${unpinned} unpinned, ${errors} error${errors === 1 ? "" : "s"}`;
-    const failed = mismatched > 0 || errors > 0 || (opts["strict"] === true && unpinned > 0);
-    console.log(failed ? chalk.red(`\n  ✗ mcp-verify: ${summary}\n`) : chalk.green(`\n  ✓ mcp-verify: ${summary}\n`));
-    if (failed) process.exit(1);
+    const failed = mismatched > 0 || errors > 0 || (strict && unpinned > 0);
+    if (failed) {
+      console.log(chalk.red(`\n  ✗ mcp-verify: ${summary}\n`));
+      process.exit(1);
+    }
+    // Never render a plain green "verified" while any server is unchecked — an
+    // unpinned server is not evidence of a clean surface, and a bare ✓ reads as
+    // one. Only all-pinned-and-matching earns the green check.
+    if (unpinned > 0) {
+      console.log(chalk.yellow(`\n  ⚠ mcp-verify: ${summary} — ${unpinned} server(s) UNVERIFIED (unpinned). Run mcp-pin --write, or --strict to fail.\n`));
+    } else {
+      console.log(chalk.green(`\n  ✓ mcp-verify: ${summary}\n`));
+    }
   });
 
 program
@@ -2366,7 +2397,13 @@ program
       console.log(a.statementOk
         ? chalk.green("  ✓ Attestation: well-formed in-toto v1 statement")
         : chalk.red("  ✗ Attestation payload malformed"));
-      if (a.subjectsMatchManifest !== null) {
+      if (a.subjectsMatchManifest === null) {
+        // No manifest to bind the attestation to → it proves only "someone
+        // signed some statement", not "this manifest is attested". That is not
+        // a pass; a self-signed statement about a different manifest must not
+        // read as verified.
+        console.log(chalk.red("  ✗ Attestation could not be bound to a manifest — unverified (a signature alone attests nothing)"));
+      } else {
         console.log(a.subjectsMatchManifest
           ? chalk.green("  ✓ Attestation subjects match the manifest's file digests")
           : chalk.red("  ✗ Attestation subjects DIVERGE from the manifest"));
@@ -2386,7 +2423,7 @@ program
         "    (Standard in-toto predicate, SSHSIG signature — verifiable here or via ssh-keygen; " +
         "not a Sigstore bundle: no transparency log, no CI-identity certificate.)"));
       attestationFailed =
-        !a.statementOk || a.subjectsMatchManifest === false ||
+        !a.statementOk || a.subjectsMatchManifest !== true ||
         a.signatureOk === false || a.signerVerified === false;
     }
 
@@ -3291,8 +3328,14 @@ program
       signKeyPath,
     });
     console.log(`  Spooled ${spool.eventsSpooled} event(s) into ${spool.batchesWritten} batch(es)${spool.signed ? chalk.green(" [signed]") : ""}`);
+    if (spool.logReset) console.log(chalk.yellow("  ⚠ Local log shrank below the cursor (rotation/truncation) — re-read from the start; the sink dedups by batch sequence."));
+    if (spool.corruptLines > 0) console.log(chalk.yellow(`  ⚠ ${spool.corruptLines} unparseable log line(s) skipped (surfaced, not silently dropped).`));
     if (spool.signingError) {
-      console.error(chalk.red(`  ✗ Signing FAILED: ${spool.signingError} — batches written unsigned; fix the key before shipping evidence.`));
+      // Signing is all-or-nothing: nothing was written and the cursor did NOT
+      // advance, so these events retain their chance to be signed on the next
+      // run with a working key — they are NOT shipped unsigned.
+      console.error(chalk.red(`  ✗ Signing FAILED: ${spool.signingError}`));
+      console.error(chalk.red("    Nothing was spooled and the cursor is unchanged — fix the signing key and re-run; events will be signed then, not shipped unsigned."));
       process.exit(1);
     }
 
@@ -3312,10 +3355,11 @@ program
   .description("Verify the hash chain of a local telemetry log and/or the digest chain, sequence continuity and signatures of shipped batches")
   .option("--log <path>", "NDJSON telemetry log to verify")
   .option("--batches <dir>", "directory of batch files to verify (e.g. the spool's shipped/ dir or the sink's store)")
+  .option("--require-signed", "FAIL if any batch is unsigned or its signature does not verify (the only defense against signature stripping — set this in CI)")
   .option("--allowed-signers <path>", "OpenSSH allowed_signers file to authenticate batch signatures against")
   .option("--signer <principal>", "expected signer principal")
   .action(async (opts) => {
-    const { verifyTelemetryLog, verifyBatchChain, TELEMETRY_SIG_NAMESPACE } = await import("./lib/telemetry-sink.js");
+    const { verifyTelemetryLog, verifyBatchChain } = await import("./lib/telemetry-sink.js");
     if (!opts["log"] && !opts["batches"]) {
       console.error(chalk.red("  ✗ Nothing to verify — pass --log and/or --batches."));
       process.exit(1);
@@ -3337,47 +3381,25 @@ program
 
     if (opts["batches"]) {
       const dir = path.resolve(opts["batches"] as string);
-      const v = verifyBatchChain(dir);
-      console.log(`  Batches: ${v.batches} — ${v.signed} signed`);
+      // Enforce signatures in the lib (not just count them): --require-signed
+      // fails on any unsigned/invalid batch — the actual defense against
+      // signature stripping — and --allowed-signers authenticates each signer.
+      const v = verifyBatchChain(dir, {
+        requireSigned: opts["requireSigned"] === true,
+        allowedSignersPath: opts["allowedSigners"] as string | undefined,
+        signerPrincipal: opts["signer"] as string | undefined,
+      });
+      console.log(`  Batches: ${v.batches} — ${v.signed} signed`
+        + (v.signatureVerified ? `, ${v.signatureVerified} signature(s) verified` : "")
+        + (v.signerAuthenticated ? `, ${v.signerAuthenticated} signer(s) authenticated` : ""));
       if (v.gaps.length > 0) console.log(chalk.red(`    ✗ sequence gap(s): batch ${v.gaps.join(", ")} missing — deleted or never delivered`));
       for (const f of v.failures) console.log(chalk.red(`    ✗ ${f.file}: ${f.reason}`));
-
-      // Signature verification against a trust root, when requested.
-      if (opts["allowedSigners"]) {
-        const { verifyManifestFile: _unused } = await import("./lib/provenance.js");
-        void _unused;
-        const { spawnSync } = await import("node:child_process");
-        const fsx = await import("node:fs");
-        const osx = await import("node:os");
-        const allowed = path.resolve(opts["allowedSigners"] as string);
-        let sigOk = 0, sigFail = 0;
-        for (const f of fsx.readdirSync(dir).filter((x) => /^batch-\d{8}\.json$/.test(x)).sort()) {
-          const batch = JSON.parse(fsx.readFileSync(path.join(dir, f), "utf-8"));
-          if (!batch.signature?.signature) continue;
-          const tmp = fsx.mkdtempSync(path.join(osx.tmpdir(), "agentboot-batchsig-"));
-          try {
-            const sigFile = path.join(tmp, "b.sig");
-            fsx.writeFileSync(sigFile, batch.signature.signature);
-            let principal = opts["signer"] as string | undefined;
-            if (!principal) {
-              const found = spawnSync("ssh-keygen", ["-Y", "find-principals", "-f", allowed, "-s", sigFile], { encoding: "utf-8", timeout: 10_000 });
-              principal = found.status === 0 ? (found.stdout ?? "").trim().split("\n")[0] : undefined;
-            }
-            const check = principal
-              ? spawnSync("ssh-keygen", ["-Y", "verify", "-f", allowed, "-I", principal, "-n", batch.signature.namespace ?? TELEMETRY_SIG_NAMESPACE, "-s", sigFile], { input: batch.digest ?? "", encoding: "utf-8", timeout: 10_000 })
-              : null;
-            if (check && check.status === 0) sigOk++;
-            else { sigFail++; console.log(chalk.red(`    ✗ ${f}: signature does not verify against allowed_signers`)); }
-          } finally {
-            fsx.rmSync(tmp, { recursive: true, force: true });
-          }
-        }
-        console.log(`    signatures: ${sigOk} authenticated${sigFail ? chalk.red(`, ${sigFail} FAILED`) : ""}`);
-        failed = failed || sigFail > 0;
+      if (!opts["requireSigned"] && !opts["allowedSigners"] && v.signed < v.batches) {
+        console.log(chalk.yellow(`    ⚠ ${v.batches - v.signed} batch(es) unsigned — pass --require-signed to fail on stripped signatures.`));
       }
-
       console.log(v.ok
-        ? chalk.green("  ✓ Batch chain verifies — digests intact, sequence continuous")
+        ? chalk.green("  ✓ Batch chain verifies — digests intact, sequence continuous"
+            + (opts["requireSigned"] || opts["allowedSigners"] ? ", signatures enforced" : ""))
         : chalk.red("  ✗ Batch chain FAILED"));
       console.log("");
       failed = failed || !v.ok;
@@ -3606,7 +3628,7 @@ program
   .option("--report", "Generate HTML report")
   .option("--output-dir <path>", "Output directory for report", ".")
   .option("--json", "Output raw JSON metrics")
-  .action(async (opts) => {
+  .action(async (opts, cmd) => {
     const { loadTelemetry, aggregateMetrics, generateModelRecommendations, analyzeCoverage, printOptimizeReport, generateHtmlReport } = await import("./lib/optimize.js");
     const events = loadTelemetry({ since: opts.since, until: opts.until, scope: opts.scope });
     if (events.length === 0) {
@@ -3615,10 +3637,14 @@ program
     }
     const metrics = aggregateMetrics(events);
     const recommendations = generateModelRecommendations(metrics);
-    // Config is optional and only feeds coverage-gap analysis. Resolve from the
-    // user's hub (cwd), never the package dir (ROOT has no config in a published
-    // install), and tolerate its absence rather than crashing.
-    const cwdConfigPath = path.join(process.cwd(), "agentboot.config.json");
+    // Config is optional and only feeds coverage-gap analysis. Honor the
+    // explicit --config / AGENTBOOT_HUB override, else the user's hub (cwd);
+    // never the package dir (ROOT has no config in a published install), and
+    // tolerate its absence rather than crashing.
+    const globalOpts = cmd.optsWithGlobals();
+    const cwdConfigPath = globalOpts.config
+      ? path.resolve(globalOpts.config as string)
+      : envHubConfig() ?? path.join(process.cwd(), "agentboot.config.json");
     const config = fs.existsSync(cwdConfigPath) ? loadConfig(cwdConfigPath) : null;
     const enabledPersonas = config?.personas?.enabled ?? [];
     const knownScopes = metrics.map((m: any) => m.scope).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);

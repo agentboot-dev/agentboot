@@ -34,13 +34,13 @@ Enforcement claims are where tools in this space tend to inflate. Here is the ac
 
 | Tier | Platforms | What you get |
 |---|---|---|
-| **Official** (enforcement-grade) | **Claude Code**, **OpenAI Codex CLI**, **GitHub Copilot CLI** | Compiled compliance hooks emitted into each platform's native mechanism (`.claude/settings.json`, `.codex/hooks.json`, `.github/hooks/agentboot.json`), from one canonical set of portable hook scripts, all blocking on exit code 2 and kept in lock-step across the three platforms. |
+| **Official** (enforcement-grade) | **Claude Code**, **OpenAI Codex CLI**, **GitHub Copilot CLI** | Compiled compliance hooks emitted into each platform's native mechanism (`.claude/settings.json`, `.codex/hooks.json`, `.github/hooks/agentboot.json`), from one canonical set of portable hook scripts, blocking on exit code 2 — empirically verified on Claude Code and Codex; documented but not yet empirically verified on Copilot (see the caveats below). |
 | **Official** (advisory) | **`AGENTS.md`** | The industry-standard cross-tool instruction file, compiled and drift-checked as a first-class output. Officially supported — but it is instructions, not hooks, so it carries no blocking enforcement by design. |
 | **Community** (advisory) | Cursor, Windsurf, Gemini Code Assist, JetBrains AI, agentskills.io | Native config output is emitted and drift-checked, but there is no blocking-hook enforcement. Advisory means advisory. |
 
 Two caveats we'd rather you hear from us than discover in evaluation:
 
-- **Copilot's hook ceiling is lower than Claude Code's and Codex's.** The hooks are real and blocking within what the platform exposes, but Copilot command-hooks **fail open on timeout** — a hung or slow hook allows the action instead of blocking it. The three platforms do not enforce identically, and we won't imply they do.
+- **Copilot's hook ceiling is lower than Claude Code's and Codex's.** The hooks are real and emitted into Copilot's native mechanism, but Copilot command-hooks **fail open on timeout** — a hung or slow hook allows the action instead of blocking it — and Copilot's exit-2 blocking is **documented platform behavior we have not yet empirically verified**, unlike Claude Code's and Codex's. The three platforms do not enforce identically, and we won't imply they do.
 - **Enforcement binds tool surfaces, not people.** Blocking hooks constrain the supported CLIs. A developer working outside them isn't constrained by AgentBoot — that's a policy matter for your org, and it's why the third leg exists. The full statement of what AgentBoot does and doesn't defend against is on the [Trust & Architecture page](/trust).
 
 ## Verify: drift you can see

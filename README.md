@@ -30,6 +30,8 @@ The `/ab` skill inside Claude Code is the human interface for all of this. The C
 
 ## Quickstart
 
+**Requires Node.js ≥ 22.** Full documentation: **[agentboot.dev](https://agentboot.dev)**.
+
 ```bash
 # 1. Install
 npm install -g agentboot

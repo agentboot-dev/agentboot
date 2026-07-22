@@ -28,6 +28,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { createHash } from "crypto";
+import { spawnSync } from "child_process";
 import {
   canonicalize,
   signManifestDigest,
@@ -154,13 +155,30 @@ export interface SpoolResult {
   signed: boolean;
   signingError: string | null;
   batchFiles: string[];
+  /** Complete log lines that were present but unparseable (surfaced, not silently dropped). */
+  corruptLines: number;
+  /** The local log shrank below the cursor (rotation/truncation) — cursor was reset to 0. */
+  logReset: boolean;
+  /** Signing was configured but failed — nothing was written and the cursor was NOT advanced. */
+  abortedUnsigned: boolean;
 }
 
 /**
  * Move new events from the local log into sequence-numbered batch files under
  * spoolDir. Idempotent via a byte-offset cursor: events are spooled exactly
- * once. Signing failures are surfaced, never silent (a configured-but-broken
- * signer must not quietly downgrade the evidence chain).
+ * once.
+ *
+ * Integrity invariants (each fixes a silent-loss / silent-downgrade class):
+ *  - **Signing is all-or-nothing.** If a signing key is configured and signing
+ *    fails, the whole run aborts: no batch is written, the cursor does NOT
+ *    advance, and the error surfaces — so a later run with a working key signs
+ *    those events instead of shipping them permanently unsigned.
+ *  - **Only complete lines are consumed.** A trailing partial line (bytes after
+ *    the last newline — a hook write still in flight) is left unconsumed; the
+ *    cursor stops before it so it is re-read once complete.
+ *  - **Truncation is detected.** If the log shrank below the cursor (rotation),
+ *    the cursor resets to 0 rather than becoming a permanent no-op.
+ *  - **Corrupt complete lines are counted, not silently dropped.**
  */
 export function spoolTelemetry(
   logPath: string,
@@ -168,24 +186,53 @@ export function spoolTelemetry(
   options: { batchSize?: number; signKeyPath?: string | null } = {},
 ): SpoolResult {
   const batchSize = options.batchSize ?? 100;
-  const result: SpoolResult = { batchesWritten: 0, eventsSpooled: 0, signed: false, signingError: null, batchFiles: [] };
+  const result: SpoolResult = {
+    batchesWritten: 0, eventsSpooled: 0, signed: false, signingError: null,
+    batchFiles: [], corruptLines: 0, logReset: false, abortedUnsigned: false,
+  };
   if (!fs.existsSync(logPath)) return result;
   fs.mkdirSync(spoolDir, { recursive: true });
 
   const state = readSpoolState(spoolDir);
   const buf = fs.readFileSync(logPath);
-  if (state.offset >= buf.length) return result;
-  const fresh = buf.subarray(state.offset).toString("utf-8");
-  const lines = fresh.split("\n").filter((l) => l.trim());
-  if (lines.length === 0) return result;
+
+  // Truncation/rotation: the log is shorter than where we last stopped, so the
+  // bytes we recorded no longer exist. Re-read from the start rather than
+  // sitting past EOF forever (batches are seq-numbered, so the sink dedups).
+  let startOffset = state.offset;
+  if (startOffset > buf.length) {
+    startOffset = 0;
+    result.logReset = true;
+  }
+  if (startOffset >= buf.length) return result;
+
+  // Consume only through the last newline; anything after it is a partial write
+  // in flight — leave those bytes for the next run.
+  const region = buf.subarray(startOffset);
+  const lastNl = region.lastIndexOf(0x0a);
+  if (lastNl === -1) return result; // no complete line yet
+  const consumedBytes = lastNl + 1;
+  const complete = region.subarray(0, consumedBytes).toString("utf-8");
+  const lines = complete.split("\n").filter((l) => l.trim());
+  if (lines.length === 0) {
+    // Only blank lines — still advance so we don't re-scan them forever.
+    fs.writeFileSync(stateFile(spoolDir), JSON.stringify({
+      offset: startOffset + consumedBytes, lastSeq: state.lastSeq, lastDigest: state.lastDigest,
+    } satisfies SpoolState, null, 2) + "\n", { mode: 0o600 });
+    return result;
+  }
 
   const events: Array<Record<string, unknown>> = [];
   for (const line of lines) {
-    try { events.push(JSON.parse(line) as Record<string, unknown>); } catch { /* skip corrupt line */ }
+    try { events.push(JSON.parse(line) as Record<string, unknown>); }
+    catch { result.corruptLines++; }
   }
 
   let seq = state.lastSeq;
   let prevDigest = state.lastDigest;
+  const written: string[] = [];
+  const rollback = () => { for (const f of written) { try { fs.unlinkSync(f); } catch { /* already gone */ } } };
+
   for (let i = 0; i < events.length; i += batchSize) {
     seq++;
     const batch: TelemetryBatch = {
@@ -201,14 +248,24 @@ export function spoolTelemetry(
     if (options.signKeyPath) {
       const signed = signManifestDigest(batch.digest, options.signKeyPath, TELEMETRY_SIG_NAMESPACE);
       if ("error" in signed) {
+        // Signing was required but failed — roll back everything written this
+        // run and leave the cursor untouched so these events get another chance
+        // to be signed, rather than permanently shipping them unsigned.
+        rollback();
         result.signingError = signed.error;
-      } else {
-        batch.signature = signed.signature;
-        result.signed = true;
+        result.abortedUnsigned = true;
+        result.batchesWritten = 0;
+        result.eventsSpooled = 0;
+        result.batchFiles = [];
+        result.signed = false;
+        return result;
       }
+      batch.signature = signed.signature;
+      result.signed = true;
     }
     const file = path.join(spoolDir, `batch-${String(seq).padStart(8, "0")}.json`);
     fs.writeFileSync(file, JSON.stringify(batch, null, 2) + "\n", { mode: 0o600 });
+    written.push(file);
     result.batchFiles.push(file);
     result.batchesWritten++;
     result.eventsSpooled += batch.events.length;
@@ -216,7 +273,7 @@ export function spoolTelemetry(
   }
 
   fs.writeFileSync(stateFile(spoolDir), JSON.stringify({
-    offset: buf.length,
+    offset: startOffset + consumedBytes,
     lastSeq: seq,
     lastDigest: prevDigest,
   } satisfies SpoolState, null, 2) + "\n", { mode: 0o600 });
@@ -289,18 +346,100 @@ export async function shipSpool(spoolDir: string, sink: TelemetrySinkConfig): Pr
 export interface BatchChainVerification {
   batches: number;
   signed: number;
+  /** Batches whose SSHSIG cryptographically verified over their digest. */
+  signatureVerified: number;
+  /** Batches whose signer authenticated against the allowed_signers file. */
+  signerAuthenticated: number;
   gaps: number[];
   failures: Array<{ file: string; reason: string }>;
   ok: boolean;
 }
 
-/** Verify digest integrity, digest chaining, and sequence continuity of a directory of batch files. */
-export function verifyBatchChain(dir: string): BatchChainVerification {
-  const result: BatchChainVerification = { batches: 0, signed: 0, gaps: [], failures: [], ok: false };
+export interface VerifyBatchChainOptions {
+  /**
+   * Treat any UNSIGNED batch, or a batch whose signature does not verify, as a
+   * FAILURE. This is the only defense against signature stripping — the chain
+   * digest is unkeyed, so an actor who deletes the `signature` fields and keeps
+   * the (still self-consistent) digests otherwise passes. The expectation that
+   * batches MUST be signed can only come from outside: this flag, set by the
+   * org's verifier/CI.
+   */
+  requireSigned?: boolean | undefined;
+  /**
+   * Cryptographically verify signatures and COUNT the verified ones, without
+   * failing on unsigned batches (for reporting, e.g. the evidence pack). Implied
+   * by requireSigned / allowedSignersPath.
+   */
+  verifySignatures?: boolean | undefined;
+  /** Path to an OpenSSH allowed_signers file to authenticate each batch signer. */
+  allowedSignersPath?: string | undefined;
+  /** Principal to authenticate against (discovered via find-principals when omitted). */
+  signerPrincipal?: string | undefined;
+}
+
+/** SSHSIG check-novalidate (+ optional allowed_signers auth) of a batch signature over its digest. */
+function verifyBatchSignature(
+  batch: TelemetryBatch,
+  opts: VerifyBatchChainOptions,
+): { signatureOk: boolean; signerAuthed: boolean | null; error?: string } {
+  const sig = batch.signature;
+  if (!sig?.signature || !batch.digest) return { signatureOk: false, signerAuthed: null, error: "no signature" };
+  const namespace = sig.namespace || TELEMETRY_SIG_NAMESPACE;
+  let dir: string | null = null;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-batchsig-"));
+    const sigFile = path.join(dir, "batch.sig");
+    fs.writeFileSync(sigFile, sig.signature, "utf-8");
+    const check = spawnSync(
+      "ssh-keygen",
+      ["-Y", "check-novalidate", "-n", namespace, "-s", sigFile],
+      { input: batch.digest, encoding: "utf-8", stdio: "pipe", timeout: 10_000 },
+    );
+    if (check.status !== 0) {
+      return { signatureOk: false, signerAuthed: null, error: (check.stderr ?? "").trim().split("\n")[0] || "signature check failed" };
+    }
+    let signerAuthed: boolean | null = null;
+    if (opts.allowedSignersPath) {
+      const allowed = path.resolve(opts.allowedSignersPath);
+      if (!fs.existsSync(allowed)) {
+        return { signatureOk: true, signerAuthed: false, error: `allowed_signers not found: ${allowed}` };
+      }
+      let principal = opts.signerPrincipal ?? null;
+      if (!principal) {
+        const found = spawnSync("ssh-keygen", ["-Y", "find-principals", "-f", allowed, "-s", sigFile],
+          { encoding: "utf-8", stdio: "pipe", timeout: 10_000 });
+        principal = found.status === 0 ? (found.stdout ?? "").trim().split("\n")[0] || null : null;
+      }
+      if (!principal) return { signatureOk: true, signerAuthed: false, error: "signer not in allowed_signers" };
+      const verify = spawnSync(
+        "ssh-keygen",
+        ["-Y", "verify", "-f", allowed, "-I", principal, "-n", namespace, "-s", sigFile],
+        { input: batch.digest, encoding: "utf-8", stdio: "pipe", timeout: 10_000 },
+      );
+      signerAuthed = verify.status === 0;
+    }
+    return { signatureOk: true, signerAuthed };
+  } catch (err) {
+    return { signatureOk: false, signerAuthed: null, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Verify digest integrity, digest chaining, sequence continuity, and — when
+ * `requireSigned` is set or an allowed_signers file is supplied — the SSHSIG
+ * signature (and signer identity) of every batch in a directory.
+ */
+export function verifyBatchChain(dir: string, options: VerifyBatchChainOptions = {}): BatchChainVerification {
+  const result: BatchChainVerification = {
+    batches: 0, signed: 0, signatureVerified: 0, signerAuthenticated: 0, gaps: [], failures: [], ok: false,
+  };
   if (!fs.existsSync(dir)) {
     result.failures.push({ file: dir, reason: "directory not found" });
     return result;
   }
+  const wantSigCheck = options.requireSigned === true || options.allowedSignersPath !== undefined || options.verifySignatures === true;
   const files = fs.readdirSync(dir).filter((f) => /^batch-\d{8}\.json$/.test(f)).sort();
   let prevSeq: number | null = null;
   let prevDigest: string | null = null;
@@ -324,7 +463,26 @@ export function verifyBatchChain(dir: string): BatchChainVerification {
         result.failures.push({ file: f, reason: "prev_batch_digest does not match the preceding batch" });
       }
     }
-    if (batch.signature?.signature) result.signed++;
+    const hasSig = Boolean(batch.signature?.signature);
+    if (hasSig) result.signed++;
+    if (wantSigCheck) {
+      if (!hasSig) {
+        if (options.requireSigned) {
+          result.failures.push({ file: f, reason: "batch is UNSIGNED but signatures are required (--require-signed) — possible signature stripping" });
+        }
+      } else {
+        const v = verifyBatchSignature(batch, options);
+        if (!v.signatureOk) {
+          result.failures.push({ file: f, reason: `signature verification failed${v.error ? `: ${v.error}` : ""}` });
+        } else {
+          result.signatureVerified++;
+          if (v.signerAuthed === true) result.signerAuthenticated++;
+          else if (v.signerAuthed === false) {
+            result.failures.push({ file: f, reason: `signer not authenticated against allowed_signers${v.error ? `: ${v.error}` : ""}` });
+          }
+        }
+      }
+    }
     prevSeq = batch.batch_seq;
     prevDigest = batch.digest ?? null;
   }

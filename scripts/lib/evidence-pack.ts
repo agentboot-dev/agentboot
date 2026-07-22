@@ -69,14 +69,33 @@ export interface EvidencePack {
     denyTools: string[];
     exceptions: Array<{ id: string; expired: boolean; expires: string; owner: string }>;
   };
+  /**
+   * MCP governance state: each approved server, where the org sourced it
+   * (registry provenance), and whether its tool surface is digest-pinned
+   * against the rug-pull class. Enforcement is only meaningful when the org
+   * enforces the approved list.
+   */
+  mcp: {
+    enforceApproved: boolean;
+    approved: Array<{
+      name: string;
+      registry: string | null;
+      pinned: boolean;
+      toolsDigestRecordedAt: string | null;
+    }>;
+  };
   repos: RepoEvidence[];
   telemetry: {
     batchStoreChecked: string | null;
-    chain: Pick<BatchChainVerification, "batches" | "signed" | "gaps" | "ok"> | null;
+    chain:
+      | (Pick<BatchChainVerification, "batches" | "signed" | "gaps" | "ok"> & { signatureVerified: number })
+      | null;
   };
   integrity?: {
     algorithm: "sha256";
     pack_digest: string;
+    /** True only when the pack digest carries an SSH signature (signing configured). */
+    signed: boolean;
     signature?: ManifestSignature;
   };
 }
@@ -171,13 +190,26 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     });
   }
 
-  // Telemetry batch-chain evidence, when a store exists.
+  // MCP governance evidence: approved servers with provenance + pin status.
+  const mcpEvidence: EvidencePack["mcp"] = {
+    enforceApproved: config.mcp?.enforceApproved === true,
+    approved: (config.mcp?.approved ?? []).map((s) => ({
+      name: s.name,
+      registry: s.registry ?? null,
+      pinned: Boolean(s.toolsDigest),
+      toolsDigestRecordedAt: s.toolsDigestRecordedAt ?? null,
+    })),
+  };
+
+  // Telemetry batch-chain evidence, when a store exists. Verify signatures too
+  // (not just digests) so the pack records how many batches are cryptographically
+  // signed, not merely how many carry a signature field.
   let telemetryChain: EvidencePack["telemetry"] = { batchStoreChecked: null, chain: null };
   if (options.telemetryBatchDir && fs.existsSync(options.telemetryBatchDir)) {
-    const v = verifyBatchChain(options.telemetryBatchDir);
+    const v = verifyBatchChain(options.telemetryBatchDir, { verifySignatures: true });
     telemetryChain = {
       batchStoreChecked: options.telemetryBatchDir,
-      chain: { batches: v.batches, signed: v.signed, gaps: v.gaps, ok: v.ok },
+      chain: { batches: v.batches, signed: v.signed, signatureVerified: v.signatureVerified, gaps: v.gaps, ok: v.ok },
     };
   }
 
@@ -188,18 +220,20 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     hub: collectHubProvenance(hubPath, agentbootVersion),
     enforcement: { declared: PLATFORM_ENFORCEMENT, manifests, unprobed_platforms: unprobed },
     guardrails: { denyTools, exceptions },
+    mcp: mcpEvidence,
     repos: repoEvidence,
     telemetry: telemetryChain,
   };
 
-  // Integrity: digest always; signature when the hub signs.
+  // Integrity: digest always; signature only when the hub configures signing —
+  // `signed` states which, so a consumer never has to assume "signed".
   const digest = createHash("sha256").update(canonicalize({ ...pack })).digest("hex");
-  pack.integrity = { algorithm: "sha256", pack_digest: digest };
+  pack.integrity = { algorithm: "sha256", pack_digest: digest, signed: false };
   let signingError: string | null = null;
   if (options.signKeyPath) {
     const signed = signManifestDigest(digest, options.signKeyPath, EVIDENCE_SIG_NAMESPACE);
     if ("error" in signed) signingError = signed.error;
-    else pack.integrity.signature = signed.signature;
+    else { pack.integrity.signature = signed.signature; pack.integrity.signed = true; }
   }
 
   return { pack, signingError };

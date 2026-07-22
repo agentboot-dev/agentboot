@@ -96,6 +96,12 @@ export function classifySyncRisk(relPath: string): SyncRiskClass {
   if (base === "settings.json" || base === "managed-settings.json") return "enforcement";
   if (p.includes("managed-settings.d/") || p.includes("/managed/")) return "enforcement";
   if (base === ".mcp.json") return "enforcement";
+  // Telemetry sink config (redirecting it exfiltrates telemetry to an
+  // attacker-chosen collector) and MCP pin baselines (swapping them weakens or
+  // disables the rug-pull digest check) are security controls, not advisory
+  // content — a reviewer must see them called out, not buried as 🟢.
+  if (base === "telemetry-sink.json") return "enforcement";
+  if (base === "mcp-pins.json" || base === "agentboot.mcp-pins.json") return "enforcement";
   if (base.endsWith(".sh") || base.endsWith(".ps1")) return "enforcement";
 
   if (base === ".agentboot-manifest.json" || base === "plugin.json" || base === "persona.config.json") {
@@ -144,14 +150,26 @@ export interface ManifestIntegrity {
   signature?: ManifestSignature;
 }
 
-/** Deterministic serialization: recursively sorted object keys. */
+/**
+ * Deterministic serialization: recursively sorted object keys.
+ *
+ * Object keys whose value is `undefined` are OMITTED, matching JSON semantics
+ * (`JSON.stringify({a: undefined})` → `"{}"`). Without this, an in-memory
+ * manifest carrying an undefined-valued field canonicalizes differently from
+ * the same manifest after a JSON round-trip (which drops the key) — so a
+ * manifest could be signed over one digest and then FAIL its own verify after
+ * being written and re-read. `undefined` (top-level or in an array) serializes
+ * to `null`, again matching `JSON.stringify`'s array behavior.
+ */
 export function canonicalize(value: unknown): string {
+  if (value === undefined) return "null";
   if (Array.isArray(value)) {
-    return "[" + value.map(canonicalize).join(",") + "]";
+    return "[" + value.map((v) => canonicalize(v === undefined ? null : v)).join(",") + "]";
   }
   if (value !== null && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     return "{" + Object.keys(obj).sort()
+      .filter((k) => obj[k] !== undefined)
       .map((k) => JSON.stringify(k) + ":" + canonicalize(obj[k]))
       .join(",") + "}";
   }
@@ -195,7 +213,12 @@ export function signManifestDigest(
     return {
       signature: {
         format: "ssh",
-        namespace: MANIFEST_SIG_NAMESPACE,
+        // Record the namespace the signature was ACTUALLY produced under — not
+        // the manifest default. Telemetry/evidence-pack sign under their own
+        // namespaces; recording the wrong one makes `-Y verify` fail against a
+        // genuine signature (the recorded namespace is what the verifier feeds
+        // back to ssh-keygen).
+        namespace,
         signer_public_key: publicKey,
         signature: sign.stdout,
       },
@@ -300,10 +323,18 @@ export function verifyManifestFile(
   // Per-file hashes. Manifest paths are repo-relative; the repo root is the
   // manifest's grandparent (repo/<targetDir>/.agentboot-manifest.json) unless
   // given explicitly.
-  const root = repoRoot ?? path.resolve(path.dirname(manifestPath), "..");
+  const root = path.resolve(repoRoot ?? path.resolve(path.dirname(manifestPath), ".."));
   const files = (manifest["files"] ?? []) as Array<{ path: string; hash: string }>;
   for (const f of files) {
-    const abs = path.join(root, f.path);
+    const abs = path.resolve(root, f.path);
+    // Refuse to hash a manifest entry that escapes the repo root — a hostile
+    // manifest could otherwise point `files[].path` at `../../etc/...` and turn
+    // verify into an arbitrary-file read. Such an entry is itself a mismatch.
+    if (abs !== root && !abs.startsWith(root + path.sep)) {
+      result.fileMismatches.push({ path: f.path, expected: f.hash, actual: null });
+      result.errors.push(`Manifest file path escapes the repo root: ${f.path}`);
+      continue;
+    }
     let actual: string | null = null;
     try {
       actual = createHash("sha256").update(fs.readFileSync(abs)).digest("hex");
@@ -389,11 +420,21 @@ export function verifyManifestFile(
   }
 
   // Honest posture: what did this verification actually establish?
+  // A "signed-*" posture REQUIRES digestOk AND zero file mismatches. The SSHSIG
+  // signs the *recorded* digest; if the content no longer matches that digest
+  // (digestOk=false) or a listed file was swapped (fileMismatches), the
+  // signature vouches only for a stale digest — the actual artifacts are
+  // unverified. Reporting "signed-authenticated" on tampered content is the lie
+  // this gate prevents; a consumer reading `posture` must never be fooled while
+  // digestOk is false.
+  const contentIntact = result.digestOk && result.fileMismatches.length === 0;
   result.posture =
     result.recordedDigest === null ? "none"
+    : !contentIntact ? "integrity-only"
     : !integrity?.signature?.signature ? "integrity-only"
     : result.signatureOk && result.signerVerified === true ? "signed-authenticated"
-    : "signed-unauthenticated";
+    : result.signatureOk ? "signed-unauthenticated"
+    : "integrity-only";
 
   return result;
 }
@@ -512,10 +553,17 @@ export interface DsseEnvelope {
   };
 }
 
-/** DSSE Pre-Authentication Encoding: "DSSEv1 SP len(type) SP type SP len(body) SP body". */
+/**
+ * DSSE Pre-Authentication Encoding: "DSSEv1 SP len(type) SP type SP len(body) SP body".
+ * Per the DSSE spec the lengths are BYTE counts (UTF-8), not JS string-length
+ * (UTF-16 code units). Identical for the ASCII payloadType shipped today, but
+ * `Buffer.byteLength` is the spec-correct value and avoids an interop break if
+ * the type ever carries a multibyte character.
+ */
 export function dssePae(payloadType: string, payload: Buffer): Buffer {
+  const typeLen = Buffer.byteLength(payloadType, "utf-8");
   return Buffer.concat([
-    Buffer.from(`DSSEv1 ${payloadType.length} ${payloadType} ${payload.length} `, "utf-8"),
+    Buffer.from(`DSSEv1 ${typeLen} ${payloadType} ${payload.length} `, "utf-8"),
     payload,
   ]);
 }

@@ -17,6 +17,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,8 +29,27 @@ export const MCP_PROTOCOL_VERSION = "2025-06-18";
 /** Hard ceiling on how long a fetch may take, spawn-to-answer. */
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-/** Bounded stdout buffer — a misbehaving server cannot balloon memory. */
-const MAX_STDOUT_BYTES = 5 * 1024 * 1024;
+/** Bounded response buffer (stdio AND http) — a misbehaving server cannot balloon memory. */
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+/** Safety bound on tools/list pagination — a server cannot loop us forever. */
+const MAX_PAGES = 100;
+
+/**
+ * Minimal, secret-free environment for a spawned stdio server. A pin probes a
+ * possibly-compromised server; handing it the full process environment (CI
+ * tokens, cloud creds) is a ready exfil channel. Pass only OS essentials plus
+ * whatever the entry explicitly declares (entry.env, "$VAR" expanded).
+ */
+function spawnEnv(entry: McpServerEntry): NodeJS.ProcessEnv {
+  const keep = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "SYSTEMROOT", "windir", "PATHEXT", "LANG", "LC_ALL"];
+  const base: NodeJS.ProcessEnv = {};
+  for (const k of keep) if (process.env[k] !== undefined) base[k] = process.env[k];
+  for (const [k, v] of Object.entries(entry.env ?? {})) {
+    base[k] = v.startsWith("$") ? (process.env[v.slice(1)] ?? "") : v;
+  }
+  return base;
+}
 
 // ---------------------------------------------------------------------------
 // Digest computation
@@ -70,7 +90,15 @@ export function computeToolsDigest(tools: unknown[]): string {
 export function computePerToolHashes(tools: unknown[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const tool of tools) {
-    out[toolSortKey(tool)] = createHash("sha256").update(canonicalize(tool)).digest("hex");
+    // Disambiguate duplicate tool names so two tools sharing a name do NOT
+    // collapse to one map entry (which would hide one of them from the
+    // added/removed/changed diff and could steer an operator into re-pinning a
+    // rug-pulled surface). A collision suffixes "#2", "#3", … deterministically.
+    const base = toolSortKey(tool);
+    let key = base;
+    let n = 2;
+    while (key in out) key = `${base}#${n++}`;
+    out[key] = createHash("sha256").update(canonicalize(tool)).digest("hex");
   }
   return out;
 }
@@ -134,18 +162,31 @@ export async function fetchToolDefinitions(
   opts: FetchOptions = {}
 ): Promise<FetchResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (entry.command) return fetchStdio(entry.command, entry.args ?? [], timeoutMs);
+  if (entry.command) return fetchStdio(entry, timeoutMs);
   if (entry.url) return fetchHttp(entry.url, timeoutMs);
   return { error: `server "${entry.name}" has neither a command nor a url — nothing to connect to` };
 }
 
+/** Pull result.tools (array) + result.nextCursor (string|undefined) from a tools/list result. */
+function readToolsPage(result: unknown): { tools: unknown[]; nextCursor: string | null } | { error: string } {
+  if (result === null || typeof result !== "object") return { error: "tools/list response carried no result object" };
+  const tools = (result as Record<string, unknown>)["tools"];
+  if (!Array.isArray(tools)) return { error: "tools/list response carried no result.tools array" };
+  const cursor = (result as Record<string, unknown>)["nextCursor"];
+  return { tools, nextCursor: typeof cursor === "string" && cursor.length > 0 ? cursor : null };
+}
+
 // ---- stdio transport (newline-delimited JSON-RPC) --------------------------
 
-function fetchStdio(command: string, args: string[], timeoutMs: number): Promise<FetchResult> {
+function fetchStdio(entry: McpServerEntry, timeoutMs: number): Promise<FetchResult> {
+  const command = entry.command!;
+  const args = entry.args ?? [];
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+      // Secret-free env — never hand a possibly-compromised server all of CI's
+      // environment (see spawnEnv). Servers that need vars declare entry.env.
+      env: spawnEnv(entry),
       killSignal: "SIGKILL",
     });
 
@@ -174,6 +215,21 @@ function fetchStdio(command: string, args: string[], timeoutMs: number): Promise
     // Server stderr is diagnostics for humans; we drain it and never parse it.
     child.stderr.on("data", () => { /* drained */ });
 
+    // Pagination state: accumulate tools across every tools/list page until the
+    // server stops returning a nextCursor. Hashing only page 1 would let a
+    // rug-pull hide malicious tools on page 2 behind a passing digest.
+    const accumulated: unknown[] = [];
+    let listId = 2;
+    let pages = 0;
+
+    function requestList(cursor: string | null): void {
+      try {
+        child.stdin.write(jsonRpcLine({ id: listId, method: "tools/list", params: cursor ? { cursor } : {} }));
+      } catch (e) {
+        finish({ error: `failed writing to server stdin: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    }
+
     function handleMessage(msg: Record<string, unknown>): void {
       if (msg["id"] === 1) {
         if (msg["error"] !== undefined) {
@@ -182,39 +238,43 @@ function fetchStdio(command: string, args: string[], timeoutMs: number): Promise
         }
         try {
           child.stdin.write(jsonRpcLine({ method: "notifications/initialized" }));
-          child.stdin.write(jsonRpcLine({ id: 2, method: "tools/list", params: {} }));
         } catch (e) {
           finish({ error: `failed writing to server stdin: ${e instanceof Error ? e.message : String(e)}` });
+          return;
         }
-      } else if (msg["id"] === 2) {
+        requestList(null);
+      } else if (msg["id"] === listId) {
         if (msg["error"] !== undefined) {
           finish({ error: `tools/list rejected: ${JSON.stringify(msg["error"])}` });
           return;
         }
-        const result = msg["result"];
-        if (result === null || typeof result !== "object") {
-          finish({ error: "tools/list response carried no result object" });
-          return;
+        const page = readToolsPage(msg["result"]);
+        if ("error" in page) { finish(page); return; }
+        accumulated.push(...page.tools);
+        pages++;
+        if (page.nextCursor && pages < MAX_PAGES) {
+          listId++;
+          requestList(page.nextCursor);
+        } else {
+          finish({ tools: accumulated });
         }
-        const tools = (result as Record<string, unknown>)["tools"];
-        if (!Array.isArray(tools)) {
-          finish({ error: "tools/list response carried no result.tools array" });
-          return;
-        }
-        finish({ tools });
       }
       // Anything else (server-initiated requests, notifications) is ignored.
     }
 
+    const decoder = new StringDecoder("utf8");
     let buf = "";
     let received = 0;
     child.stdout.on("data", (chunk: Buffer) => {
       received += chunk.length;
-      if (received > MAX_STDOUT_BYTES) {
-        finish({ error: `server stdout exceeded the ${MAX_STDOUT_BYTES / (1024 * 1024)}MB buffer bound` });
+      if (received > MAX_RESPONSE_BYTES) {
+        finish({ error: `server stdout exceeded the ${MAX_RESPONSE_BYTES / (1024 * 1024)}MB buffer bound` });
         return;
       }
-      buf += chunk.toString("utf-8");
+      // Decode via StringDecoder so a multibyte UTF-8 codepoint split across two
+      // chunk boundaries is not corrupted (which would make the digest of an
+      // honest server non-deterministic and raise false rug-pull alarms).
+      buf += decoder.write(chunk);
       let nl: number;
       while ((nl = buf.indexOf("\n")) !== -1) {
         const line = buf.slice(0, nl).trim();
@@ -288,6 +348,31 @@ function parseJsonRpcBody(
   return { message: parsed as Record<string, unknown> };
 }
 
+/**
+ * Read a fetch Response body with a hard byte cap. `res.text()` buffers an
+ * unbounded body — a hostile server could return gigabytes within the timeout
+ * and exhaust memory. Stream instead and abort past MAX_RESPONSE_BYTES.
+ */
+async function readBodyBounded(res: Response, cap: number): Promise<{ body: string } | { error: string }> {
+  if (!res.body) return { body: await res.text() };
+  const reader = res.body.getReader();
+  const decoder = new StringDecoder("utf8");
+  let total = 0;
+  let out = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      try { await reader.cancel(); } catch { /* already closed */ }
+      return { error: `response body exceeded the ${cap / (1024 * 1024)}MB bound` };
+    }
+    out += decoder.write(Buffer.from(value));
+  }
+  out += decoder.end();
+  return { body: out };
+}
+
 async function fetchHttp(rawUrl: string, timeoutMs: number): Promise<FetchResult> {
   let url: URL;
   try {
@@ -313,7 +398,9 @@ async function fetchHttp(rawUrl: string, timeoutMs: number): Promise<FetchResult
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: initializeParams() }),
     });
     if (!initRes.ok) return { error: `initialize POST returned HTTP ${initRes.status}` };
-    const initParsed = parseJsonRpcBody(await initRes.text(), initRes.headers.get("content-type"));
+    const initBody = await readBodyBounded(initRes, MAX_RESPONSE_BYTES);
+    if ("error" in initBody) return initBody;
+    const initParsed = parseJsonRpcBody(initBody.body, initRes.headers.get("content-type"));
     if ("error" in initParsed) return initParsed;
     if (initParsed.message["error"] !== undefined) {
       return { error: `initialize rejected: ${JSON.stringify(initParsed.message["error"])}` };
@@ -324,26 +411,35 @@ async function fetchHttp(rawUrl: string, timeoutMs: number): Promise<FetchResult
     const sessionId = initRes.headers.get("mcp-session-id");
     if (sessionId) listHeaders["mcp-session-id"] = sessionId;
 
-    const listRes = await fetch(url, {
-      method: "POST",
-      headers: listHeaders,
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
-      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
-    });
-    if (!listRes.ok) return { error: `tools/list POST returned HTTP ${listRes.status}` };
-    const listParsed = parseJsonRpcBody(await listRes.text(), listRes.headers.get("content-type"));
-    if ("error" in listParsed) return listParsed;
-    if (listParsed.message["error"] !== undefined) {
-      return { error: `tools/list rejected: ${JSON.stringify(listParsed.message["error"])}` };
+    // Accumulate tools across paginated tools/list responses (nextCursor), same
+    // as stdio — a digest over page 1 only is not a defense.
+    const accumulated: unknown[] = [];
+    let listId = 2;
+    let cursor: string | null = null;
+    for (let pages = 0; pages < MAX_PAGES; pages++) {
+      const listRes = await fetch(url, {
+        method: "POST",
+        headers: listHeaders,
+        redirect: "error",
+        signal: AbortSignal.timeout(timeoutMs),
+        body: JSON.stringify({ jsonrpc: "2.0", id: listId, method: "tools/list", params: cursor ? { cursor } : {} }),
+      });
+      if (!listRes.ok) return { error: `tools/list POST returned HTTP ${listRes.status}` };
+      const listBody = await readBodyBounded(listRes, MAX_RESPONSE_BYTES);
+      if ("error" in listBody) return listBody;
+      const listParsed = parseJsonRpcBody(listBody.body, listRes.headers.get("content-type"));
+      if ("error" in listParsed) return listParsed;
+      if (listParsed.message["error"] !== undefined) {
+        return { error: `tools/list rejected: ${JSON.stringify(listParsed.message["error"])}` };
+      }
+      const page = readToolsPage(listParsed.message["result"]);
+      if ("error" in page) return page;
+      accumulated.push(...page.tools);
+      if (!page.nextCursor) return { tools: accumulated };
+      cursor = page.nextCursor;
+      listId++;
     }
-    const result = listParsed.message["result"];
-    if (result === null || typeof result !== "object") {
-      return { error: "tools/list response carried no result object" };
-    }
-    const tools = (result as Record<string, unknown>)["tools"];
-    if (!Array.isArray(tools)) return { error: "tools/list response carried no result.tools array" };
-    return { tools };
+    return { tools: accumulated };
   } catch (e) {
     return { error: `HTTP transport failed: ${e instanceof Error ? e.message : String(e)}` };
   }

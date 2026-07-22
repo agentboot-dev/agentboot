@@ -91,12 +91,26 @@ function main(): void {
       );
     }
 
-    // 2. no stale patch of the same minor line
+    // 2a. no stale patch of the same minor line (v-prefixed)
     for (const match of content.matchAll(anyVersion)) {
       const [full, maj, min, pat] = match;
       if (maj === major && min === minor && pat !== patch) {
         errors.push(
           `${file.path}: stale version "${full}" of the current minor line — expected "${currentToken}"`
+        );
+      }
+    }
+
+    // 2b. no stale `agentboot@<version>` pin of ANY minor line — with or without
+    // the v prefix. A CI template pinning `agentboot@0.15.0` while the release
+    // is v0.19.0 evaded (2a) twice over: no v prefix AND a different minor. A
+    // pinned agentboot version in a tracked file must be the current release.
+    const agentbootPin = /agentboot@v?(\d+)\.(\d+)\.(\d+)/g;
+    for (const match of content.matchAll(agentbootPin)) {
+      const [full, maj, min, pat] = match;
+      if (!(maj === major && min === minor && pat === patch)) {
+        errors.push(
+          `${file.path}: stale agentboot pin "${full}" — expected "agentboot@${currentToken}"`
         );
       }
     }

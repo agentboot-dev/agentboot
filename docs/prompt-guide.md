@@ -552,10 +552,14 @@ actually produce the expected output when given known input?
 
 YAML test cases use `assertions` with `contains`, `not-contains`, and `regex` checks.
 The test runner uses js-yaml for parsing with backward compatibility for simple
-key-value formats. Each test case gets 2-of-3 flake tolerance for LLM non-determinism.
+key-value formats. Every case **must** have `name`, `persona`, `prompt`, and at
+least one assertion — a case missing any of these is silently skipped by the
+runner. Multiple cases in one file are separated by `---`. Each test case gets
+2-of-3 flake tolerance for LLM non-determinism.
 
 ```yaml
 # tests/behavioral/security-reviewer.test.yaml
+name: sql-injection-detection
 persona: security-reviewer
 prompt: |
   Review this code:

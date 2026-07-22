@@ -390,6 +390,16 @@ export interface McpServerEntry {
   url?: string;
   /** B5: expected transport ("stdio" | "sse" | "http" | ...). */
   transport?: string;
+  /**
+   * Environment for a stdio server when AgentBoot spawns it to read tool
+   * definitions (mcp-pin / mcp-verify). AgentBoot does NOT hand the spawned
+   * server its full environment — a pin probes a possibly-compromised server,
+   * so leaking every CI secret to it is an exfil channel. Only PATH/HOME and
+   * OS essentials are passed by default; anything the server genuinely needs
+   * goes here. Values of the form "$VAR" are expanded from the environment at
+   * spawn time (so secrets stay out of the committed config).
+   */
+  env?: Record<string, string>;
   /** Description of what this server provides */
   description?: string;
   /** Scope: which level this server is approved at */

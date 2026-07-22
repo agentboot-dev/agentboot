@@ -201,6 +201,58 @@ concern — keep an `allowed_signers` file and check the manifest's
 
 ---
 
+## `agentboot mcp-pin`
+
+Record a sha256 digest over each approved MCP server's live tool definitions —
+the pin that [`agentboot mcp-verify`](#agentboot-mcp-verify) re-checks for
+rug-pulls (a server changing its tool descriptions under an unchanged name).
+Per-tool hashes are written to a sidecar (`agentboot.mcp-pins.json`) so a later
+mismatch can name the exact tools that changed.
+
+```
+agentboot mcp-pin
+agentboot mcp-pin --server my-server --write
+```
+
+| Flag | Description |
+|------|-------------|
+| `--server <name>` | Pin a single approved server (default: every approved server with a `command` or `url`) |
+| `--write` | Update `agentboot.config.json` in place (`toolsDigest` + `toolsDigestRecordedAt`; per-tool hashes go to `agentboot.mcp-pins.json`) |
+
+Without `--write`, the command prints the digest it *would* record. Note:
+`--write` re-serializes the config with `JSON.stringify(…, 2)` — JSONC comments
+are not preserved. Exit code `1` if any server could not be pinned.
+
+---
+
+## `agentboot mcp-verify`
+
+Re-hash each approved MCP server's live tool definitions (stdio and https
+transports) against its recorded `toolsDigest` — the use-time rug-pull check.
+Run it in CI or before rollout. On mismatch it names the added/removed/changed
+tools when a per-tool baseline exists in the pin sidecar.
+
+```
+agentboot mcp-verify
+agentboot mcp-verify --strict
+agentboot mcp-verify --pins .claude/mcp-pins.json    # spoke side, no hub needed
+```
+
+| Flag | Description |
+|------|-------------|
+| `--server <name>` | Verify a single approved server |
+| `--strict` | Unpinned approved servers FAIL instead of warn |
+| `--pins <path>` | Spoke side: verify against a synced `mcp-pins.json` (e.g. `.claude/mcp-pins.json`) instead of a hub config |
+
+The `--pins` CI/spoke path is **fail-closed**: an approved server with no
+`toolsDigest` fails (a missing pin means the rug-pull check is a no-op for that
+server, which must not read as "verified"). Hub-side runs are warn-only on
+unpinned servers unless `--strict`. Exit code `1` on any mismatch, connection
+error, or (under `--strict`/`--pins`) unpinned server; an all-pinned-and-matching
+run is the only result reported as verified.
+
+---
+
 ## `agentboot dev-build`
 
 Run the full local development pipeline: clean, validate, build, dev-sync.
@@ -732,6 +784,87 @@ person), and one sample emission per event type. Reads config only — never tou
 agentboot telemetry-inspect
 agentboot telemetry-inspect --config path/to/agentboot.config.json
 ```
+
+---
+
+## `agentboot telemetry-ship`
+
+Spool hash-chained telemetry events into sequence-numbered, digest-chained
+(optionally SSH-signed) batches and POST them to the **org's own configured
+collector** (`telemetry.sink`). There is **no default endpoint** — with no sink
+configured the command fails rather than sending anything anywhere.
+
+```
+agentboot telemetry-ship
+agentboot telemetry-ship --spool-only
+agentboot telemetry-ship --sink-config .claude/telemetry-sink.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `--sink-config <path>` | Explicit `telemetry-sink.json` (spoke side; default: nearest `.claude/telemetry-sink.json`) |
+| `--log <path>` | Telemetry log to ship (default: config `logPath`, else `~/.agentboot/telemetry.ndjson`) |
+| `--spool-only` | Build batches but do not POST (spool for a later run) |
+
+Sink resolution: the hub config's `telemetry.sink` when run in a hub, otherwise
+the synced `telemetry-sink.json`. When `sync.signing` is enabled (and the sink
+does not set `sign: false`), batch digests are signed with the sync signing key.
+Signing is **all-or-nothing**: on a signing failure nothing is spooled and the
+cursor does not advance — events are never shipped unsigned as a fallback.
+Failed batches stay in the spool for retry; exit code `1` if any batch failed
+to ship.
+
+---
+
+## `agentboot telemetry-verify`
+
+Verify the hash chain of a local telemetry log and/or the digest chain,
+sequence continuity, and signatures of shipped batches. Pass at least one of
+`--log` / `--batches`.
+
+```
+agentboot telemetry-verify --log ~/.agentboot/telemetry.ndjson
+agentboot telemetry-verify --batches ./shipped --require-signed --allowed-signers ./allowed_signers
+```
+
+| Flag | Description |
+|------|-------------|
+| `--log <path>` | NDJSON telemetry log to verify |
+| `--batches <dir>` | Directory of batch files to verify (e.g. the spool's `shipped/` dir or the sink's store) |
+| `--require-signed` | FAIL if any batch is unsigned or its signature does not verify — the only defense against signature stripping; set this in CI |
+| `--allowed-signers <path>` | OpenSSH `allowed_signers` file to authenticate batch signatures against |
+| `--signer <principal>` | Expected signer principal |
+
+The local log chain is **unkeyed**: it detects post-write edits, deletions, and
+reordering, but cannot prevent a full consistent rewrite — signed shipped
+batches verified with `--require-signed` are the tamper-evident control.
+Concurrent-hook forks in the log are reported as warnings, distinct from
+tampering. Batch verification reports sequence gaps (deleted or undelivered
+batches) as failures. Exit code `1` on any failed check.
+
+---
+
+## `agentboot evidence-pack`
+
+Export a signed, digest-protected evidence bundle of the org's governance
+state: hub provenance, enforcement manifests per platform (unprobed platforms
+reported as such), per-repo drift and manifest trust posture, guardrails and
+policy exceptions with expiry status, and shipped-telemetry chain evidence.
+
+```
+agentboot evidence-pack
+agentboot evidence-pack --out ./evidence.json --telemetry-batches ./shipped
+```
+
+| Flag | Description |
+|------|-------------|
+| `--out <path>` | Output file (default: `agentboot-evidence-<date>.json`) |
+| `--telemetry-batches <dir>` | Shipped telemetry batch dir to include chain evidence for |
+
+The bundle always carries a sha256 pack digest; with `sync.signing` enabled it
+is also SSH-signed with the sync key (a configured-but-failing signer is an
+error, exit code `1` — never a silent fallback to unsigned). The output file is
+written mode `0600`.
 
 ---
 

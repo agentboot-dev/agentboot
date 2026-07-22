@@ -9,6 +9,61 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-21
+
+Assurance hardening driven by a GA-readiness audit: every verifier the product
+ships now fails **closed** on tampered, stripped, or unbound input (the product's
+"verify, don't trust" thesis, made true), plus a docs-to-reality truth-up, a
+named-competitor comparison page, and a refreshed website dependency baseline.
+
+### Fixed — verifiers fail closed
+- **Telemetry**: `telemetry-verify` now cryptographically verifies batch
+  signatures and enforces them under `--require-signed` (stripping every
+  signature previously passed). Signatures record the namespace they were
+  actually signed under (a genuine org-signed batch no longer false-fails auth).
+  Signing is all-or-nothing: a signing failure aborts the spool and leaves the
+  cursor unmoved instead of shipping unsigned. The spool consumes only complete
+  lines, detects log truncation, and surfaces corrupt lines instead of silently
+  dropping events.
+- **Manifests / attestation**: `verify-manifest` no longer reports a signed
+  posture on content that fails its digest or file-hash check; an attestation
+  that cannot be bound to a manifest no longer passes. Canonicalization omits
+  `undefined` keys (JSON parity, so a manifest cannot fail its own verify), the
+  DSSE PAE uses UTF-8 byte lengths, and file checks refuse manifest paths that
+  escape the repo root.
+- **MCP pinning**: the stdio transport decodes via `StringDecoder` (a multibyte
+  character split across reads no longer corrupts the digest), `tools/list`
+  pagination is followed (a tool on page 2 can no longer hide from the pin), the
+  HTTP body is size-bounded, spawned servers receive a secret-free environment
+  (opt-in `mcp.approved[].env`), duplicate tool names no longer collapse, and
+  `mcp-verify` is fail-closed on the `--pins` CI path.
+
+### Fixed — other
+- `--config` / `AGENTBOOT_HUB` is now honored by `test`, `conformance`,
+  `install-user`, `optimize`, and `add` (the documented "explicit flag wins").
+- Releases fire only on a strict semver increase (a downgrade no longer cuts a
+  release); the version-string guard catches stale `agentboot@` pins of any minor.
+- The secret scan covers `agentboot.config.json` and flags literal telemetry
+  sink header values; sink/pin config files classify as enforcement-risk in sync
+  PR summaries.
+
+### Added
+- `agentboot evidence-pack` now includes MCP governance (approved servers +
+  registry provenance + pin status) and an explicit `integrity.signed` field.
+- A named-competitor comparison page (**vs. rule distributors and single-file
+  standards** — AGENTS.md-as-SSOT, Ruler, rulesync, portal-managed rules).
+- Community-health files: `CODE_OF_CONDUCT.md`, `SUPPORT.md`, a bug-report issue
+  template.
+- An adversarial known-bad test corpus (`tests/adversarial/`) guarding each
+  fail-closed fix.
+
+### Changed
+- Public docs corrected to shipped reality: `cli-reference` documents the five
+  previously-undocumented commands; `enterprise-operations` reflects the shipped
+  telemetry sink; `migration` covers v0.16→v0.19; the assurance-claim register
+  gains a row for the evidence pack and repairs a stale probe pointer.
+- Website dependency baseline refreshed (Docusaurus 3.10, React 19.2).
+
 ## [0.19.0] — 2026-07-21
 
 Industry-bar gap closures, driven by the quarterly competitive re-survey:
