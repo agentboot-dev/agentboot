@@ -424,22 +424,38 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
   // syncs to every spoke in cleartext.
   const scanRoots = hubContentRoots(config, configDir);
 
+  const scanFile = (filePath: string): void => {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, "utf-8");
+    const hits = scanForSecrets(content, patterns);
+    for (const hit of hits) {
+      fail(
+        result,
+        `Potential secret at ${path.relative(ROOT, filePath)}:${hit.line} ` +
+          `(matched pattern: ${hit.pattern})`
+      );
+    }
+  };
+
   for (const root of scanRoots) {
     if (!fs.existsSync(root)) continue;
-
     // Recursively find all .md, .json and .yaml files.
-    const files = walkDir(root, [".md", ".json", ".yaml", ".yml"]);
+    for (const filePath of walkDir(root, [".md", ".json", ".yaml", ".yml"])) scanFile(filePath);
+  }
 
-    for (const filePath of files) {
-      const content = fs.readFileSync(filePath, "utf-8");
-      const hits = scanForSecrets(content, patterns);
-      for (const hit of hits) {
-        fail(
-          result,
-          `Potential secret at ${path.relative(ROOT, filePath)}:${hit.line} ` +
-            `(matched pattern: ${hit.pattern})`
-        );
-      }
+  // Scan agentboot.config.json itself: telemetry.sink.headers (and any other
+  // literal in the config) get compiled into synced artifacts (telemetry-sink.json)
+  // and shipped to every spoke — a literal token here leaks exactly like one in
+  // a content file. Use "$VAR" indirection instead; those are not secrets.
+  scanFile(path.join(configDir, "agentboot.config.json"));
+
+  // A telemetry sink header whose value is a literal (not a "$VAR" env
+  // reference) is a credential baked into synced config — call it out.
+  for (const [k, v] of Object.entries(config.telemetry?.sink?.headers ?? {})) {
+    if (typeof v === "string" && v.length > 0 && !v.startsWith("$")) {
+      fail(result,
+        `telemetry.sink.headers["${k}"] is a literal value — use "$ENV_VAR" indirection so the ` +
+        `credential is not compiled into telemetry-sink.json and synced to every spoke`);
     }
   }
 

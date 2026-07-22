@@ -53,19 +53,31 @@ jobs:
           LATEST_TAG_VERSION="${LATEST_TAG#v}"
           PKG_VERSION=$(node -p "require('./package.json').version")
 
+          # The highest of the two under semver ordering. A release fires ONLY
+          # when package.json is strictly GREATER than the latest tag — never on
+          # equal (no bump) and never on a DOWNGRADE (a bad merge setting
+          # package.json below the latest tag must not cut a bogus lower release).
+          HIGHEST=$(printf '%s\n%s\n' "$LATEST_TAG_VERSION" "$PKG_VERSION" | sort -V | tail -1)
+
           if [ -z "$LATEST_TAG_VERSION" ]; then
             echo "release=true" >> "$GITHUB_OUTPUT"
             echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
             echo "No existing tags. Will release v${PKG_VERSION}"
-          elif [ "$PKG_VERSION" != "$LATEST_TAG_VERSION" ]; then
+          elif [ "$PKG_VERSION" = "$LATEST_TAG_VERSION" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "package.json (${PKG_VERSION}) matches latest tag v${LATEST_TAG_VERSION} — nothing to release."
+            echo "no version bump in this merge — no release" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$HIGHEST" = "$PKG_VERSION" ]; then
             echo "release=true" >> "$GITHUB_OUTPUT"
             echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
             echo "Version bump detected: ${LATEST_TAG_VERSION} → ${PKG_VERSION}"
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
             echo "version=" >> "$GITHUB_OUTPUT"
-            echo "package.json (${PKG_VERSION}) matches latest tag v${LATEST_TAG_VERSION} — nothing to release."
-            echo "no version bump in this merge — no release" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::package.json (${PKG_VERSION}) is LOWER than the latest tag v${LATEST_TAG_VERSION} — refusing to cut a downgrade release. Bump package.json above the latest tag."
+            echo "package.json below latest tag — refusing downgrade release" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
       - name: Check tag does not already exist
