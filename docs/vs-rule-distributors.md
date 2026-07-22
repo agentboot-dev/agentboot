@@ -23,8 +23,8 @@ claim than trust a stale one. If we've gotten something wrong or out of date,
 
 | Capability | AGENTS.md as SSOT | Ruler / rulesync | Portal-managed rules | AgentBoot |
 |---|---|---|---|---|
-| One source → many tool formats | thin per-tool wrappers | **yes — their core job** (rulesync targets 40+ formats) | AGENTS.md-centric | yes (9 platforms + AGENTS.md) |
-| Org → group → team → repo scoping | nearest-file-wins *replacement* | directory nesting / concatenation | scoped rules with *override* precedence | **merge composition** — scopes layer; rules cannot be silently overridden below |
+| One source → many tool formats | thin per-tool wrappers | **yes — their core job** (rulesync targets 40+ formats) | AGENTS.md-centric | yes (8 platforms + AGENTS.md) |
+| Org → group → team → repo scoping | nearest-file-wins *replacement* | directory nesting / concatenation | scoped rules with *override* precedence | **merge composition** — scopes layer; **hard guardrails** cannot be silently overridden below (soft preferences stay adaptable) |
 | Delivery to many repos | manual / DIY | local apply per repo | sync (PR-based in the portal we reviewed) | PRs from the hub, per scope |
 | Drift detection | none | re-apply and diff (DIY in CI) | portal-side regeneration only | content-hash manifests + `drift-check`, exceptions with expiry |
 | Verification / tamper evidence | — | — | — | signed manifests, `verify-manifest`, optional in-toto/DSSE attestation |
@@ -99,7 +99,8 @@ good pattern — we use PR delivery too, for the same reasons.
 
 **Where it stops (as of July 2026):** precedence is *override* — a more specific
 scope replaces the less specific one on conflict, where AgentBoot's composition
-*merges* scopes and makes org-level rules non-overridable below. Output is
+*merges* scopes and makes org-level **guardrails** non-overridable below (while
+soft preferences remain adaptable per team). Output is
 AGENTS.md plus per-tool pointer files rather than native per-tool formats. And
 the loop is one-directional: rules regenerate when they change portal-side, but
 nothing watches the repos for drift, verifies what's deployed, or enforces
