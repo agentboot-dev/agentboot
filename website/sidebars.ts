@@ -39,21 +39,13 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Compare',
-      items: [
-        'vs-a-hand-rolled-settings-repo',
-        'vs-per-tool-rules-files',
-        'vs-rule-distributors',
-      ],
-    },
-    {
-      type: 'category',
       label: 'Reference',
       items: [
         'glossary',
         'troubleshooting',
         'migration',
         'github-bot',
+        'compare',
         'roadmap',
       ],
     },

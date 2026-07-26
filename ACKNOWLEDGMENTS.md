@@ -11,11 +11,11 @@ with AgentBoot. We acknowledge their contributions to the ecosystem.
 
 | Project | Relationship | Notes |
 |---------|-------------|-------|
-| [SuperClaude](https://github.com/nickbaumann98/superClaude) | Prior art | Trait-based behavioral composition for Claude Code. Independently developed the trait format concept that AgentBoot adopted and extended for multi-org governance. |
-| [ArcKit](https://github.com/nicholasgriffintn/arckit) | Prior art | Architecture-aware Claude Code configuration. Demonstrated the value of structured project context for AI agents. |
-| [spec-kit](https://github.com/spec-kit/spec-kit) | Prior art | Specification-driven development tool. Explored structured prompt management and project specification patterns. |
-| [Trail of Bits Claude Config](https://github.com/trailofbits/claude-config) | Prior art | Security-focused Claude Code configuration from a leading security firm. Influenced our security persona and compliance hook design. |
-| [Trail of Bits Claude Skills](https://github.com/trailofbits/claude-skills) | Prior art (CC-BY-SA-4.0) | Security review skills. Licensed under CC-BY-SA-4.0 which requires ShareAlike — these cannot be relicensed as MIT/Apache. Referenced for security review patterns but not bundled. |
+| [SuperClaude](https://github.com/SuperClaude-Org/SuperClaude_Framework) | Prior art | Configuration framework enhancing Claude Code with specialized commands and cognitive personas, by NomenAK. Independently developed the trait-based behavioral composition concept that AgentBoot adopted and extended for multi-org governance. |
+| [ArcKit](https://github.com/tractorjuice/arc-kit) | Prior art | Enterprise architecture governance harness for AI coding assistants, by Mark Craddock. Demonstrated the value of structured project context for AI agents. (Now also distributed as a Claude Code plugin at [tractorjuice/arckit-claude](https://github.com/tractorjuice/arckit-claude).) |
+| [spec-kit](https://github.com/github/spec-kit) | Prior art | GitHub's spec-driven development toolkit. Explored structured prompt management and project specification patterns. |
+| [Trail of Bits Claude Code Config](https://github.com/trailofbits/claude-code-config) | Prior art | Opinionated Claude Code defaults, sandboxing, permissions, hooks, and MCP usage patterns from a leading security firm. Influenced our security persona and compliance hook design. |
+| [Trail of Bits Skills](https://github.com/trailofbits/skills) | Prior art (CC-BY-SA-4.0) | Security research, vulnerability detection, and audit-workflow skills, distributed as a reviewed plugin marketplace. Licensed CC-BY-SA-4.0, which requires ShareAlike — these cannot be relicensed as MIT/Apache. Referenced for security review patterns but not bundled. |
 
 ## Complementary Tools
 
@@ -44,13 +44,18 @@ The scope hierarchy model (Org → Group → Team → Repo) draws from:
 
 ## License Compatibility
 
+Upstream licenses last verified against the GitHub API on **2026-07-25**. Re-verify
+before reusing any upstream content — licenses change, and none of the below is bundled
+into AgentBoot today.
+
 | Source | License | Compatible with Apache-2.0? | Notes |
 |--------|---------|----------------------------|-------|
 | AgentBoot core | Apache-2.0 | Yes | Our license |
 | SuperClaude | MIT | Yes | Permissive |
-| Trail of Bits config | Apache-2.0 | Yes | Same license |
+| spec-kit | MIT | Yes | Permissive |
+| Trail of Bits Claude Code config | **None declared** | **No — assume all rights reserved** | No license file in the repo. Absence of a license is not permission. Reference only, not bundled. |
 | Trail of Bits skills | CC-BY-SA-4.0 | **No (ShareAlike)** | Cannot be relicensed. Reference only, not bundled. |
-| ArcKit | MIT | Yes | Permissive |
+| ArcKit | **Not detected** (`NOASSERTION`) | **Unknown — do not assume** | GitHub cannot resolve a standard license. Reference only, not bundled. |
 
 ## Contributing
 
