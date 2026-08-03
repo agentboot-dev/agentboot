@@ -31,6 +31,7 @@ const sidebars: SidebarsConfig = {
         'delivery-methods',
         'org-connection',
         'platform-capability-matrix',
+        'guardrails',
         'hub-cicd',
         'enterprise-operations',
         'privacy',

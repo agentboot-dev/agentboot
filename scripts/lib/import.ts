@@ -1674,7 +1674,77 @@ export async function runImport(opts: ImportOptions): Promise<void> {
   const trustedFilePath = path.join(hubPath, ".agentboot-import-trusted.json");
   if (fs.existsSync(trustedFilePath)) fs.unlinkSync(trustedFilePath);
 
+  // Record that this source has been imported. sync's first-sync gate recommends
+  // `import` as the safe remediation, but import deliberately does not touch the
+  // source repo — so the gate's own condition ("a bespoke instruction file exists
+  // in the spoke") was unchanged by it and the gate re-fired identically, leaving
+  // the operator looping with only the destructive branch as an escape.
+  if (result.created > 0 || (result.updated ?? 0) > 0) {
+    // trustedSources holds absolute FILE paths, and an org-scale sweep
+    // (`import --path ~/work/`) spans many repos — so record the repo root of
+    // each imported file, plus the path the operator actually pointed at.
+    const roots = new Set<string>([targetPath]);
+    for (const file of trustedSources) roots.add(repoRootOf(file, targetPath));
+    recordImportedSources(hubPath, [...roots]);
+  }
+
   console.log(chalk.gray("  Original files were not modified. Run `agentboot build` to compile.\n"));
+}
+
+/** Filename of the hub-side ledger of source paths that have been imported. */
+export const IMPORT_LEDGER = ".agentboot-imports.json";
+
+/**
+ * Nearest ancestor of `filePath` containing a `.git` entry — the repo the file
+ * belongs to. Falls back to `fallback` when no repo boundary is found (loose
+ * files, or a sweep over a non-repo directory).
+ */
+function repoRootOf(filePath: string, fallback: string): string {
+  let dir = path.dirname(path.resolve(filePath));
+  const root = path.parse(dir).root;
+  while (dir !== root) {
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
+    dir = path.dirname(dir);
+  }
+  return path.resolve(fallback);
+}
+
+/**
+ * Append source directories to the hub's import ledger (idempotent, deduped).
+ * Paths are stored resolved so sync can compare them against a spoke path.
+ */
+export function recordImportedSources(hubPath: string, sourceDirs: string[]): void {
+  const ledgerPath = path.join(hubPath, IMPORT_LEDGER);
+  let entries: Array<{ path: string; importedAt: string }> = [];
+  try {
+    const raw = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+    if (Array.isArray(raw)) entries = raw;
+  } catch { /* absent or malformed — start fresh */ }
+
+  const seen = new Set(entries.map((e) => e.path));
+  const now = new Date().toISOString();
+  for (const dir of sourceDirs) {
+    const resolved = path.resolve(dir);
+    if (seen.has(resolved)) continue;
+    entries.push({ path: resolved, importedAt: now });
+    seen.add(resolved);
+  }
+  try {
+    fs.writeFileSync(ledgerPath, JSON.stringify(entries, null, 2) + "\n", "utf-8");
+  } catch { /* ledger is an optimisation for the sync gate — never fail import over it */ }
+}
+
+/** True when `sourcePath` (or a parent of it) has been imported into this hub. */
+export function hasBeenImported(hubPath: string, sourcePath: string): boolean {
+  const ledgerPath = path.join(hubPath, IMPORT_LEDGER);
+  try {
+    const raw = JSON.parse(fs.readFileSync(ledgerPath, "utf-8"));
+    if (!Array.isArray(raw)) return false;
+    const target = path.resolve(sourcePath);
+    return raw.some((e: { path?: string }) => typeof e.path === "string" && path.resolve(e.path) === target);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

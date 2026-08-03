@@ -36,6 +36,7 @@ import {
 } from "./lib/config.js";
 import { childScopeNames } from "./lib/scope-layout.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
+import { hasBeenImported } from "./lib/import.js";
 import {
   collectHubProvenance,
   buildSyncPrBody,
@@ -65,6 +66,8 @@ interface SyncRunContext {
   signingKeyPath: string | null;
   /** v0.19.0: also emit the in-toto/DSSE attestation next to the manifest. */
   emitInToto: boolean;
+  /** The hub directory (the loaded config's dir) — used to read the import ledger. */
+  configDir: string;
 }
 
 let syncRunContext: SyncRunContext | null = null;
@@ -813,13 +816,24 @@ function syncRepoTarget(
       bespoke.push(".github/copilot-instructions.md");
     }
     if (bespoke.length > 0) {
+      // If this spoke has already been imported, the knowledge is in the hub and
+      // the reason for the gate is satisfied — so say so, rather than repeating a
+      // recommendation the operator has already followed. `import` never modifies
+      // the spoke, so the raw file test alone cannot tell the two states apart.
+      const hubDir = syncRunContext?.configDir ?? process.cwd();
+      const alreadyImported = hasBeenImported(hubDir, effectivePath);
       result.errors.push(
-        `First sync would REPLACE pre-existing instruction file(s): ${bespoke.join(", ")}.\n` +
-        `      They would be archived, but their knowledge goes dormant. Choose deliberately:\n` +
-        `        1. Import first (recommended): agentboot import --path ${entry.path}\n` +
-        `           — decomposes the bespoke content into hub artifacts, then sync.\n` +
-        `        2. Replace anyway:             agentboot sync --adopt-existing\n` +
-        `           — originals are archived to ${targetDir}/.agentboot-archive/`
+        alreadyImported
+          ? `First sync would replace pre-existing instruction file(s): ${bespoke.join(", ")}.\n` +
+            `      This repo HAS already been imported — its content is in the hub, so nothing is lost.\n` +
+            `      Confirm the replacement:  agentboot sync --adopt-existing\n` +
+            `           — originals are still archived to ${targetDir}/.agentboot-archive/`
+          : `First sync would REPLACE pre-existing instruction file(s): ${bespoke.join(", ")}.\n` +
+            `      They would be archived, but their knowledge goes dormant. Choose deliberately:\n` +
+            `        1. Import first (recommended): agentboot import --path ${entry.path}\n` +
+            `           — decomposes the bespoke content into hub artifacts, then re-run sync.\n` +
+            `        2. Replace anyway:             agentboot sync --adopt-existing\n` +
+            `           — originals are archived to ${targetDir}/.agentboot-archive/`
       );
       return result;
     }
@@ -1554,6 +1568,33 @@ function createSyncPR(
     return; // nothing written — no PR
   }
 
+  // Assert the preconditions BEFORE branching and committing. Previously the first
+  // sign that PR mode could not be honoured was a failure from `git push` or
+  // `gh pr create` — after a branch had been cut and a commit made. Check up front
+  // and fail with a reason the operator can act on.
+  const prPreconditionErrors: string[] = [];
+  const originUrl = spawnSync("git", ["remote", "get-url", "origin"], { cwd: repoPath, stdio: "pipe" });
+  if (originUrl.status !== 0) {
+    prPreconditionErrors.push(`no "origin" remote — PR mode needs a remote to push a branch to`);
+  } else if (!/github\.com/i.test(originUrl.stdout?.toString() ?? "")) {
+    prPreconditionErrors.push(
+      `origin is not a GitHub remote (${originUrl.stdout?.toString().trim()}) — PR creation uses the "gh" CLI`,
+    );
+  }
+  if (spawnSync("gh", ["--version"], { stdio: "pipe" }).status !== 0) {
+    prPreconditionErrors.push(`the "gh" CLI is not installed or not on PATH`);
+  } else if (spawnSync("gh", ["auth", "status"], { stdio: "pipe" }).status !== 0) {
+    prPreconditionErrors.push(`"gh" is not authenticated — run "gh auth login"`);
+  }
+  if (prPreconditionErrors.length > 0) {
+    result.errors.push(
+      `PR mode was requested but cannot be honoured for this repo:\n` +
+        prPreconditionErrors.map((e) => `      - ${e}`).join("\n") +
+        `\n      Files were written directly. Re-run without PR mode to accept that, or fix the above.`,
+    );
+    return;
+  }
+
   const dateSlug = new Date().toISOString().slice(0, 10);
   let branch = `${branchPrefix}${dateSlug}`;
 
@@ -1737,6 +1778,7 @@ async function main(): Promise<void> {
       ? path.resolve(configDir, signingCfg.sshKeyPath)
       : null,
     emitInToto: signingCfg?.enabled === true && signingCfg.emitInToto === true,
+    configDir,
   };
   if (syncRunContext.provenance.hub_dirty) {
     console.log(chalk.yellow(
@@ -1816,6 +1858,14 @@ async function main(): Promise<void> {
       if (result.errors.length === 0 && result.filesWritten.length > 0) {
         successResults.push(result);
       }
+    }
+
+    // A dry run must SAY that PR mode is active. Previously its output was
+    // byte-identical to direct-write mode, so an operator had no way to confirm PR
+    // mode was configured correctly except by doing it for real — and a
+    // misconfiguration then looked like a successful direct write.
+    if (isPrMode && dryRun && successResults.length > 0) {
+      console.log(chalk.cyan(`      PR mode: a branch and pull request would be opened for these files [DRY RUN]`));
     }
 
     // AB-28: Create ONE PR per repo entry (not per package) in PR mode
