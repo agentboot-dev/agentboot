@@ -3793,7 +3793,10 @@ function main(): void {
 
   log(
     chalk.bold(
-      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(ROOT, distPath)}/`
+      // Hub output path — HUB_ROOT, not ROOT. Same defect as the provenance
+      // header: against the installed package dir this printed
+      // "→ ../../../../../Users/<name>/hub/dist/".
+      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(HUB_ROOT, distPath)}/`
     )
   );
   for (const fmt of outputFormats) {

@@ -431,7 +431,11 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
     for (const hit of hits) {
       fail(
         result,
-        `Potential secret at ${path.relative(ROOT, filePath)}:${hit.line} ` +
+        // Relative to the hub being validated, not the installed package dir —
+        // otherwise a secret finding is reported at a path like
+        // "../../../../../Users/<name>/hub/core/x.md", which is the hardest
+        // possible thing to act on in the one message that most needs acting on.
+        `Potential secret at ${path.relative(configDir, filePath)}:${hit.line} ` +
           `(matched pattern: ${hit.pattern})`
       );
     }
