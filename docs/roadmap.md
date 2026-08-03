@@ -9,9 +9,9 @@ Where AgentBoot is headed. This page is forward‑looking — themes and intent,
 commitments**; priorities shift with what teams actually need. For the full record of what has
 already shipped, see the [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md).
 
-## Where we are today — v0.20.1 (public Beta)
+## Where we are today — v0.20.2 (public Beta)
 
-**AgentBoot v0.20.1 is a public Beta.** The full pipeline works end to end today: it compiles your
+**AgentBoot v0.20.2 is a public Beta.** The full pipeline works end to end today: it compiles your
 team's AI behavior — personas, traits, rules, gotchas, and domain layers — from one hub repo into
 native config for the **CLI surfaces** of **Claude Code**, **OpenAI Codex**, and **GitHub
 Copilot**, and delivers it to every repo as a reviewable pull request, with drift detection,
@@ -104,13 +104,18 @@ teams, close the gaps Beta feedback surfaces, and earn the "you can standardize 
 The short version — full detail in the
 [CHANGELOG](https://github.com/agentboot-dev/agentboot/blob/main/CHANGELOG.md):
 
-- **v0.20.1 — assurance hardening + honest docs (current).** Every verifier
-  made fail-closed (telemetry signature enforcement, manifest trust posture,
-  attestation binding, MCP digest correctness — pagination, UTF-8, secret-free
-  spawn env); evidence-pack carries MCP provenance and states its signed state;
-  the public docs corrected to shipped reality; a named-competitor comparison
-  page; the website dependency baseline refreshed; and a docs-link/CHANGELOG
-  fixup pass (v0.20.1).
+- **v0.20.x — assurance hardening, honest docs, and evaluation fixes (current).**
+  Every verifier made fail-closed (telemetry signature enforcement, manifest
+  trust posture, attestation binding, MCP digest correctness — pagination,
+  UTF-8, secret-free spawn env); evidence-pack carries MCP provenance and states
+  its signed state; the public docs corrected to shipped reality; a
+  named-competitor comparison page. Then, from an assistant-driven beta
+  evaluation run against the published docs only (v0.20.2): PR-mode
+  preconditions asserted before the repo is touched, drift reporting that counts
+  deletions, guardrail shadowing made a `validate --strict` error, provenance
+  paths resolved against the hub, an `add instruction` scaffold, and a
+  `/docs/guardrails` page for a capability whose authoring syntax had been
+  documented nowhere.
 - **v0.19.0 — industry-bar gap closures.** MCP rug-pull defense
   (digest-pinned server references, `mcp-pin`/`mcp-verify`, registry
   provenance, pins compiled to spokes); optional in-toto/DSSE attestation

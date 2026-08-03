@@ -9,6 +9,66 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.20.2] — 2026-08-03
+
+Fixes from an assistant-driven beta evaluation that ran AgentBoot end to end
+against three repositories **working from the published documentation only**.
+The common thread is reporting honesty: most controls worked, but described what
+they had done inaccurately.
+
+### Fixed
+- **`sync` PR mode now asserts its preconditions before mutating the repo.**
+  Previously the first sign PR mode could not be honoured was a `git push` or
+  `gh` failure — after a branch had been cut and a commit made. The error now
+  names the cause (no origin, non-GitHub remote, `gh` missing or unauthenticated)
+  and states plainly that files were written directly, so nobody is left
+  believing a review gate applied when it did not.
+- **`sync --dry-run` reports that PR mode is active.** Its output was
+  byte-identical to direct-write, so PR configuration could not be verified
+  short of running it for real.
+- **`import` can now clear the gate that recommends it.** A first sync onto a
+  repo with existing instruction files stops and points at `import` — but
+  `import` deliberately never modifies the source repo, so the gate's condition
+  was unchanged and it re-fired identically, leaving the destructive
+  `--adopt-existing` branch as the only escape. Import records what it imported;
+  the gate reads that record.
+- **`drift-check` counts deletions.** A deletion-only drift printed
+  `0 modified` while the repo was still flagged — a line that reads as a no-op in
+  a compliance report. Deleting a delivered enforcement hook is the most
+  security-relevant drift there is.
+- **`drift-check --verbose` works.** It was accepted and silently ignored; it now
+  lists the individual drifted files.
+- **Shadowing a `guardrail: hard` artifact fails `validate --strict`.** The check
+  covered only trait weights set to `OFF`, so re-declaring the artifact at a
+  lower scope with `guardrail: soft` passed, with the sole signal being advisory
+  text in a separate command.
+- **Provenance headers, build output, and secret-scan findings resolve against
+  the hub.** All three rendered paths against the installed package directory,
+  producing `../../../../../Users/<name>/…` — unusable for tracing output back to
+  source, and it leaked the operator's filesystem layout into every file synced
+  to every spoke.
+- **`managed.guardrails.denyTools` errors now point at `claude.permissions.deny`**
+  for path-scoped denies.
+- **`test --behavioral` states that it is experimental.** Reporting "no
+  behavioral test cases found" implied the operator had authored their files
+  wrongly and sent them to debug a schema that is not yet published.
+
+### Added
+- **`agentboot add instruction <name>`.** The docs told operators org-wide
+  instructions live in `core/instructions/`, but nothing scaffolded that artifact
+  type, and neither the `.instructions.md` filename convention nor the
+  frontmatter schema was documented anywhere — the only way to discover either
+  was reading compiled output in `dist/`.
+- **[`docs/guardrails.md`](https://agentboot.dev/docs/guardrails).** `/docs/guardrails`
+  was a 404 while the authoring syntax for `guardrail: hard` appeared on no
+  documentation surface at all. Covers authoring, what lower scopes may and may
+  not do, the `denyTools` vs. permissions distinction, and where enforcement is
+  real versus advisory.
+- **Getting-started step for instructions and guardrails.** The walkthrough
+  previously completed without mentioning either, so an organisation whose
+  requirement is enforcement could finish onboarding believing it had it. Also
+  documents that `validate` does not gate `build` and that both belong in CI.
+
 ## [0.20.1] — 2026-07-21
 
 Documentation fixups.
@@ -739,7 +799,8 @@ way to v1.0 GA.
 - Security audit across path traversal, input validation, shell injection, and secret patterns;
   test-isolation crash guards; routing/behavioral-test corrections.
 
-[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/agentboot-dev/agentboot/compare/v0.20.2...HEAD
+[0.20.2]: https://github.com/agentboot-dev/agentboot/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/agentboot-dev/agentboot/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/agentboot-dev/agentboot/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/agentboot-dev/agentboot/compare/v0.18.0...v0.19.0
