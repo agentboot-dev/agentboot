@@ -431,7 +431,11 @@ function checkNoSecrets(config: AgentBootConfig, configDir: string): CheckResult
     for (const hit of hits) {
       fail(
         result,
-        `Potential secret at ${path.relative(ROOT, filePath)}:${hit.line} ` +
+        // Relative to the hub being validated, not the installed package dir —
+        // otherwise a secret finding is reported at a path like
+        // "../../../../../Users/<name>/hub/core/x.md", which is the hardest
+        // possible thing to act on in the one message that most needs acting on.
+        `Potential secret at ${path.relative(configDir, filePath)}:${hit.line} ` +
           `(matched pattern: ${hit.pattern})`
       );
     }
@@ -874,6 +878,35 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
 
   // Scan scope nodes for overrides of HARD artifacts
   const checkScopeDir = (scopeDir: string, scopeLabel: string): void => {
+    // A lower scope can also neutralise a HARD artifact by SHADOWING it — placing
+    // a file of the same artifact name in its own instructions/ or traits/ dir,
+    // typically with `guardrail: soft`. That path was previously caught only by
+    // `agentboot audit`, as advisory text ("verify the override is intentional"),
+    // which is right for shadowing a soft preference and wrong for downgrading a
+    // HARD guardrail. This check makes it an error where it belongs.
+    //
+    // Note this fires regardless of whether scope-level instruction CONTENT is
+    // currently compiled: the intent to weaken a HARD artifact is the defect, and
+    // the check must not silently start passing or failing based on that.
+    for (const sub of ["instructions", "traits"]) {
+      const subDir = path.join(scopeDir, sub);
+      if (!fs.existsSync(subDir)) continue;
+      for (const file of fs.readdirSync(subDir).filter(f => f.endsWith(".md"))) {
+        const artifactName = path.basename(file, ".md");
+        if (!hardArtifacts.has(artifactName)) continue;
+        const content = fs.readFileSync(path.join(subDir, file), "utf-8");
+        const fm = content.match(/^---\n([\s\S]*?)\n---/);
+        const isHard = fm ? /guardrail:\s*hard/i.test(fm[1]!) : false;
+        if (!isHard) {
+          fail(result,
+            `${scopeLabel} ${sub}/${file} shadows HARD artifact "${artifactName}" ` +
+            `(defined at ${hardArtifacts.get(artifactName)}) without \`guardrail: hard\` — ` +
+            `HARD guardrails cannot be downgraded or overridden at lower scopes`
+          );
+        }
+      }
+    }
+
     // Check persona configs for trait weight overrides
     const personasDir = path.join(scopeDir, "personas");
     if (fs.existsSync(personasDir)) {

@@ -606,14 +606,20 @@ describe("sync script", () => {
 
     let caught = false;
     try {
-      // PR creation will fail (no remote) — sync reports the error but still completes.
+      // PR mode cannot be honoured here (no remote) — sync reports it and completes.
       // execSync throws on non-zero exit, so we catch and verify the output.
       run("scripts/sync.ts -- --mode pr");
     } catch (err: unknown) {
       caught = true;
-      // Verify the error is from PR creation (expected), not a process crash
       const output = (err as { stdout?: Buffer })?.stdout?.toString() ?? "";
-      expect(output).toContain("PR creation failed");
+      // The preconditions are now asserted BEFORE a branch is cut and a commit made,
+      // so the failure names the actual cause up front instead of surfacing as a
+      // late "PR creation failed" from git/gh after the repo was already mutated.
+      expect(output).toContain("PR mode was requested but cannot be honoured");
+      expect(output).toContain('no "origin" remote');
+      // And it must say what DID happen to the files, so the operator is never left
+      // believing a review gate applied when it did not.
+      expect(output).toContain("Files were written directly");
     } finally {
       fs.writeFileSync(
         path.join(ROOT, "repos.json"),

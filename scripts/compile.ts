@@ -102,7 +102,12 @@ function ensureDir(dirPath: string): void {
 }
 
 function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
-  const relSource = path.relative(ROOT, sourceFile);
+  // Hub content, so this must resolve against HUB_ROOT — not ROOT (the installed
+  // package dir). Using ROOT produced headers like
+  // "../../../../../Users/<name>/hub/core/instructions/x.md": unusable for tracing
+  // output back to source, and it leaked the operator's local filesystem layout
+  // into every file synced to every spoke.
+  const relSource = path.relative(HUB_ROOT, sourceFile);
   const timestamp = new Date().toISOString();
   const org = config.orgDisplayName ?? config.org;
   return [
@@ -2524,6 +2529,10 @@ exit 0
       if (!/^[a-zA-Z0-9._*?-]+$/.test(p)) {
         log(chalk.red(`  ✗ managed.guardrails.denyTools contains unsafe pattern: "${p}"`));
         log(chalk.red(`    Patterns must match [a-zA-Z0-9._*?-]+ (tool names and glob chars only)`));
+        // The message was accurate about what is wrong but silent about where the
+        // rejected form belongs, leaving the operator with no way to discover the
+        // right key. Path-scoped denies are a permissions concern, not a tool-name one.
+        log(chalk.yellow(`    For a path-scoped deny like "Read(**/.env)", use claude.permissions.deny instead.`));
         process.exit(1);
       }
     }
@@ -3784,7 +3793,10 @@ function main(): void {
 
   log(
     chalk.bold(
-      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(ROOT, distPath)}/`
+      // Hub output path — HUB_ROOT, not ROOT. Same defect as the provenance
+      // header: against the installed package dir this printed
+      // "→ ../../../../../Users/<name>/hub/dist/".
+      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(HUB_ROOT, distPath)}/`
     )
   );
   for (const fmt of outputFormats) {

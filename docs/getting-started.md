@@ -191,7 +191,55 @@ are present.
 
 ---
 
-## Step 3: Add your first team-level customization
+## Step 3: Add an org-wide instruction — and a guardrail
+
+Personas are *who* the agent is. **Instructions** are the always-on rules that apply
+regardless of which persona is active. They live in `core/instructions/`:
+
+```bash
+agentboot add instruction secret-read-deny
+```
+
+That scaffolds `core/instructions/secret-read-deny.instructions.md`:
+
+```markdown
+---
+description: "TODO — brief description of this instruction"
+applyTo: "**"
+# guardrail: hard
+---
+```
+
+`applyTo` is a comma-separated glob list — `"**"` is always-on, `"src/api/**"` scopes it
+to a subtree. Keep the body short: it loads on every session and competes for context.
+
+### Making it non-overridable
+
+By default an instruction is a **soft preference** — a team may adapt it. To make it a
+rule a team cannot silently weaken, uncomment the guardrail line:
+
+```markdown
+guardrail: hard
+```
+
+Then a lower scope shadowing it, downgrading it, or zeroing its weight is an **error**:
+
+```bash
+agentboot validate --strict
+```
+
+> **Run `validate --strict` and `build` in CI, in that order.** They're separable
+> commands — `build` can succeed on a config `validate --strict` rejects. Only running
+> `build` will compile a guardrail violation and ship it.
+
+On Claude Code, Codex CLI and Copilot CLI a HARD guardrail compiles to a **blocking
+hook**. On `AGENTS.md` and the community-tier platforms it is delivered as instruction
+text with no blocking mechanism — see [Guardrails](guardrails.md) for the full picture
+and how to verify enforcement rather than assume it.
+
+---
+
+## Step 4: Add your first team-level customization
 
 Team-level customization lets you add personas that apply only to repos in a
 specific team, without affecting the rest of the org.
@@ -233,7 +281,7 @@ reviewer persona, layered on top of the org defaults. Other repos are unaffected
 
 ---
 
-## Step 4: Configure your harness
+## Step 5: Configure your harness
 
 Your personas repo is a codebase. Treat it like one:
 
@@ -249,7 +297,7 @@ Your personas repo is a codebase. Treat it like one:
 
 ---
 
-## Step 5: Onboard your team
+## Step 6: Onboard your team
 
 Once you have a working deployment, tell your team:
 

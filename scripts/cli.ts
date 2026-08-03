@@ -544,8 +544,8 @@ program
 
 program
   .command("add")
-  .description("Scaffold a persona, trait, gotcha, domain, hook, or template — or classify a prompt")
-  .argument("<type>", "what to add: persona, trait, gotcha, domain, hook, prompt, template")
+  .description("Scaffold a persona, trait, instruction, gotcha, domain, hook, or template — or classify a prompt")
+  .argument("<type>", "what to add: persona, trait, instruction, gotcha, domain, hook, prompt, template")
   .argument("<name>", "name for the new item (lowercase-with-hyphens); for template, the template name")
   .action(async (type: string, name: string, _opts, cmd) => {
     // Validate name format (skip for prompt type — name is content/path, not an identifier)
@@ -710,6 +710,47 @@ paths:
       console.log(chalk.bold(`\n${chalk.green("✓")} Created gotcha: ${name}\n`));
       console.log(chalk.gray(`  core/gotchas/${name}.md\n`));
       console.log(chalk.gray(`  Next: Edit the paths: frontmatter and add your rules.\n`));
+
+    } else if (type === "instruction") {
+      // The docs tell operators that org-wide instructions live in
+      // core/instructions/, but `add` had no scaffold for that artifact type and
+      // neither the filename convention (`.instructions.md`) nor the frontmatter
+      // schema was documented anywhere. The only way to discover either was to
+      // read compiled output in dist/ — so an assistant working from the docs
+      // could not author one, and a guessed schema produces a file build ignores.
+      const instructionsDir = path.join(cwd, "core", "instructions");
+      const instructionPath = path.join(instructionsDir, `${name}.instructions.md`);
+      if (fs.existsSync(instructionPath)) {
+        console.error(chalk.red(`Instruction '${name}' already exists at core/instructions/${name}.instructions.md`));
+        process.exit(1);
+      }
+
+      if (!fs.existsSync(instructionsDir)) {
+        fs.mkdirSync(instructionsDir, { recursive: true });
+      }
+
+      const instructionMd = `---
+description: "TODO — brief description of this instruction"
+# applyTo is a comma-separated glob list. "**" = always on, every file.
+applyTo: "**"
+# Uncomment to make this a HARD guardrail that lower scopes cannot override or
+# downgrade. Without it the instruction is a soft preference teams may adapt.
+# guardrail: hard
+---
+
+# ${name.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
+
+<!-- Always-on guidance compiled into every platform's instruction surface.
+     Keep it short: this is loaded on every session, so it competes for context. -->
+
+- **TODO:** First instruction — state the rule AND the reason behind it
+`;
+
+      fs.writeFileSync(instructionPath, instructionMd, "utf-8");
+
+      console.log(chalk.bold(`\n${chalk.green("✓")} Created instruction: ${name}\n`));
+      console.log(chalk.gray(`  core/instructions/${name}.instructions.md\n`));
+      console.log(chalk.gray(`  Next: Edit applyTo: to scope it, and uncomment guardrail: hard to make it non-overridable.\n`));
 
     } else if (type === "domain") {
       // AB-46/53: Domain layer scaffolding
@@ -927,7 +968,7 @@ exit 0
       }
 
     } else {
-      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, gotcha, domain, hook, prompt, template`));
+      console.error(chalk.red(`Unknown type: '${type}'. Use: persona, trait, instruction, gotcha, domain, hook, prompt, template`));
       process.exit(1);
     }
   });
@@ -1458,8 +1499,21 @@ program
       const results = runBehavioralTests(testDir, distPath);
 
       if (results.length === 0) {
-        console.log(chalk.yellow("  No behavioral test cases found.\n"));
-        console.log(chalk.gray(`  Create YAML test files in: ${path.relative(cwd, testDir)}/\n`));
+        // The scenario schema is still in flux and the runner does not yet parse
+        // the set that ships with the repo. Saying "no test cases found" implies
+        // the operator authored their files wrongly and sends them to debug a
+        // schema that isn't published — so state the actual situation instead.
+        const yamlPresent = fs.existsSync(testDir) &&
+          fs.readdirSync(testDir).some(f => f.endsWith(".yaml") || f.endsWith(".yml"));
+        console.log(chalk.yellow("  No behavioral test cases were parsed.\n"));
+        if (yamlPresent) {
+          console.log(chalk.yellow(
+            `  YAML files ARE present in ${path.relative(cwd, testDir)}/ — this is not your schema.\n`));
+        }
+        console.log(chalk.gray(
+          "  --behavioral is EXPERIMENTAL: the scenario schema is not yet stabilised or\n" +
+          "  published, and the runner does not yet parse it. Do not use it as a CI gate.\n" +
+          "  Track: https://github.com/agentboot-dev/agentboot/issues\n"));
       } else {
         const passed = results.filter(r => r.passed).length;
         const failed = results.length - passed;
@@ -2453,6 +2507,7 @@ program
   .description("Check spoke repos for drift against their manifest")
   .option("--repo <path>", "Check a specific repo (defaults to all repos in repos.json)")
   .option("--format <type>", "Output format: text or json", "text")
+  .option("--verbose", "list the individual drifted files for each repo")
   .action(async (opts, cmd) => {
     const { checkDrift, generateComplianceReport } = await import("./lib/drift.js");
     const globalOpts = cmd.optsWithGlobals();
@@ -2501,8 +2556,35 @@ program
         for (const r of report.repos) {
           const icon = r.clean ? chalk.green("✓") : r.manifestFound ? chalk.red("✗") : chalk.yellow("?");
           const label = path.basename(r.repoPath);
-          const detail = !r.manifestFound ? "(no manifest)" : r.clean ? "clean" : `${r.summary.modifiedCount} modified`;
+          // A repo can drift by modification OR deletion. Reporting only
+          // modifiedCount rendered a deletion-only drift as "0 modified" — a line
+          // that reads as a no-op in a compliance report while the repo is in fact
+          // flagged. Deleting a delivered enforcement hook is the most
+          // security-relevant drift there is; it must never print as a zero.
+          const parts: string[] = [];
+          if (r.summary.modifiedCount > 0) parts.push(`${r.summary.modifiedCount} modified`);
+          if (r.summary.missingCount > 0) parts.push(`${r.summary.missingCount} deleted`);
+          if (r.summary.exceptedCount > 0) parts.push(`${r.summary.exceptedCount} excepted`);
+          const detail = !r.manifestFound
+            ? "(no manifest)"
+            : r.clean
+              ? "clean"
+              : parts.length > 0
+                ? parts.join(", ")
+                : "drifted";
           console.log(`    ${icon} ${label} — ${detail}`);
+          // --verbose names the individual files. Without this the compliance
+          // report says a repo drifted but never which file, so the operator has
+          // to re-run per-repo to act on it.
+          if (opts.verbose && r.manifestFound && !r.clean) {
+            for (const entry of r.entries) {
+              if (entry.status === "clean" || entry.status === "unmanaged") continue;
+              const mark = entry.status === "excepted" ? chalk.cyan("◦") : chalk.red("✗");
+              const suffix = entry.status === "excepted" ? ` (approved exception ${entry.exceptionId})` : "";
+              const state = entry.status === "missing" ? "deleted" : entry.status;
+              console.log(`        ${mark} ${entry.file} — ${state}${suffix}`);
+            }
+          }
         }
         console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${report.summary.noManifestRepos} no manifest\n`);
       }
