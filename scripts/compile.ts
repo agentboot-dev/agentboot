@@ -62,6 +62,9 @@ import {
   APPLY_TO_PROJECTION, type ScopedArtifact,
 } from "./lib/scope-projection.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
+import {
+  computeConfigDigest, writeDistStamp, markDistBuildFailed,
+} from "./lib/dist-stamp.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -129,7 +132,21 @@ function ensureDir(dirPath: string): void {
  */
 let stagingDistPath: string | null = null;
 
-process.on("exit", () => {
+/**
+ * N1: everything needed to INVALIDATE the previous `dist/` when this build does
+ * not finish. Armed as soon as the config is loaded; cleared by the successful
+ * swap. While it is non-null, a non-zero exit means "the tree at finalDistPath
+ * is now known-stale" and the exit hook records that ON DISK.
+ *
+ * Without this, staging's (correct) blast-radius behaviour — leave the previous
+ * dist/ byte-identical — is indistinguishable, to every downstream consumer,
+ * from a successful build that produced no changes.
+ */
+let distInvalidationContext:
+  | { finalDistPath: string; configDigest: string; outputFormats: string[]; version: string }
+  | null = null;
+
+process.on("exit", (code) => {
   if (stagingDistPath && fs.existsSync(stagingDistPath)) {
     try {
       fs.rmSync(stagingDistPath, { recursive: true, force: true });
@@ -137,7 +154,30 @@ process.on("exit", () => {
       /* best effort — never mask the real exit code */
     }
   }
+  // A build that did not reach the swap leaves a dist/ that no longer
+  // corresponds to the config on disk. Say so. Silence is not success.
+  if (code !== 0 && distInvalidationContext) {
+    const ctx = distInvalidationContext;
+    markDistBuildFailed(
+      ctx.finalDistPath,
+      `build exited ${code} before the staged tree was swapped into place`,
+      ctx.configDigest,
+      ctx.outputFormats,
+      ctx.version,
+    );
+  }
 });
+
+/** Version of the installed agentboot package, for the dist stamp. */
+function packageVersion(): string {
+  try {
+    const pkgPath = path.join(ROOT, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 /**
  * Refuse to point the build (which now DELETES this tree on every run) at
@@ -3308,6 +3348,17 @@ function main(): void {
   // a symlink, to the hub root, or to anything outside the hub.
   assertSafeDistTarget(finalDistPath, configDir);
 
+  // N1: arm the invalidation hook BEFORE any gate below can exit. Every gate
+  // from here on is a place the build can stop, and each one must leave dist/
+  // marked stale rather than plausibly-current.
+  const configDigest = computeConfigDigest(config);
+  distInvalidationContext = {
+    finalDistPath,
+    configDigest,
+    outputFormats: config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS],
+    version: packageVersion(),
+  };
+
   // Every emitter below writes into a staging sibling; the tree is swapped into
   // place at the very end of main(). This is what makes `dist/` a faithful
   // projection of hub config rather than an append-only cache: an artifact the
@@ -4316,7 +4367,23 @@ function main(): void {
   // Everything above wrote to staging; from here on dist/ is authoritative.
   // ---------------------------------------------------------------------------
 
+  // N1: stamp the staging tree BEFORE the swap, so the stamp arrives with the
+  // artifacts it describes rather than as a separate, interruptible write. A
+  // `status: "success"` stamp can therefore only exist on a tree that reached
+  // this line — i.e. past every gate above.
+  writeDistStamp(distPath, {
+    status: "success",
+    configDigest,
+    outputFormats: [...outputFormats],
+    builtAt: new Date().toISOString(),
+    agentbootVersion: packageVersion(),
+  });
+
   swapDistAndReport(distPath, finalDistPath);
+  // The swap succeeded: dist/ now genuinely corresponds to this config, so a
+  // later non-zero exit (e.g. an unrelated post-swap failure) must NOT mark it
+  // stale.
+  distInvalidationContext = null;
 
   // ---------------------------------------------------------------------------
   // Summary
