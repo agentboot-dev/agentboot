@@ -50,7 +50,7 @@ import {
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
-import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, type CapabilityContext } from "./lib/conformance.js";
+import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, type CapabilityContext } from "./lib/conformance.js";
 import {
   inspectArtifact, unenforceableFormats, capabilityViolations,
   countNarrowlyScopedInstructions, countScopedGotchas,
@@ -3428,8 +3428,19 @@ function main(): void {
   // errors on EVERY build for a capability that is in fact emitted — a false
   // positive that would get the whole gate disabled. Same drift class as
   // `plugin`, opposite direction, four lines to make impossible.
-  const badCapabilityRefs = CAPABILITY_SUPPORT.flatMap((r) =>
-    r.emittedBy.filter((f) => !validFormats.includes(f)).map((f) => `${r.id} → "${f}"`));
+  const badCapabilityRefs = CAPABILITY_SUPPORT.flatMap((r) => [
+    ...r.emittedBy.filter((f) => !validFormats.includes(f)).map((f) => `${r.id} → "${f}"`),
+    // B1: the same drift check for the conditional half. A `conditionalOn` key
+    // that is not in `emittedBy` is dead configuration (it can never filter
+    // anything); a dependency naming a non-format can never be satisfied, so the
+    // row would be permanently unhonoured with no explanation.
+    ...Object.keys(r.conditionalOn ?? {})
+      .filter((k) => !r.emittedBy.includes(k))
+      .map((k) => `${r.id} → conditionalOn["${k}"] but "${k}" is not in emittedBy`),
+    ...Object.values(r.conditionalOn ?? {}).flat()
+      .filter((f) => !validFormats.includes(f))
+      .map((f) => `${r.id} → conditionalOn depends on unknown format "${f}"`),
+  ]);
   if (badCapabilityRefs.length > 0) {
     log(chalk.red(`  ✗ CAPABILITY_SUPPORT references unknown output format(s):`));
     for (const b of badCapabilityRefs) log(chalk.red(`      ${b}`));
@@ -3954,7 +3965,7 @@ function main(): void {
     if (warns.length > 0) {
       log(chalk.yellow(`  ⚠ Configured capabilities no configured output format can honour (advisory):`));
       for (const v of warns) {
-        log(chalk.yellow(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(v.row.emittedBy)}`));
+        log(chalk.yellow(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(effectiveEmitters(v.row, outputFormats))}`));
         log(chalk.gray(`        ${v.row.consequence}`));
       }
     }
@@ -3975,7 +3986,7 @@ function main(): void {
       log(chalk.red(`  ✗ Configured capabilities that NO configured output format can honour:`));
       log("");
       for (const v of errors) {
-        log(chalk.red(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(v.row.emittedBy)}`));
+        log(chalk.red(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(effectiveEmitters(v.row, outputFormats))}`));
         log(chalk.gray(`        ${v.row.consequence}`));
       }
       log("");

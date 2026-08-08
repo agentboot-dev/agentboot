@@ -21,6 +21,7 @@ import path from "path";
 import {
   PLATFORM_ENFORCEMENT,
   CAPABILITY_SUPPORT,
+  effectiveEmitters,
   type CapabilityContext,
   type CapabilityRow,
 } from "./conformance.js";
@@ -173,7 +174,9 @@ export function capabilityViolations(
   // Declaration order, so output is stable and diffs are reviewable.
   for (const row of CAPABILITY_SUPPORT) {
     if (!row.detect(ctx)) continue;
-    const honoured = row.emittedBy.filter((f) => outputFormats.includes(f));
+    // B1: effectiveEmitters, not row.emittedBy — a platform whose emitter is
+    // gated on another format that is not being built does NOT honour the key.
+    const honoured = effectiveEmitters(row, outputFormats).filter((f) => outputFormats.includes(f));
     if (honoured.length > 0) continue; // the silence case
     const waivedBy = capabilityExceptionFor(row.id, activeExceptions);
     out.push(waivedBy ? { row, waivedBy } : { row });

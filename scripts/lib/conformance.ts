@@ -82,8 +82,28 @@ export interface CapabilityRow {
   /** Is it configured? */
   detect: (ctx: CapabilityContext) => boolean;
   /** Platforms whose compiled dist tree contains a mechanism acting on this key.
-   *  EMPTY ARRAY means: implemented on no platform, at all. */
+   *  EMPTY ARRAY means: implemented on no platform, at all.
+   *
+   *  This is the DECLARED set — what the platform is capable of carrying. It is
+   *  not, on its own, what a given build emits: see `conditionalOn`. */
   emittedBy: string[];
+  /**
+   * B1: emission preconditions, platform → other output formats that must ALSO
+   * be built for that platform's emitter to run.
+   *
+   * `emittedBy` is a flat list and therefore cannot express the one thing that
+   * is true of `plugin`: the plugin tree is assembled by copying artifacts out
+   * of `dist/claude/`, and both `generatePluginOutput` and
+   * `generateComplianceHooks` sit INSIDE `if (outputFormats.includes("claude"))`
+   * in compile.ts. On a `plugin`-only hub those emitters never run, `dist/plugin/`
+   * comes out near-empty, and four error-severity rows claimed the capability was
+   * honoured — so the gate stayed silent about a control that reached nothing.
+   *
+   * Modelling this as data rather than as a special case in the gate is
+   * deliberate: the next platform with a build-order dependency gets a row, not
+   * a second `if`.
+   */
+  conditionalOn?: Record<string, string[]>;
   /** Severity when emittedBy ∩ outputFormats is empty. */
   severity: "error" | "warn";
   /** What the operator actually loses. Printed under the finding. */
@@ -175,6 +195,9 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     id: "compliance.inputScan.scannerCommand",
     detect: (c) => Boolean(c.config.compliance?.inputScan?.scannerCommand),
     emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Verified at compile.ts:4187 / :4195.
+    conditionalOn: { plugin: ["claude"] },
     severity: "error",
     consequence: 'The DLP scanner is never invoked. Prompts are unscanned, failMode "closed" notwithstanding.',
     warrant: "scripts/compile.ts:2424",
@@ -183,6 +206,9 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     id: "compliance.outputScan.blocking",
     detect: (c) => c.config.compliance?.outputScan?.blocking === true,
     emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Verified at compile.ts:4187 / :4195.
+    conditionalOn: { plugin: ["claude"] },
     severity: "error",
     consequence: "Nothing scans or blocks model output.",
     warrant: "scripts/compile.ts:2410",
@@ -191,6 +217,9 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     id: "managed.guardrails.denyTools",
     detect: (c) => (c.config.managed?.guardrails?.denyTools?.length ?? 0) > 0,
     emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Verified at compile.ts:4187 / :4195.
+    conditionalOn: { plugin: ["claude"] },
     severity: "error",
     consequence: "The PreToolUse deny hook is emitted nowhere; denied tools run.",
     warrant: "scripts/compile.ts:2410",
@@ -199,6 +228,9 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     id: "managed.guardrails.requireAuditLog",
     detect: (c) => Boolean(c.config.managed?.guardrails?.requireAuditLog),
     emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Verified at compile.ts:4187 / :4195.
+    conditionalOn: { plugin: ["claude"] },
     severity: "error",
     consequence: "The telemetry hook is emitted nowhere; nothing is audit-logged.",
     warrant: "scripts/compile.ts:2410",
@@ -236,6 +268,22 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     warrant: "scripts/compile.ts:1265",
   },
 ];
+
+/**
+ * The platforms that will ACTUALLY emit this capability for a given build.
+ *
+ * The single place `conditionalOn` is applied. Every consumer (the build gate,
+ * doctor's Coverage block, the reporting label) goes through here, because a
+ * second copy of this filter is precisely how `plugin` ended up claimed by four
+ * rows and emitted by none.
+ */
+export function effectiveEmitters(row: CapabilityRow, outputFormats: readonly string[]): string[] {
+  return row.emittedBy.filter((platform) => {
+    const deps = row.conditionalOn?.[platform];
+    if (!deps) return true;
+    return deps.every((d) => outputFormats.includes(d));
+  });
+}
 
 /** Where a platform's executable hooks live inside dist/, or null when the
  * platform has no hook mechanism at all. */

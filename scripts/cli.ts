@@ -34,7 +34,7 @@ import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
-import { PLATFORM_ENFORCEMENT, type CapabilityContext } from "./lib/conformance.js";
+import { PLATFORM_ENFORCEMENT, effectiveEmitters, type CapabilityContext } from "./lib/conformance.js";
 import {
   findHardArtifacts, capabilityViolations,
   countNarrowlyScopedInstructions, countScopedGotchas,
@@ -1574,9 +1574,15 @@ program
             ok("Capability coverage — every configured capability has a target that emits it");
           } else {
             for (const v of capViolations) {
+              // B1: report the EFFECTIVE emitters. Naming a platform whose
+              // emitter is itself gated on a format this hub does not build
+              // would send the operator to add a target that changes nothing.
+              const effective = effectiveEmitters(v.row, covFormats);
               const needs = v.row.emittedBy.length === 0
                 ? "implemented on no platform"
-                : `needs one of: ${v.row.emittedBy.join(", ")}`;
+                : effective.length === 0
+                  ? `needs one of: ${v.row.emittedBy.join(", ")} — every emitter for this key is gated on a format this hub does not build`
+                  : `needs one of: ${effective.join(", ")}`;
               if (v.waivedBy) {
                 warn(`${v.row.id} — gap accepted under ${v.waivedBy.id} (owner: ${v.waivedBy.owner}, expires ${v.waivedBy.expires})`);
               } else if (v.row.severity === "error") {

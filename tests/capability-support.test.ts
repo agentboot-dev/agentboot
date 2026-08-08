@@ -30,6 +30,7 @@ import os from "node:os";
 
 import {
   CAPABILITY_SUPPORT,
+  effectiveEmitters,
   type CapabilityContext,
 } from "../scripts/lib/conformance.js";
 import {
@@ -458,5 +459,101 @@ describe("capability gate — integration", () => {
     const goodJson = JSON.parse(good.out.slice(good.out.indexOf("{")));
     expect(goodJson.checks.filter((c: { status: string; name: string }) =>
       c.status === "fail" && ERROR_IDS.some((id) => c.name.startsWith(id)))).toEqual([]);
+  }, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// B1 — `emittedBy` could not express that plugin emission is conditional
+// ---------------------------------------------------------------------------
+
+/**
+ * `emittedBy` is a flat list, so four ERROR-severity rows claimed `plugin`
+ * unconditionally. But the plugin tree is assembled by copying out of
+ * `dist/claude/`, and both `generatePluginOutput` and `generateComplianceHooks`
+ * sit inside `if (outputFormats.includes("claude"))`. On a `plugin`-only hub
+ * those emitters never run — so the gate went silent about a control that
+ * reached nothing at all, which is the exact fail-open shape this table exists
+ * to close, three rows down from where it was closed the first time.
+ */
+describe("B1 — conditional emitters", () => {
+  const rowsClaimingPlugin = CAPABILITY_SUPPORT.filter((r) => r.emittedBy.includes("plugin"));
+
+  it("B1-U1: every row claiming `plugin` records that it depends on `claude`", () => {
+    // Guards the drift directly: a fifth row added later that claims plugin
+    // without the dependency reintroduces the defect.
+    expect(rowsClaimingPlugin.length).toBeGreaterThan(0);
+    for (const r of rowsClaimingPlugin) {
+      expect(r.conditionalOn?.plugin, `${r.id} claims plugin unconditionally`).toEqual(["claude"]);
+    }
+  });
+
+  it("B1-U2: effectiveEmitters drops plugin when claude is not built", () => {
+    const row = rowsClaimingPlugin[0]!;
+    expect(effectiveEmitters(row, ["plugin"])).not.toContain("plugin");
+    expect(effectiveEmitters(row, ["plugin", "claude"])).toContain("plugin");
+  });
+
+  it("B1-U3 (NEGATIVE): an unconditional row is untouched by the filter", () => {
+    const plain = CAPABILITY_SUPPORT.find((r) => r.id === "claude.hooks")!;
+    expect(effectiveEmitters(plain, ["claude"])).toEqual(["claude"]);
+    expect(effectiveEmitters(plain, ["cursor"])).toEqual(["claude"]);
+  });
+
+  it("B1-U4: the gate FIRES on a plugin-only hub — it used to stay silent", () => {
+    const v = capabilityViolations(
+      ctx({ managed: { guardrails: { denyTools: ["WebFetch"] } } }), ["plugin"],
+    );
+    expect(v.map((x) => x.row.id)).toContain("managed.guardrails.denyTools");
+  });
+
+  it("B1-U5 (NEGATIVE): plugin + claude honours it — the dependency, not the platform, is the gate", () => {
+    expect(capabilityViolations(
+      ctx({ managed: { guardrails: { denyTools: ["WebFetch"] } } }), ["plugin", "claude"],
+    )).toEqual([]);
+  });
+
+  it("B1-U6: the DECLARED set is unchanged — this is not a capability-claim change", () => {
+    // Option 2 (drop `plugin` from the rows) would be a public claim change on
+    // an honesty product. This fix is mechanical: plugin really does carry these
+    // hooks, when it is built at all.
+    for (const r of rowsClaimingPlugin) {
+      expect(r.emittedBy).toContain("plugin");
+    }
+  });
+
+  it("B1-U7: every conditionalOn key is a platform the row already claims", () => {
+    // A dependency on a platform not in emittedBy is dead configuration: it can
+    // never filter anything, so the row silently behaves as unconditional.
+    for (const r of CAPABILITY_SUPPORT) {
+      for (const k of Object.keys(r.conditionalOn ?? {})) {
+        expect(r.emittedBy, `${r.id}: conditionalOn["${k}"] not in emittedBy`).toContain(k);
+      }
+    }
+  });
+
+  it("B1-U8: every conditionalOn dependency is a real output format", () => {
+    for (const r of CAPABILITY_SUPPORT) {
+      for (const dep of Object.values(r.conditionalOn ?? {}).flat()) {
+        expect(VALID_FORMATS, `${r.id}: unknown dependency "${dep}"`).toContain(dep);
+      }
+    }
+  });
+});
+
+describe("B1 integration — a plugin-only hub with a deny list", () => {
+  it("B1-I1: build FAILS instead of reporting `Compiled … × 1 platform(s)`", () => {
+    const hub = scaffoldHub();
+    editConfig(hub, (c) => {
+      c.personas.outputFormats = ["plugin"];
+      c.managed = { guardrails: { denyTools: ["WebFetch"] } };
+    });
+    const bad = ab(["build"], hub);
+    expect(bad.status).not.toBe(0);
+    expect(bad.out).toContain("managed.guardrails.denyTools");
+
+    // ...and adding claude — the dependency the row actually needs — fixes it.
+    editConfig(hub, (c) => { c.personas.outputFormats = ["plugin", "claude"]; });
+    const good = ab(["build"], hub);
+    expect(good.status).toBe(0);
   }, 300_000);
 });
