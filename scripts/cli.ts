@@ -237,15 +237,30 @@ program
     fs.mkdirSync(outDir, { recursive: true });
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const distPath = path.join(cwd, "dist");
+    // Read the hub's configured distPath. Hardcoding `dist` meant a hub with
+    // `output.distPath` set archived nothing, forever, on a schedule.
+    const baselineConfigPath = opts.config
+      ? path.resolve(opts.config)
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    const baselineConfig = fs.existsSync(baselineConfigPath) ? loadConfig(baselineConfigPath) : null;
+    const distPath = baselineConfig
+      ? path.resolve(path.dirname(baselineConfigPath), baselineConfig.output?.distPath ?? "./dist")
+      : path.join(cwd, "dist");
 
     const manifests: Record<string, unknown> = {};
+    // The point of the archive is OBSERVED platform behaviour. A manifest whose
+    // every control is `untested`/`not-applicable` records no observation at
+    // all — it is a snapshot of "we did not look".
+    let observedProbes = 0;
     if (fs.existsSync(distPath)) {
       for (const platform of fs.readdirSync(distPath)) {
         const mf = path.join(distPath, platform, "enforcement-manifest.json");
         if (!fs.existsSync(mf)) continue;
         try {
-          manifests[platform] = JSON.parse(fs.readFileSync(mf, "utf-8"));
+          const parsed = JSON.parse(fs.readFileSync(mf, "utf-8")) as { controls?: Array<{ status?: string }> };
+          manifests[platform] = parsed;
+          observedProbes += (parsed.controls ?? [])
+            .filter((c) => c.status === "pass" || c.status === "fail").length;
         } catch {
           manifests[platform] = { error: "unparseable enforcement-manifest.json" };
         }
@@ -255,8 +270,21 @@ program
     if (Object.keys(manifests).length === 0) {
       // Silence is not success: an empty archive must say so and fail, or the
       // baseline quietly accumulates nothing and looks healthy for a year.
-      console.error(chalk.red("  ✗ No enforcement manifests found in dist/."));
+      console.error(chalk.red(`  ✗ No enforcement manifests found in ${path.relative(cwd, distPath) || distPath}.`));
       console.error(chalk.gray("    Run `agentboot conformance` first — it writes dist/<platform>/enforcement-manifest.json."));
+      console.error(chalk.gray("    Nothing was archived."));
+      process.exit(1);
+    }
+
+    if (observedProbes === 0) {
+      // A file count is not a measurement. Manifests exist here, so the
+      // emptiness check above passes and the CI `find | wc -l` assertion passes
+      // — while the snapshot contains zero probe results. Banking that as
+      // history is worse than banking nothing, because it looks like history.
+      console.error(chalk.red("  ✗ Every control in every manifest is untested or not-applicable — this snapshot records NO observed behaviour."));
+      console.error(chalk.gray(`    ${Object.keys(manifests).length} manifest(s) present, 0 probes executed.`));
+      console.error(chalk.gray("    A baseline of unmeasured platforms cannot answer \"how did the platform behave in August\" later."));
+      console.error(chalk.gray("    Fix: make `agentboot conformance` produce real probe results (it needs bash, and a built dist/), then re-run."));
       console.error(chalk.gray("    Nothing was archived."));
       process.exit(1);
     }
@@ -266,6 +294,7 @@ program
       capturedAt: new Date().toISOString(),
       agentbootVersion: getVersion(),
       note: "Point-in-time platform enforcement behaviour. Archive only — comparison is post-GA (Continental Drift).",
+      observedProbes,
       platforms: manifests,
     };
     const outFile = path.join(outDir, `conformance-${stamp}.json`);
@@ -274,7 +303,7 @@ program
     const count = fs.readdirSync(outDir).filter((f) => f.startsWith("conformance-")).length;
     console.log(chalk.bold(`\n  ${chalk.green("✓")} Baseline archived`));
     console.log(chalk.gray(`    ${path.relative(cwd, outFile)}`));
-    console.log(chalk.gray(`    ${Object.keys(manifests).length} platform(s) · ${count} snapshot(s) on record\n`));
+    console.log(chalk.gray(`    ${Object.keys(manifests).length} platform(s) · ${observedProbes} observed probe(s) · ${count} snapshot(s) on record\n`));
   });
 
 program

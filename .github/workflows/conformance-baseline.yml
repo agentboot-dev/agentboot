@@ -85,7 +85,12 @@ jobs:
       # A skip must alarm as loudly as a failure. If the archive step produced
       # nothing, the two steps above already failed non-zero — this makes the
       # empty case impossible to mistake for a quiet success in the summary.
-      - name: Assert the snapshot is non-empty
+      #
+      # A FILE COUNT IS NOT A MEASUREMENT. The original assertion counted
+      # snapshot files, which a snapshot of entirely `untested` controls
+      # satisfies — the runner could lose bash and this job would stay green
+      # while banking nothing but "we did not look". Count observed probes.
+      - name: Assert the snapshot records observed behaviour
         run: |
           count=$(find .agentboot/baseline -name 'conformance-*.json' | wc -l | tr -d ' ')
           echo "snapshots on record in this run: $count"
@@ -93,6 +98,23 @@ jobs:
             echo "::error::conformance baseline produced no snapshot — the clock did not advance this week"
             exit 1
           fi
+          probes=$(node -e '
+            const fs=require("fs"),path=require("path");
+            const dir=".agentboot/baseline";
+            let n=0;
+            for (const f of fs.readdirSync(dir).filter(f=>f.startsWith("conformance-"))) {
+              const s=JSON.parse(fs.readFileSync(path.join(dir,f),"utf-8"));
+              for (const m of Object.values(s.platforms||{}))
+                for (const c of (m.controls||[]))
+                  if (c.status==="pass"||c.status==="fail") n++;
+            }
+            process.stdout.write(String(n));
+          ')
+          echo "observed probes across the archive: $probes"
+          if [ "$probes" -eq 0 ]; then
+            echo "::error::every archived control is untested — the baseline banked no observation of platform behaviour"
+            exit 1
+          fi
           echo "## Conformance baseline" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Captured $count snapshot file(s)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Captured $count snapshot file(s), $probes observed probe(s)." >> "$GITHUB_STEP_SUMMARY"
