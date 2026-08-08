@@ -69,6 +69,25 @@ export const SYNCABLE_OUTPUT_FORMATS: readonly string[] =
 }
 
 /**
+ * H1: output formats whose emitters DEPEND on another format being built.
+ *
+ * `plugin` is the only one today. The plugin tree is assembled by copying
+ * artifacts out of `dist/claude/`, and both `generatePluginOutput` and
+ * `generateComplianceHooks` sit inside `if (outputFormats.includes("claude"))`.
+ * A `plugin`-only build therefore produced a near-empty `dist/plugin/` and
+ * reported `✓ Compiled 4 persona(s) × 1 platform(s)`.
+ *
+ * ONE declaration of that fact, consumed by three gates that would otherwise
+ * each re-state it: the build precondition (compile), the enforcement resolver
+ * (PLATFORM_ENFORCEMENT.requires) and the capability table
+ * (CAPABILITY_SUPPORT.conditionalOn). Three copies of one dependency is how the
+ * `plugin` fail-open happened three separate times.
+ */
+export const PLATFORM_REQUIRES: Record<string, string[]> = {
+  plugin: ["claude"],
+};
+
+/**
  * Aliases operators actually type. Historically local to sync.ts, which meant
  * every OTHER consumer of a repos.json platform compared un-normalized strings.
  */

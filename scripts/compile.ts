@@ -47,6 +47,7 @@ import {
   agentbootNpxSpec,
   DEFAULT_OUTPUT_FORMATS,
   VALID_OUTPUT_FORMATS,
+  PLATFORM_REQUIRES,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
@@ -3473,6 +3474,39 @@ function main(): void {
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
     console.error(chalk.red(`Unknown output format(s): ${unknownFormats.join(", ")}. Valid: ${validFormats.join(", ")}`));
+    process.exit(1);
+  }
+
+  // H1 (F-3): a format whose emitters are gated on another format that is not
+  // being built produces a tree that is empty in the ways that matter, and says
+  // "✓ Compiled 4 persona(s) × 1 platform(s)" about it.
+  //
+  // Verified against the pre-fix tree: outputFormats ["plugin"] exited 0 with
+  // dist/plugin/ containing `core` and no hooks at all.
+  //
+  // Erroring rather than silently implying the dependency is deliberate. Adding
+  // `claude` to the build changes what lands in every spoke targeting claude;
+  // that is the operator's decision to make, and a build that quietly widens its
+  // own output is a worse surprise than one that stops and says why.
+  const missingRequires = outputFormats.flatMap((f) =>
+    (PLATFORM_REQUIRES[f] ?? [])
+      .filter((dep) => !outputFormats.includes(dep))
+      .map((dep) => ({ format: f, dep })));
+  if (missingRequires.length > 0) {
+    for (const { format, dep } of missingRequires) {
+      console.error(chalk.red(
+        `✗ Output format \`${format}\` requires \`${dep}\`, which is not in personas.outputFormats.`,
+      ));
+      console.error(chalk.gray(
+        `    dist/${format}/ is assembled from dist/${dep}/, so without it the tree is produced`,
+      ));
+      console.error(chalk.gray(
+        `    but carries none of the hooks or compiled personas — a green build over an empty control.`,
+      ));
+      console.error(chalk.gray(
+        `    Fix: add "${dep}" to personas.outputFormats, or remove "${format}".`,
+      ));
+    }
     process.exit(1);
   }
 

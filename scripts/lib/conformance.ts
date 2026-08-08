@@ -23,7 +23,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentBootConfig } from "./config.js";
+import { PLATFORM_REQUIRES, type AgentBootConfig } from "./config.js";
 
 /** Same bound as every external-binary probe (v0.12.4 hang-class fix). */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -58,7 +58,7 @@ export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
   jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
   agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
   skill: { level: "advisory", detail: "skill content is instructions only" },
-  plugin: { level: "enforced", requires: ["claude"], detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
+  plugin: { level: "enforced", requires: PLATFORM_REQUIRES["plugin"]!, detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
 };
 
 export interface EnforcementResolution {
@@ -251,8 +251,8 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     detect: (c) => Boolean(c.config.compliance?.inputScan?.scannerCommand),
     emittedBy: ["claude", "codex", "copilot", "plugin"],
     // The plugin tree is assembled FROM dist/claude/; its emitters run only when
-    // `claude` is also built. Verified at compile.ts:4187 / :4195.
-    conditionalOn: { plugin: ["claude"] },
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
     severity: "error",
     consequence: 'The DLP scanner is never invoked. Prompts are unscanned, failMode "closed" notwithstanding.',
     warrant: "scripts/compile.ts:2424",
@@ -262,8 +262,8 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     detect: (c) => c.config.compliance?.outputScan?.blocking === true,
     emittedBy: ["claude", "codex", "copilot", "plugin"],
     // The plugin tree is assembled FROM dist/claude/; its emitters run only when
-    // `claude` is also built. Verified at compile.ts:4187 / :4195.
-    conditionalOn: { plugin: ["claude"] },
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
     severity: "error",
     consequence: "Nothing scans or blocks model output.",
     warrant: "scripts/compile.ts:2410",
@@ -273,8 +273,8 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     detect: (c) => (c.config.managed?.guardrails?.denyTools?.length ?? 0) > 0,
     emittedBy: ["claude", "codex", "copilot", "plugin"],
     // The plugin tree is assembled FROM dist/claude/; its emitters run only when
-    // `claude` is also built. Verified at compile.ts:4187 / :4195.
-    conditionalOn: { plugin: ["claude"] },
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
     severity: "error",
     consequence: "The PreToolUse deny hook is emitted nowhere; denied tools run.",
     warrant: "scripts/compile.ts:2410",
@@ -284,8 +284,8 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     detect: (c) => Boolean(c.config.managed?.guardrails?.requireAuditLog),
     emittedBy: ["claude", "codex", "copilot", "plugin"],
     // The plugin tree is assembled FROM dist/claude/; its emitters run only when
-    // `claude` is also built. Verified at compile.ts:4187 / :4195.
-    conditionalOn: { plugin: ["claude"] },
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
     severity: "error",
     consequence: "The telemetry hook is emitted nowhere; nothing is audit-logged.",
     warrant: "scripts/compile.ts:2410",

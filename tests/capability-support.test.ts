@@ -30,6 +30,7 @@ import os from "node:os";
 
 import {
   CAPABILITY_SUPPORT,
+  PLATFORM_ENFORCEMENT,
   effectiveEmitters,
   type CapabilityContext,
 } from "../scripts/lib/conformance.js";
@@ -37,7 +38,7 @@ import {
   capabilityViolations, countNarrowlyScopedInstructions, countScopedGotchas,
 } from "../scripts/lib/guardrail-scan.js";
 import { capabilityExceptionFor, validateExceptions, type PolicyException } from "../scripts/lib/exceptions.js";
-import type { AgentBootConfig } from "../scripts/lib/config.js";
+import { PLATFORM_REQUIRES, type AgentBootConfig } from "../scripts/lib/config.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "agentboot.js");
@@ -549,7 +550,13 @@ describe("B1 integration — a plugin-only hub with a deny list", () => {
     });
     const bad = ab(["build"], hub);
     expect(bad.status).not.toBe(0);
-    expect(bad.out).toContain("managed.guardrails.denyTools");
+    // H1 landed after B1 and stops this config EARLIER, at config load, with the
+    // dependency named directly — a better diagnostic for the same defect, and
+    // the reason this assertion changed. The capability gate's own behaviour on
+    // a plugin-only format set stays pinned by B1-U4/B1-U5, which call
+    // capabilityViolations directly rather than through the CLI.
+    expect(bad.out).toContain("`plugin` requires `claude`");
+    expect(bad.out).not.toMatch(/✓ Compiled \d+ persona\(s\) × 1 platform\(s\)/);
 
     // ...and adding claude — the dependency the row actually needs — fixes it.
     editConfig(hub, (c) => { c.personas.outputFormats = ["plugin", "claude"]; });
@@ -584,5 +591,47 @@ describe("B2 integration — doctor on a plugin-only hub", () => {
     expect(bad[0]!.status).toBe("fail");
     expect(bad[0]!.message).toContain("NOT enforced");
     expect(bad[0]!.message).toContain("claude is not in personas.outputFormats");
+  }, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// H1 (F-3) — a plugin-only build reported success over a near-empty tree
+// ---------------------------------------------------------------------------
+
+describe("H1 — output formats with build-order dependencies", () => {
+  it("H1-U1: PLATFORM_REQUIRES is the ONE declaration, and the other two tables use it", () => {
+    // Three copies of "plugin needs claude" is how the plugin fail-open happened
+    // three separate times. Assert the identity, not just the values.
+    expect(PLATFORM_REQUIRES["plugin"]).toEqual(["claude"]);
+    expect(PLATFORM_ENFORCEMENT["plugin"]!.requires).toBe(PLATFORM_REQUIRES["plugin"]);
+    for (const r of CAPABILITY_SUPPORT.filter((x) => x.emittedBy.includes("plugin"))) {
+      expect(r.conditionalOn?.plugin).toBe(PLATFORM_REQUIRES["plugin"]);
+    }
+  });
+
+  it("H1-U2: every dependency names a real output format", () => {
+    for (const [fmt, deps] of Object.entries(PLATFORM_REQUIRES)) {
+      expect(VALID_FORMATS, `${fmt} is not a valid format`).toContain(fmt);
+      for (const d of deps) expect(VALID_FORMATS, `${fmt} → ${d}`).toContain(d);
+    }
+  });
+
+  it("H1-I1: a plugin-only build FAILS; adding claude makes it pass", () => {
+    const hub = scaffoldHub();
+    editConfig(hub, (c) => { c.personas.outputFormats = ["plugin"]; });
+    const bad = ab(["build"], hub);
+    expect(bad.status).not.toBe(0);
+    expect(bad.out).toContain("`plugin` requires `claude`");
+    // The old output, verbatim, is what must NOT appear.
+    expect(bad.out).not.toMatch(/✓ Compiled \d+ persona\(s\) × 1 platform\(s\)/);
+
+    editConfig(hub, (c) => { c.personas.outputFormats = ["plugin", "claude"]; });
+    expect(ab(["build"], hub).status).toBe(0);
+  }, 300_000);
+
+  it("H1-I2 (NEGATIVE): a claude-only build is unaffected — the gate is directional", () => {
+    const hub = scaffoldHub();
+    editConfig(hub, (c) => { c.personas.outputFormats = ["claude"]; });
+    expect(ab(["build"], hub).status).toBe(0);
   }, 300_000);
 });
