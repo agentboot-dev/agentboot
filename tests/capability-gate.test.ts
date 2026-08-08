@@ -26,6 +26,7 @@ import {
   unenforceableViolations,
   type HardArtifact,
 } from "../scripts/lib/guardrail-scan.js";
+import { resolveEnforcement } from "../scripts/lib/conformance.js";
 
 const hard = (extra = "") =>
   `---\ndescription: x\napplyTo: "**/*"\nguardrail: hard\n${extra}---\n\n# body\n`;
@@ -82,11 +83,40 @@ describe("unenforceableFormats", () => {
     expect(unenforceableFormats(["not-a-platform"])).toEqual(["not-a-platform"]);
   });
 
-  it("classifies plugin as enforcing — verified, not assumed", () => {
-    // Confirmed against the real hub: dist/plugin receives instructions AND
-    // hooks (agentboot-input-scan.sh, output-scan, telemetry). An unverified
-    // row in this table is the same class of error as an unsourced claim.
-    expect(unenforceableFormats(["plugin"])).toEqual([]);
+  it("classifies plugin as enforcing ONLY when claude is also built (B2)", () => {
+    // The original assertion here was `unenforceableFormats(["plugin"]) === []`,
+    // justified as "confirmed against the real hub: dist/plugin receives
+    // instructions AND hooks". That observation was correct and the inference
+    // from it was not: the real hub builds `claude`, and dist/plugin/ is
+    // assembled by copying out of dist/claude/ by an emitter gated on `claude`.
+    // On a plugin-only hub dist/plugin/ contains no hooks.json at all, so the
+    // table's `enforced` was describing a mechanism that is not present — and
+    // this test PINNED that as intended behaviour.
+    expect(unenforceableFormats(["plugin", "claude"])).toEqual([]);
+    expect(unenforceableFormats(["plugin"])).toEqual(["plugin"]);
+  });
+
+  it("resolveEnforcement reports the unmet prerequisite by name", () => {
+    const withClaude = resolveEnforcement("plugin", ["plugin", "claude"]);
+    expect(withClaude.level).toBe("enforced");
+    expect(withClaude.unmetRequires).toEqual([]);
+
+    const without = resolveEnforcement("plugin", ["plugin"]);
+    expect(without.level).toBe("advisory");
+    expect(without.unmetRequires).toEqual(["claude"]);
+    expect(without.detail).toContain("claude");
+  });
+
+  it("resolveEnforcement fails closed on an unknown platform", () => {
+    expect(resolveEnforcement("not-a-platform", ["not-a-platform"]).level).toBe("advisory");
+  });
+
+  it("NEGATIVE: a platform with no prerequisites keeps its declared level", () => {
+    // If `requires` leaked onto every row this would silently downgrade the
+    // whole table to advisory and the gate would fire on every hub.
+    expect(resolveEnforcement("claude", ["claude"]).level).toBe("enforced");
+    expect(resolveEnforcement("cursor", ["cursor"]).level).toBe("advisory");
+    expect(resolveEnforcement("copilot", ["copilot"]).level).toBe("fail-open");
   });
 });
 

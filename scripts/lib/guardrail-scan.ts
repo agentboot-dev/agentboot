@@ -19,9 +19,9 @@
 import fs from "fs";
 import path from "path";
 import {
-  PLATFORM_ENFORCEMENT,
   CAPABILITY_SUPPORT,
   effectiveEmitters,
+  resolveEnforcement,
   type CapabilityContext,
   type CapabilityRow,
 } from "./conformance.js";
@@ -107,21 +107,24 @@ export function findHardArtifacts(dirs: {
  * the defect class this file exists to close.
  */
 export function unenforceableFormats(outputFormats: string[]): string[] {
-  return outputFormats.filter((f) => {
-    const e = PLATFORM_ENFORCEMENT[f];
-    // FAIL CLOSED on an unknown platform.
-    //
-    // The first version of this returned `false` here — "don't guess about a
-    // platform we have no data for." That reasoning is right for a classifier
-    // and exactly backwards for a safety gate: it meant any output format
-    // missing from the table was silently treated as ENFORCING, so a HARD
-    // guardrail targeting it passed the gate. `plugin` was such a format, and
-    // the artifact then reached no platform tree at all — a disappearance,
-    // strictly worse than the downgrade this gate exists to prevent.
-    //
-    // An unknown platform is a platform we cannot vouch for. Say so.
-    return e ? e.level === "advisory" : true;
-  });
+  // FAIL CLOSED, twice, both inside resolveEnforcement():
+  //
+  //   * An UNKNOWN platform resolves to advisory. The first version of this
+  //     returned false — "don't guess about a platform we have no data for."
+  //     That reasoning is right for a classifier and exactly backwards for a
+  //     safety gate: any format missing from the table was silently treated as
+  //     ENFORCING, so a HARD guardrail targeting it passed. `plugin` was such a
+  //     format, and the artifact then reached no platform tree at all.
+  //
+  //   * A platform with UNMET prerequisites resolves to advisory (B2). `plugin`
+  //     has no hooks of its own; it bundles Claude Code's, copied out of
+  //     dist/claude/. Without `claude` in outputFormats there is no hooks.json
+  //     in dist/plugin/ — so the declared level `enforced` describes a mechanism
+  //     that is not present.
+  //
+  // Keyed off the SAME resolver doctor uses; a second list here would drift from
+  // the first, which is the defect class this file exists to close.
+  return outputFormats.filter((f) => resolveEnforcement(f, outputFormats).level === "advisory");
 }
 
 /**

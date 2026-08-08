@@ -34,7 +34,7 @@ import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
-import { PLATFORM_ENFORCEMENT, effectiveEmitters, type CapabilityContext } from "./lib/conformance.js";
+import { PLATFORM_ENFORCEMENT, effectiveEmitters, resolveEnforcement, type CapabilityContext } from "./lib/conformance.js";
 import {
   findHardArtifacts, capabilityViolations,
   countNarrowlyScopedInstructions, countScopedGotchas,
@@ -1623,7 +1623,6 @@ program
         const enforcementFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
         // D2: the classification is the conformance harness's SSOT — doctor
         // reads the same table `agentboot conformance` tests empirically.
-        const ENFORCEMENT_LEVELS = PLATFORM_ENFORCEMENT;
         if (hasHardPolicy) {
           if (hardArtifacts.length > 0) {
             const acked = hardArtifacts.filter(a => a.acknowledgedAdvisory).length;
@@ -1633,8 +1632,7 @@ program
             );
           }
           for (const fmt of enforcementFormats) {
-            const e = ENFORCEMENT_LEVELS[fmt];
-            if (!e) {
+            if (!PLATFORM_ENFORCEMENT[fmt]) {
               // Previously `continue` — a platform dropped from the Enforcement
               // report with no trace, in a function whose entire job is honesty.
               // The compile-time coverage assertion makes this unreachable, which
@@ -1642,7 +1640,17 @@ program
               warn(`${fmt}: no enforcement classification — cannot state whether org policy is enforced here`);
               continue;
             }
-            if (e.level === "enforced") {
+            // B2: resolve against THIS build. doctor positively asserted
+            // "✓ plugin: org policy is enforceable — bundles Claude Code hooks"
+            // on a plugin-only hub whose dist/plugin/ had no hooks.json. The
+            // operator was not merely un-warned, they were reassured.
+            const e = resolveEnforcement(fmt, enforcementFormats);
+            if (e.unmetRequires.length > 0) {
+              // fail(), not warn(): the org configured HARD policy and this
+              // target has no mechanism at all. Nothing is degraded here —
+              // nothing exists.
+              fail(`${fmt}: org policy is NOT enforced here — ${e.detail}`);
+            } else if (e.level === "enforced") {
               ok(`${fmt}: org policy is enforceable — ${e.detail}`);
             } else {
               warn(

@@ -557,3 +557,32 @@ describe("B1 integration — a plugin-only hub with a deny list", () => {
     expect(good.status).toBe(0);
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// B2 — doctor positively asserted `plugin` was enforceable
+// ---------------------------------------------------------------------------
+
+describe("B2 integration — doctor on a plugin-only hub", () => {
+  it("B2-I1: reports NOT enforced, where it used to report ✓ enforceable", () => {
+    const hub = scaffoldHub();
+    type Check = { status: string; message: string };
+    const checks = (): Check[] =>
+      JSON.parse(ab(["doctor", "--format", "json"], hub).out).checks as Check[];
+
+    // plugin WITH claude: the claim is true, and doctor must still make it —
+    // otherwise this is an outage, not a gate.
+    editConfig(hub, (c) => {
+      c.personas.outputFormats = ["plugin", "claude"];
+      c.managed = { enabled: true, guardrails: {} };
+    });
+    expect(checks().some((c) => c.status === "ok" && c.message.startsWith("plugin: org policy is enforceable"))).toBe(true);
+
+    // plugin WITHOUT claude: dist/plugin/ has no hooks.json at all.
+    editConfig(hub, (c) => { c.personas.outputFormats = ["plugin"]; });
+    const bad = checks().filter((c) => c.message.startsWith("plugin:"));
+    expect(bad).toHaveLength(1);
+    expect(bad[0]!.status).toBe("fail");
+    expect(bad[0]!.message).toContain("NOT enforced");
+    expect(bad[0]!.message).toContain("claude is not in personas.outputFormats");
+  }, 300_000);
+});

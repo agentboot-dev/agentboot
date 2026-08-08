@@ -35,6 +35,17 @@ const PROBE_TIMEOUT_MS = 10_000;
 export interface PlatformEnforcement {
   level: "enforced" | "partial" | "fail-open" | "advisory";
   detail: string;
+  /**
+   * B2: other output formats that must ALSO be built for this platform's
+   * enforcement mechanism to exist at all.
+   *
+   * `plugin` does not have hooks of its own — it bundles Claude Code's, copied
+   * out of dist/claude/ by an emitter that only runs when `claude` is built. On
+   * a plugin-only hub dist/plugin/ has no hooks.json, so the declared level
+   * `enforced` describes a mechanism that is not present. A level is a claim
+   * about an artifact; when the artifact is absent the claim must not be made.
+   */
+  requires?: string[];
 }
 
 export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
@@ -47,8 +58,52 @@ export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
   jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
   agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
   skill: { level: "advisory", detail: "skill content is instructions only" },
-  plugin: { level: "enforced", detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
+  plugin: { level: "enforced", requires: ["claude"], detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
 };
+
+export interface EnforcementResolution {
+  level: PlatformEnforcement["level"];
+  detail: string;
+  /** Declared prerequisites that this build does NOT satisfy. */
+  unmetRequires: string[];
+}
+
+/**
+ * The enforcement level a platform ACTUALLY has in a given build.
+ *
+ * One resolver, used by the HARD-guardrail gate and by doctor, because two
+ * places deciding "is `plugin` enforcing?" is the drift that produced
+ * `✓ plugin: org policy is enforceable` on a hub whose dist/plugin/ contained no
+ * hooks.json at all.
+ *
+ * FAILS CLOSED twice over: an unknown platform resolves to `advisory`, and a
+ * platform whose prerequisites are unmet resolves to `advisory` rather than to
+ * its declared level. "We could not verify it" must never resolve upward.
+ */
+export function resolveEnforcement(
+  format: string,
+  outputFormats: readonly string[],
+): EnforcementResolution {
+  const e = PLATFORM_ENFORCEMENT[format];
+  if (!e) {
+    return {
+      level: "advisory",
+      detail: "no enforcement classification for this platform",
+      unmetRequires: [],
+    };
+  }
+  const unmet = (e.requires ?? []).filter((r) => !outputFormats.includes(r));
+  if (unmet.length > 0) {
+    return {
+      level: "advisory",
+      detail:
+        `${e.detail} — but ${unmet.join(", ")} is not in personas.outputFormats, ` +
+        `so no hooks are produced for this platform at all`,
+      unmetRequires: unmet,
+    };
+  }
+  return { level: e.level, detail: e.detail, unmetRequires: [] };
+}
 
 // ---------------------------------------------------------------------------
 // Capability × platform SUPPORT — the second, orthogonal axis
