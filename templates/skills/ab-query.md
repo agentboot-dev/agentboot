@@ -101,13 +101,13 @@ If no attribution fields exist, say so: "This artifact doesn't have attribution 
 
 ---
 
-## Brain Queries (Phase 11)
+## Decision-History Questions
 
 When the user asks questions like "why did we stop using Redis for sessions?" or "what's the history of our auth decisions?":
 
-Respond honestly: "Brain queries (organizational memory search) are coming in Phase 11. For now, I can check if any gotchas or traits mention what you're looking for."
+Be plain about the boundary: AgentBoot indexes the artifacts installed in this repo — gotchas, traits, instructions, personas and their attribution metadata. It is not an organizational memory store and does not search chat history, tickets, or commit history.
 
-Then search installed content using `agentboot_list_gotchas` and `agentboot_list_traits` for relevant matches.
+Then search the installed content using `agentboot_list_gotchas` and `agentboot_list_traits` for relevant matches, and say so if there are none: "Nothing in the installed artifacts covers that. If the decision was written up as a gotcha or an ADR reference, `agentboot import` can bring it into the hub so the answer is available next time."
 
 ---
 
