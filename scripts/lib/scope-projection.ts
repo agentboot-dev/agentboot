@@ -98,15 +98,44 @@ import { frontmatterBlock } from "./frontmatter.js";
  * anything — that is a separate finding with a different verdict (warn, not
  * error), and folding it in here makes this change unshippable.
  */
+/**
+ * C2: YAML ends a scalar at an inline comment. This parser did not.
+ *
+ * AgentBoot's OWN documented scaffold — core/instructions/agentboot-authoring
+ * .instructions.md and the `agentboot add instruction` template — writes:
+ *
+ *     applyTo: "**"  # glob pattern for activation scope
+ *
+ * Everything after the closing quote was being taken as part of the glob, so the
+ * value the product tells authors to write parsed to the single glob
+ * `** # glob pattern for activation scope`, which is not universal, does not
+ * match the always-on sentinel set, and therefore made every artifact written to
+ * our own instructions look NARROWLY SCOPED. The gate would then fire on the
+ * default install — the exact "check becomes noise inside a week" outcome the
+ * UNIVERSAL_GLOBS set exists to prevent.
+ */
+function stripYamlInlineComment(raw: string): string {
+  // A quoted scalar ends at its closing quote; anything after is a comment.
+  const quoted = raw.match(/^(["'])(?:[^\\]|\\.)*?\1/);
+  if (quoted) return quoted[0]!;
+  // An unquoted scalar ends at whitespace-then-hash. A bare `#` with no leading
+  // space is a legal character in a glob and is deliberately NOT treated as a
+  // comment, matching YAML.
+  const at = raw.search(/\s#/);
+  return at === -1 ? raw : raw.slice(0, at).trimEnd();
+}
+
 export function inspectScope(content: string): ScopeInspection {
   const fm = frontmatterBlock(content);
-  if (!fm) return { globs: [], alwaysOn: true, acknowledgedUnscoped: false, raw: null };
+  // `=== null`, not falsy: an EMPTY frontmatter block ("---\n---") is a real
+  // block that happens to be empty, and `!fm` conflated it with "no frontmatter".
+  if (fm === null) return { globs: [], alwaysOn: true, acknowledgedUnscoped: false, raw: null };
 
   const acknowledgedUnscoped = /^\s*scope-unsupported:\s*acknowledged\s*$/im.test(fm);
   const m = fm.match(/^\s*applyTo:\s*(.+)$/im);
   if (!m) return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null };
 
-  const raw = m[1]!.trim();
+  const raw = stripYamlInlineComment(m[1]!.trim());
   const globs = raw
     .replace(/^["']|["']$/g, "")
     .split(",")

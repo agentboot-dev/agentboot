@@ -421,3 +421,47 @@ describe("C1 — frontmatter detection must survive a line ending", () => {
     expect(scopePreamble(["src/api/**", "lib/**"])).toContain("src/api/**, lib/**");
   });
 });
+
+// ---------------------------------------------------------------------------
+// C2 — a trailing YAML comment was parsed as part of the glob
+// ---------------------------------------------------------------------------
+
+describe("C2 — inline YAML comments in applyTo", () => {
+  it("C2-1: AgentBoot's OWN documented scaffold parses as universal", () => {
+    // core/instructions/agentboot-authoring.instructions.md and the
+    // `agentboot add instruction` template both write exactly this line. Before
+    // the fix it parsed to the single glob
+    // `** # glob pattern for activation scope` — not universal, so the gate
+    // fired on the default install of our own documented example.
+    const s = inspectScope(fm(`applyTo: "**"  # glob pattern for activation scope\n`));
+    expect(s.alwaysOn).toBe(true);
+    expect(s.globs).toEqual([]);
+  });
+
+  it("C2-2: a comment after an UNQUOTED narrowing glob is stripped", () => {
+    expect(inspectScope(fm(`applyTo: src/api/**  # only the API\n`)).globs)
+      .toEqual(["src/api/**"]);
+  });
+
+  it("C2-3: a comment after a quoted list is stripped, the list survives", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**, src/db/**"  # two trees\n`)).globs)
+      .toEqual(["src/api/**", "src/db/**"]);
+  });
+
+  it("C2-4 (NEGATIVE): a `#` with no leading space is a legal glob character", () => {
+    // YAML only starts an inline comment at whitespace-then-hash. Stripping
+    // every `#` would corrupt a legitimate path.
+    expect(inspectScope(fm(`applyTo: "src/#tag/**"\n`)).globs).toEqual(["src/#tag/**"]);
+  });
+
+  it("C2-5 (NEGATIVE): a line with no comment is untouched", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**"\n`)).globs).toEqual(["src/api/**"]);
+  });
+
+  it("C2-6: an EMPTY frontmatter block is a block, not a missing one", () => {
+    // `!fm` treated "" as absent. Same observable result here, but the
+    // conflation is the kind that becomes a defect the moment a second field is
+    // read from the block.
+    expect(inspectScope(`---\n---\n\n# body\n`)).toMatchObject({ globs: [], alwaysOn: true });
+  });
+});
