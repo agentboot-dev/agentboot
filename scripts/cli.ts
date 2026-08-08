@@ -2711,6 +2711,9 @@ program
           if (r.summary.modifiedCount > 0) parts.push(`${r.summary.modifiedCount} modified`);
           if (r.summary.missingCount > 0) parts.push(`${r.summary.missingCount} deleted`);
           if (r.summary.exceptedCount > 0) parts.push(`${r.summary.exceptedCount} excepted`);
+          // F-1: a revoked control still live here must be named, not folded
+          // into a generic "drifted" — it is a different remediation entirely.
+          if (r.summary.retiredCount > 0) parts.push(`${r.summary.retiredCount} retired-but-present`);
           const detail = !r.manifestFound
             ? "(no manifest)"
             : r.clean
@@ -2727,7 +2730,9 @@ program
               if (entry.status === "clean" || entry.status === "unmanaged") continue;
               const mark = entry.status === "excepted" ? chalk.cyan("◦") : chalk.red("✗");
               const suffix = entry.status === "excepted" ? ` (approved exception ${entry.exceptionId})` : "";
-              const state = entry.status === "missing" ? "deleted" : entry.status;
+              const state = entry.status === "missing" ? "deleted"
+                : entry.status === "retired" ? "retired — revoked at the hub, still present here"
+                : entry.status;
               console.log(`        ${mark} ${entry.file} — ${state}${suffix}`);
             }
           }

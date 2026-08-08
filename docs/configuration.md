@@ -190,12 +190,42 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 |---|---|---|---|
 | `output.distPath` | string | `./dist` | Where compiled output is written before syncing. |
 | `output.provenanceHeaders` | boolean | `true` | Add source-file + timestamp provenance headers to output. |
-| `output.failOnDirtyDist` | boolean | `false` | Fail the build if `dist/` already contains prior output (CI staleness guard). |
+| `output.failOnDirtyDist` | boolean | `false` | **Deprecated, ignored.** `dist/` is now rebuilt from empty on every build and pruned, so a dirty `dist/` is structurally impossible. Setting the key prints a deprecation warning; the build no longer fails. |
 | `output.tokenBudget.warnAt` | number | `8000` | Per-persona estimated-token warning threshold (informational — warns, never blocks). |
 | `output.tokenBudget.failAt` | number | — | Opt-in hard ceiling: the build **fails** when a compiled persona's estimated size exceeds it — the CI gate for prompt-size regressions. The build also writes `dist/persona-sizes.json` so hub PRs show size changes as a reviewable diff. Estimates use a chars/4 heuristic — a stable relative measure, not an exact tokenizer count. |
 
 > Which **platforms** to emit is controlled by `personas.outputFormats`, not `output`. There is no
 > `output.format`, `output.hooks`, `output.mcp`, `output.managed`, or `output.dir` key.
+
+### Revocation — `dist/` is generated output, not a cache
+
+Every build compiles into a staging directory and swaps it into place, so `dist/` is a faithful
+projection of hub config rather than an append-only cache. Removing an artifact from
+`instructions.enabled`, or a platform from `personas.outputFormats`, therefore **removes it from
+`dist/`** — and the build reports what it pruned, including the zero case:
+
+```
+  Pruned 4 stale artifact(s) from dist/:
+    − dist/claude/core/rules/security.instructions.md
+  Pruned 5 retired platform tree(s): agents, claude, copilot, plugin, skill
+```
+
+`sync` then propagates the deletion to each spoke. Removal is confined to paths listed in that
+spoke's previous manifest — sync can only delete files it wrote — which is why it is on by default
+with no flag. Two cases do not delete:
+
+| Case | Behaviour |
+|---|---|
+| The spoke **edited** the file since delivery | Never deleted. Sync **exits non-zero**: the org withdrew a control and one repo still has it. Fix the local edit, or add a `retain` regex to the repo entry. |
+| A `retain` regex matches (repos.json entry, or hub-wide `sync.retain`) | Never deleted. Reported as a **warning on every sync** — the hatch silences the error, never the fact. |
+
+A revoked artifact sync could not withdraw is recorded in the spoke manifest's `retired[]` array, and
+`drift-check` reports it as drift and **exits non-zero**. A withdrawn control still live on a spoke
+is not a clean repo.
+
+`sync` also refuses to ship a platform the hub does not build: if `repos.json` names `claude` but
+`personas.outputFormats` does not, `dist/claude/` does not exist and that repo entry fails with a
+message naming both sides. Other repos still sync; the run exits non-zero at the end.
 
 ---
 

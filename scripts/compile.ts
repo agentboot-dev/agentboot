@@ -50,6 +50,7 @@ import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
 import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
 import { inspectArtifact, unenforceableFormats } from "./lib/guardrail-scan.js";
+import { diffTrees, inventoryTree } from "./lib/prune.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -103,6 +104,123 @@ function log(msg: string): void {
 
 function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+// ---------------------------------------------------------------------------
+// dist/ staging + prune (F-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The staging directory for the build currently in flight, or null when there
+ * is nothing to clean up. Registered on `process.on("exit")` so a crash, a
+ * `fatal()`, or a mid-build `process.exit(1)` leaves the previous `dist/`
+ * byte-identical instead of half-overwritten.
+ */
+let stagingDistPath: string | null = null;
+
+process.on("exit", () => {
+  if (stagingDistPath && fs.existsSync(stagingDistPath)) {
+    try {
+      fs.rmSync(stagingDistPath, { recursive: true, force: true });
+    } catch {
+      /* best effort — never mask the real exit code */
+    }
+  }
+});
+
+/**
+ * Refuse to point the build (which now DELETES this tree on every run) at
+ * anything that is not plainly a generated output directory.
+ */
+function assertSafeDistTarget(finalDistPath: string, configDir: string): void {
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.lstatSync(finalDistPath);
+  } catch {
+    stat = undefined;
+  }
+  if (stat?.isSymbolicLink()) {
+    fatal(
+      `output.distPath is a symlink: ${finalDistPath}\n  The build replaces this directory wholesale; refusing to follow a symlink.`,
+    );
+  }
+  const resolvedConfigDir = path.resolve(configDir);
+  if (path.resolve(finalDistPath) === resolvedConfigDir) {
+    fatal(`output.distPath resolves to the hub root: ${finalDistPath}`);
+  }
+  const rel = path.relative(resolvedConfigDir, path.resolve(finalDistPath));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    fatal(
+      `output.distPath resolves outside the hub: ${finalDistPath}\n  The build replaces this directory wholesale; it must live under ${resolvedConfigDir}.`,
+    );
+  }
+}
+
+/** Recursive copy used only as the EXDEV fallback for the staging swap. */
+function copyTree(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyTree(from, to);
+    else fs.copyFileSync(from, to);
+  }
+}
+
+/**
+ * Swap the staging tree into place and report exactly what stopped being
+ * produced. Per "Silence Is Not Success" the zero case is printed too — "no
+ * artifact went stale" and "pruning never ran" must not look identical.
+ */
+function swapDistAndReport(stagingPath: string, finalPath: string): void {
+  const before = inventoryTree(finalPath);
+  const after = inventoryTree(stagingPath);
+  const { removed, retiredTrees } = diffTrees(before, after);
+
+  if (fs.existsSync(finalPath)) {
+    fs.rmSync(finalPath, { recursive: true, force: true });
+  }
+  try {
+    fs.renameSync(stagingPath, finalPath);
+  } catch {
+    // Cross-device or a Windows rename-over — fall back to copy + remove.
+    // Never fall back to "keep the old tree and exit 0": that is the silent
+    // skip this whole change exists to eliminate.
+    try {
+      copyTree(stagingPath, finalPath);
+      fs.rmSync(stagingPath, { recursive: true, force: true });
+    } catch (err: unknown) {
+      fatal(
+        `Could not move the staged build into place.\n` +
+          `  Staged output is at: ${stagingPath}\n` +
+          `  Target was:          ${finalPath}\n` +
+          `  Cause: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  stagingDistPath = null;
+
+  if (removed.length === 0 && retiredTrees.length === 0) {
+    log(chalk.gray(`  dist/ pruned: 0 stale artifact(s), 0 retired platform tree(s)`));
+    return;
+  }
+
+  if (removed.length > 0) {
+    log(chalk.yellow(`  Pruned ${removed.length} stale artifact(s) from dist/:`));
+    for (const p of removed.slice(0, 20)) {
+      log(chalk.gray(`    − dist/${p}`));
+    }
+    if (removed.length > 20) {
+      log(chalk.gray(`    … and ${removed.length - 20} more`));
+    }
+  }
+  if (retiredTrees.length > 0) {
+    log(
+      chalk.yellow(
+        `  Pruned ${retiredTrees.length} retired platform tree(s): ${retiredTrees.join(", ")}`,
+      ),
+    );
+  }
 }
 
 function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
@@ -3032,19 +3150,37 @@ function main(): void {
   // declaration at the top of the file.
   HUB_ROOT = configDir;
 
-  const distPath = path.resolve(
+  const finalDistPath = path.resolve(
     configDir,
     config.output?.distPath ?? "./dist"
   );
 
-  // Optional: fail on dirty dist.
-  if (config.output?.failOnDirtyDist && fs.existsSync(distPath)) {
-    const entries = fs.readdirSync(distPath);
-    if (entries.length > 0) {
-      fatal(
-        `dist/ is not empty and failOnDirtyDist is enabled. Run: rm -rf ${distPath}`
-      );
-    }
+  // F-1: this build now DELETES the previous dist/ tree. Refuse to do that to
+  // a symlink, to the hub root, or to anything outside the hub.
+  assertSafeDistTarget(finalDistPath, configDir);
+
+  // Every emitter below writes into a staging sibling; the tree is swapped into
+  // place at the very end of main(). This is what makes `dist/` a faithful
+  // projection of hub config rather than an append-only cache: an artifact the
+  // operator revoked is simply never written this build, and therefore is gone.
+  //
+  // Binding the staging dir to the name `distPath` is deliberate — it keeps the
+  // ~3,800 lines of emitters (62 writeFileSync + 5 copyFileSync call sites)
+  // untouched. Threading a path-recorder through all 67 would be a diff where a
+  // single missed site silently reintroduces the defect.
+  const distPath = `${finalDistPath}.staging-${process.pid}`;
+  if (fs.existsSync(distPath)) fs.rmSync(distPath, { recursive: true, force: true });
+  stagingDistPath = distPath;
+
+  // Deprecated: staging makes a dirty dist/ structurally impossible, so the
+  // guard has nothing left to guard. Removing the key outright would break
+  // existing configs for no benefit — accept it, and say it is now a no-op.
+  if (config.output?.failOnDirtyDist) {
+    log(
+      chalk.yellow(
+        "  ⚠ output.failOnDirtyDist is deprecated and ignored — dist/ is now rebuilt from empty and pruned on every build.",
+      ),
+    );
   }
 
   ensureDir(distPath);
@@ -3184,15 +3320,11 @@ function main(): void {
 
   const allResults: CompileResult[] = [];
 
-  // Phase 11 audit fix: Clear concatenated output files before compilation loop.
-  // Without this, running `build` twice without `clean` produces duplicate content
-  // in JetBrains AGENTS.md and Windsurf .windsurfrules (append-without-clear bug).
-  for (const scope of ["core"]) {
-    const junieFile = path.join(distPath, "jetbrains", scope, ".junie", "AGENTS.md");
-    if (fs.existsSync(junieFile)) fs.unlinkSync(junieFile);
-    const windsurfFile = path.join(distPath, "windsurf", scope, ".windsurfrules");
-    if (fs.existsSync(windsurfFile)) fs.unlinkSync(windsurfFile);
-  }
+  // The append-without-clear guard that used to live here (two targeted
+  // unlinkSync calls for the JetBrains/Windsurf concat files) is gone: the
+  // staging dir starts empty, so nothing can be appended to a previous build's
+  // file. That also fixes what the old loop never covered — it iterated
+  // ["core"] only, so non-core scopes kept accumulating duplicate appends.
 
   // ---------------------------------------------------------------------------
   // 1. Compile core personas → dist/{platform}/core/{persona}/
@@ -3849,6 +3981,13 @@ function main(): void {
   }
 
   // ---------------------------------------------------------------------------
+  // F-1: swap the staged tree into place, reporting what stopped being produced.
+  // Everything above wrote to staging; from here on dist/ is authoritative.
+  // ---------------------------------------------------------------------------
+
+  swapDistAndReport(distPath, finalDistPath);
+
+  // ---------------------------------------------------------------------------
   // Summary
   // ---------------------------------------------------------------------------
 
@@ -3859,7 +3998,7 @@ function main(): void {
       // Hub output path — HUB_ROOT, not ROOT. Same defect as the provenance
       // header: against the installed package dir this printed
       // "→ ../../../../../Users/<name>/hub/dist/".
-      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(HUB_ROOT, distPath)}/`
+      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(HUB_ROOT, finalDistPath)}/`
     )
   );
   for (const fmt of outputFormats) {

@@ -9,6 +9,41 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+### Fixed
+- **Revocation now works. `dist/` was never pruned.** `compile` only ever wrote into `dist/`, so an
+  artifact an operator removed from `instructions.enabled` — or an entire platform removed from
+  `personas.outputFormats` — kept shipping to every spoke indefinitely, with `build`, `sync`,
+  `status`, `drift-check` and `audit` all reporting green and the manifest attesting the delivered
+  bytes as correct. Builds now compile into a staging directory and swap it into place, and report
+  what was pruned (including `0 stale artifact(s), 0 retired platform tree(s)` when nothing went
+  stale). A failed build leaves the previous `dist/` byte-identical instead of half-overwritten.
+- **`sync` now propagates deletions to spokes.** Pruning `dist/` alone did not fix revocation:
+  `syncRepoTarget` never unlinked anything, and `generateManifest` regenerated the manifest *without*
+  the revoked file — de-listing a governed artifact into an untracked one, so `drift-check` reported
+  "clean" precisely BECAUSE it had stopped being tracked. Removal is confined to paths in the spoke's
+  previous manifest, so sync can only delete files it wrote.
+- **A revoked artifact the spoke edited is an ERROR, not a silent skip.** It is recorded in the
+  manifest's new `retired[]` array, `sync` exits non-zero, and `drift-check` reports it and exits
+  non-zero. Escape hatch: a `retain` regex on the repos.json entry (or hub-wide `sync.retain`)
+  downgrades it to a warning that still prints on every sync.
+- **`sync` refuses to ship a platform the hub does not build.** `repos.json` and
+  `personas.outputFormats` could contradict each other and the contradiction was resolved silently in
+  favour of the stale tree — i.e. in favour of the retired policy. Other repos still sync; the run
+  exits non-zero at the end.
+- **JetBrains/Windsurf concat files no longer accumulate duplicates in non-`core` scopes.** The old
+  append-without-clear guard iterated `["core"]` only; a staging build cannot append to a previous
+  build's file at all.
+
+### Changed
+- `output.failOnDirtyDist` is **deprecated and ignored** (warns when set). It was an opt-in,
+  default-off, all-or-nothing guard that only advised `rm -rf`; staging makes a dirty `dist/`
+  structurally impossible.
+- Sync manifests gain `platform` and `retired[]` fields. **`manifest_digest` changes for every
+  spoke**, so the first sync after upgrading reports every repo as changed; signed hubs re-sign. Any
+  spoke carrying stale artifacts accumulated before this release has them removed at once — run
+  `agentboot sync --dry-run` first to see the list. Because several platforms share a `targetDir`,
+  revocation propagation is skipped (loudly) for one run against an untagged manifest.
+
 ## [0.20.2] — 2026-08-03
 
 Fixes from an assistant-driven beta evaluation that ran AgentBoot end to end

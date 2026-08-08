@@ -15,7 +15,7 @@ import {
 
 export interface DriftEntry {
   file: string;
-  status: "clean" | "modified" | "missing" | "unmanaged" | "excepted";
+  status: "clean" | "modified" | "missing" | "unmanaged" | "excepted" | "retired";
   expectedHash?: string | undefined;
   actualHash?: string | undefined;
   /** B7: id of the active policy exception covering this drift, when status is "excepted". */
@@ -34,6 +34,9 @@ export interface DriftReport {
     unmanagedCount: number;
     /** B7: drifted files covered by an unexpired policy exception. */
     exceptedCount: number;
+    /** F-1: artifacts revoked at the hub that sync could NOT withdraw from this
+     *  repo and that are still present on disk. An unremediated revocation. */
+    retiredCount: number;
   };
   /** B7: problems with the repo's exceptions file (expired entries etc.). */
   exceptionIssues?: string[];
@@ -55,11 +58,18 @@ interface ManifestFile {
   hash: string;
 }
 
+interface RetiredFile {
+  path: string;
+  reason: string;
+}
+
 interface Manifest {
   managed_by: string;
   version: string;
   synced_at: string;
   files: ManifestFile[];
+  /** F-1: revoked-but-not-removable artifacts recorded by the last sync. */
+  retired?: RetiredFile[];
 }
 
 function sha256(content: string): string {
@@ -121,7 +131,7 @@ export function checkDrift(repoPath: string): DriftReport {
       manifestFound: false,
       entries: [],
       clean: false,
-      summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0 },
+      summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0, retiredCount: 0 },
     };
   }
 
@@ -170,6 +180,17 @@ export function checkDrift(repoPath: string): DriftReport {
     }
   }
 
+  // F-1: a control the org withdrew that is still live here. These files are
+  // deliberately absent from manifest.files (sync no longer delivers them), so
+  // the loop above cannot see them — which is exactly how drift-check used to
+  // report "clean" BECAUSE the artifact had stopped being tracked.
+  for (const retired of manifest.retired ?? []) {
+    managedPaths.add(retired.path);
+    if (fs.existsSync(path.join(absPath, retired.path))) {
+      entries.push({ file: retired.path, status: "retired" });
+    }
+  }
+
   // Check for unmanaged files in platform directories
   const platformDirs = [".claude", ".cursor", ".gemini", ".windsurf", ".junie", ".aiassistant", ".agents", ".codex"];
   for (const dir of platformDirs) {
@@ -192,6 +213,7 @@ export function checkDrift(repoPath: string): DriftReport {
     missingCount: entries.filter(e => e.status === "missing").length,
     unmanagedCount: entries.filter(e => e.status === "unmanaged").length,
     exceptedCount: entries.filter(e => e.status === "excepted").length,
+    retiredCount: entries.filter(e => e.status === "retired").length,
   };
 
   return {
@@ -205,7 +227,8 @@ export function checkDrift(repoPath: string): DriftReport {
     // every real repo. Callers that care about unmanaged files read summary.unmanagedCount.
     // Excepted entries are approved drift — visible in the report, but they do
     // not fail the repo. Unauthorized drift (modified/missing) still does.
-    clean: summary.modifiedCount === 0 && summary.missingCount === 0,
+    // F-1: a revoked control still live on a spoke is NOT a clean repo.
+    clean: summary.modifiedCount === 0 && summary.missingCount === 0 && summary.retiredCount === 0,
     summary,
     ...(exceptionIssues.length > 0 ? { exceptionIssues } : {}),
   };
@@ -241,7 +264,7 @@ export function generateComplianceReport(
         manifestFound: false,
         entries: [],
         clean: false,
-        summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0 },
+        summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0, retiredCount: 0 },
       });
       continue;
     }

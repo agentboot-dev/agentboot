@@ -48,6 +48,14 @@ export interface AgentBootConfig {
     targetDir?: string;
     writePersonasIndex?: boolean;
     dryRun?: boolean;
+    /**
+     * F-1 escape hatch, hub-wide. Regex sources matched against repo-relative
+     * POSIX paths. A revoked artifact whose path matches is never unlinked from
+     * a spoke, and the resulting unremediated revocation is reported at WARN
+     * instead of failing the sync. Set per-repo via `retain` in repos.json for
+     * the usual case — ownership is a property of the spoke, not of the hub.
+     */
+    retain?: string[];
     pr?: {
       enabled?: boolean;
       branchPrefix?: string;

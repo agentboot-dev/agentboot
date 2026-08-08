@@ -182,7 +182,10 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
           ? entries.every((e) => e.status === "clean" || e.status === "unmanaged" || e.status === "excepted")
           : null,
         driftedFiles: entries
-          .filter((e) => e.status === "modified" || e.status === "missing")
+          // F-1: a "retired" entry is a control the org withdrew that this repo
+          // still carries. Omitting it from the evidence pack would reproduce
+          // the exact false-green this fix removes.
+          .filter((e) => e.status === "modified" || e.status === "missing" || e.status === "retired")
           .map((e) => e.file),
         unmanagedFiles: entries.filter((e) => e.status === "unmanaged").map((e) => e.file),
       },
