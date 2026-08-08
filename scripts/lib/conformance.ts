@@ -17,6 +17,12 @@
  * "untested", never "pass". Advisory platforms get a manifest stating plainly
  * that no enforcement mechanism exists. Nothing is fabricated at compile time
  * — empirical fields only exist after a real harness run.
+ *
+ * And "untested" is not a green result. Recording it truthfully in the manifest
+ * was only half the rule: the RUN must also refuse to report success, or a
+ * machine without bash produces a full sheet of `untested` under the line
+ * "✓ All probed controls behave as declared" and exit 0. A skip must alarm as
+ * loudly as a failure — see `untestedPlatforms` / `probedControls` below.
  */
 
 import { spawnSync } from "node:child_process";
@@ -648,8 +654,19 @@ export interface ConformanceRun {
   manifests: EnforcementManifest[];
   /** Platforms whose manifest contains at least one FAILED control. */
   failedPlatforms: string[];
+  /**
+   * Platforms carrying at least one control that declares a mechanism but could
+   * NOT be probed (no bash, script absent from dist/). Separate from
+   * `failedPlatforms` because the remedy differs — but equally non-green.
+   */
+  untestedPlatforms: string[];
+  /** Controls that actually executed a probe. Zero means nothing was measured. */
+  probedControls: number;
   bashAvailable: boolean;
 }
+
+/** A control that declares a mechanism and could not be exercised. */
+export const isUntested = (c: ControlResult): boolean => c.status === "untested";
 
 /**
  * Run the harness for every requested platform and write each
@@ -664,6 +681,8 @@ export function runConformance(
   const bashPath = probeBash();
   const manifests: EnforcementManifest[] = [];
   const failedPlatforms: string[] = [];
+  const untestedPlatforms: string[] = [];
+  let probedControls = 0;
 
   for (const platform of platforms) {
     const manifest = runPlatformConformance(distPath, platform, config, agentbootVersion, bashPath);
@@ -671,6 +690,10 @@ export function runConformance(
     if (manifest.controls.some((c) => c.status === "fail")) {
       failedPlatforms.push(platform);
     }
+    if (manifest.controls.some(isUntested)) {
+      untestedPlatforms.push(platform);
+    }
+    probedControls += manifest.controls.filter((c) => c.status === "pass" || c.status === "fail").length;
     const platformDir = path.join(distPath, platform);
     if (fs.existsSync(platformDir)) {
       fs.writeFileSync(
@@ -681,5 +704,5 @@ export function runConformance(
     }
   }
 
-  return { manifests, failedPlatforms, bashAvailable: bashPath !== null };
+  return { manifests, failedPlatforms, untestedPlatforms, probedControls, bashAvailable: bashPath !== null };
 }

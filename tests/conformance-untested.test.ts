@@ -1,0 +1,123 @@
+/**
+ * R1-A — `agentboot conformance` reported success for a run that measured nothing.
+ *
+ * The harness was already honest at the DATA layer: a control it cannot execute
+ * is recorded `untested`, never `pass`. The RUN layer was not. `failedPlatforms`
+ * counted only `fail`, so a machine with no bash produced a full sheet of
+ * `untested` and then printed
+ *
+ *     ✓ All probed controls behave as declared.
+ *
+ * and exited 0 — on the one command in the product whose entire job is empirical
+ * verification, and the command the weekly `conformance-baseline` workflow runs
+ * before archiving its snapshot. A skip must alarm as loudly as a failure.
+ *
+ * Both directions are pinned: the fresh, bash-present run must still be green,
+ * or the gate is just an outage.
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+import { runConformance, isUntested, type ControlResult } from "../scripts/lib/conformance.js";
+
+const ROOT = path.resolve(__dirname, "..");
+const CLI = path.join(ROOT, "bin", "agentboot.js");
+
+/** Run the real CLI. Status is read WITHOUT a pipe — a piped $? is the pipe's. */
+function ab(args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): { status: number; out: string } {
+  const r = spawnSync(process.execPath, [CLI, ...args], {
+    cwd,
+    env: { ...process.env, NODE_NO_WARNINGS: "1", ...env },
+    encoding: "utf-8",
+    timeout: 300_000,
+  });
+  return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+let base: string;
+let hub: string;
+/** A PATH containing nothing at all — probeBash() finds no bash through it. */
+let emptyBinDir: string;
+
+beforeAll(() => {
+  base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-conf-untested-"));
+  hub = path.join(base, "hub");
+  const r = spawnSync(
+    process.execPath,
+    [CLI, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+    { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+  );
+  if (r.status !== 0) throw new Error(`hub scaffold failed: ${r.stdout}${r.stderr}`);
+
+  const cfgPath = path.join(hub, "agentboot.config.json");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  cfg.personas = { ...(cfg.personas ?? {}), outputFormats: ["claude", "cursor"] };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+  const build = ab(["build"], hub);
+  if (build.status !== 0) throw new Error(`build failed: ${build.out}`);
+
+  emptyBinDir = path.join(base, "empty-bin");
+  fs.mkdirSync(emptyBinDir, { recursive: true });
+}, 600_000);
+
+afterAll(() => {
+  if (base) fs.rmSync(base, { recursive: true, force: true });
+});
+
+describe("conformance — a run that measured nothing is not a pass", () => {
+  it("POSITIVE: the normal run still exits 0 and reports how many controls were probed", () => {
+    const r = ab(["conformance"], hub);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/probed control\(s\) behave as declared/);
+    // The count must be real, not decorative.
+    expect(r.out).not.toMatch(/✓ All 0 probed/);
+  }, 300_000);
+
+  it("NEGATIVE: with no bash on PATH every control is untested — exit 1, no green line", () => {
+    const r = ab(["conformance"], hub, { PATH: emptyBinDir, Path: emptyBinDir });
+    expect(r.out).toMatch(/UNTESTED controls on/);
+    expect(r.out).not.toMatch(/behave as declared/);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("--allow-untested is an explicit, visible opt-out — exit 0 but still no green claim", () => {
+    const r = ab(["conformance", "--allow-untested"], hub, { PATH: emptyBinDir, Path: emptyBinDir });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/UNTESTED controls on/);
+  }, 300_000);
+
+  it("--format json exits 1 on an untested run and carries the counts a CI job can assert on", () => {
+    const r = ab(["conformance", "--format", "json"], hub, { PATH: emptyBinDir, Path: emptyBinDir });
+    expect(r.status, r.out).toBe(1);
+    const parsed = JSON.parse(r.out.slice(r.out.indexOf("{"))) as {
+      bashAvailable: boolean; untestedPlatforms: string[]; probedControls: number;
+    };
+    expect(parsed.bashAvailable).toBe(false);
+    expect(parsed.untestedPlatforms).toContain("claude");
+    expect(parsed.probedControls).toBe(0);
+  }, 300_000);
+});
+
+describe("runConformance — the counts the CLI gates on", () => {
+  it("probedControls counts only controls that actually executed a probe", () => {
+    const dist = path.join(hub, "dist");
+    const config = JSON.parse(fs.readFileSync(path.join(hub, "agentboot.config.json"), "utf-8"));
+    const run = runConformance(dist, ["claude", "cursor"], config, "test");
+    // cursor has no hook mechanism at all — not-applicable, never probed.
+    const cursor = run.manifests.find((m) => m.platform === "cursor")!;
+    expect(cursor.controls.every((c: ControlResult) => c.status === "not-applicable")).toBe(true);
+    // claude's hooks exist and were exercised.
+    expect(run.probedControls).toBeGreaterThan(0);
+    expect(run.untestedPlatforms).toEqual([]);
+  }, 300_000);
+
+  it("isUntested is the single predicate — a status rename cannot silently un-gate the CLI", () => {
+    expect(isUntested({ control: "x", mechanism: "hook script", declared_level: "enforced", status: "untested", probes: [] })).toBe(true);
+    expect(isUntested({ control: "x", mechanism: "hook script", declared_level: "enforced", status: "pass", probes: [] })).toBe(false);
+  });
+});

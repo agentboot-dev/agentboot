@@ -2531,6 +2531,7 @@ program
   .description("Empirically test compiled enforcement (hooks: block/deny/timeouts/malformed input) per platform and write dist/<platform>/enforcement-manifest.json")
   .option("--platform <name>", "test a single platform (default: all configured output formats)")
   .option("--format <type>", "output format: text or json", "text")
+  .option("--allow-untested", "exit 0 even when a declared control could not be probed (local convenience — never in CI)")
   .action(async (opts, cmd) => {
     const { runConformance } = await import("./lib/conformance.js");
     const globalOpts = cmd.optsWithGlobals();
@@ -2558,9 +2559,25 @@ program
 
     const run = runConformance(distPath, platforms, config, pkg.version);
 
+    // "Could not verify" must not resolve upward. A control that declares a
+    // mechanism and could not be exercised (bash absent, script missing from
+    // dist/) is UNTESTED — recording that in the manifest and then exiting 0
+    // under "✓ All probed controls behave as declared" is a skip reading as a
+    // pass, on the one command whose whole job is empirical verification.
+    // Verified before this change: with bash off PATH every control came back
+    // untested and `conformance` still exited 0 with the green line.
+    const allowUntested = opts["allowUntested"] === true;
+    const notGreen = run.failedPlatforms.length > 0 || (!allowUntested && run.untestedPlatforms.length > 0);
+
     if (opts["format"] === "json") {
-      console.log(JSON.stringify({ bashAvailable: run.bashAvailable, failedPlatforms: run.failedPlatforms, manifests: run.manifests }, null, 2));
-      process.exit(run.failedPlatforms.length > 0 ? 1 : 0);
+      console.log(JSON.stringify({
+        bashAvailable: run.bashAvailable,
+        failedPlatforms: run.failedPlatforms,
+        untestedPlatforms: run.untestedPlatforms,
+        probedControls: run.probedControls,
+        manifests: run.manifests,
+      }, null, 2));
+      process.exit(notGreen ? 1 : 0);
     }
 
     console.log(chalk.bold("\n  AgentBoot — platform conformance\n"));
@@ -2585,9 +2602,23 @@ program
     }
     if (run.failedPlatforms.length > 0) {
       console.log(chalk.red(`  ✗ Conformance FAILED on: ${run.failedPlatforms.join(", ")}\n`));
-      process.exit(1);
     }
-    console.log(chalk.green("  ✓ All probed controls behave as declared.\n"));
+    if (run.untestedPlatforms.length > 0) {
+      const line = `  ${allowUntested ? "⚠" : "✗"} UNTESTED controls on: ${run.untestedPlatforms.join(", ")} — ${run.probedControls} control(s) actually probed.`;
+      console.log((allowUntested ? chalk.yellow : chalk.red)(line));
+      console.log(chalk.gray(run.bashAvailable
+        ? "      A declared hook is missing from dist/ — run `agentboot build`, or the platform is not emitting it."
+        : "      No bash on this machine (Windows without Git Bash) — install one, or pass --allow-untested to accept an unverified run."));
+      console.log("");
+    }
+    if (notGreen) process.exit(1);
+    if (run.probedControls === 0) {
+      // Every control was not-applicable. Nothing failed, but nothing was
+      // measured either, and those must not print the same sentence.
+      console.log(chalk.yellow("  ⚠ No control was probed — this configuration declares no enforceable mechanism on any target.\n"));
+      return;
+    }
+    console.log(chalk.green(`  ✓ All ${run.probedControls} probed control(s) behave as declared.\n`));
   });
 
 // ---- v0.19.0: MCP tool-definition digest pinning (rug-pull defense) --------
