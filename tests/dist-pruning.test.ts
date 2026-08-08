@@ -23,7 +23,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 
-import { diffTrees, planOrphanRemoval } from "../scripts/lib/prune.js";
+import { diffTrees, planOrphanRemoval, InvalidRetainPatternError } from "../scripts/lib/prune.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "agentboot.js");
@@ -477,4 +477,53 @@ describe("F-1 integration: revocation actually propagates", () => {
     const sizeTwice = fs.existsSync(wsFile) ? fs.readFileSync(wsFile, "utf-8").length : 0;
     expect(sizeTwice).toBe(sizeOnce);
   }, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// G1 — an uncompilable retain pattern turned "keep" into "delete"
+// ---------------------------------------------------------------------------
+
+/**
+ * `try { new RegExp(r) } catch { return null }` followed by `.filter(...)`
+ * dropped an invalid pattern on the floor. The operator's intent was
+ * PROTECTIVE — "never delete this" — and the failure mode was destructive, with
+ * no diagnostic at all. A Silence-Is-Not-Success violation inside the module
+ * written to enforce that norm.
+ */
+describe("G1 — invalid sync.prune.retain patterns", () => {
+  const prev = prevOf({ ".claude/rules/keep.md": "h", ".claude/rules/drop.md": "h" });
+
+  it("G1-U1: throws instead of silently dropping the filter", () => {
+    expect(() => planOrphanRemoval(prev, new Set(), () => "h", ["[unclosed"]))
+      .toThrow(InvalidRetainPatternError);
+  });
+
+  it("G1-U2: names EVERY bad pattern, not just the first", () => {
+    try {
+      planOrphanRemoval(prev, new Set(), () => "h", ["[unclosed", "keep\\.md", "(also-bad"]);
+      throw new Error("expected a throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(InvalidRetainPatternError);
+      const e = err as InstanceType<typeof InvalidRetainPatternError>;
+      expect(e.patterns.map((p) => p.pattern)).toEqual(["[unclosed", "(also-bad"]);
+    }
+  });
+
+  it("G1-U3 (NEGATIVE): a valid retain list still retains, and still prunes the rest", () => {
+    // The regression risk of throwing is throwing on the normal path.
+    const plan = planOrphanRemoval(prev, new Set(), () => "h", ["keep\\.md$"]);
+    expect(plan.retained).toEqual([".claude/rules/keep.md"]);
+    expect(plan.remove).toEqual([".claude/rules/drop.md"]);
+  });
+
+  it("G1-U4 (NEGATIVE): an empty retain list is not an error", () => {
+    expect(() => planOrphanRemoval(prev, new Set(), () => "h", [])).not.toThrow();
+    expect(() => planOrphanRemoval(prev, new Set(), () => "h")).not.toThrow();
+  });
+
+  it("G1-U5: the message says what the operator lost, not just that a regex failed", () => {
+    const e = new InvalidRetainPatternError([{ pattern: "[oops", reason: "bad" }]);
+    expect(e.message).toContain('"[oops"');
+    expect(e.message).toContain("delete this file");
+  });
 });

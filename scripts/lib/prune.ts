@@ -110,6 +110,23 @@ export interface OrphanPlan {
   retained: string[];
 }
 
+/**
+ * G1: thrown when `sync.prune.retain` contains a pattern that is not a valid
+ * regular expression. Carries every bad pattern, not just the first — an
+ * operator with three typos needs three, not a three-build loop.
+ */
+export class InvalidRetainPatternError extends Error {
+  constructor(public readonly patterns: Array<{ pattern: string; reason: string }>) {
+    super(
+      `Invalid sync.prune.retain pattern(s):\n` +
+      patterns.map((p) => `      ${JSON.stringify(p.pattern)} — ${p.reason}`).join("\n") +
+      `\n      A retain pattern says "never delete this". An uncompilable one used to be` +
+      `\n      dropped silently, which turns "keep this file" into "delete this file".`,
+    );
+    this.name = "InvalidRetainPatternError";
+  }
+}
+
 /** Paths sync itself owns and must never treat as an orphan. */
 function isSelfManaged(relPath: string): boolean {
   return (
@@ -141,15 +158,29 @@ export function planOrphanRemoval(
   const plan: OrphanPlan = { remove: [], blocked: [], retained: [] };
   if (!prev) return plan; // first sync — nothing was ever delivered
 
-  const retainRes = retain
-    .map((r) => {
-      try {
-        return new RegExp(r);
-      } catch {
-        return null;
-      }
-    })
-    .filter((r): r is RegExp => r !== null);
+  // G1: an UNCOMPILABLE retain pattern is an ERROR, not a dropped filter.
+  //
+  // `try { new RegExp(r) } catch { return null }` followed by `.filter(...)`
+  // meant a typo in a "keep this file" pattern silently became "delete this
+  // file" — the exact inversion this module is written to prevent, inside the
+  // code written to enforce Silence Is Not Success. The operator's intent was
+  // PROTECTIVE; the failure mode was destructive; the diagnostic was nothing.
+  //
+  // Throwing is right rather than dropping-and-warning: the caller is about to
+  // unlink files, and a warning printed above a completed deletion is not a
+  // choice the operator got to make.
+  const retainRes: RegExp[] = [];
+  const badPatterns: Array<{ pattern: string; reason: string }> = [];
+  for (const r of retain) {
+    try {
+      retainRes.push(new RegExp(r));
+    } catch (err: unknown) {
+      badPatterns.push({ pattern: r, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (badPatterns.length > 0) {
+    throw new InvalidRetainPatternError(badPatterns);
+  }
 
   for (const [relPath, expectedHash] of prev) {
     if (kept.has(relPath)) continue;

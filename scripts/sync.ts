@@ -42,7 +42,7 @@ import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
 import { childScopeNames } from "./lib/scope-layout.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { hasBeenImported } from "./lib/import.js";
-import { planOrphanRemoval, pruneEmptyDirs } from "./lib/prune.js";
+import { planOrphanRemoval, pruneEmptyDirs, InvalidRetainPatternError } from "./lib/prune.js";
 import {
   collectHubProvenance,
   buildSyncPrBody,
@@ -1352,16 +1352,28 @@ function syncRepoTarget(
       ),
     );
   }
-  const orphanPlan = planOrphanRemoval(
-    prunable ? prevManifest : null,
-    keptPaths,
-    (rel) => {
-      const abs = path.resolve(effectivePath, rel);
-      if (!fs.existsSync(abs)) return null;
-      return createHash("sha256").update(fs.readFileSync(abs)).digest("hex");
-    },
-    retainPatterns,
-  );
+  let orphanPlan;
+  try {
+    orphanPlan = planOrphanRemoval(
+      prunable ? prevManifest : null,
+      keptPaths,
+      (rel) => {
+        const abs = path.resolve(effectivePath, rel);
+        if (!fs.existsSync(abs)) return null;
+        return createHash("sha256").update(fs.readFileSync(abs)).digest("hex");
+      },
+      retainPatterns,
+    );
+  } catch (err: unknown) {
+    // G1: refuse to prune AT ALL against a retain list we could not compile.
+    // Falling through with the valid patterns only would delete exactly the
+    // files the broken pattern was written to protect.
+    if (err instanceof InvalidRetainPatternError) {
+      result.errors.push(err.message);
+      return result;
+    }
+    throw err;
+  }
   result.removalBlocked = orphanPlan.blocked;
   result.removalRetained = orphanPlan.retained;
   if (!dryRun) {
