@@ -2575,7 +2575,28 @@ set -uo pipefail
 HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
 command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node is required for input scanning"}'; exit 2; }
 
-INPUT=$(cat)
+# I1: bound what a hook will read from stdin.
+#
+# INPUT=$(cat) read an unbounded payload into a shell variable. A hook runs on
+# every prompt / tool call on a developer's machine, so an oversized payload is
+# a memory and latency problem on the machine's critical path.
+#
+# The cap is deliberately generous (1 MiB) — larger than any legitimate prompt or
+# tool payload — and the over-cap ACTION follows each hook's own declared
+# posture rather than inventing a new one:
+#   * blocking hooks (input scan, deny-tools) FAIL CLOSED. An unscannable
+#     payload is an unscanned payload, and this is a DLP gate.
+#   * non-blocking hooks (output scan, telemetry) degrade as they already do on
+#     any other failure — but say so on stderr, never silently.
+MAX_HOOK_INPUT_BYTES="\${AGENTBOOT_MAX_HOOK_INPUT_BYTES:-1048576}"
+INPUT=$(head -c "$((MAX_HOOK_INPUT_BYTES + 1))")
+INPUT_TRUNCATED=0
+if [ "\${#INPUT}" -gt "$MAX_HOOK_INPUT_BYTES" ]; then INPUT_TRUNCATED=1; fi
+if [ "$INPUT_TRUNCATED" -eq 1 ]; then
+  echo "AgentBoot: prompt exceeds $MAX_HOOK_INPUT_BYTES bytes — cannot scan it in full." >&2
+  echo '{"decision":"block","reason":"AgentBoot: prompt exceeds the hook input limit and could not be scanned. Split it, or raise AGENTBOOT_MAX_HOOK_INPUT_BYTES deliberately."}'
+  exit 2
+fi
 PROMPT=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.prompt||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
 
 # Scan for potential credential leaks in prompts
@@ -2639,7 +2660,29 @@ set -uo pipefail
 HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
 command -v node >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
+# I1: bound what a hook will read from stdin.
+#
+# INPUT=$(cat) read an unbounded payload into a shell variable. A hook runs on
+# every prompt / tool call on a developer's machine, so an oversized payload is
+# a memory and latency problem on the machine's critical path.
+#
+# The cap is deliberately generous (1 MiB) — larger than any legitimate prompt or
+# tool payload — and the over-cap ACTION follows each hook's own declared
+# posture rather than inventing a new one:
+#   * blocking hooks (input scan, deny-tools) FAIL CLOSED. An unscannable
+#     payload is an unscanned payload, and this is a DLP gate.
+#   * non-blocking hooks (output scan, telemetry) degrade as they already do on
+#     any other failure — but say so on stderr, never silently.
+MAX_HOOK_INPUT_BYTES="\${AGENTBOOT_MAX_HOOK_INPUT_BYTES:-1048576}"
+INPUT=$(head -c "$((MAX_HOOK_INPUT_BYTES + 1))")
+INPUT_TRUNCATED=0
+if [ "\${#INPUT}" -gt "$MAX_HOOK_INPUT_BYTES" ]; then INPUT_TRUNCATED=1; fi
+if [ "$INPUT_TRUNCATED" -eq 1 ]; then
+  # This hook fails OPEN by design (a Stop hook that blocks on its own failure
+  # strands the session). Say so — an unscanned response must not look clean.
+  echo "AgentBoot: response payload exceeds $MAX_HOOK_INPUT_BYTES bytes — output scan SKIPPED for this turn." >&2
+  exit 0
+fi
 RESPONSE=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);if(typeof j.last_assistant_message==='string'&&j.last_assistant_message){process.stdout.write(j.last_assistant_message);return;}if(j.transcript_path){const fs=require('fs');const lines=fs.readFileSync(j.transcript_path,'utf-8').split('\\n');for(let i=lines.length-1;i>=0;i--){const l=lines[i].trim();if(!l)continue;try{const e=JSON.parse(l);const m=(e.message&&e.message.role==='assistant')?e.message:null;if(m){const c=m.content;const t=typeof c==='string'?c:(Array.isArray(c)?c.filter(p=>p&&p.type==='text').map(p=>p.text).join('\\n'):'');process.stdout.write(t);return;}}catch(_){}}}process.stdout.write('');}catch(_){process.stdout.write('')}})") || exit 0
 
 # Scan for accidental credential exposure in output
@@ -2735,7 +2778,28 @@ TELEMETRY_LOG="\${AGENTBOOT_TELEMETRY_LOG:-${rawLogPath}}"
 umask 077
 mkdir -p "$(dirname "$TELEMETRY_LOG")"
 
-INPUT=$(cat)
+# I1: bound what a hook will read from stdin.
+#
+# INPUT=$(cat) read an unbounded payload into a shell variable. A hook runs on
+# every prompt / tool call on a developer's machine, so an oversized payload is
+# a memory and latency problem on the machine's critical path.
+#
+# The cap is deliberately generous (1 MiB) — larger than any legitimate prompt or
+# tool payload — and the over-cap ACTION follows each hook's own declared
+# posture rather than inventing a new one:
+#   * blocking hooks (input scan, deny-tools) FAIL CLOSED. An unscannable
+#     payload is an unscanned payload, and this is a DLP gate.
+#   * non-blocking hooks (output scan, telemetry) degrade as they already do on
+#     any other failure — but say so on stderr, never silently.
+MAX_HOOK_INPUT_BYTES="\${AGENTBOOT_MAX_HOOK_INPUT_BYTES:-1048576}"
+INPUT=$(head -c "$((MAX_HOOK_INPUT_BYTES + 1))")
+INPUT_TRUNCATED=0
+if [ "\${#INPUT}" -gt "$MAX_HOOK_INPUT_BYTES" ]; then INPUT_TRUNCATED=1; fi
+if [ "$INPUT_TRUNCATED" -eq 1 ]; then
+  # Non-blocking hook: record the event anyway, but never pretend the record is
+  # complete.
+  echo "AgentBoot: telemetry payload exceeds $MAX_HOOK_INPUT_BYTES bytes — event fields may be incomplete." >&2
+fi
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ${devIdBlock}
 
@@ -2815,7 +2879,28 @@ HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")
 # Fail-closed: if node is missing, block the tool (compliance requires enforcement)
 command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node required for compliance hooks"}'; exit 2; }
 
-INPUT=$(cat)
+# I1: bound what a hook will read from stdin.
+#
+# INPUT=$(cat) read an unbounded payload into a shell variable. A hook runs on
+# every prompt / tool call on a developer's machine, so an oversized payload is
+# a memory and latency problem on the machine's critical path.
+#
+# The cap is deliberately generous (1 MiB) — larger than any legitimate prompt or
+# tool payload — and the over-cap ACTION follows each hook's own declared
+# posture rather than inventing a new one:
+#   * blocking hooks (input scan, deny-tools) FAIL CLOSED. An unscannable
+#     payload is an unscanned payload, and this is a DLP gate.
+#   * non-blocking hooks (output scan, telemetry) degrade as they already do on
+#     any other failure — but say so on stderr, never silently.
+MAX_HOOK_INPUT_BYTES="\${AGENTBOOT_MAX_HOOK_INPUT_BYTES:-1048576}"
+INPUT=$(head -c "$((MAX_HOOK_INPUT_BYTES + 1))")
+INPUT_TRUNCATED=0
+if [ "\${#INPUT}" -gt "$MAX_HOOK_INPUT_BYTES" ]; then INPUT_TRUNCATED=1; fi
+if [ "$INPUT_TRUNCATED" -eq 1 ]; then
+  echo "AgentBoot: tool payload exceeds $MAX_HOOK_INPUT_BYTES bytes — cannot identify the tool." >&2
+  echo '{"decision":"block","reason":"AgentBoot: tool-use payload exceeds the hook input limit and could not be inspected."}'
+  exit 2
+fi
 TOOL_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.tool_name||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
 
 DENY_PATTERNS=(
