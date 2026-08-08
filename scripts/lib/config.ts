@@ -68,6 +68,54 @@ export const SYNCABLE_OUTPUT_FORMATS: readonly string[] =
   }
 }
 
+/**
+ * Aliases operators actually type. Historically local to sync.ts, which meant
+ * every OTHER consumer of a repos.json platform compared un-normalized strings.
+ */
+export const PLATFORM_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  "github-copilot": "copilot",
+  "openai-codex": "codex",
+};
+
+/** Canonical platform ids for a repos.json entry (singular or array form). */
+export function resolveRepoPlatforms(entry: { platform?: string; platforms?: string[] }): string[] {
+  const raw = entry.platforms && entry.platforms.length > 0
+    ? entry.platforms
+    : [entry.platform ?? "claude"];
+  return raw.map((p) => PLATFORM_ALIASES[p] ?? p);
+}
+
+/**
+ * A4: platforms that repos.json TARGETS but the hub does not BUILD.
+ *
+ * `status` printed `Platforms:` and `Repos (N)` four lines apart and never
+ * compared them, so the single most common misconfiguration in the product —
+ * a repo pointed at a platform that was never added to personas.outputFormats —
+ * was displayed, in full, on one screen, to an operator with no reason to
+ * cross-reference two lists by eye. sync catches it, but only at ship time and
+ * only for the repos it reaches.
+ */
+export function unbuiltRepoPlatforms(
+  repos: Array<{ label?: string; path?: string; platform?: string; platforms?: string[] }>,
+  outputFormats: readonly string[],
+): Array<{ platform: string; repos: string[] }> {
+  const built = new Set(outputFormats.map((f) => PLATFORM_ALIASES[f] ?? f));
+  const byPlatform = new Map<string, string[]>();
+  for (const entry of repos) {
+    for (const p of resolveRepoPlatforms(entry)) {
+      if (built.has(p)) continue;
+      const label = entry.label ?? entry.path ?? "(unnamed repo)";
+      const list = byPlatform.get(p) ?? [];
+      if (!list.includes(label)) list.push(label);
+      byPlatform.set(p, list);
+    }
+  }
+  return [...byPlatform.entries()]
+    .map(([platform, r]) => ({ platform, repos: r }))
+    .sort((a, b) => a.platform.localeCompare(b.platform));
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

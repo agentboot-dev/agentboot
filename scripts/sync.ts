@@ -35,6 +35,8 @@ import {
   agentbootNpxSpec,
   DEFAULT_OUTPUT_FORMATS,
   SYNCABLE_OUTPUT_FORMATS,
+  PLATFORM_ALIASES,
+  resolveRepoPlatforms,
 } from "./lib/config.js";
 import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
 import { childScopeNames } from "./lib/scope-layout.js";
@@ -110,11 +112,9 @@ interface RepoEntry {
  * ("claude-code") where the canonical id is expected ("claude") — accept the
  * alias instead of failing their first sync.
  */
-const PLATFORM_ALIASES: Record<string, string> = {
-  "claude-code": "claude",
-  "github-copilot": "copilot",
-  "openai-codex": "codex",
-};
+// A4: moved to lib/config.ts so `status` and `doctor` compare the SAME
+// normalized ids sync does. Keeping this private to sync is why the two other
+// consumers were comparing raw strings.
 
 /**
  * Normalize platform(s) for a repo entry. Handles both the old singular
@@ -122,10 +122,7 @@ const PLATFORM_ALIASES: Record<string, string> = {
  * aliases to canonical platform ids. Returns an array.
  */
 function getRepoPlatforms(entry: RepoEntry): string[] {
-  const raw = entry.platforms && entry.platforms.length > 0
-    ? entry.platforms
-    : [entry.platform ?? "claude"];
-  return raw.map((p) => PLATFORM_ALIASES[p] ?? p);
+  return resolveRepoPlatforms(entry);
 }
 
 interface SyncResult {

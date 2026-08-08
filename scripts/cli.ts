@@ -31,7 +31,7 @@ import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT, type CapabilityContext } from "./lib/conformance.js";
@@ -1381,6 +1381,26 @@ program
               }
             }
             if (checkedAnyRepo && !anyConflict) ok("No gitignore conflicts in synced repos");
+
+            // A4: repos.json targets a platform the hub does not build. sync
+            // refuses at ship time, but only for the repos that run — this is a
+            // static contradiction between two files, and doctor is where a
+            // static contradiction belongs. fail(), not warn(): the repo will
+            // NEVER receive anything.
+            const entries = (Array.isArray(reposArr) ? reposArr : []) as Array<{
+              label?: string; path?: string; platform?: string; platforms?: string[];
+            }>;
+            const declaredFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+            const unbuilt = unbuiltRepoPlatforms(entries, declaredFormats);
+            for (const u of unbuilt) {
+              fail(
+                `repos.json targets \`${u.platform}\` but personas.outputFormats = [${declaredFormats.join(", ")}] — ` +
+                `${u.repos.join(", ")} can never be synced`,
+              );
+            }
+            if (entries.length > 0 && unbuilt.length === 0) {
+              ok(`Every repos.json platform is built by the hub`);
+            }
           } catch {
             // repos.json unparseable — the check above already surfaced that.
           }
@@ -1906,6 +1926,9 @@ program
         personas: enabledPersonas,
         traits: enabledTraits,
         outputFormats,
+        // A4: machine consumers need the comparison too — a field that is
+        // always `[]` on a healthy hub is how a monitor learns to alert.
+        unbuiltPlatforms: unbuiltRepoPlatforms(repos, outputFormats),
         repos: repos.map((r) => {
           const manifestPath = path.join(r.path, targetDir, ".agentboot-manifest.json");
           let manifest = null;
@@ -1925,6 +1948,21 @@ program
     console.log(`  Personas:  ${enabledPersonas.length} enabled (${enabledPersonas.join(", ")})`);
     console.log(`  Traits:    ${enabledTraits.length} enabled`);
     console.log(`  Platforms: ${outputFormats.join(", ")}`);
+    // A4: the two lists are printed four lines apart; compare them in code.
+    // Displaying a contradiction and expecting the operator to cross-reference
+    // by eye is not a check. sync catches this, but only at ship time and only
+    // for the repos it reaches.
+    const unbuilt = unbuiltRepoPlatforms(repos, outputFormats);
+    if (unbuilt.length > 0) {
+      for (const u of unbuilt) {
+        console.log(chalk.red(
+          `  ✗ repos.json targets \`${u.platform}\` but the hub does not build it — ${u.repos.join(", ")}`,
+        ));
+      }
+      console.log(chalk.gray(
+        `    Fix: add the platform to personas.outputFormats, or change/remove the repo entry.`,
+      ));
+    }
     console.log("");
 
     if (repos.length === 0) {
