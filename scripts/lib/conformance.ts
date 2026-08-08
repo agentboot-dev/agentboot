@@ -47,6 +47,7 @@ export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
   jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
   agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
   skill: { level: "advisory", detail: "skill content is instructions only" },
+  plugin: { level: "enforced", detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
 };
 
 /** Where a platform's executable hooks live inside dist/, or null when the

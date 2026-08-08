@@ -71,9 +71,22 @@ describe("unenforceableFormats", () => {
     expect(unenforceableFormats(["claude"])).toEqual([]);
   });
 
-  it("ignores unknown formats rather than guessing", () => {
-    // Guessing here would either invent false failures or hide real ones.
-    expect(unenforceableFormats(["not-a-platform"])).toEqual([]);
+  it("FAILS CLOSED on an unknown format", () => {
+    // This test previously asserted the opposite — "ignore unknown formats
+    // rather than guessing" — and that reasoning shipped a hole. It is correct
+    // for a classifier and backwards for a safety gate: any output format
+    // missing from PLATFORM_ENFORCEMENT was silently treated as ENFORCING, so
+    // a HARD guardrail targeting it passed unchecked. `plugin` was such a
+    // format, and the artifact then reached no platform tree at all — a
+    // disappearance, strictly worse than the downgrade the gate exists to stop.
+    expect(unenforceableFormats(["not-a-platform"])).toEqual(["not-a-platform"]);
+  });
+
+  it("classifies plugin as enforcing — verified, not assumed", () => {
+    // Confirmed against the real hub: dist/plugin receives instructions AND
+    // hooks (agentboot-input-scan.sh, output-scan, telemetry). An unverified
+    // row in this table is the same class of error as an unsourced claim.
+    expect(unenforceableFormats(["plugin"])).toEqual([]);
   });
 });
 

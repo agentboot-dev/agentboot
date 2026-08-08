@@ -48,6 +48,7 @@ import {
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
+import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
 import { inspectArtifact, unenforceableFormats } from "./lib/guardrail-scan.js";
 
 // ---------------------------------------------------------------------------
@@ -3076,6 +3077,17 @@ function main(): void {
 
   const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains", "codex"];
   const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+  // Every valid output format MUST have an enforcement classification. Without
+  // this assertion the two lists drift silently, and a format present in one but
+  // not the other is precisely how the capability gate failed open on `plugin`.
+  const unclassified = validFormats.filter((f) => !(f in PLATFORM_ENFORCEMENT));
+  if (unclassified.length > 0) {
+    log(chalk.red(`  ✗ Output format(s) with no enforcement classification: ${unclassified.join(", ")}`));
+    log(chalk.gray(`    Add a row to PLATFORM_ENFORCEMENT in scripts/lib/conformance.ts.`));
+    log(chalk.gray(`    An unclassified format cannot be gated, so guardrails targeting it would pass unchecked.`));
+    process.exit(1);
+  }
+
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
     console.error(chalk.red(`Unknown output format(s): ${unknownFormats.join(", ")}. Valid: ${validFormats.join(", ")}`));
