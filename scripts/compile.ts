@@ -76,6 +76,8 @@ interface TraitContent {
   name: string;
   content: string;
   filePath: string;
+  /** Verbatim file content including frontmatter — for copy-out paths. */
+  raw: string;
 }
 
 interface CompileResult {
@@ -165,11 +167,20 @@ function loadTraits(
     }
 
     const filePath = path.join(coreTraitsDir, file);
-    const content = fs.readFileSync(filePath, "utf-8");
+    const raw = fs.readFileSync(filePath, "utf-8");
+
+    // decision-0005: traits may now carry identity frontmatter (id/slug/hash).
+    // Strip it HERE, once, rather than at each consumer — two consumers
+    // (selectTraitTier and the persona injector) did not strip, so per-site
+    // stripping would have leaked `id:`/`hash:` into every compiled persona.
+    // `content` is the composable body; `raw` keeps the file verbatim for the
+    // copy-out paths that reproduce the source artifact.
+    const content = raw.replace(/^---\n[\s\S]*?\n---\n*/, "");
 
     traits.set(traitName, {
       name: traitName,
       content: content.trim(),
+      raw: raw.trim(),
       filePath,
     });
   }
@@ -1292,7 +1303,7 @@ function generateClaudeMd(
   for (const traitName of traitNames) {
     const trait = traits.get(traitName);
     if (trait) {
-      fs.writeFileSync(path.join(traitsDir, `${traitName}.md`), trait.content, "utf-8");
+      fs.writeFileSync(path.join(traitsDir, `${traitName}.md`), trait.raw, "utf-8");
     }
   }
 
@@ -2075,7 +2086,7 @@ function generatePluginOutput(
   const pluginTraitsDir = path.join(pluginDir, "traits");
   ensureDir(pluginTraitsDir);
   for (const [name, trait] of traits) {
-    fs.writeFileSync(path.join(pluginTraitsDir, `${name}.md`), trait.content, "utf-8");
+    fs.writeFileSync(path.join(pluginTraitsDir, `${name}.md`), trait.raw, "utf-8");
     traitEntries.push({ id: name, path: `traits/${name}.md` });
   }
 
@@ -3477,10 +3488,10 @@ function main(): void {
     }
 
     for (const [name, trait] of traits) {
-      const r = inspectArtifact(trait.content);
+      const r = inspectArtifact(trait.raw);
       if (!r.hard) continue;
       ensureDir(path.join(managedOutDir, "traits"));
-      fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.content, "utf-8");
+      fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.raw, "utf-8");
       hardArtifacts.push({ name, acknowledged: r.acknowledgedAdvisory });
     }
 

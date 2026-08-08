@@ -1,6 +1,9 @@
 ---
 description: AgentBoot baseline — always-on code quality and review guidance
 applyTo: "**"
+id: 01KZH2QM0DG6NGTVHK50M46RGA
+slug: baseline
+hash: sha256:32a76d5db48d1ca6
 ---
 
 # AgentBoot Baseline Instructions

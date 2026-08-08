@@ -36,6 +36,7 @@ import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
 import { findHardArtifacts } from "./lib/guardrail-scan.js";
+import { stampIdentity, mintId } from "./lib/artifact-identity.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -175,6 +176,62 @@ program
   });
 
 // ---- validate -------------------------------------------------------------
+
+program
+  .command("identity")
+  .description("Stamp permanent artifact identifiers (decision-0005) — mints missing ids, refreshes content hashes")
+  .option("--config <path>", "path to agentboot.config.json")
+  .option("--dry-run", "report what would change without writing")
+  .action(async (opts: { config?: string; dryRun?: boolean }) => {
+    // decision-0005. Backfill exists because identity cannot be applied to the
+    // past — every artifact that goes unstamped before the 1.0 tag can only ever
+    // date from whenever it is finally stamped.
+    const cwd = opts.config ? path.dirname(path.resolve(opts.config)) : process.cwd();
+    const dirs = [
+      path.join(cwd, "core", "instructions"),
+      path.join(cwd, "core", "traits"),
+      path.join(cwd, "core", "gotchas"),
+    ];
+    let minted = 0, refreshed = 0, skipped = 0, seen = 0;
+    const collisions = new Map<string, string>();
+
+    for (const dir of dirs) {
+      if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+        const full = path.join(dir, file);
+        const before = fs.readFileSync(full, "utf-8");
+        // Never stamp navigational files — a README is not a governed artifact.
+        if (/^(README|index)\.md$/i.test(file)) { skipped++; seen++; continue; }
+        const slug = file.replace(/\.(instructions|gotchas?)?\.?md$/, "").replace(/\.md$/, "");
+        // Traits/gotchas carry no frontmatter by convention; create it for them.
+        const r = stampIdentity(before, { slug, createFrontmatter: true });
+        seen++;
+        if (!r.changed) { skipped++; continue; }
+
+        const id = r.content.match(/^id:\s*(\S+)$/m)?.[1];
+        if (id) {
+          const prior = collisions.get(id);
+          // Should be impossible, but a duplicated id silently merges two
+          // artifacts' histories forever — worth one comparison to never find out.
+          if (prior) {
+            console.error(chalk.red(`  ✗ duplicate id ${id}: ${prior} and ${path.relative(cwd, full)}`));
+            process.exit(1);
+          }
+          collisions.set(id, path.relative(cwd, full));
+        }
+
+        if (r.minted) minted++; else refreshed++;
+        if (!opts.dryRun) fs.writeFileSync(full, r.content, "utf-8");
+        console.log(chalk.gray(`  ${r.minted ? "mint " : "hash "} ${path.relative(cwd, full)}`));
+      }
+    }
+
+    const verb = opts.dryRun ? "would be" : "";
+    console.log(chalk.bold(`\n  ${seen} artifact(s) scanned`));
+    console.log(`  ${chalk.green(String(minted))} id(s) ${verb} minted · ${refreshed} hash(es) ${verb} refreshed · ${skipped} unchanged`);
+    if (opts.dryRun) console.log(chalk.yellow("  --dry-run: nothing written"));
+    console.log("");
+  });
 
 program
   .command("validate")
@@ -730,13 +787,23 @@ paths:
         fs.mkdirSync(instructionsDir, { recursive: true });
       }
 
+      // decision-0005: every artifact is born with a permanent identifier.
+      // Minted at creation because identity cannot be applied retroactively —
+      // an id added later can only date from later.
       const instructionMd = `---
+id: ${mintId()}
+slug: ${name}
 description: "TODO — brief description of this instruction"
 # applyTo is a comma-separated glob list. "**" = always on, every file.
 applyTo: "**"
 # Uncomment to make this a HARD guardrail that lower scopes cannot override or
 # downgrade. Without it the instruction is a soft preference teams may adapt.
 # guardrail: hard
+# Reserved (XP3): declared change-rate for this artifact. Nothing consumes it yet.
+#   constitutional — rare, high ceremony, decade-scale
+#   statutory      — normal review, year-scale
+#   ephemeral      — write it in a morning, expires, no ceremony
+# tier: statutory
 ---
 
 # ${name.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}

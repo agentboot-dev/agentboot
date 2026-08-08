@@ -176,3 +176,30 @@ future artifacts nobody reconsidered.
 
 `agentboot doctor` reports the same thing from the other direction: it now counts artifacts declaring
 `guardrail: hard`, not just `managed` config keys, and warns per target that cannot enforce them.
+
+## Artifact identity
+
+Every governance artifact carries a permanent identifier in its frontmatter:
+
+```yaml
+id: 01KZH2S4N8H1AEPFCWPJRBHTA5   # opaque, permanent — survives rename/split/merge
+slug: critical-thinking           # human-readable, free to change
+hash: sha256:9a520ca580354ef6     # integrity for THIS revision
+```
+
+Three fields with three jobs, deliberately separate. **The `id` is the identity** — it never changes
+once minted, which is what lets an artifact's history survive renames and scope moves. The `slug` is
+for humans and may be edited freely. The `hash` describes the current revision and moves on every
+edit, so it is integrity, not identity. Conflating the two is the usual mistake: a content hash
+identifies a *version*, and lineage dies at the first edit.
+
+`agentboot add` mints an id at creation. `agentboot identity` backfills existing artifacts and
+refreshes hashes — it is **idempotent and never regenerates an existing id.** Use `--dry-run` first.
+
+Identity is stamped **before v1.0.0** on purpose: it cannot be applied retroactively. An id minted
+later can only date from later, and after the GA tag adding the field is a breaking change for every
+consumer plus a re-sync of every spoke.
+
+**Reserved, not yet active:** `tier:` (`constitutional` / `statutory` / `ephemeral`) declares an
+artifact's intended change-rate. The slot exists so the schema is stable at GA; nothing consumes it
+yet, and untagged artifacts are deliberately **not** assigned a default.

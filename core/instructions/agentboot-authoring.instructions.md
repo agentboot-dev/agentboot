@@ -1,6 +1,9 @@
 ---
 description: AgentBoot hub authoring conventions — how to create and edit personas, traits, gotchas, and lexicons
 applyTo: "core/**"
+id: 01KZH2QM0CCJRF0EMPBHPBH8DA
+slug: agentboot-authoring
+hash: sha256:55f92dee8643a113
 ---
 
 # AgentBoot Hub Authoring Instructions

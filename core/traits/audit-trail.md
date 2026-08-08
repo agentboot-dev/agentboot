@@ -1,3 +1,9 @@
+---
+id: 01KZH2S4N7TSM4J71FVQMKMD2K
+slug: audit-trail
+hash: sha256:2a6b091ba26ea53e
+---
+
 # Trait: Audit Trail
 
 **ID:** `audit-trail`

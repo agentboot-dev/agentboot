@@ -1,3 +1,9 @@
+---
+id: 01KZH2S4N88N7H54WFVFB24FMH
+slug: schema-awareness
+hash: sha256:4f549e5cff61fbde
+---
+
 # Trait: Schema Awareness
 
 **ID:** `schema-awareness`
