@@ -3074,9 +3074,14 @@ function generateMergedManagedArtifacts(
   const guardrailBase = readFragment(path.join(distPath, "managed", "managed-settings.json")) ?? {};
   const orgFragment = readFragment(path.join(distPath, "claude", "core", "managed-settings.d", "00-org.json")) ?? {};
 
-  // F-5: the acknowledgement register. `permissions` and `hooks` never appear
-  // here — both are UNIONED, so nothing is discarded and there is nothing to
-  // acknowledge.
+  // F-5: the acknowledgement register.
+  //
+  // D3 corrects this comment, which was false. `hooks` is unioned wholesale, so
+  // it genuinely never appears here. `permissions` is NOT — only
+  // `permissions.deny` and `permissions.allow` are unioned. Every other sub-key
+  // (`defaultMode`, `additionalDirectories`, `bypassPermissions`, anything added
+  // upstream later) is a shallow overwrite like any scalar, and now appears here
+  // as `permissions.<sub-key>` when scopes disagree about it.
   const acknowledgedOverrides = config.managed?.scopeMerge?.acknowledgedOverrides ?? [];
   if (acknowledgedOverrides.includes("*")) {
     fatal(

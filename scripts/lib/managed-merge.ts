@@ -45,7 +45,11 @@ export interface MergeResult {
   merged: Record<string, unknown>;
   /** Keys present in ≥2 fragments with DIFFERENT values. Identical-value
    *  collisions are normal (claude.settings is copied into both the guardrail
-   *  base and 00-org) and are never reported. */
+   *  base and 00-org) and are never reported.
+   *
+   *  D3: non-unioned `permissions` sub-keys appear here as
+   *  `permissions.defaultMode` etc. Only `deny`/`allow` are exempt, because
+   *  only they are unioned. */
   conflicts: MergeConflict[];
   /** Event names present in the merged `hooks`, when ≥2 fragments contributed
    *  hooks. Empty on the common single-source path, so the report stays quiet. */
@@ -143,13 +147,23 @@ export function mergeHooks(
   return { hooks: Object.keys(out).length > 0 ? out : undefined, malformed };
 }
 
+/**
+ * D3: the sub-keys of `permissions` that are UNIONED across scopes.
+ *
+ * Everything else under `permissions` — `defaultMode`, `additionalDirectories`,
+ * `bypassPermissions`, anything Anthropic adds later — is a shallow overwrite
+ * exactly like a top-level scalar, and must be subject to the same conflict
+ * detection.
+ */
+const UNIONED_PERMISSION_KEYS = ["deny", "allow"] as const;
+
 function mergePermissions(
   higher: Record<string, unknown> | undefined,
   lower: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!higher && !lower) return undefined;
   const merged: Record<string, unknown> = { ...(lower ?? {}), ...(higher ?? {}) };
-  for (const key of ["deny", "allow"] as const) {
+  for (const key of UNIONED_PERMISSION_KEYS) {
     const h = (higher?.[key] as string[] | undefined) ?? [];
     const l = (lower?.[key] as string[] | undefined) ?? [];
     const union = [...new Set([...h, ...l])];
@@ -197,13 +211,36 @@ export function mergeManagedFragments(
   const scalarKeys = new Set<string>();
   for (const frag of ordered) {
     for (const k of Object.keys(frag)) {
-      if (k.startsWith("//") || k === "permissions" || k === "hooks") continue;
+      if (k.startsWith("//") || k === "hooks") continue;
+      if (k === "permissions") {
+        // D3: exempt only the sub-keys that are actually unioned, not the whole
+        // object. `defaultMode`, `additionalDirectories` and `bypassPermissions`
+        // are shallow overwrites like any scalar — a team fragment setting
+        // `defaultMode` silently replaced the org's, while the build reported no
+        // conflict, because the exemption was written for `deny`/`allow` and
+        // applied to their container.
+        const perms = frag[k];
+        if (isPlainObject(perms)) {
+          for (const sub of Object.keys(perms)) {
+            if ((UNIONED_PERMISSION_KEYS as readonly string[]).includes(sub)) continue;
+            scalarKeys.add(`permissions.${sub}`);
+          }
+        }
+        continue;
+      }
       scalarKeys.add(k);
     }
   }
+  const valueAt = (frag: Record<string, unknown>, key: string): { has: boolean; value: unknown } => {
+    if (!key.startsWith("permissions.")) return { has: key in frag, value: frag[key] };
+    const sub = key.slice("permissions.".length);
+    const perms = frag["permissions"];
+    if (!isPlainObject(perms)) return { has: false, value: undefined };
+    return { has: sub in perms, value: perms[sub] };
+  };
   for (const key of [...scalarKeys].sort()) {
     const present = ordered
-      .map((f, i) => ({ value: f[key], source: sourceLabels[i] ?? `fragment[${i}]`, has: key in f }))
+      .map((f, i) => ({ ...valueAt(f, key), source: sourceLabels[i] ?? `fragment[${i}]` }))
       .filter((x) => x.has);
     if (present.length < 2) continue;
     const winner = present[0]!; // ordered[0] is highest precedence

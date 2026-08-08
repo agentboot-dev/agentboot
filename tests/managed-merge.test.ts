@@ -245,3 +245,69 @@ describe("D1 integration — a malformed hook event fails the build", () => {
     expect(bad.out).not.toMatch(/hooks unioned across \d+ event\(s\): .*PreToolUse/);
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// D3 — the permissions exemption was wider than the union
+// ---------------------------------------------------------------------------
+
+describe("D3 — only the UNIONED permissions sub-keys are exempt from conflicts", () => {
+  it("D3-1: a non-unioned sub-key collision is reported, not silently overwritten", () => {
+    // Only `deny` and `allow` are unioned. The whole `permissions` object was
+    // exempted from conflict detection anyway, so a team fragment setting
+    // `defaultMode` replaced the org's and the build reassured the operator that
+    // nothing had been discarded.
+    const r = mergeManagedFragments(
+      [{ permissions: { defaultMode: "acceptEdits" } },
+       { permissions: { defaultMode: "plan" } }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key)).toEqual(["permissions.defaultMode"]);
+    expect(r.conflicts[0]!.keptSource).toBe("20-team");
+    expect(r.conflicts[0]!.discarded).toEqual([{ value: "plan", source: "00-org" }]);
+  });
+
+  it("D3-2 (NEGATIVE): deny/allow collisions are STILL not conflicts — they union", () => {
+    // The exemption must survive: reporting a union as a loss would be noise on
+    // the normal path and would train the report away.
+    const r = mergeManagedFragments(
+      [{ permissions: { deny: ["WebFetch"] } }, { permissions: { deny: ["curl*"], allow: ["Read"] } }],
+      ["00-org", "guardrails"],
+    );
+    expect(r.conflicts).toEqual([]);
+    expect(r.permissionCounts).toEqual({ deny: 2, allow: 1 });
+  });
+
+  it("D3-3 (NEGATIVE): an identical non-unioned sub-key in both scopes is not a conflict", () => {
+    const r = mergeManagedFragments(
+      [{ permissions: { defaultMode: "plan" } }, { permissions: { defaultMode: "plan" } }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("D3-4: additionalDirectories and bypassPermissions are covered too", () => {
+    const r = mergeManagedFragments(
+      [{ permissions: { additionalDirectories: ["/a"], bypassPermissions: false } },
+       { permissions: { additionalDirectories: ["/b"], bypassPermissions: true } }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key).sort())
+      .toEqual(["permissions.additionalDirectories", "permissions.bypassPermissions"]);
+  });
+
+  it("D3-5: `hooks` remains fully exempt — it really is unioned wholesale", () => {
+    const r = mergeManagedFragments(
+      [{ hooks: guardrailHooks }, { hooks: orgHooks }],
+      ["guardrails", "00-org"],
+    );
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("D3-6: a top-level scalar collision still reports, unchanged", () => {
+    const r = mergeManagedFragments(
+      [{ cleanupPeriodDays: 7 }, { cleanupPeriodDays: 30 }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key)).toEqual(["cleanupPeriodDays"]);
+  });
+});
