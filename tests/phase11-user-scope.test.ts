@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -253,4 +253,97 @@ describe("user-level write SPI (§I)", () => {
     const res = stageForHandoff(distCore, stagingDir);
     expect(res.errors.some(e => e.includes("unresolved_var") || e.includes("template var"))).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// E2 — removeUserContent() had no production caller
+// ---------------------------------------------------------------------------
+
+/**
+ * `install-user` writes into ~/.claude/ and `removeUserContent()` has existed to
+ * undo it since the SPI landed — with zero callers outside tests. User-level
+ * artifacts were therefore installable and, in production, permanently
+ * unremovable: a revoked user-level control could not be withdrawn by any
+ * command the product ships.
+ */
+describe("E2 — `agentboot uninstall --user`", () => {
+  const CLI_E2 = path.join(path.resolve(__dirname, ".."), "bin", "agentboot.js");
+
+  function runE2(args: string[], home: string, cwd: string) {
+    const r = spawnSync("node", [CLI_E2, ...args], {
+      cwd,
+      env: { ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1" },
+      encoding: "utf-8",
+      timeout: 180_000,
+    });
+    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  function scaffoldE2Hub(): { base: string; hub: string; home: string } {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-e2-"));
+    const hub = path.join(base, "hub");
+    const home = path.join(base, "home");
+    fs.mkdirSync(home, { recursive: true });
+    const r = spawnSync("node",
+      [CLI_E2, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+      { cwd: base, env: { ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 });
+    if (r.status !== 0) throw new Error(`scaffold failed: ${r.stdout}${r.stderr}`);
+    return { base, hub, home };
+  }
+
+  it("E2-1: removes what install-user wrote, and the manifest with it", () => {
+    const { hub, home } = scaffoldE2Hub();
+    expect(runE2(["build"], home, hub).status).toBe(0);
+    expect(runE2(["install-user"], home, hub).status).toBe(0);
+
+    const userManifest = path.join(home, ".claude", ".agentboot-user-manifest.json");
+    expect(fs.existsSync(userManifest)).toBe(true);
+    const tracked = (JSON.parse(fs.readFileSync(userManifest, "utf-8")).files as Array<{ path: string }>)
+      .map((f) => path.join(home, ".claude", f.path));
+    expect(tracked.length).toBeGreaterThan(0);
+    for (const f of tracked) expect(fs.existsSync(f), f).toBe(true);
+
+    const un = runE2(["uninstall", "--user"], home, hub);
+    expect(un.status).toBe(0);
+    for (const f of tracked) expect(fs.existsSync(f), f).toBe(false);
+    expect(fs.existsSync(userManifest)).toBe(false);
+  }, 300_000);
+
+  it("E2-2: --dry-run reports the tracked files and removes nothing", () => {
+    const { hub, home } = scaffoldE2Hub();
+    expect(runE2(["build"], home, hub).status).toBe(0);
+    expect(runE2(["install-user"], home, hub).status).toBe(0);
+    const userManifest = path.join(home, ".claude", ".agentboot-user-manifest.json");
+
+    const dry = runE2(["uninstall", "--user", "--dry-run"], home, hub);
+    expect(dry.status).toBe(0);
+    expect(dry.out).toContain("would remove");
+    expect(fs.existsSync(userManifest)).toBe(true);
+  }, 300_000);
+
+  it("E2-3: says so when there is nothing installed — a skip must not read as a removal", () => {
+    const { hub, home } = scaffoldE2Hub();
+    const un = runE2(["uninstall", "--user"], home, hub);
+    expect(un.status).toBe(0);
+    expect(un.out).toContain("No AgentBoot user manifest found");
+  }, 300_000);
+
+  it("E2-4: a REPO uninstall says that user-level content was not touched", () => {
+    // The dangerous silence: "AgentBoot is removed" vs "AgentBoot is removed
+    // from this repo". An operator who believes the first while the second is
+    // true has org instructions still loading in every session on the machine.
+    const { hub, home } = scaffoldE2Hub();
+    expect(runE2(["build"], home, hub).status).toBe(0);
+    expect(runE2(["install-user"], home, hub).status).toBe(0);
+
+    const spoke = path.join(path.dirname(hub), "spoke-e2");
+    fs.mkdirSync(path.join(spoke, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(spoke, ".claude", ".agentboot-manifest.json"),
+      JSON.stringify({ managed_by: "agentboot", files: [] }),
+    );
+    const un = runE2(["uninstall", "--repo", spoke], home, hub);
+    expect(un.out).toContain("user-level AgentBoot content is also installed");
+    expect(un.out).toContain("agentboot uninstall --user");
+  }, 300_000);
 });

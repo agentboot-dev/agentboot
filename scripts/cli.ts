@@ -2284,12 +2284,50 @@ program
 
 program
   .command("uninstall")
-  .description("Remove AgentBoot managed files from a repository")
+  .description("Remove AgentBoot managed files from a repository (or from ~/.claude/ with --user)")
   .option("--repo <path>", "target repository path")
+  .option("--user", "remove user-level content from ~/.claude/ instead of a repo")
   .option("-d, --dry-run", "preview what would be removed")
-  .action((opts) => {
-    const targetRepo = opts.repo ? path.resolve(opts.repo) : process.cwd();
+  .action(async (opts) => {
     const dryRun = opts.dryRun ?? false;
+
+    // E2: `install-user` writes into ~/.claude/ and `removeUserContent()` has
+    // existed to undo it since the SPI landed — with ZERO callers outside tests.
+    // So user-level artifacts were installable and, in production, permanently
+    // unremovable: a revoked user-level control could not be withdrawn by any
+    // command the product ships.
+    if (opts.user) {
+      const { removeUserContent, detectExistingContent } = await import("./lib/user-scope.js");
+      console.log(chalk.bold("\nAgentBoot — uninstall (user level)\n"));
+      const { hasManifest, manifestPath: userManifest } = detectExistingContent();
+      if (!hasManifest) {
+        console.log(chalk.yellow("  No AgentBoot user manifest found in ~/.claude/ — nothing to uninstall."));
+        console.log(chalk.gray("  User-level content is written by `agentboot install-user`.\n"));
+        process.exit(0);
+      }
+      if (dryRun) {
+        // Report from the manifest without touching anything. A dry run that
+        // silently did nothing would be indistinguishable from an empty install.
+        let files: Array<{ path: string }> = [];
+        try {
+          files = (JSON.parse(fs.readFileSync(userManifest, "utf-8")).files ?? []) as Array<{ path: string }>;
+        } catch { /* reported below as 0 files */ }
+        console.log(chalk.yellow(`  DRY RUN — ${files.length} tracked file(s) would be removed from ~/.claude/\n`));
+        for (const f of files) console.log(chalk.gray(`    would remove ${f.path}`));
+        console.log("");
+        process.exit(0);
+      }
+      const { removed, errors } = removeUserContent();
+      for (const r of removed) console.log(chalk.green(`    removed ${r}`));
+      for (const e of errors) console.log(chalk.red(`    ✗ ${e}`));
+      console.log("");
+      console.log(chalk.bold(`  removed: ${removed.length}, errors: ${errors.length}\n`));
+      // A partial removal is not a success: the untouched files are still active
+      // in every session on this machine.
+      process.exit(errors.length > 0 ? 1 : 0);
+    }
+
+    const targetRepo = opts.repo ? path.resolve(opts.repo) : process.cwd();
     const targetDir = ".claude";
     const manifestPath = path.join(targetRepo, targetDir, ".agentboot-manifest.json");
 
@@ -2379,6 +2417,22 @@ program
     console.log("");
     const verb = dryRun ? "would remove" : "removed";
     console.log(chalk.bold(`  ${verb}: ${removed}, skipped (modified): ${modified}, already gone: ${missing}`));
+
+    // E2: user-level content lives in ~/.claude/ and is NOT touched by a repo
+    // uninstall. Saying so is the difference between "AgentBoot is removed" and
+    // "AgentBoot is removed from this repo" — an operator who believes the first
+    // while the second is true has org instructions still loading in every
+    // session on this machine.
+    {
+      const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir();
+      const userManifest = path.join(home, ".claude", ".agentboot-user-manifest.json");
+      if (fs.existsSync(userManifest)) {
+        console.log(chalk.yellow(
+          `\n  Note: user-level AgentBoot content is also installed in ~/.claude/ and was NOT removed.`,
+        ));
+        console.log(chalk.gray(`    Remove it with: agentboot uninstall --user`));
+      }
+    }
 
     // Auto-restore from archive if it exists.
     const archiveDir = path.join(targetRepo, targetDir, ".agentboot-archive");
