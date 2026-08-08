@@ -5,10 +5,10 @@ sidebar_position: 3
 
 # Prompt & Cost Optimization
 
-AgentBoot's core claim is "prompts as code." If prompts are code, they need the same
-discipline as code: linting, testing, measurement, optimization, and review. This doc
-covers how AgentBoot helps organizations write better prompts, spend less on tokens,
-and measure the effectiveness of their personas.
+AgentBoot's core claim is "prompts as code." If prompts are code, they get the same
+discipline as code: linting, review, version control, and a cost budget. This doc
+covers how AgentBoot helps organizations keep persona prompts reviewable and lean,
+and spend less on tokens.
 
 ---
 
@@ -252,8 +252,10 @@ model: sonnet
 
 ### Why This Matters
 
-Claude Code's context window is 200k tokens. But effective adherence drops sharply
-after the first ~50k tokens of instructions. A persona that loads 15k tokens of
+Claude Code's context window is 200k tokens, but the window is not the budget — every
+token of standing instruction competes with file reads, tool definitions, and
+conversation history for the model's attention, and is re-paid on every turn. A
+persona that loads 15k tokens of
 instructions is pushing against the useful limit, especially when combined with
 file reads, tool definitions, and conversation history. Keeping personas lean (under
 6k tokens) leaves room for the actual work.
@@ -604,8 +606,8 @@ These prompts are never submitted, never reviewed, and never visible to anyone e
 But they're where most of the value (and waste) lives.
 
 A developer who doesn't know how to ask for what they need wastes time, tokens, and
-trust. A developer who's learned to prompt effectively gets 10x the value from the
-same tooling. AgentBoot should help developers get better at this — privately.
+trust — a question that takes four attempts costs four times the tokens of one that
+lands first time. AgentBoot should help developers close that gap — privately.
 
 ### The Prompt Development Lifecycle
 
