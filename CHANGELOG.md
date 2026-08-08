@@ -10,6 +10,30 @@ full PR-level detail; this file is the curated, human-readable summary.
 ## [Unreleased]
 
 ### Fixed
+- **Configured capabilities no longer vanish silently.** `compile` decided emission with eleven
+  independent `outputFormats.includes(...)` tests scattered across 3,000 lines; each `if` was
+  defensible and the `else` was empty everywhere. Eight capabilities — an org `PreToolUse` gate, a
+  fail-closed DLP scanner, a digest-pinned approved-MCP allowlist, `disableBypassPermissionsMode`,
+  model overrides and more — produced zero bytes while `build`, `validate --strict` AND `doctor` all
+  reported green. The build now **fails** when a configured capability can be honoured by none of the
+  configured output formats, and `doctor` gains a **Coverage** section printed before Enforcement.
+- **`managed.guardrails.forcePlugins` is reported as not implemented.** It was typed, documented and
+  accepted, and read by no code path on any platform. Setting it now fails the build. Whether to
+  implement it or delete the key is a product decision, flagged rather than made here.
+- **`doctor` no longer prints "no hard org policy configured" against a fail-closed DLP scanner.**
+  `hasHardPolicy` omitted `compliance.inputScan`, so a hub declaring one was classified as having no
+  hard policy. That was a false statement, not a hedge.
+- **`doctor` no longer drops an unclassified platform from the Enforcement report with `continue`** —
+  a silent skip in a function whose entire job is honesty. It now says so.
+
+### Added
+- `CAPABILITY_SUPPORT` (`scripts/lib/conformance.ts`) — which platforms emit which capability, a
+  separate axis from `PLATFORM_ENFORCEMENT`'s "how strongly does it enforce". Every row was verified
+  against real `dist/` output and carries a `file:line` warrant. A startup assertion pins every
+  `emittedBy` entry to a real output format, so the two tables cannot drift the way `validFormats`
+  and `PLATFORM_ENFORCEMENT` already did.
+- Policy-exception key `capability:<id>` in `agentboot-exceptions.json` waives a capability gap. It
+  requires an owner and an approver and it **expires** — a waived gap still prints on every build.
 - **Revocation now works. `dist/` was never pruned.** `compile` only ever wrote into `dist/`, so an
   artifact an operator removed from `instructions.enabled` — or an entire platform removed from
   `personas.outputFormats` — kept shipping to every spoke indefinitely, with `build`, `sync`,

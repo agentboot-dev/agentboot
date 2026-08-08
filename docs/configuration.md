@@ -197,6 +197,56 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 > Which **platforms** to emit is controlled by `personas.outputFormats`, not `output`. There is no
 > `output.format`, `output.hooks`, `output.mcp`, `output.managed`, or `output.dir` key.
 
+### Capability coverage — a configured control must reach some platform
+
+`personas.outputFormats` selects platforms; the `claude.*`, `compliance.*`, `mcp.*`, `ab.*` and
+`managed.*` blocks configure capabilities. Nothing used to compare the two, so a capability whose
+emitter was gated off produced no file, no log line, and no record that it had ever been requested.
+
+The build now fails when a configured capability can be honoured by **none** of the configured output
+formats. Which platforms emit which capability is declared in `CAPABILITY_SUPPORT`
+(`scripts/lib/conformance.ts`) — a separate axis from `PLATFORM_ENFORCEMENT`, which states how
+*strongly* a platform enforces:
+
+| Capability | Emitted by | Severity if no configured target emits it |
+|---|---|---|
+| `claude.hooks`, `claude.permissions.deny`, `mcp.enforceApproved`, `managed.guardrails.disableBypassPermissions` | claude | **error** |
+| `compliance.inputScan.scannerCommand`, `compliance.outputScan.blocking`, `managed.guardrails.denyTools`, `managed.guardrails.requireAuditLog` | claude, codex, copilot, plugin | **error** |
+| `claude.permissions.allow`, `claude.mcpServers`, `claude.settings`, `ab.modelOverrides` | claude | warn |
+| `instructions[].applyTo` (narrowing only) | copilot | warn |
+| `gotchas[].paths` | copilot, cursor, windsurf, jetbrains | warn |
+| `managed.guardrails.forcePlugins` | **nothing** | **error, always** |
+
+**One honouring target is enough** — partial coverage is the enforcement axis's concern, not this one.
+
+Severity is assigned by *what the operator loses*, not by importance. **Error** means the operator
+believes a control is active and it is not. **Warn** means a convenience is lost and nothing is
+falsely believed to be enforced. `permissions.deny` and `permissions.allow` look symmetric and are
+not: `deny` is the control, `allow` is a pre-approval convenience — failing a build over lost
+friction-reduction is the over-gating that gets a gate switched off.
+
+**A narrowing `applyTo` only.** `applyTo: "**"` is the documented always-on sentinel; losing a
+universal scope is a no-op, so it never fires.
+
+#### Accepting a gap
+
+Errors are waived through the policy-exception register (`agentboot-exceptions.json`) with the policy
+key `capability:<id>` — not a config boolean, because the register requires an owner and an approver
+and it **expires**:
+
+```json
+[{ "id": "EX-2026-014", "policy": "capability:claude.hooks",
+   "reason": "cursor-only pilot; hooks land when Claude Code is added",
+   "approver": "…", "owner": "…", "created": "2026-08-08", "expires": "2026-11-08" }]
+```
+
+A waived gap still prints on every build, naming the owner and the expiry. The day after it expires
+the build fails again. Warn-level rows need no waiver — they do not block.
+
+`agentboot doctor` reports the same information under a **Coverage** section, printed *before*
+Enforcement: coverage answers "was it emitted at all?", enforcement answers "how strongly?" — and
+coverage is the prior question.
+
 ### Revocation — `dist/` is generated output, not a cache
 
 Every build compiles into a staging directory and swaps it into place, so `dist/` is a faithful
@@ -285,7 +335,7 @@ Generates a managed-settings artifact (Claude Code only) for MDM distribution.
 | `managed.enabled` | boolean | Enable managed-settings generation. |
 | `managed.platform` | `"jamf"\|"intune"\|"jumpcloud"\|"kandji"\|"other"` | MDM target. |
 | `managed.outputPath` | string | Custom output path. |
-| `managed.guardrails.forcePlugins` | string[] | Plugins to force-install. |
+| `managed.guardrails.forcePlugins` | string[] | **NOT IMPLEMENTED — accepted, typed, and read by no code path on any platform.** Setting it now FAILS the build (see the capability gate below); this row is retained only so the failure is explicable. Flagged for a product decision: implement it, or delete the key and the type. |
 | `managed.guardrails.denyTools` | string[] | Tool patterns to deny. |
 | `managed.guardrails.requireAuditLog` | boolean | Require audit logging. |
 | `managed.guardrails.disableBypassPermissions` | boolean | Disallow bypassing permissions. |

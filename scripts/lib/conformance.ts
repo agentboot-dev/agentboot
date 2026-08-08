@@ -50,6 +50,193 @@ export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
   plugin: { level: "enforced", detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
 };
 
+// ---------------------------------------------------------------------------
+// Capability × platform SUPPORT — the second, orthogonal axis
+// ---------------------------------------------------------------------------
+
+/**
+ * `PLATFORM_ENFORCEMENT` answers "how strongly does platform P enforce?".
+ * Nothing in the codebase answered "which platforms EMIT capability C?", so the
+ * intersection of configured capabilities with configured platforms was never
+ * computed — and an empty intersection was indistinguishable from a correct
+ * build. Eight capabilities passed `build`, `validate --strict` AND `doctor`
+ * with zero mention (confirmed 2026-08-08).
+ *
+ * The two axes are deliberately kept separate. Restating enforcement strength
+ * here would create a second, drifting copy of the first table, which is exactly
+ * how `plugin` came to be in `validFormats` but not in `PLATFORM_ENFORCEMENT`.
+ * Support = "is there a mechanism at all". Enforcement = "how strong is it".
+ */
+
+export interface CapabilityContext {
+  config: AgentBootConfig;
+  /** Instructions whose `applyTo` NARROWS scope (present, and not "**"/"**\/*"). */
+  narrowlyScopedInstructions: number;
+  /** Gotchas carrying a `paths:` value. */
+  scopedGotchas: number;
+}
+
+export interface CapabilityRow {
+  /** The key as the operator writes it in agentboot.config.json. Printed verbatim. */
+  id: string;
+  /** Is it configured? */
+  detect: (ctx: CapabilityContext) => boolean;
+  /** Platforms whose compiled dist tree contains a mechanism acting on this key.
+   *  EMPTY ARRAY means: implemented on no platform, at all. */
+  emittedBy: string[];
+  /** Severity when emittedBy ∩ outputFormats is empty. */
+  severity: "error" | "warn";
+  /** What the operator actually loses. Printed under the finding. */
+  consequence: string;
+  /** file:line of the emitter, so a reviewer can check the row against the code.
+   *  An unverified row here is the same class of error as an unsourced claim. */
+  warrant: string;
+}
+
+/**
+ * Every `emittedBy` set below was OBSERVED — a hub was built with all hook
+ * platforms configured and `dist/` grepped for the configured value — not
+ * inferred from the gate structure. Two of them correct the research matrix:
+ * `plugin` does NOT carry `claude.hooks` (it carries the generated compliance
+ * hooks only), and `plugin`/`copilot` DO receive the denyTools PreToolUse hook.
+ */
+export const CAPABILITY_SUPPORT: CapabilityRow[] = [
+  {
+    id: "claude.hooks",
+    detect: (c) => Object.keys(c.config.claude?.hooks ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Org-authored PreToolUse/PostToolUse gates produce no file. Nothing runs.",
+    warrant: "scripts/compile.ts:1742",
+  },
+  {
+    id: "claude.permissions.deny",
+    detect: (c) => (c.config.claude?.permissions?.deny?.length ?? 0) > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "The deny list is applied on no target.",
+    warrant: "scripts/compile.ts:1742",
+  },
+  {
+    id: "claude.permissions.allow",
+    // WARN, not ERROR, and the asymmetry with `deny` is deliberate: `deny` is
+    // the control (its absence means a forbidden action is permitted); `allow`
+    // is a pre-approval convenience (its absence means the developer gets
+    // prompted). Failing a build over lost friction-reduction is the
+    // over-gating that gets a gate switched off. `hasHardPolicy` in doctor
+    // already draws this exact line.
+    detect: (c) => (c.config.claude?.permissions?.allow?.length ?? 0) > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Pre-approvals are not applied; developers get prompted where they would have been auto-approved.",
+    warrant: "scripts/compile.ts:1742",
+  },
+  {
+    id: "claude.mcpServers",
+    detect: (c) => Object.keys(c.config.claude?.mcpServers ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "The org's MCP servers reach no runtime.",
+    warrant: "scripts/compile.ts:1799",
+  },
+  {
+    id: "claude.settings",
+    detect: (c) => Object.keys(c.config.claude?.settings ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Pass-through settings are written to no managed fragment.",
+    warrant: "scripts/compile.ts:3421",
+  },
+  {
+    id: "mcp.enforceApproved",
+    detect: (c) => c.config.mcp?.enforceApproved === true && (c.config.mcp?.approved?.length ?? 0) > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Approved-server filtering never executes; mcp-pins.json is a manifest nothing reads.",
+    warrant: "scripts/compile.ts:1799",
+  },
+  {
+    id: "ab.modelOverrides",
+    detect: (c) => Object.keys(c.config.ab?.modelOverrides ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "/ab subagents use built-in model defaults.",
+    warrant: "scripts/compile.ts:3471",
+  },
+  {
+    id: "managed.guardrails.disableBypassPermissions",
+    detect: (c) => Boolean(c.config.managed?.guardrails?.disableBypassPermissions),
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Developers can still bypass permission prompts.",
+    warrant: "scripts/compile.ts:3433",
+  },
+  {
+    id: "compliance.inputScan.scannerCommand",
+    detect: (c) => Boolean(c.config.compliance?.inputScan?.scannerCommand),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    severity: "error",
+    consequence: 'The DLP scanner is never invoked. Prompts are unscanned, failMode "closed" notwithstanding.',
+    warrant: "scripts/compile.ts:2424",
+  },
+  {
+    id: "compliance.outputScan.blocking",
+    detect: (c) => c.config.compliance?.outputScan?.blocking === true,
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    severity: "error",
+    consequence: "Nothing scans or blocks model output.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "managed.guardrails.denyTools",
+    detect: (c) => (c.config.managed?.guardrails?.denyTools?.length ?? 0) > 0,
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    severity: "error",
+    consequence: "The PreToolUse deny hook is emitted nowhere; denied tools run.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "managed.guardrails.requireAuditLog",
+    detect: (c) => Boolean(c.config.managed?.guardrails?.requireAuditLog),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    severity: "error",
+    consequence: "The telemetry hook is emitted nowhere; nothing is audit-logged.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "managed.guardrails.forcePlugins",
+    // The special case, and the point of the whole table: emittedBy is EMPTY, so
+    // the intersection is empty for EVERY configuration and this fires whenever
+    // the key is set. It is typed, documented, accepted — and read by no code
+    // path in AgentBoot. Do not leave a governance knob wired to nothing.
+    detect: (c) => (c.config.managed?.guardrails?.forcePlugins?.length ?? 0) > 0,
+    emittedBy: [],
+    severity: "error",
+    consequence: "This key is accepted, typed and documented, and read by no code path in AgentBoot.",
+    warrant: "NOT IMPLEMENTED — scripts/lib/config.ts type + docs/configuration.md only",
+  },
+  {
+    id: "instructions[].applyTo",
+    // Fires only on a NARROWING glob. The shipped baseline.instructions.md
+    // carries applyTo: "**", which is universal — losing that scope is a no-op,
+    // and firing on it would make every default install warn, which is how a
+    // check becomes noise inside a week.
+    detect: (c) => c.narrowlyScopedInstructions > 0,
+    emittedBy: ["copilot"],
+    severity: "warn",
+    consequence: "Narrowly-scoped instructions ship unscoped.",
+    warrant: "scripts/compile.ts:1196",
+  },
+  {
+    id: "gotchas[].paths",
+    detect: (c) => c.scopedGotchas > 0,
+    emittedBy: ["copilot", "cursor", "windsurf", "jetbrains"],
+    severity: "warn",
+    consequence: "Path-scoped gotchas ship unscoped.",
+    warrant: "scripts/compile.ts:1265",
+  },
+];
+
 /** Where a platform's executable hooks live inside dist/, or null when the
  * platform has no hook mechanism at all. */
 export function hookDirForPlatform(distPath: string, platform: string): string | null {

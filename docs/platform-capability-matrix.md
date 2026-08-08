@@ -93,3 +93,41 @@ can only receive it as advisory instructions, doctor says so.
 > hook scripts per platform and writes `dist/<platform>/enforcement-manifest.json`
 > recording declared level vs observed behavior. The classification in this matrix
 > is the same single source of truth the harness tests and `doctor` reports.
+
+## Capability × platform — which platforms EMIT a capability at all
+
+The table above is about **enforcement strength**. This one is about a prior and
+different question: does the platform receive a mechanism for the capability *at all*?
+A capability nobody emits is not weakly enforced — it is absent.
+
+The source of truth is `CAPABILITY_SUPPORT` in `scripts/lib/conformance.ts`. Every row
+was verified by building a hub with the capability configured and inspecting `dist/`,
+and each carries a `warrant` (`file:line` of the emitter) so a reviewer can check the
+row against the code. The build fails when a configured capability's platform set does
+not intersect `personas.outputFormats`.
+
+| Capability | claude | codex | copilot | plugin | cursor | gemini | windsurf | jetbrains | agents | skill |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `claude.hooks` (org-authored) | ✅ | – | – | – | – | – | – | – | – | – |
+| `claude.permissions` (allow + deny) | ✅ | – | – | – | – | – | – | – | – | – |
+| `claude.mcpServers` | ✅ | – | – | – | – | – | – | – | – | – |
+| `claude.settings` pass-through | ✅ | – | – | – | – | – | – | – | – | – |
+| `mcp.enforceApproved` filtering | ✅ | – | – | – | – | – | – | – | – | – |
+| `ab.modelOverrides` | ✅ | – | – | – | – | – | – | – | – | – |
+| `managed.guardrails.disableBypassPermissions` | ✅ | – | – | – | – | – | – | – | – | – |
+| `compliance.inputScan.scannerCommand` | ✅ | ✅ | ✅ | ✅ | – | – | – | – | – | – |
+| `compliance.outputScan.blocking` | ✅ | ✅ | ✅ | ✅ | – | – | – | – | – | – |
+| `managed.guardrails.denyTools` | ✅ | ✅ | ✅ | ✅ | – | – | – | – | – | – |
+| `managed.guardrails.requireAuditLog` | ✅ | ✅ | ✅ | ✅ | – | – | – | – | – | – |
+| `managed.guardrails.forcePlugins` | – | – | – | – | – | – | – | – | – | – |
+| `instructions[].applyTo` (narrowing) | – | – | ✅ | – | – | – | – | – | – | – |
+| `gotchas[].paths` | – | – | ✅ | – | ✅ | – | ✅ | ✅ | – | – |
+
+**`managed.guardrails.forcePlugins` has an empty row on purpose.** It is typed,
+documented, accepted — and read by no code path on any platform. Setting it fails the
+build, because that is the only honest thing a governance product can do with a knob
+wired to nothing.
+
+**`plugin` carries the generated compliance hooks, not `claude.hooks`.** Both were
+verified by building and grepping `dist/`; the distinction matters and is easy to
+assume wrongly.

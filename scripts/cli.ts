@@ -34,8 +34,15 @@ import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
-import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
-import { findHardArtifacts } from "./lib/guardrail-scan.js";
+import { PLATFORM_ENFORCEMENT, type CapabilityContext } from "./lib/conformance.js";
+import {
+  findHardArtifacts, capabilityViolations,
+  countNarrowlyScopedInstructions, countScopedGotchas,
+} from "./lib/guardrail-scan.js";
+import {
+  loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE,
+  type PolicyException,
+} from "./lib/exceptions.js";
 import { stampIdentity, mintId } from "./lib/artifact-identity.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
@@ -1481,6 +1488,49 @@ program
           ok("Tool/format consistency (no agents.tools configured)");
         }
 
+        // Capability coverage (2026-08-08). Coverage answers "was it emitted at
+        // all?"; Enforcement answers "how strongly?". Coverage is the prior
+        // question and must be read first: an operator who learns "cursor is
+        // advisory" already knew that, and still does not learn that their
+        // PreToolUse hook produced zero files.
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Coverage")); }
+        {
+          const covFormats = config.personas?.outputFormats ?? [];
+          const narrow = countNarrowlyScopedInstructions(
+            [path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions")],
+            config.instructions?.enabled,
+          );
+          const scopedG = countScopedGotchas(path.join(cwd, "core", "gotchas"));
+          const capCtx: CapabilityContext = {
+            config, narrowlyScopedInstructions: narrow, scopedGotchas: scopedG,
+          };
+          let activeEx: PolicyException[] = [];
+          try {
+            const loaded = loadExceptionsFile(path.join(cwd, HUB_EXCEPTIONS_FILE));
+            if (loaded.length > 0) activeEx = validateExceptions(loaded).active;
+          } catch { /* unreadable → treated as empty, so the gate still fires */ }
+
+          const capViolations = capabilityViolations(capCtx, covFormats, activeEx);
+          if (capViolations.length === 0) {
+            ok("Capability coverage — every configured capability has a target that emits it");
+          } else {
+            for (const v of capViolations) {
+              const needs = v.row.emittedBy.length === 0
+                ? "implemented on no platform"
+                : `needs one of: ${v.row.emittedBy.join(", ")}`;
+              if (v.waivedBy) {
+                warn(`${v.row.id} — gap accepted under ${v.waivedBy.id} (owner: ${v.waivedBy.owner}, expires ${v.waivedBy.expires})`);
+              } else if (v.row.severity === "error") {
+                // fail() drives the exit code; warn() does not. That distinction
+                // is the whole point of the severity split.
+                fail(`${v.row.id} — configured, but ${needs}`);
+              } else {
+                warn(`${v.row.id} — configured, but ${needs}`);
+              }
+            }
+          }
+        }
+
         // B12: enforcement honesty — when the org has configured HARD policy
         // (managed guardrails, deny lists, blocking output scan), say plainly
         // which output platforms can actually enforce it and which only receive
@@ -1499,6 +1549,10 @@ program
           Boolean(config.managed?.guardrails?.denyTools?.length) ||
           Boolean(config.claude?.permissions?.deny?.length) ||
           Boolean(config.compliance?.outputScan?.blocking) ||
+          // A fail-closed DLP scanner is hard policy by any definition. Its
+          // omission is why doctor printed "no hard org policy configured"
+          // against a config declaring one (observed 2026-08-08).
+          Boolean(config.compliance?.inputScan?.scannerCommand) ||
           hardArtifacts.length > 0;
         const enforcementFormats = config.personas?.outputFormats ?? [];
         // D2: the classification is the conformance harness's SSOT — doctor
@@ -1514,7 +1568,14 @@ program
           }
           for (const fmt of enforcementFormats) {
             const e = ENFORCEMENT_LEVELS[fmt];
-            if (!e) continue;
+            if (!e) {
+              // Previously `continue` — a platform dropped from the Enforcement
+              // report with no trace, in a function whose entire job is honesty.
+              // The compile-time coverage assertion makes this unreachable, which
+              // is exactly why it should say so rather than skip.
+              warn(`${fmt}: no enforcement classification — cannot state whether org policy is enforced here`);
+              continue;
+            }
             if (e.level === "enforced") {
               ok(`${fmt}: org policy is enforceable — ${e.detail}`);
             } else {

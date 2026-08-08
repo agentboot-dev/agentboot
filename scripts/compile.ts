@@ -48,8 +48,12 @@ import {
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
-import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
-import { inspectArtifact, unenforceableFormats } from "./lib/guardrail-scan.js";
+import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, type CapabilityContext } from "./lib/conformance.js";
+import {
+  inspectArtifact, unenforceableFormats, capabilityViolations,
+  countNarrowlyScopedInstructions, countScopedGotchas,
+} from "./lib/guardrail-scan.js";
+import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 
 // ---------------------------------------------------------------------------
@@ -3223,6 +3227,19 @@ function main(): void {
     log(chalk.gray(`    An unclassified format cannot be gated, so guardrails targeting it would pass unchecked.`));
     process.exit(1);
   }
+  // The symmetric assertion for the capability table. Without it a typo
+  // ("cluade") silently shrinks an emittedBy set to zero, and the gate then
+  // errors on EVERY build for a capability that is in fact emitted — a false
+  // positive that would get the whole gate disabled. Same drift class as
+  // `plugin`, opposite direction, four lines to make impossible.
+  const badCapabilityRefs = CAPABILITY_SUPPORT.flatMap((r) =>
+    r.emittedBy.filter((f) => !validFormats.includes(f)).map((f) => `${r.id} → "${f}"`));
+  if (badCapabilityRefs.length > 0) {
+    log(chalk.red(`  ✗ CAPABILITY_SUPPORT references unknown output format(s):`));
+    for (const b of badCapabilityRefs) log(chalk.red(`      ${b}`));
+    log(chalk.gray(`    Fix the row in scripts/lib/conformance.ts — an unknown name makes the row unsatisfiable.`));
+    process.exit(1);
+  }
 
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
@@ -3678,6 +3695,109 @@ function main(): void {
         }
       }
     }
+  }
+
+  // Capability gate (2026-08-08): configured capabilities that NO configured
+  // output format can honour.
+  //
+  // Placed here deliberately: after all core emission, so dist/ reflects reality
+  // when the message is printed; adjacent to the HARD-guardrail gate above, so
+  // the two are read and maintained together; and before scope-node compilation,
+  // so a doomed build stops early.
+  //
+  // The failure this closes: `compile` decided emission with eleven independent
+  // `outputFormats.includes(...)` string tests scattered across 3,000 lines, each
+  // individually defensible, with an EMPTY `else` everywhere. A capability whose
+  // gate was false produced no file, no log line, and no record that it had ever
+  // been requested — eight of them passed `build`, `validate --strict` AND
+  // `doctor` with zero mention.
+  {
+    // Both planes, because deriving a governance trigger from config alone is
+    // exactly what shipped the HARD-guardrail hole. One implementation of "is
+    // this scope narrowing", shared with doctor — a second copy here is
+    // precisely the drift that produced this defect class.
+    const capCtx: CapabilityContext = {
+      config,
+      narrowlyScopedInstructions: countNarrowlyScopedInstructions(
+        [packageInstructionsDir, coreInstructionsDir],
+        config.instructions?.enabled,
+      ),
+      scopedGotchas: countScopedGotchas(coreGotchasDir),
+    };
+
+    // `.active` and never the raw list — that is what makes expiry real. A
+    // malformed exceptions file WARNS and is treated as empty (fail closed: the
+    // gate still fires), rather than crashing the build or silently passing.
+    let activeExceptions: PolicyException[] = [];
+    try {
+      const exPath = path.join(configDir, HUB_EXCEPTIONS_FILE);
+      const loaded = loadExceptionsFile(exPath);
+      if (loaded.length > 0) activeExceptions = validateExceptions(loaded).active;
+    } catch (err: unknown) {
+      log(chalk.yellow(
+        `  ⚠ ${HUB_EXCEPTIONS_FILE} is unreadable (${err instanceof Error ? err.message : String(err)}) — no capability waivers honoured.`,
+      ));
+    }
+
+    const violations = capabilityViolations(capCtx, outputFormats, activeExceptions);
+    const waived = violations.filter((v) => v.waivedBy);
+    const errors = violations.filter((v) => !v.waivedBy && v.row.severity === "error");
+    const warns = violations.filter((v) => !v.waivedBy && v.row.severity === "warn");
+
+    const emittedByLabel = (fmts: string[]) =>
+      fmts.length === 0 ? "NOTHING — not implemented on any platform" : fmts.join(", ");
+
+    // Warnings print whether or not the error path fires — a warning must never
+    // be swallowed by an error elsewhere.
+    if (warns.length > 0) {
+      log(chalk.yellow(`  ⚠ Configured capabilities no configured output format can honour (advisory):`));
+      for (const v of warns) {
+        log(chalk.yellow(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(v.row.emittedBy)}`));
+        log(chalk.gray(`        ${v.row.consequence}`));
+      }
+    }
+
+    // A waived row prints at ⚠ regardless of its declared severity, and always
+    // names owner and expiry. A silent waiver is the same defect wearing a badge.
+    if (waived.length > 0) {
+      log(chalk.yellow(`  ⚠ ${waived.length} capability gap(s) accepted under an active exception:`));
+      for (const v of waived) {
+        log(chalk.yellow(
+          `      ${v.row.id} — ${v.waivedBy!.id} (owner: ${v.waivedBy!.owner}, expires ${v.waivedBy!.expires})`,
+        ));
+      }
+    }
+
+    if (errors.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Configured capabilities that NO configured output format can honour:`));
+      log("");
+      for (const v of errors) {
+        log(chalk.red(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(v.row.emittedBy)}`));
+        log(chalk.gray(`        ${v.row.consequence}`));
+      }
+      log("");
+      log(chalk.gray(`    Configured output formats: ${outputFormats.join(", ")}`));
+      log("");
+      log(chalk.gray(`    Resolve by one of:`));
+      log(chalk.gray(`      • add a platform that emits the capability to personas.outputFormats`));
+      log(chalk.gray(`      • remove the capability from agentboot.config.json`));
+      log(chalk.gray(`      • record the accepted gap in ${HUB_EXCEPTIONS_FILE} (owned, and expiring):`));
+      log(chalk.gray(`          { "id": "EX-2026-014", "policy": "capability:${errors[0]!.row.id}",`));
+      log(chalk.gray(`            "reason": "…", "approver": "…", "owner": "…",`));
+      log(chalk.gray(`            "created": "YYYY-MM-DD", "expires": "YYYY-MM-DD" }`));
+      log("");
+      log(chalk.red(
+        `  ✗ Build failed: ${errors.length} configured capability/capabilities cannot be honoured by any ` +
+        `configured output format (${outputFormats.join(", ")}).`,
+      ));
+      log("");
+      process.exit(1);
+    }
+    // Silence path: when every configured capability has at least one configured
+    // target, print NOTHING. A "✓ all capabilities honoured" line on every build
+    // trains operators to skim past exactly the region that matters. `build` is a
+    // pipeline step; `doctor` is the report, and it says the positive there.
   }
 
   // Generate composition manifests for core scope (all platforms)

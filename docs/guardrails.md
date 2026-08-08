@@ -203,3 +203,20 @@ consumer plus a re-sync of every spoke.
 **Reserved, not yet active:** `tier:` (`constitutional` / `statutory` / `ephemeral`) declares an
 artifact's intended change-rate. The slot exists so the schema is stable at GA; nothing consumes it
 yet, and untagged artifacts are deliberately **not** assigned a default.
+
+## Waiving a capability gap
+
+When a configured capability can be honoured by none of your configured output formats, the build
+fails. The sanctioned waiver is a policy exception in `agentboot-exceptions.json` with the key
+`capability:<id>`:
+
+```json
+[{ "id": "EX-2026-014", "policy": "capability:compliance.inputScan.scannerCommand",
+   "reason": "cursor-only pilot; Claude Code lands next quarter",
+   "approver": "…", "owner": "…", "created": "2026-08-08", "expires": "2026-11-08" }]
+```
+
+It is deliberately not a config boolean. A boolean can be pasted once and never revisited; an owned,
+expiring record cannot — the day after `expires`, the build fails again. The waiver silences the
+error, never the fact: an accepted gap prints on every build, naming its owner and expiry, and appears
+in generated evidence packs.
