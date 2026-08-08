@@ -70,7 +70,7 @@ Test Generator     =  schema-awareness + structured-output + source-citation
 
 | Persona | Invocation | What it does |
 |---|---|---|
-| Code Reviewer | `/review-code` | Finds real bugs, not style nits |
+| Code Reviewer | `/review-code` | Reviews diffs against your conventions and review bar |
 | Security Reviewer | `/review-security` | Flags vulnerabilities, secrets, risky patterns |
 | AI Security Reviewer | `/review-ai-security` | Flags AI-workflow threats — prompt injection, MCP escalation, excessive agency |
 | Test Generator | `/gen-tests` | Writes tests, audits coverage, finds gaps |

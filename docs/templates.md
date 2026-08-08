@@ -38,7 +38,7 @@ with an unknown name lists what's available.
 ## The sdlc-orchestrator template
 
 A **phase-gated software delivery persona** (invoked as `/sdlc`) that drives a
-change from spec to merge — and refuses to advance a phase until its exit criteria
+change from spec to merge — and is written to hold each phase until its exit criteria
 are met:
 
 1. **Spec (PRD)** — problem statement, scope, acceptance criteria as a pass/fail
@@ -50,7 +50,7 @@ are met:
    workstreams in separate git worktrees so they progress without colliding.
    *Exit: each workstream builds and its tests pass in isolation.*
 4. **QA gates** — formatter/linter, type check, tests, security/dependency scan,
-   in order, each a hard stop on failure. *Exit: every gate green, new code
+   in order, each treated as a stop-on-failure gate. *Exit: every gate green, new code
    covered.*
 5. **Review & merge** — a diff scoped to one concern, description tied to the
    spec, gate results attached, reviewed against a checklist. *Exit: acceptance

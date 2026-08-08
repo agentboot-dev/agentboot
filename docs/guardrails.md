@@ -116,7 +116,8 @@ This is the part to read before promising anything to a security reviewer.
 
 | Surface | What a guardrail does |
 |---|---|
-| Claude Code, Codex CLI, GitHub Copilot CLI | Compiled to **blocking hooks** — the action is denied (exit code 2) |
+| Claude Code, Codex CLI | Compiled to **blocking hooks** — the action is denied (exit code 2); empirically verified by `agentboot conformance` |
+| GitHub Copilot CLI | Compiled to **blocking hooks** in Copilot's native mechanism, but two ceilings: command-hooks **fail open on timeout**, and exit-2 blocking is **documented platform behaviour we have not yet verified end to end** |
 | `AGENTS.md` | **Advisory.** No hook mechanism exists in the standard |
 | Cursor, Gemini, Windsurf, JetBrains | **Advisory.** Community tier; content is delivered, nothing blocks |
 

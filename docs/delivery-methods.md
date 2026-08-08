@@ -774,9 +774,10 @@ sync. Mixing governance and convenience in managed settings makes both harder to
 
 ### D-04: MCP server is the cross-platform bridge
 
-When an org has Claude Code AND Copilot AND Cursor users, the MCP server is the only
-channel that serves all three with the same persona definitions. It's higher effort but
-the only path to true multi-agent governance.
+When an org has Claude Code AND Copilot AND Cursor users, the MCP server serves all
+three from one live source, without each repo carrying compiled output. It's higher
+effort than PR sync, which reaches the same three platforms as files — choose MCP when
+you want a single live source rather than distributed artifacts.
 
 ### D-05: Same plugin serves CC and Cowork
 

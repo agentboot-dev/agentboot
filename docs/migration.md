@@ -221,10 +221,13 @@ nothing (see below).
 > **v0.11 is a public Beta.** It's usable end to end, but breaking changes may still
 > occur before **v1.0 GA**. See the [Roadmap](roadmap.md) for what's ahead.
 
-**What changed:** v0.11 adds a third official platform — **OpenAI Codex** — and turns
-governance into a first-class, enforced surface. Compliance hooks are now emitted for
-**Claude Code, Codex, and GitHub Copilot** from one canonical set of portable scripts
-(all blocking on exit code 2), alongside drift detection, HARD/SOFT guardrails, and
+**What changed:** v0.11 adds a third official platform — **OpenAI Codex** — and makes
+governance a first-class output. Compliance hooks are now emitted for **Claude Code,
+Codex, and GitHub Copilot** from one canonical set of portable scripts, blocking on
+exit code 2 (verified on Claude Code and Codex; Copilot's exit-2 behaviour is
+documented but not yet verified, and its command-hooks fail open on timeout — see the
+[platform capability matrix](platform-capability-matrix.md)), alongside drift
+detection, HARD/SOFT guardrails, and
 managed-settings output. It also introduces user-level installs (`install-user`),
 packaged harness templates (`add template`, starting with `sdlc-orchestrator`), and
 weight-tiered trait sections. None of your existing hub source needs to be rewritten —

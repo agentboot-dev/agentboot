@@ -79,7 +79,7 @@ can only receive it as advisory instructions, doctor says so.
   tool's **command-line surface**. The IDE and editor extensions of these same
   tools, and additional platforms, are on the [roadmap](/docs/roadmap) — not
   shipped today. If your team lives primarily in an IDE extension, plan around the
-  CLI surface for the enforcement guarantees above.
+  CLI surface for the enforcement levels above.
 - **Enforcement lives on the agent surface, not around it.** Blocking hooks bind
   the three official CLI surfaces. They do not constrain a developer who
   uninstalls the tooling or works outside it — pair them with your normal
