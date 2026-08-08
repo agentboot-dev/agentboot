@@ -45,6 +45,7 @@ import {
   type PolicyException,
 } from "./lib/exceptions.js";
 import { stampIdentity, mintId } from "./lib/artifact-identity.js";
+import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -142,6 +143,35 @@ function collectGlobalArgs(opts: { config?: string }): string[] {
     args.push("--config", opts.config);
   }
   return args;
+}
+
+/**
+ * A3 / N1: refuse to REPORT GREEN against a dist/ that does not correspond to
+ * the hub config.
+ *
+ * `drift-check` and `audit` both exited 0 in the N1 repro. Neither is wrong in
+ * isolation — each spoke really did match its manifest, and the hub sources
+ * really were healthy. What made the pair dangerous is what the operator reads
+ * off them: "governance is in force." After a failed build the manifests
+ * describe the policy that was in force BEFORE the edit, so a clean report is
+ * a report about the superseded policy, delivered in the present tense.
+ *
+ * A dist/ that does not exist at all is NOT stale — it is unbuilt, which is a
+ * legitimate state for a hub being audited before its first build. That case
+ * says so out loud rather than passing quietly, because "I checked nothing" and
+ * "I checked everything and it was fine" must not print the same.
+ */
+function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, command: string): void {
+  const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
+  if (!fs.existsSync(distPath)) {
+    console.log(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`));
+    return;
+  }
+  const freshness = checkDistFreshness(distPath, config);
+  if (!freshness.fresh) {
+    console.error(chalk.red(staleDistMessage(freshness, command)));
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2754,6 +2784,19 @@ program
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
 
+    // A3: a clean drift report off a stale dist/ is a clean report about the
+    // PREVIOUS policy. Gate both branches. When drift-check is run from inside a
+    // spoke there is no hub config to check against, and that is fine — the
+    // command is then answering a purely spoke-local question.
+    {
+      const hubConfigPath = globalOpts.config
+        ? path.resolve(globalOpts.config)
+        : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+      if (fs.existsSync(hubConfigPath)) {
+        assertDistFreshOrExit(hubConfigPath, loadConfig(hubConfigPath), "drift-check");
+      }
+    }
+
     if (opts.repo) {
       const report = checkDrift(path.resolve(opts.repo));
       if (!report.manifestFound) {
@@ -2850,6 +2893,12 @@ program
       ? path.resolve(globalOpts.config)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const hubRoot = path.dirname(configPath);
+
+    // A3: `audit` reports on hub health, and an operator reads "✓ No issues
+    // found" as "the hub is in the state I asked for". After a failed build the
+    // hub SOURCES are healthy and the deployed tree is not — so the clean
+    // verdict is true and misleading. Refuse rather than qualify.
+    assertDistFreshOrExit(configPath, loadConfig(configPath), "audit");
 
     const report = runAudit(hubRoot);
 

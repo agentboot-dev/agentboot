@@ -290,4 +290,37 @@ describe("N1 integration: sync / drift-check / audit refuse a stale dist/", () =
     expect(dry.status).toBe(1);
     expect(dry.out).toContain("config-stale");
   }, 300_000);
+
+  it("I6: drift-check and audit stop reporting green off a stale tree", () => {
+    const { hub } = scaffoldHub("n1-report");
+    expect(ab(["build"], hub).status).toBe(0);
+
+    // Both must PASS on a fresh tree, or the assertions below prove nothing.
+    expect(ab(["drift-check"], hub).status).toBe(0);
+    expect(ab(["audit"], hub).status).toBe(0);
+
+    editConfig(hub, (c) => { c.instructions.enabled = ["baseline.instructions"]; });
+
+    const drift = ab(["drift-check"], hub);
+    expect(drift.status).toBe(1);
+    expect(drift.out).toContain("stale dist/");
+
+    const audit = ab(["audit"], hub);
+    expect(audit.status).toBe(1);
+    expect(audit.out).toContain("stale dist/");
+
+    // ...and both recover on a successful rebuild.
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(ab(["drift-check"], hub).status).toBe(0);
+    expect(ab(["audit"], hub).status).toBe(0);
+  }, 300_000);
+
+  it("I7: an UNBUILT hub is not stale — audit runs, and says it cannot speak to deployment", () => {
+    const { hub } = scaffoldHub("n1-unbuilt");
+    fs.rmSync(path.join(hub, "dist"), { recursive: true, force: true });
+    const audit = ab(["audit"], hub);
+    expect(audit.status).toBe(0);
+    // "I checked nothing" must not print the same as "I checked and it was fine".
+    expect(audit.out).toContain("never been built");
+  }, 300_000);
 });
