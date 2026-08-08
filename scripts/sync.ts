@@ -653,16 +653,23 @@ function loadManifestMeta(
 function buildMcpContent(
   mergedFiles: Map<string, ScopedFile>,
   existingMcpPath: string,
+  /** F1: server names AgentBoot delivered on the PREVIOUS sync, from the
+   *  manifest. Anything here that is no longer in dist has been REVOKED. */
+  previouslyManaged: string[] = [],
 ): string {
   const agentbootEntry = { command: "npx", args: [agentbootNpxSpec(), "mcp-server"] };
   let mcpServers: Record<string, unknown> = {};
+  const distServerNames = new Set<string>();
   const mcpDistFile = mergedFiles.get(".mcp.json");
   if (mcpDistFile) {
     try {
       const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
         mcpServers?: Record<string, unknown>;
       };
-      if (distContent.mcpServers) mcpServers = { ...distContent.mcpServers };
+      if (distContent.mcpServers) {
+        mcpServers = { ...distContent.mcpServers };
+        for (const k of Object.keys(distContent.mcpServers)) distServerNames.add(k);
+      }
     } catch { /* ignore */ }
   }
   if (fs.existsSync(existingMcpPath)) {
@@ -670,11 +677,54 @@ function buildMcpContent(
       const existing = JSON.parse(fs.readFileSync(existingMcpPath, "utf-8")) as {
         mcpServers?: Record<string, unknown>;
       };
-      if (existing.mcpServers) mcpServers = { ...existing.mcpServers, ...mcpServers };
+      if (existing.mcpServers) {
+        // F1: the spoke's own entries survive — that is the point of merging
+        // rather than overwriting. But an entry AGENTBOOT PUT THERE and has
+        // since withdrawn from the hub config is not the spoke's; it is a
+        // revoked control. `{ ...existing, ...dist }` kept it forever, and
+        // because .mcp.json is rewritten every sync it is never an orphan, so
+        // the file-granular prune cannot see inside it — and the manifest then
+        // SIGNS the file containing the withdrawn server.
+        const carried: Record<string, unknown> = {};
+        for (const [name, value] of Object.entries(existing.mcpServers)) {
+          if (previouslyManaged.includes(name) && !distServerNames.has(name)) continue; // revoked
+          carried[name] = value;
+        }
+        mcpServers = { ...carried, ...mcpServers };
+      }
     } catch { /* ignore */ }
   }
   mcpServers["agentboot"] = agentbootEntry;
   return JSON.stringify({ mcpServers }, null, 2) + "\n";
+}
+
+/** F1: the AgentBoot-delivered server names to record in this sync's manifest. */
+function managedMcpServerNames(mergedFiles: Map<string, ScopedFile>): string[] {
+  const names = new Set<string>(["agentboot"]);
+  const mcpDistFile = mergedFiles.get(".mcp.json");
+  if (mcpDistFile) {
+    try {
+      const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      for (const k of Object.keys(distContent.mcpServers ?? {})) names.add(k);
+    } catch { /* ignore */ }
+  }
+  return [...names].sort();
+}
+
+/** F1: server names the PREVIOUS manifest recorded as AgentBoot-delivered. */
+function loadManagedMcpServers(repoPath: string, targetDir: string): string[] {
+  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
+  if (!fs.existsSync(manifestPath)) return [];
+  try {
+    const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as { mcp_managed_servers?: unknown };
+    return Array.isArray(m.mcp_managed_servers)
+      ? m.mcp_managed_servers.filter((x): x is string => typeof x === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -736,7 +786,9 @@ function isRepoUpToDate(
     // .mcp.json: hash the merged content (dist + existing spoke + agentboot entry)
     // because that's what sync writes and what the manifest recorded.
     const mcpDestPath = path.join(repoPath, ".mcp.json");
-    const mcpContent = buildMcpContent(mergedFiles, mcpDestPath);
+    const mcpContent = buildMcpContent(
+      mergedFiles, mcpDestPath, loadManagedMcpServers(repoPath, targetDir),
+    );
     wouldWrite.set(".mcp.json", createHash("sha256").update(mcpContent).digest("hex"));
 
     // CLAUDE.md: plain file, hash the dist source directly.
@@ -1256,7 +1308,9 @@ function syncRepoTarget(
     // from ~/.agentboot/config.json (written by `agentboot install`). This makes
     // /ab available in every spoke repo without hardcoding a machine-specific path.
     const mcpDestPath = path.join(effectivePath, ".mcp.json");
-    const mcpContent = buildMcpContent(merged, mcpDestPath);
+    const mcpContent = buildMcpContent(
+      merged, mcpDestPath, loadManagedMcpServers(effectivePath, targetDir),
+    );
     const mcpStatus = writeFile(mcpDestPath, mcpContent, dryRun);
     if (mcpStatus === "written") result.filesWritten.push(".mcp.json");
     else result.filesSkipped.push(".mcp.json");
@@ -1416,6 +1470,9 @@ function syncRepoTarget(
          ...orphanPlan.retained.map((p) => ({ path: p, reason: "retained", hash_expected: prevManifest?.get(p) ?? null }))]
       : prevMeta.retired,
     platform,
+    // F1: record what AgentBoot delivered, so the NEXT sync can tell a
+    // spoke-owned server from one we withdrew.
+    managedMcpServerNames(merged),
   );
   if (!dryRun) {
     result.filesWritten.push(manifestOut.relPath);
@@ -1632,6 +1689,10 @@ function generateManifest(
   /** F-1: which platform's delivery this manifest records. Several platforms
    *  share a targetDir, so an untagged manifest cannot be safely pruned against. */
   platform?: string,
+  /** F1: MCP server names AgentBoot delivered this sync. `.mcp.json` is merged
+   *  rather than replaced, so file-granular pruning cannot see inside it — this
+   *  is what lets the NEXT sync tell a spoke-owned entry from a revoked one. */
+  mcpManagedServers?: string[],
 ): { relPath: string; signed: boolean; signingError: string | null } {
   // Read version from package.json
   const pkgJsonPath = path.join(ROOT, "package.json");
@@ -1670,6 +1731,7 @@ function generateManifest(
     platform: platform ?? null,
     files: fileEntries,
     retired: retired ?? [],
+    mcp_managed_servers: mcpManagedServers ?? [],
     provenance,
   };
 

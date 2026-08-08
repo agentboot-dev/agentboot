@@ -527,3 +527,63 @@ describe("G1 — invalid sync.prune.retain patterns", () => {
     expect(e.message).toContain("delete this file");
   });
 });
+
+// ---------------------------------------------------------------------------
+// F1 — .mcp.json union-merge defeated revocation
+// ---------------------------------------------------------------------------
+
+/**
+ * `mcpServers = { ...existing.mcpServers, ...mcpServers }` meant the spoke's
+ * existing entries ALWAYS survived. Since `.mcp.json` is rewritten on every
+ * sync it is never an orphan, so the file-granular prune cannot see inside it —
+ * and the manifest then SIGNS the file containing the withdrawn server.
+ */
+describe("F1 — revoking an org MCP server", () => {
+  it("F1-I1: a withdrawn server is dropped; a spoke-owned one is kept", () => {
+    const { base, hub } = (() => {
+      const b = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-f1-"));
+      const h = path.join(b, "hub");
+      const r = spawnSync("node",
+        [CLI, "install", "--hub", "--org", "acme", "--path", h, "--non-interactive", "--skip-sync"],
+        { cwd: b, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 });
+      if (r.status !== 0) throw new Error(`scaffold failed: ${r.stdout}${r.stderr}`);
+      return { base: b, hub: h };
+    })();
+    const spoke = mkSpoke(base);
+    fs.writeFileSync(
+      path.join(hub, "repos.json"),
+      JSON.stringify([{ label: "spoke", path: "../spoke", platform: "claude", scope: "core" }], null, 2),
+    );
+
+    // The spoke has its OWN server before AgentBoot ever touches it.
+    fs.writeFileSync(
+      path.join(spoke, ".mcp.json"),
+      JSON.stringify({ mcpServers: { "team-local": { command: "team-mcp" } } }, null, 2) + "\n",
+    );
+
+    editConfig(hub, (c) => { c.claude = { ...(c.claude ?? {}), mcpServers: { "org-db": { command: "org-db-mcp" } } }; });
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(ab(["sync"], hub).status).toBe(0);
+
+    const read = () => Object.keys(
+      JSON.parse(fs.readFileSync(path.join(spoke, ".mcp.json"), "utf-8")).mcpServers,
+    ).sort();
+    // Precondition: it really was delivered, else the revocation proves nothing.
+    expect(read()).toEqual(["agentboot", "org-db", "team-local"]);
+
+    // The manifest must record what AgentBoot delivered — that is the mechanism.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(spoke, ".claude", ".agentboot-manifest.json"), "utf-8"),
+    );
+    expect(manifest.mcp_managed_servers).toEqual(["agentboot", "org-db"]);
+
+    // Revoke it at the hub.
+    editConfig(hub, (c) => { delete c.claude.mcpServers; });
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(ab(["sync"], hub).status).toBe(0);
+
+    // org-db is gone; the spoke's own server is untouched. Dropping `team-local`
+    // would be the opposite defect — sync deleting something it never delivered.
+    expect(read()).toEqual(["agentboot", "team-local"]);
+  }, 300_000);
+});
