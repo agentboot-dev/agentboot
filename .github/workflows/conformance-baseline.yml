@@ -1,0 +1,98 @@
+# K1 / XP4 — start the platform-behaviour clock.
+#
+# `agentboot baseline` shipped and NOTHING ever ran it. That is the one defect in
+# this class that cannot be fixed later: platforms change their semantics
+# silently — a Tuesday release with no changelog — and the corpus's text does not
+# move, so drift-check reports green while the governance quietly stops working.
+# Detecting that needs a baseline, and a baseline cannot be backfilled. Probes
+# that begin at 1.4 cannot say how the platforms behaved at 1.0.
+#
+# Archive only. No analysis, no comparison, no alerting on drift — that is the
+# Continental Drift epic and it is post-GA. The point here is that the clock is
+# running before the 1.0 tag.
+
+name: Conformance baseline
+
+on:
+  schedule:
+    # Weekly, Mondays 04:17 UTC. Off the hour on purpose: the top of the hour is
+    # the most contended slot on GitHub's scheduler and the least reliable.
+    - cron: "17 4 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: Capture conformance baseline
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # `baseline` archives dist/<platform>/enforcement-manifest.json, which only
+      # exists after a conformance run. Without this step the archive would be
+      # empty every week — and `baseline` would (correctly) exit 1 rather than
+      # bank a snapshot of nothing.
+      - name: Run conformance probes
+        run: npx tsx scripts/cli.ts conformance
+
+      - name: Archive baseline snapshot
+        run: npx tsx scripts/cli.ts baseline --dir "$GITHUB_WORKSPACE/.agentboot/baseline"
+
+      # Silence Is Not Success. A scheduled job whose only output is a workflow
+      # log nobody opens is a job that can stop working unnoticed for a year —
+      # which, for a baseline, means losing exactly the history it exists to
+      # accumulate. The artifact IS the durable trace: if it is absent, the run
+      # did not do its work, and that is visible without reading a log.
+      # PIN REQUIRED BEFORE MERGE — the one unpinned action in this repo, and
+      # deliberately visible. Every other `uses:` here carries a verified commit
+      # SHA; this one does not, because it was written offline and a SHA
+      # recalled from memory is exactly the "inferred, not empirical" claim this
+      # codebase refuses elsewhere. Shipping a plausible-looking wrong SHA in a
+      # supply-chain position is worse than shipping an obvious tag.
+      #
+      # To pin: `gh api repos/actions/upload-artifact/git/ref/tags/v4.6.2`
+      # and replace `@v4` with the resolved SHA plus a `# v4.6.2` comment.
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-baseline-${{ github.run_id }}
+          path: .agentboot/baseline/
+          if-no-files-found: error
+          # 90 days is the free-tier cap. The snapshots are small JSON; if the
+          # Continental Drift epic needs a longer horizon it should push them to
+          # a durable store rather than lengthen this retention.
+          retention-days: 90
+
+      # A skip must alarm as loudly as a failure. If the archive step produced
+      # nothing, the two steps above already failed non-zero — this makes the
+      # empty case impossible to mistake for a quiet success in the summary.
+      - name: Assert the snapshot is non-empty
+        run: |
+          count=$(find .agentboot/baseline -name 'conformance-*.json' | wc -l | tr -d ' ')
+          echo "snapshots on record in this run: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::conformance baseline produced no snapshot — the clock did not advance this week"
+            exit 1
+          fi
+          echo "## Conformance baseline" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Captured $count snapshot file(s)." >> "$GITHUB_STEP_SUMMARY"
