@@ -56,7 +56,7 @@ import {
   countNarrowlyScopedInstructions, countScopedGotchas,
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
-import { mergeManagedFragments, type MergeConflict, type MergeResult } from "./lib/managed-merge.js";
+import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook } from "./lib/managed-merge.js";
 import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble,
   APPLY_TO_PROJECTION, type ScopedArtifact,
@@ -3086,9 +3086,11 @@ function generateMergedManagedArtifacts(
   }
 
   const allConflicts: Array<{ scope: string; conflict: MergeConflict }> = [];
+  const allMalformedHooks: Array<{ scope: string; hook: MalformedHook }> = [];
 
   const writeMerged = (scope: string, result: MergeResult, sources: string[]): void => {
     for (const c of result.conflicts) allConflicts.push({ scope: `scopes/${scope}`, conflict: c });
+    for (const h of result.malformedHooks) allMalformedHooks.push({ scope: `scopes/${scope}`, hook: h });
     if (Object.keys(result.merged).length === 0) return;
     const outDir = path.join(distPath, "managed", "scopes", scope);
     ensureDir(outDir);
@@ -3132,6 +3134,21 @@ function generateMergedManagedArtifacts(
     if (fragments.length > 2) {
       writeMerged(`nodes/${nodePath}`, mergeManagedFragments(fragments, sources), sources);
     }
+  }
+
+  // D1: a hook event that could not be unioned is a DELETED control on the
+  // non-overridable channel. Fail the build, naming the scope, the event and the
+  // fragment — never write the artifact and report a union that did not happen.
+  if (allMalformedHooks.length > 0) {
+    log(chalk.red(`\n  ✗ Malformed hook event(s) in managed-settings fragments — cannot be merged:`));
+    for (const { scope, hook } of allMalformedHooks) {
+      log(chalk.red(`      ${scope}: hooks.${hook.event} is ${hook.found}, expected an array — from ${hook.source}`));
+    }
+    log(chalk.gray(`    dist/managed/scopes/<scope>/managed-settings.json is the file an MDM operator`));
+    log(chalk.gray(`    deploys and a developer CANNOT override. Silently dropping the event would`));
+    log(chalk.gray(`    write the ABSENCE of a control into that file, while the build log named the`));
+    log(chalk.gray(`    event as unioned. Fix the fragment; there is no safe default here.`));
+    process.exit(1);
   }
 
   // F-5 §2.2: report every scope in ONE run. An operator with a conflict in

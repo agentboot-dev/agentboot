@@ -52,6 +52,20 @@ export interface MergeResult {
   unionedHookEvents: string[];
   /** Union sizes, for the "what did the merge do" report. */
   permissionCounts: { deny: number; allow: number };
+  /**
+   * D1: hook events whose value was not an array, and therefore could not be
+   * unioned. NON-EMPTY IS A BUILD ERROR — see the rationale on `mergeHooks`.
+   */
+  malformedHooks: MalformedHook[];
+}
+
+export interface MalformedHook {
+  /** The event name, e.g. "PreToolUse". */
+  event: string;
+  /** Which fragment carried it, so the operator knows which file to open. */
+  source: string;
+  /** What was there instead of an array — `typeof`, or "null". */
+  found: string;
 }
 
 /** Key-sorted canonical JSON — deep equality for JSON fragments by construction. */
@@ -91,26 +105,42 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  */
 export function mergeHooks(
   ordered: Array<Record<string, unknown>>,
-): Record<string, unknown[]> | undefined {
-  const hookObjects = [...ordered]
+  sourceLabels: string[] = [],
+): { hooks: Record<string, unknown[]> | undefined; malformed: MalformedHook[] } {
+  // Preserve the index so a malformed event can name the fragment it came from.
+  const hookObjects = ordered
+    .map((f, i) => ({ hooks: f["hooks"], source: sourceLabels[i] ?? `fragment[${i}]` }))
     .reverse() // lowest precedence first
-    .map((f) => f["hooks"])
-    .filter(isPlainObject);
-  if (hookObjects.length === 0) return undefined;
+    .filter((x): x is { hooks: Record<string, unknown>; source: string } => isPlainObject(x.hooks));
+  if (hookObjects.length === 0) return { hooks: undefined, malformed: [] };
 
   const out: Record<string, unknown[]> = {};
-  for (const h of hookObjects) {
+  const malformed: MalformedHook[] = [];
+  for (const { hooks: h, source } of hookObjects) {
     for (const [event, value] of Object.entries(h)) {
-      // Defensive: a non-array event value is not something we can union.
-      const entries = Array.isArray(value) ? value : [];
+      // D1: a non-array event value used to become `[]` — the event was
+      // DESTROYED and the merge said nothing. Worse, the build log then named
+      // that event in "hooks unioned across N event(s)", because the empty
+      // bucket still created the key. So the report positively asserted that a
+      // control had been composed into the non-overridable MDM artifact while
+      // the control had in fact been deleted.
+      //
+      // There is no correct silent recovery here. `[]` is not a conservative
+      // default on this channel — it is the ABSENCE of a control, written into
+      // the file a developer cannot override, at the request of an org that
+      // asked for the opposite. Collect it and let the caller fail the build.
+      if (!Array.isArray(value)) {
+        malformed.push({ event, source, found: value === null ? "null" : typeof value });
+        continue;
+      }
       const bucket = (out[event] ??= []);
-      for (const entry of entries) {
+      for (const entry of value) {
         const sig = canonical(entry);
         if (!bucket.some((e) => canonical(e) === sig)) bucket.push(entry);
       }
     }
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+  return { hooks: Object.keys(out).length > 0 ? out : undefined, malformed };
 }
 
 function mergePermissions(
@@ -157,7 +187,7 @@ export function mergeManagedFragments(
     .reduce<Record<string, unknown> | undefined>((acc, p) => mergePermissions(acc, p), undefined);
   if (permissions) merged["permissions"] = permissions;
 
-  const hooks = mergeHooks(ordered);
+  const { hooks, malformed: malformedHooks } = mergeHooks(ordered, sourceLabels);
   if (hooks) merged["hooks"] = hooks;
 
   // Conflict detection over the shallow-overwrite class. Reported once per key,
@@ -196,6 +226,7 @@ export function mergeManagedFragments(
     merged,
     conflicts,
     unionedHookEvents,
+    malformedHooks,
     permissionCounts: {
       deny: ((permissions?.["deny"] as string[] | undefined) ?? []).length,
       allow: ((permissions?.["allow"] as string[] | undefined) ?? []).length,
