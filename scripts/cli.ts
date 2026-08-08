@@ -178,6 +178,68 @@ program
 // ---- validate -------------------------------------------------------------
 
 program
+  .command("baseline")
+  .description("Archive a dated conformance snapshot — starts the platform-behaviour baseline (XP4)")
+  .option("--config <path>", "path to agentboot.config.json")
+  .option("--dir <path>", "archive directory (default: .agentboot/baseline)")
+  .action(async (opts: { config?: string; dir?: string }) => {
+    // XP4 / Continental Drift, pre-GA slice.
+    //
+    // Platforms change their semantics silently — a Tuesday release with no
+    // changelog — and the corpus's TEXT does not move, so drift-check reports
+    // green while the governance quietly stops working. Detecting that needs a
+    // BASELINE, and a baseline cannot be backfilled: probes that begin at 1.4
+    // cannot say how the platforms behaved at 1.0.
+    //
+    // This is deliberately only the archive. No analysis, no comparison, no
+    // reporting surface — that is the Continental Drift epic and it is post-GA.
+    // The point is to start a clock that cannot be restarted.
+    const cwd = opts.config ? path.dirname(path.resolve(opts.config)) : process.cwd();
+    const outDir = opts.dir ? path.resolve(opts.dir) : path.join(cwd, ".agentboot", "baseline");
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const distPath = path.join(cwd, "dist");
+
+    const manifests: Record<string, unknown> = {};
+    if (fs.existsSync(distPath)) {
+      for (const platform of fs.readdirSync(distPath)) {
+        const mf = path.join(distPath, platform, "enforcement-manifest.json");
+        if (!fs.existsSync(mf)) continue;
+        try {
+          manifests[platform] = JSON.parse(fs.readFileSync(mf, "utf-8"));
+        } catch {
+          manifests[platform] = { error: "unparseable enforcement-manifest.json" };
+        }
+      }
+    }
+
+    if (Object.keys(manifests).length === 0) {
+      // Silence is not success: an empty archive must say so and fail, or the
+      // baseline quietly accumulates nothing and looks healthy for a year.
+      console.error(chalk.red("  ✗ No enforcement manifests found in dist/."));
+      console.error(chalk.gray("    Run `agentboot conformance` first — it writes dist/<platform>/enforcement-manifest.json."));
+      console.error(chalk.gray("    Nothing was archived."));
+      process.exit(1);
+    }
+
+    const snapshot = {
+      schema: 1,
+      capturedAt: new Date().toISOString(),
+      agentbootVersion: getVersion(),
+      note: "Point-in-time platform enforcement behaviour. Archive only — comparison is post-GA (Continental Drift).",
+      platforms: manifests,
+    };
+    const outFile = path.join(outDir, `conformance-${stamp}.json`);
+    fs.writeFileSync(outFile, JSON.stringify(snapshot, null, 2), "utf-8");
+
+    const count = fs.readdirSync(outDir).filter((f) => f.startsWith("conformance-")).length;
+    console.log(chalk.bold(`\n  ${chalk.green("✓")} Baseline archived`));
+    console.log(chalk.gray(`    ${path.relative(cwd, outFile)}`));
+    console.log(chalk.gray(`    ${Object.keys(manifests).length} platform(s) · ${count} snapshot(s) on record\n`));
+  });
+
+program
   .command("identity")
   .description("Stamp permanent artifact identifiers (decision-0005) — mints missing ids, refreshes content hashes")
   .option("--config <path>", "path to agentboot.config.json")
