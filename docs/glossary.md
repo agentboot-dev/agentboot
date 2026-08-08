@@ -19,7 +19,7 @@ Key terms used throughout AgentBoot documentation.
 
 **agentskills.io** — An open standard for AI agent skill definitions using SKILL.md format (Markdown with YAML frontmatter). Supported by 26+ agent platforms. AgentBoot uses agentskills.io as its cross-platform persona format.
 
-**Always-On Instructions** — Universal guardrails distributed to every repo regardless of persona configuration. These load at session start and remain active throughout, enforcing org-wide rules like security baselines and compliance requirements.
+**Always-On Instructions** — Universal guidance distributed to every repo regardless of persona configuration. These load at session start and remain active throughout, stating org-wide rules like security baselines and compliance requirements. They are instructions, not hooks — they do not block; pair them with compiled hooks where a rule must be mechanically enforced.
 
 **Autonomy Progression** — A three-phase model for persona independence: Advisory (persona produces findings, human decides), Auto-approve (low-risk fixes applied automatically), and Autonomous (persona operates independently, human reviews post-hoc).
 
@@ -47,9 +47,9 @@ Key terms used throughout AgentBoot documentation.
 
 **GELF (Graylog Extended Log Format)** — A structured log format referenced in AgentBoot's telemetry design discussion as a possible aggregation-friendly format. The shipped telemetry output is NDJSON only.
 
-**Gotcha (Gotchas Rule)** — A path-scoped instruction encoding hard-won operational knowledge. Activated only when a developer works on files matching the glob pattern, invisible otherwise. In Claude Code, gotchas compile to `.claude/rules/` files which are re-injected into the agent's context every time a matching file is accessed — making them the highest-impact artifact AgentBoot produces.
+**Gotcha (Gotchas Rule)** — A path-scoped instruction encoding hard-won operational knowledge. Activated only when a developer works on files matching the glob pattern, invisible otherwise. In Claude Code, gotchas compile to `.claude/rules/` files which are re-injected into the agent's context every time a matching file is accessed — so they stay in context for the work they apply to and cost nothing for the work they don't.
 
-**HARD Guardrail** — A non-overridable compliance rule deployed via MDM or marked `required: true` in the org config. Cannot be elevated, overridden, or disabled at any scope level. Used for rules where violation is a compliance incident.
+**HARD Guardrail** — A compliance rule a lower scope may not weaken: shadowing it, downgrading it to soft, or zeroing its trait weight are all errors under `validate --strict`. That is a *composition* property, enforced at compile time. Whether it is also a *mechanical* control at runtime depends on the target — blocking hooks on the three official CLI surfaces, advisory text everywhere else (see the [platform capability matrix](platform-capability-matrix.md)). Used for rules where violation is a compliance incident.
 
 **Harness Engineering** — The discipline of designing the infrastructure that wraps around an AI model to make it reliable: system prompts, tool definitions, permission boundaries, feedback loops, validation gates, and context retrieval. AgentBoot is a harness engineering build tool. The term was formalized by Birgitta Bockeler (Thoughtworks) and operationalized by OpenAI in 2026.
 
