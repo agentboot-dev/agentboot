@@ -673,3 +673,47 @@ describe("H2 — MCP config for non-Claude platforms", () => {
     }
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// B4 / H4 — dist/managed/ was emitted, and logged as a success, to non-consumers
+// ---------------------------------------------------------------------------
+
+describe("B4/H4 — the managed-settings MDM channel", () => {
+  it("B4-I1: managed.enabled without `claude` fails instead of emitting a dead artifact", () => {
+    const hub = scaffoldHub();
+    editConfig(hub, (c) => {
+      c.personas.outputFormats = ["codex"];
+      c.managed = { enabled: true, guardrails: { requireAuditLog: true } };
+    });
+    const bad = ab(["build"], hub);
+    expect(bad.status).toBe(1);
+    expect(bad.out).toContain("managed.enabled is set, but `claude` is not");
+    // The reassurance that used to be printed over the dead artifact.
+    expect(bad.out).not.toContain("Managed settings written to dist/managed/");
+    expect(bad.out).not.toContain("Target MDM path");
+    expect(fs.existsSync(path.join(hub, "dist", "managed"))).toBe(false);
+  }, 300_000);
+
+  it("B4-I2 (NEGATIVE): with claude built, the artifact is emitted as before", () => {
+    const hub = scaffoldHub();
+    editConfig(hub, (c) => {
+      c.personas.outputFormats = ["claude", "codex"];
+      c.managed = { enabled: true, guardrails: { requireAuditLog: true } };
+    });
+    const good = ab(["build"], hub);
+    expect(good.status).toBe(0);
+    expect(good.out).toContain("Managed settings written to dist/managed/");
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(hub, "dist", "managed", "managed-settings.json"), "utf-8"),
+    );
+    // The hook it references must actually exist in this build — that was the defect.
+    expect(JSON.stringify(settings)).toContain("agentboot-telemetry.sh");
+    expect(fs.existsSync(path.join(hub, "dist", "claude", "core", "hooks", "agentboot-telemetry.sh"))).toBe(true);
+  }, 300_000);
+
+  it("B4-I3 (NEGATIVE): no managed config at all is still silent", () => {
+    const hub = scaffoldHub();
+    editConfig(hub, (c) => { c.personas.outputFormats = ["codex"]; delete c.managed; });
+    expect(ab(["build"], hub).status).toBe(0);
+  }, 300_000);
+});

@@ -3256,9 +3256,35 @@ function listNodeScopeRoots(hubRoot: string, nodePath: string): string[] {
   return candidates.filter((c): c is string => c !== undefined && fs.existsSync(c));
 }
 
-function generateManagedSettings(config: AgentBootConfig, distPath: string): void {
+function generateManagedSettings(
+  config: AgentBootConfig,
+  distPath: string,
+  outputFormats: readonly string[],
+): void {
   const managed = config.managed;
   if (!managed?.enabled) return;
+
+  // B4 / H4: `dist/managed/` is the Claude Code MDM channel, and nothing else
+  // consumes it. This call was UNGATED, so a hub with no `claude` target still
+  // got a managed-settings.json — and, with `requireAuditLog`, one referencing
+  // `.claude/hooks/agentboot-telemetry.sh`, a hook that build never produced.
+  // The operator was then told "→ Managed settings written to dist/managed/"
+  // and "→ Target MDM path: /Library/Application Support/Claude/", i.e. handed
+  // a deployable artifact pointing at a script that does not exist.
+  //
+  // Erroring rather than skipping: `managed.enabled` is a configured control,
+  // and a control that reaches no platform is the exact class the capability
+  // gate exists to fail on. Skipping quietly would put this back in the
+  // "emitted nothing, said nothing" bucket.
+  if (!outputFormats.includes("claude")) {
+    log(chalk.red(`\n  ✗ managed.enabled is set, but \`claude\` is not in personas.outputFormats.`));
+    log(chalk.gray(`    dist/managed/ is the Claude Code managed-settings (MDM) channel — no other`));
+    log(chalk.gray(`    platform consumes it, and managed.guardrails.requireAuditLog writes a hook`));
+    log(chalk.gray(`    path of .claude/hooks/agentboot-telemetry.sh — a location this build does not`));
+    log(chalk.gray(`    produce (a codex-only build puts its hooks under .codex/hooks/).`));
+    log(chalk.gray(`    Fix: add "claude" to personas.outputFormats, or remove managed.enabled.`));
+    process.exit(1);
+  }
 
   log(chalk.cyan("\nGenerating managed settings..."));
 
@@ -4374,7 +4400,7 @@ function main(): void {
   // 8. AB-61: Managed settings
   // ---------------------------------------------------------------------------
 
-  generateManagedSettings(config, distPath);
+  generateManagedSettings(config, distPath, outputFormats);
 
   // B8: single deployable managed artifact per scope, merged from the fragments
   if (outputFormats.includes("claude")) {
