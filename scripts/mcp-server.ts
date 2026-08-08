@@ -27,6 +27,7 @@ import os from "node:os";
 import { createInterface } from "node:readline";
 import { execSync, spawnSync } from "node:child_process";
 import { stripJsoncComments, type PersonaConfig, type AgentBootConfig, loadConfig } from "./lib/config.js";
+import { frontmatterBlock } from "./lib/frontmatter.js";
 import { scanParentForContent } from "./lib/import.js";
 import { getDefaultHub } from "./lib/registry.js";
 import { checkDrift, findManifestPath } from "./lib/drift.js";
@@ -248,11 +249,13 @@ function listGotchaFiles(): Array<{ name: string; description: string; paths: st
 
 /** Parse YAML-like frontmatter (simple key-value extraction). */
 function parseFrontmatter(content: string): Record<string, unknown> {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
+  // C1: tolerant of BOM/CRLF — a Windows checkout previously reported an
+  // artifact as having no frontmatter at all.
+  const block = frontmatterBlock(content);
+  if (block === null) return {};
 
   const result: Record<string, unknown> = {};
-  const lines = match[1]!.split("\n");
+  const lines = block.split("\n");
   let currentKey = "";
 
   for (const line of lines) {

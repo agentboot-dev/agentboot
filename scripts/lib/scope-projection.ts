@@ -78,11 +78,18 @@ export interface ScopeInspection {
   raw: string | null;
 }
 
-/** Frontmatter block of a Markdown artifact, or null when absent. */
-export function frontmatterBlock(content: string): string | null {
-  const m = content.match(/^---\n([\s\S]*?)\n---/);
-  return m ? m[1]! : null;
-}
+/**
+ * C1: re-exported from the ONE tolerant extractor rather than re-implemented.
+ *
+ * The copy that lived here was `/^---\n([\s\S]*?)\n---/` against raw content —
+ * so a CRLF or BOM artifact matched nothing, `inspectScope` returned
+ * `{globs: [], alwaysOn: true}`, and this gate — the gate that exists BECAUSE
+ * `applyTo` was being inverted — failed open on exactly the artifacts a Windows
+ * checkout produces. The tolerant parser was already in the repo, ten lines
+ * away, unused by both copies.
+ */
+export { frontmatterBlock } from "./frontmatter.js";
+import { frontmatterBlock } from "./frontmatter.js";
 
 /**
  * Parse an artifact's path scope.

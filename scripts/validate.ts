@@ -36,6 +36,7 @@ import {
 } from "./lib/config.js";
 import {
   parseFrontmatter,
+  frontmatterBlock,
   DEFAULT_SECRET_PATTERNS,
   scanForSecrets,
   resolveCompositionType,
@@ -855,8 +856,8 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
   if (fs.existsSync(instructionsDir)) {
     for (const file of fs.readdirSync(instructionsDir).filter(f => f.endsWith(".md"))) {
       const content = fs.readFileSync(path.join(instructionsDir, file), "utf-8");
-      const fm = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+      const fm = frontmatterBlock(content);
+      if (fm !== null && /guardrail:\s*hard/i.test(fm)) {
         hardArtifacts.set(path.basename(file, ".md"), "core");
       }
     }
@@ -867,8 +868,8 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
   if (fs.existsSync(traitsDir)) {
     for (const file of fs.readdirSync(traitsDir).filter(f => f.endsWith(".md"))) {
       const content = fs.readFileSync(path.join(traitsDir, file), "utf-8");
-      const fm = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+      const fm = frontmatterBlock(content);
+      if (fm !== null && /guardrail:\s*hard/i.test(fm)) {
         hardArtifacts.set(path.basename(file, ".md"), "core");
       }
     }
@@ -895,8 +896,8 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
         const artifactName = path.basename(file, ".md");
         if (!hardArtifacts.has(artifactName)) continue;
         const content = fs.readFileSync(path.join(subDir, file), "utf-8");
-        const fm = content.match(/^---\n([\s\S]*?)\n---/);
-        const isHard = fm ? /guardrail:\s*hard/i.test(fm[1]!) : false;
+        const fm = frontmatterBlock(content);
+        const isHard = fm !== null ? /guardrail:\s*hard/i.test(fm) : false;
         if (!isHard) {
           fail(result,
             `${scopeLabel} ${sub}/${file} shadows HARD artifact "${artifactName}" ` +

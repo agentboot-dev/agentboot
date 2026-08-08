@@ -337,3 +337,87 @@ describe("emission — the unsupported tier degrades honestly", () => {
     expect(baseline.alwaysOn).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// C1 — the same defect, reachable through a LINE ENDING
+// ---------------------------------------------------------------------------
+
+/**
+ * `frontmatterBlock` was re-implemented, strictly, in TWO places
+ * (scope-projection.ts and guardrail-scan.ts), neither normalizing CRLF or a
+ * BOM — while the tolerant parser sat unused ten lines away in frontmatter.ts.
+ *
+ * A file checked out on Windows (git autocrlf) therefore matched nothing,
+ * `inspectScope` returned `{globs: [], alwaysOn: true}`, and this gate — the
+ * gate that exists BECAUSE `applyTo` was being inverted — concluded there was no
+ * scope to lose and let it through. F-6 verbatim, on every Windows checkout,
+ * behind a green build.
+ */
+
+import { frontmatterBlock, scopePreamble } from "../scripts/lib/scope-projection.js";
+import { inspectArtifact } from "../scripts/lib/guardrail-scan.js";
+
+const C1_LF = `---\ndescription: x\napplyTo: "src/api/**"\n---\n\n# body\n`;
+const C1_CRLF = C1_LF.replace(/\n/g, "\r\n");
+const C1_BOM = `﻿${C1_LF}`;
+const C1_BOM_CRLF = `﻿${C1_CRLF}`;
+const C1_CR = C1_LF.replace(/\n/g, "\r");
+
+describe("C1 — frontmatter detection must survive a line ending", () => {
+  it("C1-1: LF is the control case", () => {
+    expect(frontmatterBlock(C1_LF)).toContain("applyTo");
+    expect(inspectScope(C1_LF)).toMatchObject({ globs: ["src/api/**"], alwaysOn: false });
+  });
+
+  it.each([
+    ["CRLF", C1_CRLF],
+    ["BOM", C1_BOM],
+    ["BOM+CRLF", C1_BOM_CRLF],
+    ["lone CR", C1_CR],
+  ])("C1-2 (%s): the scope is READ, not silently discarded", (_label, content) => {
+    // The pre-C1 result was exactly `{globs: [], alwaysOn: true}` — which the
+    // gate reads as "nothing to lose".
+    expect(inspectScope(content).alwaysOn).toBe(false);
+    expect(inspectScope(content).globs).toEqual(["src/api/**"]);
+  });
+
+  it("C1-3: the gate FIRES on a CRLF artifact against an unsupported target", () => {
+    const globs = inspectScope(C1_CRLF).globs;
+    expect(globs.length).toBeGreaterThan(0); // precondition, not decoration
+    const v = scopeViolations([art({ globs })], ["claude"]);
+    expect(v).toHaveLength(1);
+    expect(v[0]!.formats).toEqual(["claude"]);
+  });
+
+  it("C1-4 (NEGATIVE): a genuinely unscoped CRLF artifact still does not fire", () => {
+    expect(inspectScope(`---\r\ndescription: x\r\n---\r\n\r\n# body\r\n`))
+      .toMatchObject({ globs: [], alwaysOn: true });
+    expect(inspectScope(`---\r\napplyTo: "**"\r\n---\r\n`).alwaysOn).toBe(true);
+  });
+
+  it("C1-5: the acknowledgement escape hatch survives CRLF too", () => {
+    // If the hatch were unreadable on Windows the gate would be unresolvable
+    // there, and an error the operator cannot silence is a gate that gets removed.
+    expect(inspectScope(`---\r\napplyTo: "src/**"\r\nscope-unsupported: acknowledged\r\n---\r\n`)
+      .acknowledgedUnscoped).toBe(true);
+  });
+
+  it("C1-6: the HARD-guardrail twin had the identical defect and is fixed with it", () => {
+    const hardLF = `---\ndescription: x\nguardrail: hard\n---\n\n# body\n`;
+    const hardCRLF = hardLF.replace(/\n/g, "\r\n");
+    expect(inspectArtifact(hardLF).hard).toBe(true);
+    expect(inspectArtifact(hardCRLF).hard).toBe(true);
+    expect(inspectArtifact(`﻿${hardCRLF}`).hard).toBe(true);
+    // NEGATIVE: still not fooled by prose in the body.
+    expect(inspectArtifact(`---\r\ndescription: x\r\n---\r\n\r\nguardrail: hard\r\n`).hard).toBe(false);
+  });
+
+  it("C1-7 (NEGATIVE): no frontmatter at all is still no frontmatter", () => {
+    expect(frontmatterBlock("# just a heading\n")).toBeNull();
+    expect(frontmatterBlock("﻿# just a heading\r\n")).toBeNull();
+  });
+
+  it("C1-8: scopePreamble names the globs it stands in for", () => {
+    expect(scopePreamble(["src/api/**", "lib/**"])).toContain("src/api/**, lib/**");
+  });
+});

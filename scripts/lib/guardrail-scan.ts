@@ -18,6 +18,7 @@
  */
 import fs from "fs";
 import path from "path";
+import { frontmatterBlock } from "./frontmatter.js";
 import {
   CAPABILITY_SUPPORT,
   effectiveEmitters,
@@ -38,11 +39,13 @@ export interface HardArtifact {
   acknowledgedAdvisory: boolean;
 }
 
-/** Frontmatter block of a Markdown artifact, or null when absent. */
-function frontmatter(content: string): string | null {
-  const m = content.match(/^---\n([\s\S]*?)\n---/);
-  return m ? m[1]! : null;
-}
+/**
+ * C1: the identical twin of scope-projection's copy, with the identical defect.
+ * A CRLF or BOM artifact declaring `guardrail: hard` returned no frontmatter,
+ * so `inspectArtifact` reported `hard: false` and the HARD-guardrail gate — and
+ * doctor with it — went silent on the artifact it exists to catch.
+ */
+const frontmatter = frontmatterBlock;
 
 function isHard(fm: string): boolean {
   return /^\s*guardrail:\s*hard\s*$/im.test(fm);

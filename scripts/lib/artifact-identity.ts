@@ -27,6 +27,7 @@
  * identifies a *version*, not an artifact, so lineage dies at the first edit.
  */
 import crypto from "crypto";
+import { frontmatterBlock } from "./frontmatter.js";
 
 /** Crockford base32 — excludes I, L, O, U to avoid transcription ambiguity. */
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -81,10 +82,10 @@ export interface Identity {
   tier: Tier | null;
 }
 
-function fmBlock(content: string): string | null {
-  const m = content.match(/^---\n([\s\S]*?)\n---/);
-  return m ? m[1]! : null;
-}
+// C1: the tolerant extractor. A BOM/CRLF artifact previously reported "no
+// frontmatter" here, so identity stamping silently minted a fresh id for an
+// artifact that already carried one.
+const fmBlock = frontmatterBlock;
 
 function scalar(fm: string, key: string): string | null {
   const m = fm.match(new RegExp(`^\\s*${key}:\\s*["']?([^"'\\n]+)["']?\\s*$`, "im"));

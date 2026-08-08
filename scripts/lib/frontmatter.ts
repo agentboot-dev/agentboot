@@ -13,17 +13,38 @@
 // Line endings are normalized to LF before this runs, so it only needs \n.
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
 
+/**
+ * Tolerate a leading UTF-8 BOM and CRLF / lone-CR line endings.
+ *
+ * Files checked out on Windows arrive with CRLF (git autocrlf) and some editors
+ * prepend a BOM. Neither should defeat frontmatter detection — and when the
+ * consumer is a SAFETY GATE, failing to detect frontmatter means failing open.
+ */
+export function normalizeForFrontmatter(content: string): string {
+  return content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+}
+
+/**
+ * The frontmatter block of a Markdown artifact, or null when absent.
+ *
+ * C1: THE single extractor. Two byte-identical strict copies of this regex used
+ * to live in scope-projection.ts and guardrail-scan.ts, neither of them
+ * normalizing — so a CRLF or BOM file returned null, `inspectScope` reported
+ * `{globs: [], alwaysOn: true}`, and the F-6 scope gate failed OPEN: the rule
+ * the operator wrote as `applyTo: "src/api/**"` was delivered to Cursor and
+ * Windsurf as always-on, every file. Inversion, not omission — exactly the
+ * defect F-6 was opened to close, reachable again through a line ending.
+ */
+export function frontmatterBlock(content: string): string | null {
+  const match = FRONTMATTER_RE.exec(normalizeForFrontmatter(content));
+  return match ? (match[1] ?? "") : null;
+}
+
 export function parseFrontmatter(content: string): Map<string, string> | null {
-  // Tolerate a leading UTF-8 BOM and CRLF / lone-CR line endings. Files checked
-  // out on Windows arrive with CRLF (git autocrlf), and some editors prepend a
-  // BOM — neither should defeat frontmatter detection. Normalize first so the
-  // matcher and the per-line split below only ever deal with LF.
-  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const block = frontmatterBlock(content);
+  if (block === null) return null;
 
-  const match = FRONTMATTER_RE.exec(normalized);
-  if (!match) return null;
-
-  const lines = (match[1] ?? "").split("\n");
+  const lines = block.split("\n");
   const fields = new Map<string, string>();
 
   for (const line of lines) {
