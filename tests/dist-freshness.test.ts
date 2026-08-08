@@ -324,3 +324,36 @@ describe("N1 integration: sync / drift-check / audit refuse a stale dist/", () =
     expect(audit.out).toContain("never been built");
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// The digest must not fire on config that cannot change the build
+// ---------------------------------------------------------------------------
+
+describe("computeConfigDigest — build-affecting keys only", () => {
+  it("U10: changing `sync.*` does NOT move the digest", () => {
+    // sync governs DELIVERY; compile.ts never reads it. Marking a
+    // byte-for-byte-correct dist/ stale because the operator enabled manifest
+    // signing is a false positive, and a staleness error that fires when
+    // nothing is stale trains people to ignore the real one.
+    const base = { org: "acme", personas: { outputFormats: ["claude"] } };
+    expect(computeConfigDigest({ ...base, sync: { signing: { enabled: false } } }))
+      .toBe(computeConfigDigest({ ...base, sync: { signing: { enabled: true }, repos: "./r.json" } }));
+    expect(computeConfigDigest({ ...base, sync: { pr: { enabled: true } } }))
+      .toBe(computeConfigDigest(base));
+  });
+
+  it("U11 (NEGATIVE): every OTHER key still moves it — the exclusion is a deny-list", () => {
+    // A config key added later must be included by default. Over-reporting
+    // staleness costs a rebuild; under-reporting ships the wrong policy.
+    const base: Record<string, unknown> = { org: "acme", sync: { repos: "./r.json" } };
+    for (const [k, v] of Object.entries({
+      personas: { outputFormats: ["claude"] },
+      managed: { enabled: true },
+      compliance: { outputScan: { blocking: true } },
+      instructions: { enabled: ["baseline.instructions"] },
+      somethingAddedLater: { x: 1 },
+    })) {
+      expect(computeConfigDigest({ ...base, [k]: v }), k).not.toBe(computeConfigDigest(base));
+    }
+  });
+});

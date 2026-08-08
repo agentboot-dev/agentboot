@@ -56,14 +56,38 @@ export interface DistStamp {
 }
 
 /**
- * Stable digest of the resolved config.
+ * Top-level config keys that CANNOT change what the build emits, and are
+ * therefore excluded from the freshness digest.
+ *
+ * `sync.*` (repos, signing, pr, targetDir, dryRun) governs DELIVERY, not
+ * compilation — `compile.ts` never reads it (verified: zero `config.sync`
+ * references). Including it made turning on manifest signing mark a
+ * byte-for-byte-correct dist/ as stale, which is a false positive, and a
+ * staleness error that fires when nothing is stale is how operators are trained
+ * to ignore the real one.
+ *
+ * Deliberately a DENY-list, not an allow-list: a config key added later is
+ * included in the digest by default. Over-reporting staleness costs a rebuild;
+ * under-reporting it ships the wrong policy.
+ */
+const NON_BUILD_CONFIG_KEYS = new Set(["sync"]);
+
+/**
+ * Stable digest of the build-affecting part of the resolved config.
  *
  * Key order is normalized so a cosmetic re-serialization of the config file
  * does not read as a policy change (that would train operators to ignore the
  * staleness error, which is worse than not having it).
  */
 export function computeConfigDigest(config: unknown): string {
-  return crypto.createHash("sha256").update(canonicalize(config)).digest("hex");
+  let subject = config;
+  if (config && typeof config === "object" && !Array.isArray(config)) {
+    subject = Object.fromEntries(
+      Object.entries(config as Record<string, unknown>)
+        .filter(([k]) => !NON_BUILD_CONFIG_KEYS.has(k)),
+    );
+  }
+  return crypto.createHash("sha256").update(canonicalize(subject)).digest("hex");
 }
 
 function canonicalize(value: unknown): string {
