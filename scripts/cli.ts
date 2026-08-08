@@ -568,6 +568,24 @@ program
       const r = res.direct!;
       for (const e of r.errors) console.log(chalk.red(`  ✗ ${e}`));
       console.log(chalk.green(`  ✓ ${opts.dryRun ? "Would write" : "Wrote"} ${r.skillsWritten.length} skill file(s) + ${r.rulesWritten.length} rule file(s) to ~/.claude/`));
+      // E1: report the withdrawal explicitly. "0 revoked" and "pruning never
+      // ran" must not print identically — that equivalence is what let a
+      // revoked user-level artifact sit on disk, untracked, indefinitely.
+      const removedUser = r.pruned.filter((p) => p.status === "removed");
+      const blockedUser = r.pruned.filter((p) => p.status === "blocked");
+      if (removedUser.length > 0) {
+        console.log(chalk.green(`  ✓ ${opts.dryRun ? "Would withdraw" : "Withdrew"} ${removedUser.length} revoked artifact(s) from ~/.claude/`));
+        for (const p of removedUser) console.log(chalk.gray(`      ${p.path}`));
+      } else {
+        console.log(chalk.gray(`  ~/.claude/ pruned: 0 revoked artifact(s)`));
+      }
+      if (blockedUser.length > 0) {
+        // Not an error: a local edit is a decision. But it must be SEEN — the
+        // artifact is revoked at the hub and still active on this machine.
+        console.log(chalk.yellow(`  ⚠ ${blockedUser.length} revoked artifact(s) kept — edited locally, still active:`));
+        for (const p of blockedUser) console.log(chalk.yellow(`      ${p.path}`));
+        console.log(chalk.gray(`    Remove with: agentboot uninstall --user`));
+      }
       for (const s of r.skipped) console.log(chalk.gray(`  – skipped ${s}`));
       if (r.errors.length) process.exit(1);
     } else {

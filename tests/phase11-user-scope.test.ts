@@ -347,3 +347,118 @@ describe("E2 — `agentboot uninstall --user`", () => {
     expect(un.out).toContain("agentboot uninstall --user");
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// E1 — install-user never pruned AND de-listed
+// ---------------------------------------------------------------------------
+
+/**
+ * `writeDirectly` was a pure copy-in, and the manifest it wrote recorded only
+ * the NEW write set. So an artifact revoked at the hub was dropped from tracking
+ * while remaining on disk in ~/.claude/, still loading in every session — and
+ * invisible to `uninstall --user`, which only removes what the manifest lists.
+ * 47ef85c's own commit message calls that "strictly worse than leaving it
+ * tracked-and-stale".
+ */
+describe("E1 — install-user withdraws revoked artifacts", () => {
+  const CLI_E1 = path.join(path.resolve(__dirname, ".."), "bin", "agentboot.js");
+
+  function runE1(args: string[], home: string, cwd: string) {
+    const r = spawnSync("node", [CLI_E1, ...args], {
+      cwd,
+      env: { ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1" },
+      encoding: "utf-8",
+      timeout: 180_000,
+    });
+    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  function scaffoldE1(): { hub: string; home: string } {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-e1-"));
+    const hub = path.join(base, "hub");
+    const home = path.join(base, "home");
+    fs.mkdirSync(home, { recursive: true });
+    const r = spawnSync("node",
+      [CLI_E1, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+      { cwd: base, env: { ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 });
+    if (r.status !== 0) throw new Error(`scaffold failed: ${r.stdout}${r.stderr}`);
+    return { hub, home };
+  }
+
+  function editCfg(hub: string, fn: (c: any) => void): void {
+    const p = path.join(hub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    fn(c);
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+  }
+
+  const trackedPaths = (home: string): string[] =>
+    (JSON.parse(fs.readFileSync(path.join(home, ".claude", ".agentboot-user-manifest.json"), "utf-8"))
+      .files as Array<{ path: string }>).map((f) => f.path);
+
+  it("E1-1: a revoked skill is removed from disk AND is not left untracked", () => {
+    const { hub, home } = scaffoldE1();
+    expect(runE1(["build"], home, hub).status).toBe(0);
+    expect(runE1(["install-user"], home, hub).status).toBe(0);
+
+    const revoked = path.join(home, ".claude", "skills", "gen-tests", "SKILL.md");
+    expect(fs.existsSync(revoked)).toBe(true); // precondition
+    expect(trackedPaths(home)).toContain("skills/gen-tests/SKILL.md");
+
+    editCfg(hub, (c) => {
+      c.personas.enabled = c.personas.enabled.filter((p: string) => p !== "test-generator");
+    });
+    expect(runE1(["build"], home, hub).status).toBe(0);
+    const again = runE1(["install-user"], home, hub);
+    expect(again.status).toBe(0);
+    expect(again.out).toContain("Withdrew 1 revoked artifact(s)");
+    expect(again.out).toContain("skills/gen-tests/SKILL.md");
+
+    expect(fs.existsSync(revoked)).toBe(false);
+    expect(trackedPaths(home)).not.toContain("skills/gen-tests/SKILL.md");
+    // The rest is untouched.
+    expect(fs.existsSync(path.join(home, ".claude", "skills", "review-code", "SKILL.md"))).toBe(true);
+  }, 300_000);
+
+  it("E1-2: a steady-state re-install prunes nothing, and SAYS so", () => {
+    // "0 revoked" and "pruning never ran" printing identically is what let the
+    // defect live. Both must be distinguishable.
+    const { hub, home } = scaffoldE1();
+    expect(runE1(["build"], home, hub).status).toBe(0);
+    expect(runE1(["install-user"], home, hub).status).toBe(0);
+    const second = runE1(["install-user"], home, hub);
+    expect(second.status).toBe(0);
+    expect(second.out).toContain("pruned: 0 revoked artifact(s)");
+    expect(second.out).not.toContain("Withdrew");
+  }, 300_000);
+
+  it("E1-3: a locally-edited revoked artifact is KEPT, warned about, and stays tracked", () => {
+    // Silently discarding a local edit is the destructive-surprise class. But
+    // dropping it from the manifest would reproduce the original defect exactly:
+    // on disk, active, and removable by no command.
+    const { hub, home } = scaffoldE1();
+    expect(runE1(["build"], home, hub).status).toBe(0);
+    expect(runE1(["install-user"], home, hub).status).toBe(0);
+
+    const edited = path.join(home, ".claude", "skills", "gen-tests", "SKILL.md");
+    fs.appendFileSync(edited, "\n<!-- local edit -->\n");
+
+    editCfg(hub, (c) => {
+      c.personas.enabled = c.personas.enabled.filter((p: string) => p !== "test-generator");
+    });
+    expect(runE1(["build"], home, hub).status).toBe(0);
+    const again = runE1(["install-user"], home, hub);
+    expect(again.status).toBe(0);
+    expect(again.out).toContain("edited locally, still active");
+    expect(fs.existsSync(edited)).toBe(true);
+    expect(trackedPaths(home)).toContain("skills/gen-tests/SKILL.md");
+  }, 300_000);
+
+  it("E1-4: a first install (no previous manifest) prunes nothing", () => {
+    const { hub, home } = scaffoldE1();
+    expect(runE1(["build"], home, hub).status).toBe(0);
+    const first = runE1(["install-user"], home, hub);
+    expect(first.status).toBe(0);
+    expect(first.out).toContain("pruned: 0 revoked artifact(s)");
+  }, 300_000);
+});

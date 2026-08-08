@@ -18,6 +18,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { planOrphanRemoval, pruneEmptyDirs } from "./prune.js";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import type { AgentBootConfig } from "./config.js";
@@ -68,11 +69,28 @@ export function findTemplateVars(content: string): string[] {
   return matches ? [...new Set(matches)] : [];
 }
 
+export interface PrunedUserArtifact {
+  /** Path relative to ~/.claude/ */
+  path: string;
+  /** "removed" — withdrawn; "blocked" — edited by the user, left alone. */
+  status: "removed" | "blocked";
+}
+
 export interface WriteDirectlyResult {
   skillsWritten: string[];
   rulesWritten: string[];
   skipped: string[];
   errors: string[];
+  /**
+   * E1: artifacts the PREVIOUS install-user delivered that this one did not.
+   *
+   * Without this, `writeDirectly` was a pure copy-in and the manifest recorded
+   * only the NEW write set — so a revoked artifact was dropped from tracking
+   * while remaining on disk in ~/.claude/, still loading in every session.
+   * Commit 47ef85c's own message calls that "strictly worse than leaving it
+   * tracked-and-stale", because it is invisible to `uninstall --user` too.
+   */
+  pruned: PrunedUserArtifact[];
 }
 
 /**
@@ -107,7 +125,12 @@ export function writeDirectly(
     rulesWritten: [],
     skipped: [],
     errors: [],
+    pruned: [],
   };
+
+  // E1: read what the PREVIOUS install delivered, before we overwrite the
+  // manifest with the new write set.
+  const previous = loadUserManifestHashes(claudeDir);
 
   if (!fs.existsSync(distClaudeCorePath)) {
     result.errors.push(`dist path does not exist: ${distClaudeCorePath}`);
@@ -133,9 +156,56 @@ export function writeDirectly(
   result.skipped.push("CLAUDE.md (composed file — left to the external provider)");
   result.skipped.push("settings.json (composed file — left to the external provider)");
 
-  // Write user manifest to track what we wrote
+  // E1: withdraw what the previous install delivered and this one did not.
+  //
+  // Same invariant as sync's file prune: removal is confined to the PREVIOUS
+  // MANIFEST, which lists only files AgentBoot itself wrote, so this can never
+  // delete a file it did not create. A user-edited file is blocked rather than
+  // removed — a local edit is a decision, and silently discarding it would be
+  // the destructive-surprise class this codebase keeps closing.
+  const written = new Set(
+    [...result.skillsWritten, ...result.rulesWritten].map((f) => toManifestPath(claudeDir, f)),
+  );
+  const plan = planOrphanRemoval(
+    previous,
+    written,
+    (rel) => {
+      const abs = path.join(claudeDir, rel);
+      if (!fs.existsSync(abs)) return null;
+      try {
+        return createHash("sha256").update(fs.readFileSync(abs, "utf-8")).digest("hex");
+      } catch {
+        return null;
+      }
+    },
+  );
+  for (const rel of plan.remove) {
+    if (!options?.dryRun) {
+      try {
+        fs.unlinkSync(path.join(claudeDir, rel));
+      } catch (err) {
+        result.errors.push(`Failed to remove revoked ${rel}: ${(err as Error).message}`);
+        continue;
+      }
+    }
+    result.pruned.push({ path: rel, status: "removed" });
+  }
+  for (const b of plan.blocked) {
+    result.pruned.push({ path: b.path, status: "blocked" });
+  }
+  if (!options?.dryRun && plan.remove.length > 0) {
+    pruneEmptyDirs(claudeDir, plan.remove);
+  }
+
+  // Write user manifest to track what we wrote.
+  //
+  // A BLOCKED artifact stays in the manifest: it is still on disk and still
+  // AgentBoot's to account for. Dropping it here would reproduce the exact
+  // defect this change closes — untracked content that no command can remove.
   if (!options?.dryRun) {
-    const manifest = generateUserManifest([...result.skillsWritten, ...result.rulesWritten], claudeDir);
+    const stillTracked = [...result.skillsWritten, ...result.rulesWritten];
+    for (const b of plan.blocked) stillTracked.push(path.join(claudeDir, b.path));
+    const manifest = generateUserManifest(stillTracked, claudeDir);
     const manifestPath = path.join(claudeDir, ".agentboot-user-manifest.json");
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   }
@@ -181,6 +251,31 @@ function copyDirContents(
       }
       written.push(destPath);
     }
+  }
+}
+
+/** POSIX-normalized path relative to ~/.claude/, matching the manifest format. */
+function toManifestPath(claudeDir: string, absPath: string): string {
+  return path.relative(claudeDir, absPath).replace(/\\/g, "/");
+}
+
+/** E1: previous manifest as path → hash, or null when there is no previous install. */
+function loadUserManifestHashes(claudeDir: string): Map<string, string> | null {
+  const manifestPath = path.join(claudeDir, ".agentboot-user-manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+      files?: Array<{ path?: string; hash?: string }>;
+    };
+    const out = new Map<string, string>();
+    for (const f of manifest.files ?? []) {
+      if (f.path && f.hash) out.set(f.path, f.hash);
+    }
+    return out;
+  } catch {
+    // Unreadable manifest → treat as "no previous install" and prune NOTHING.
+    // Guessing here would delete files we cannot prove we wrote.
+    return null;
   }
 }
 
