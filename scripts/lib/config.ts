@@ -7,6 +7,68 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
+// Output formats — ONE definition, asserted, not eight literals
+// ---------------------------------------------------------------------------
+
+/**
+ * A5: every output format AgentBoot knows how to emit.
+ *
+ * This used to be spelled out at two call sites (compile's `validFormats`,
+ * sync's `validPlatforms`) that had already drifted from each other. Two lists
+ * that must agree will drift; the fix is one list plus an asserted derivation
+ * for the places that legitimately differ.
+ */
+export const VALID_OUTPUT_FORMATS: readonly string[] = [
+  "skill", "claude", "copilot", "cursor", "agents",
+  "plugin", "windsurf", "gemini", "jetbrains", "codex",
+];
+
+/**
+ * The formats a hub builds when `personas.outputFormats` is absent.
+ *
+ * Before this constant there were FOUR different answers to "what is the
+ * default?" across eight sites — `["skill","claude","copilot","agents"]`,
+ * `["skill","claude","copilot"]`, `["claude"]`, and `[]`. The `[]` variants
+ * were the dangerous ones: in `doctor`'s Coverage and Enforcement blocks an
+ * unspecified config produced an EMPTY format list, so every capability and
+ * enforcement check iterated over nothing and reported clean. A gate that
+ * evaluates zero platforms is not a passing gate, it is an absent one.
+ */
+export const DEFAULT_OUTPUT_FORMATS: readonly string[] = ["skill", "claude", "copilot"];
+
+/**
+ * Formats that can be SYNCED into a spoke repo.
+ *
+ * `plugin` is deliberately excluded: a Claude Code plugin is installed as a
+ * plugin, not copied into a target repository, so `dist/plugin/` is not a sync
+ * target. Derived-and-asserted rather than re-typed, so adding a format to
+ * `VALID_OUTPUT_FORMATS` cannot silently leave sync behind.
+ */
+export const SYNCABLE_OUTPUT_FORMATS: readonly string[] =
+  VALID_OUTPUT_FORMATS.filter((f) => f !== "plugin");
+
+/**
+ * The invariant, checked at module load rather than trusted.
+ *
+ * A default the build would then reject as unknown is not a hypothetical: it is
+ * exactly the shape of the `plugin` fail-open (a name present in one list and
+ * absent from its partner). This throws at import time, so it cannot be
+ * introduced and shipped.
+ */
+{
+  const unknownDefaults = DEFAULT_OUTPUT_FORMATS.filter((f) => !VALID_OUTPUT_FORMATS.includes(f));
+  if (unknownDefaults.length > 0) {
+    throw new Error(
+      `DEFAULT_OUTPUT_FORMATS contains format(s) missing from VALID_OUTPUT_FORMATS: ${unknownDefaults.join(", ")}`,
+    );
+  }
+  const dupes = VALID_OUTPUT_FORMATS.filter((f, i) => VALID_OUTPUT_FORMATS.indexOf(f) !== i);
+  if (dupes.length > 0) {
+    throw new Error(`VALID_OUTPUT_FORMATS contains duplicate(s): ${dupes.join(", ")}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 

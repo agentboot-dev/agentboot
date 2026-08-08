@@ -33,6 +33,8 @@ import {
   resolveConfigPath,
   loadConfig,
   agentbootNpxSpec,
+  DEFAULT_OUTPUT_FORMATS,
+  SYNCABLE_OUTPUT_FORMATS,
 } from "./lib/config.js";
 import { childScopeNames } from "./lib/scope-layout.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
@@ -852,7 +854,7 @@ function syncRepoTarget(
   // each other and the contradiction was resolved silently in favour of the
   // stale tree — i.e. in favour of the RETIRED policy.
   if (!fs.existsSync(path.join(distPath, platform))) {
-    const declared = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+    const declared = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
     result.errors.push(
       `hub does not build for this platform\n` +
       `      repos.json targets \`${platform}\`, but personas.outputFormats = [${declared.join(", ")}],\n` +
@@ -1551,7 +1553,10 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
   }
 
   // Validate platform(s)
-  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"];
+  // A5: derived from VALID_OUTPUT_FORMATS (minus `plugin`, which installs as a
+  // plugin rather than syncing into a spoke) instead of re-typed. The re-typed
+  // copy had already drifted from compile's list.
+  const validPlatforms = [...SYNCABLE_OUTPUT_FORMATS];
   const platforms = getRepoPlatforms(entry);
   for (const platform of platforms) {
     if (!validPlatforms.includes(platform)) {

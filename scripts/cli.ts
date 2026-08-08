@@ -31,7 +31,7 @@ import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT, type CapabilityContext } from "./lib/conformance.js";
@@ -1502,7 +1502,9 @@ program
         // PreToolUse hook produced zero files.
         if (!isJson) { console.log(""); console.log(chalk.cyan("Coverage")); }
         {
-          const covFormats = config.personas?.outputFormats ?? [];
+          // A5: was `?? []` — Coverage iterated over zero platforms and printed
+          // clean for every hub that omits personas.outputFormats.
+          const covFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
           const narrow = countNarrowlyScopedInstructions(
             [path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions")],
             config.instructions?.enabled,
@@ -1561,7 +1563,8 @@ program
           // against a config declaring one (observed 2026-08-08).
           Boolean(config.compliance?.inputScan?.scannerCommand) ||
           hardArtifacts.length > 0;
-        const enforcementFormats = config.personas?.outputFormats ?? [];
+        // A5: was `?? []` — same absent-gate defect as Coverage above.
+        const enforcementFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
         // D2: the classification is the conformance harness's SSOT — doctor
         // reads the same table `agentboot conformance` tests empirically.
         const ENFORCEMENT_LEVELS = PLATFORM_ENFORCEMENT;
@@ -1856,7 +1859,7 @@ program
 
     const enabledPersonas = config.personas?.enabled ?? [];
     const enabledTraits = config.traits?.enabled ?? [];
-    const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+    const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
     const targetDir = config.sync?.targetDir ?? ".claude";
 
     // Load repos
@@ -2394,7 +2397,9 @@ program
       process.exit(1);
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
-    const configured = config.personas?.outputFormats ?? ["claude"];
+    // A5: was `?? ["claude"]` — conformance tested one platform where the build
+    // produces three, so two thirds of the hub went unprobed and reported clean.
+    const configured = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
     const platforms = opts["platform"] ? [opts["platform"] as string] : configured;
 
     const run = runConformance(distPath, platforms, config, pkg.version);

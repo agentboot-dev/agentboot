@@ -45,6 +45,8 @@ import {
   DEFAULT_WEIGHT,
   WEIGHT_MAP,
   agentbootNpxSpec,
+  DEFAULT_OUTPUT_FORMATS,
+  VALID_OUTPUT_FORMATS,
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
@@ -919,9 +921,10 @@ function compilePersona(
     personaName
   );
 
-  // "agents" (AGENTS.md) is a first-class official output — the fallback must
-  // agree with the install/export defaults, which always include it.
-  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot", "agents"];
+  // A5: one default, imported. This site used to add "agents" to the fallback
+  // while main() did not, so a config omitting personas.outputFormats compiled
+  // per-persona output for a platform the build never announced or pruned.
+  const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
   const platforms: string[] = [];
 
   // Write to dist/{platform}/{scopePath}/{persona}/ (or skills/{name}/ for claude)
@@ -1942,7 +1945,9 @@ function generateCrossPlatformMcpConfigs(
   distPath: string,
   scopePath: string,
 ): void {
-  const outputFormats = config.personas?.outputFormats ?? [];
+  // A5: was `?? []` — an omitted personas.outputFormats silently emitted NO
+  // cross-platform MCP config while the build reported success.
+  const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
   const abMcpEntry = { command: "npx", args: [agentbootNpxSpec(), "mcp-server"] };
 
   if (outputFormats.includes("cursor")) {
@@ -3355,8 +3360,8 @@ function main(): void {
   const packageTraitsDir = path.join(packageCoreDir, "traits");
   const packageInstructionsDir = path.join(packageCoreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains", "codex"];
-  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+  const validFormats = [...VALID_OUTPUT_FORMATS];
+  const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
   // Every valid output format MUST have an enforcement classification. Without
   // this assertion the two lists drift silently, and a format present in one but
   // not the other is precisely how the capability gate failed open on `plugin`.
