@@ -321,6 +321,182 @@ describe("B8: merged managed artifacts per scope", () => {
       fs.rmSync(hub, { recursive: true, force: true });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // F-5: org hooks were silently dropped from the MDM deployable.
+  //
+  // The control survived in dist/claude/core/settings.json — the project-level,
+  // developer-OVERRIDABLE file — and vanished from dist/managed/scopes/*, the
+  // channel a developer cannot override. Present exactly where it can be
+  // bypassed, absent where it cannot.
+  //
+  // `grep -rn requireAuditLog tests/` returned nothing before this block: the
+  // entire code path was untested, which is why it shipped.
+  // -------------------------------------------------------------------------
+
+  const ORG_HOOKS = {
+    PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/opt/org/block-dangerous.sh", timeout: 5000 }] }],
+    SubagentStart: [{ matcher: "", hooks: [{ type: "command", command: "/opt/org/org-audit.sh", timeout: 3000 }] }],
+  };
+  const mergedCore = (hub: string) => JSON.parse(fs.readFileSync(
+    path.join(hub, "dist", "managed", "scopes", "core", "managed-settings.json"), "utf-8"));
+  const commandsFor = (hooks: Record<string, any[]>, event: string): string[] =>
+    (hooks[event] ?? []).flatMap((g: any) => (g.hooks ?? []).map((h: any) => h.command)).sort();
+
+  it("F5-T1: org hooks survive alongside the guardrail telemetry hooks", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      claude: { hooks: ORG_HOOKS, permissions: { deny: ["WebFetch"] } },
+      managed: { enabled: true, guardrails: { requireAuditLog: true, denyTools: ["curl*"] } },
+    });
+    try {
+      const out = run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      const core = mergedCore(hub);
+      expect(Object.keys(core.hooks).sort()).toEqual(["PreToolUse", "SubagentStart", "SubagentStop"]);
+      expect(commandsFor(core.hooks, "PreToolUse")).toContain("/opt/org/block-dangerous.sh");
+      // THE assertion a naive `{...base.hooks, ...org.hooks}` fix fails: both
+      // sides declare SubagentStart, so an event-level spread still destroys one.
+      expect(core.hooks.SubagentStart).toHaveLength(2);
+      expect(commandsFor(core.hooks, "SubagentStart")).toEqual([
+        ".claude/hooks/agentboot-telemetry.sh", "/opt/org/org-audit.sh",
+      ]);
+      expect(commandsFor(core.hooks, "SubagentStop")).toContain(".claude/hooks/agentboot-telemetry.sh");
+      expect(out).toContain("hooks unioned across 3 event(s)");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("F5-T2 (NEGATIVE): without requireAuditLog nothing collides, and nothing is said", () => {
+    // The control that proves the fix does not fire on the common path.
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      claude: { hooks: ORG_HOOKS, permissions: { deny: ["WebFetch"] } },
+      managed: { enabled: true, guardrails: { denyTools: ["curl*"] } },
+    });
+    try {
+      const out = run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      const core = mergedCore(hub);
+      expect(Object.keys(core.hooks).sort()).toEqual(["PreToolUse", "SubagentStart"]);
+      expect(core.hooks.SubagentStart).toHaveLength(1);
+      expect(out).not.toContain("discards a configured value");
+      // Only one fragment contributed hooks — the union line would be noise.
+      expect(out).not.toContain("hooks unioned");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("F5-T3: a hand-declared telemetry hook is deduped, not double-fired", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      claude: {
+        hooks: {
+          SubagentStart: [{ matcher: "", hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh", timeout: 3000, async: true }] }],
+        },
+      },
+      managed: { enabled: true, guardrails: { requireAuditLog: true } },
+    });
+    try {
+      run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      const core = mergedCore(hub);
+      // Without dedupe the MDM file fires the telemetry hook twice on every
+      // subagent start. Nothing in validate prevents the double declaration.
+      expect(core.hooks.SubagentStart).toHaveLength(1);
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("F5-T4: an unacknowledged differing-value collision FAILS the build", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      groups: { platform: { teams: ["api"], enabledPlugins: [{ url: "https://org/plug-B" }] } },
+      claude: { settings: { enabledPlugins: [{ url: "https://org/plug-A" }] } },
+      managed: { enabled: true },
+    });
+    fs.mkdirSync(path.join(hub, "nodes", "platform", "personas"), { recursive: true });
+    try {
+      let status = 0; let out = "";
+      try {
+        out = run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      } catch (e: any) {
+        // execSync throws on non-zero — read .status, never `$?` through a pipe.
+        status = e.status; out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+      }
+      expect(status).toBe(1);
+      expect(out).toContain("discards a configured value");
+      expect(out).toContain("enabledPlugins");
+      expect(out).toContain("plug-A");   // kept
+      expect(out).toContain("plug-B");   // discarded
+      expect(out).toContain("guardrails");
+      expect(out).toContain("10-group(platform)");
+      expect(out).toContain("acknowledgedOverrides");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("F5-T5: acknowledging the override warns (naming both values) and passes", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      groups: { platform: { teams: ["api"], enabledPlugins: [{ url: "https://org/plug-B" }] } },
+      claude: { settings: { enabledPlugins: [{ url: "https://org/plug-A" }] } },
+      managed: { enabled: true, scopeMerge: { acknowledgedOverrides: ["enabledPlugins"] } },
+    });
+    fs.mkdirSync(path.join(hub, "nodes", "platform", "personas"), { recursive: true });
+    try {
+      const out = run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      expect(out).toContain("⚠");
+      expect(out).toContain("enabledPlugins");
+      expect(out).toContain("plug-A");
+      expect(out).toContain("plug-B");
+      expect(out).toContain("acknowledged");
+      expect(out).not.toContain("Build failed");
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("F5-T6: the node-scope artifact carries all three hook events too", () => {
+    const hub = mkHub({
+      ...BASE_CONFIG,
+      groups: { platform: { teams: ["api"], permissions: { deny: ["WebSearch"] } } },
+      claude: { hooks: ORG_HOOKS },
+      managed: { enabled: true, guardrails: { requireAuditLog: true } },
+    });
+    fs.mkdirSync(path.join(hub, "nodes", "platform", "personas"), { recursive: true });
+    try {
+      run(`scripts/compile.ts --config ${path.join(hub, "agentboot.config.json")}`);
+      const node = JSON.parse(fs.readFileSync(
+        path.join(hub, "dist", "managed", "scopes", "nodes", "platform", "managed-settings.json"), "utf-8"));
+      expect(Object.keys(node.hooks).sort()).toEqual(["PreToolUse", "SubagentStart", "SubagentStop"]);
+      expect(node.hooks.SubagentStart).toHaveLength(2);
+    } finally {
+      fs.rmSync(hub, { recursive: true, force: true });
+    }
+  });
+
+  it("F5-T7: the merged artifact is byte-identical across two builds", () => {
+    // It is hashed into the signed manifest; a non-deterministic union would
+    // surface as phantom drift in drift-check.
+    const cfg = {
+      ...BASE_CONFIG,
+      claude: { hooks: ORG_HOOKS, permissions: { deny: ["WebFetch"], allow: ["Read"] } },
+      managed: { enabled: true, guardrails: { requireAuditLog: true, denyTools: ["curl*"] } },
+    };
+    const a = mkHub(cfg); const b = mkHub(cfg);
+    try {
+      run(`scripts/compile.ts --config ${path.join(a, "agentboot.config.json")}`);
+      run(`scripts/compile.ts --config ${path.join(b, "agentboot.config.json")}`);
+      const rel = path.join("dist", "managed", "scopes", "core", "managed-settings.json");
+      expect(fs.readFileSync(path.join(a, rel), "utf-8"))
+        .toBe(fs.readFileSync(path.join(b, rel), "utf-8"));
+    } finally {
+      fs.rmSync(a, { recursive: true, force: true });
+      fs.rmSync(b, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

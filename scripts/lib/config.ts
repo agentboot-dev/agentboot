@@ -356,9 +356,29 @@ export interface ManagedConfig {
   platform?: "jamf" | "intune" | "jumpcloud" | "kandji" | "other";
   /** Custom output path for managed settings */
   outputPath?: string;
+  /**
+   * F-5: scope-merge overrides the operator has reviewed and accepted.
+   *
+   * When two managed-settings fragments declare the same key with DIFFERENT
+   * values, the higher scope wins and the lower value is discarded. On the MDM
+   * channel — the non-overridable one — a silently discarded control is a
+   * compliance hole with a green build and a signed manifest, so the build
+   * fails. Listing the key here says "I know, that override is intended."
+   *
+   * Keys are top-level managed-settings key names (e.g. "cleanupPeriodDays").
+   * `permissions` and `hooks` never appear here: both are UNIONED, so nothing
+   * is discarded and there is nothing to acknowledge. `"*"` is rejected — the
+   * point is that each accepted loss is enumerated.
+   */
+  scopeMerge?: { acknowledgedOverrides?: string[] };
   /** HARD guardrails to enforce via managed settings */
   guardrails?: {
-    /** Force-install specific plugins */
+    /**
+     * NOT IMPLEMENTED. Typed, documented, and read by no code path on any
+     * platform — see CAPABILITY_SUPPORT row `managed.guardrails.forcePlugins`,
+     * which fails the build when this is set. Kept only so that failure is
+     * explicable; implement it or delete it.
+     */
     forcePlugins?: string[];
     /** Deny these tool patterns */
     denyTools?: string[];

@@ -54,6 +54,7 @@ import {
   countNarrowlyScopedInstructions, countScopedGotchas,
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
+import { mergeManagedFragments, type MergeConflict, type MergeResult } from "./lib/managed-merge.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 
 // ---------------------------------------------------------------------------
@@ -2931,6 +2932,7 @@ function generateTelemetrySchema(distPath: string): void {
 function generateMergedManagedArtifacts(
   distPath: string,
   nodePaths: string[],
+  config: AgentBootConfig,
 ): void {
   const readFragment = (p: string): Record<string, unknown> | null => {
     if (!fs.existsSync(p)) return null;
@@ -2942,55 +2944,46 @@ function generateMergedManagedArtifacts(
   const guardrailBase = readFragment(path.join(distPath, "managed", "managed-settings.json")) ?? {};
   const orgFragment = readFragment(path.join(distPath, "claude", "core", "managed-settings.d", "00-org.json")) ?? {};
 
-  const mergePermissions = (
-    higher: Record<string, unknown> | undefined,
-    lower: Record<string, unknown> | undefined,
-  ): Record<string, unknown> | undefined => {
-    if (!higher && !lower) return undefined;
-    const merged: Record<string, unknown> = { ...(lower ?? {}), ...(higher ?? {}) };
-    for (const key of ["deny", "allow"] as const) {
-      const h = (higher?.[key] as string[] | undefined) ?? [];
-      const l = (lower?.[key] as string[] | undefined) ?? [];
-      const union = [...new Set([...h, ...l])];
-      if (union.length > 0) merged[key] = union;
-    }
-    return merged;
-  };
+  // F-5: the acknowledgement register. `permissions` and `hooks` never appear
+  // here — both are UNIONED, so nothing is discarded and there is nothing to
+  // acknowledge.
+  const acknowledgedOverrides = config.managed?.scopeMerge?.acknowledgedOverrides ?? [];
+  if (acknowledgedOverrides.includes("*")) {
+    fatal(
+      "managed.scopeMerge.acknowledgedOverrides may not contain \"*\".\n" +
+      "  The point is that each accepted loss is ENUMERATED and reviewable in the hub PR diff.",
+    );
+  }
 
-  /** Merge fragments ordered from HIGHEST precedence to lowest. */
-  const mergeScopes = (ordered: Array<Record<string, unknown>>): Record<string, unknown> => {
-    const merged: Record<string, unknown> = {};
-    // Apply lowest precedence first so higher scopes overwrite.
-    for (const frag of [...ordered].reverse()) {
-      for (const [k, v] of Object.entries(frag)) {
-        if (k.startsWith("//")) continue;
-        if (k === "permissions") continue; // handled below
-        merged[k] = v;
-      }
-    }
-    const permissions = ordered
-      .map((f) => f["permissions"] as Record<string, unknown> | undefined)
-      .filter((p): p is Record<string, unknown> => p !== undefined)
-      .reduce<Record<string, unknown> | undefined>((acc, p) => mergePermissions(acc, p), undefined);
-    if (permissions) merged["permissions"] = permissions;
-    return merged;
-  };
+  const allConflicts: Array<{ scope: string; conflict: MergeConflict }> = [];
 
-  const writeMerged = (scope: string, merged: Record<string, unknown>, sources: string[]): void => {
-    if (Object.keys(merged).length === 0) return;
+  const writeMerged = (scope: string, result: MergeResult, sources: string[]): void => {
+    for (const c of result.conflicts) allConflicts.push({ scope: `scopes/${scope}`, conflict: c });
+    if (Object.keys(result.merged).length === 0) return;
     const outDir = path.join(distPath, "managed", "scopes", scope);
     ensureDir(outDir);
     fs.writeFileSync(
       path.join(outDir, "managed-settings.json"),
-      JSON.stringify(merged, null, 2) + "\n",
+      JSON.stringify(result.merged, null, 2) + "\n",
       "utf-8"
     );
     log(chalk.gray(`  → Merged managed artifact: scopes/${scope} (${sources.join(" + ")})`));
+    // Silence Is Not Success: a successful merge reports the composition it
+    // PERFORMED, not merely that it happened.
+    if (result.unionedHookEvents.length > 0) {
+      log(chalk.gray(
+        `      hooks unioned across ${result.unionedHookEvents.length} event(s): ${result.unionedHookEvents.join(", ")}`,
+      ));
+    }
+    const { deny, allow } = result.permissionCounts;
+    if (deny > 0 || allow > 0) {
+      log(chalk.gray(`      permissions.deny unioned: ${deny} rule(s) · permissions.allow unioned: ${allow} rule(s)`));
+    }
   };
 
   // Core scope: guardrail base wins over the org fragment (both org-authored;
   // the guardrail channel is the harder statement of intent).
-  writeMerged("core", mergeScopes([guardrailBase, orgFragment]), ["guardrails", "00-org"]);
+  writeMerged("core", mergeManagedFragments([guardrailBase, orgFragment], ["guardrails", "00-org"]), ["guardrails", "00-org"]);
 
   for (const nodePath of nodePaths) {
     const parts = nodePath.split("/");
@@ -3007,9 +3000,71 @@ function generateMergedManagedArtifacts(
       }
     }
     if (fragments.length > 2) {
-      writeMerged(`nodes/${nodePath}`, mergeScopes(fragments), sources);
+      writeMerged(`nodes/${nodePath}`, mergeManagedFragments(fragments, sources), sources);
     }
   }
+
+  // F-5 §2.2: report every scope in ONE run. An operator with a conflict in
+  // scopes/core and scopes/nodes/platform/api should see both, not fix them one
+  // build at a time.
+  if (allConflicts.length === 0) return;
+
+  const unacked = allConflicts.filter((c) => !acknowledgedOverrides.includes(c.conflict.key));
+  const acked = allConflicts.filter((c) => acknowledgedOverrides.includes(c.conflict.key));
+
+  const fmt = (v: unknown) => JSON.stringify(v);
+
+  for (const { scope, conflict } of acked) {
+    // An acknowledged loss is STILL a loss — name winner, loser and both sources.
+    for (const d of conflict.discarded) {
+      log(chalk.yellow(
+        `  ⚠ ${scope}: ${conflict.key} — kept ${fmt(conflict.keptValue)} (${conflict.keptSource}), ` +
+        `discarded ${fmt(d.value)} (${d.source}) — acknowledged in managed.scopeMerge.acknowledgedOverrides.`,
+      ));
+    }
+  }
+
+  if (unacked.length === 0) return;
+
+  for (const { scope, conflict } of unacked) {
+    log("");
+    log(chalk.red(`  ✗ Managed scope merge discards a configured value: ${scope}`));
+    log(chalk.red(`      ${conflict.key}`));
+    log(chalk.gray(`        kept      ${fmt(conflict.keptValue)}  (from ${conflict.keptSource})`));
+    for (const d of conflict.discarded) {
+      log(chalk.gray(`        discarded ${fmt(d.value)}  (from ${d.source})`));
+    }
+  }
+  log("");
+  log(chalk.gray(
+    `    dist/managed/scopes/<scope>/managed-settings.json is the file your MDM deploys and a`,
+  ));
+  log(chalk.gray(
+    `    developer cannot override. A value dropped here is a control that was authored,`,
+  ));
+  log(chalk.gray(`    validated and signed, and enforces nothing.`));
+  // The F-1 interaction: the guardrail base is read from DISK, so a hub that
+  // once set managed.enabled and later cleared it used to merge a stale base.
+  // Staging fixes that, but say so if the shape still appears.
+  if (!config.managed?.enabled) {
+    log(chalk.gray(
+      `    NOTE: managed.enabled is not set, yet a guardrail base was present — if dist/ predates`,
+    ));
+    log(chalk.gray(`    this release, the remedy is \`rm -rf dist\`, not an acknowledgement.`));
+  }
+  log("");
+  log(chalk.gray(`    Fix by making the two scopes agree, or — if the override is intended — add`));
+  log(chalk.gray(`    to agentboot.config.json:`));
+  log(chalk.gray(
+    `      "managed": { "scopeMerge": { "acknowledgedOverrides": [${[...new Set(unacked.map((c) => `"${c.conflict.key}"`))].join(", ")}] } }`,
+  ));
+  log("");
+  log(chalk.red(
+    `  ✗ Build failed: ${unacked.length} key(s) discarded by the managed scope merge ` +
+    `(${[...new Set(unacked.map((c) => c.scope))].join(", ")}).`,
+  ));
+  log("");
+  process.exit(1);
 }
 
 /**
@@ -4040,7 +4095,7 @@ function main(): void {
   // B8: single deployable managed artifact per scope, merged from the fragments
   if (outputFormats.includes("claude")) {
     const mergeNodePaths = scopeNodes ? flattenNodes(scopeNodes).map((n) => n.path) : [];
-    generateMergedManagedArtifacts(distPath, mergeNodePaths);
+    generateMergedManagedArtifacts(distPath, mergeNodePaths, config);
   }
 
   // ---------------------------------------------------------------------------

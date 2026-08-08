@@ -335,6 +335,7 @@ Generates a managed-settings artifact (Claude Code only) for MDM distribution.
 | `managed.enabled` | boolean | Enable managed-settings generation. |
 | `managed.platform` | `"jamf"\|"intune"\|"jumpcloud"\|"kandji"\|"other"` | MDM target. |
 | `managed.outputPath` | string | Custom output path. |
+| `managed.scopeMerge.acknowledgedOverrides` | string[] | Top-level managed-settings keys whose cross-scope override is intended. Without this the build fails on a differing-value collision. `permissions`/`hooks` are unioned and never belong here; `"*"` is rejected. |
 | `managed.guardrails.forcePlugins` | string[] | **NOT IMPLEMENTED — accepted, typed, and read by no code path on any platform.** Setting it now FAILS the build (see the capability gate below); this row is retained only so the failure is explicable. Flagged for a product decision: implement it, or delete the key and the type. |
 | `managed.guardrails.denyTools` | string[] | Tool patterns to deny. |
 | `managed.guardrails.requireAuditLog` | boolean | Require audit logging. |
@@ -358,11 +359,34 @@ Deployment flow:
 2. **Per-team policy:** the build performs the merge for you — every scope with policy
    gets a single deployable file at `dist/managed/scopes/<scope>/managed-settings.json`
    (e.g. `scopes/core/` for the org-wide fleet, `scopes/nodes/platform/api/` for a team
-   segment). Merge semantics: `permissions.deny` and `permissions.allow` are the UNION
-   across scopes (a team can add denies, never remove the org's), and every other key is
-   won by the higher scope (org over group over team). Deploy the merged file for each
-   fleet segment; the `managed-settings.d/` fragments remain available as the reviewable
-   composition inputs.
+   segment). Merge semantics:
+
+   - **`permissions.deny` / `permissions.allow` — UNION across scopes.** A team can add
+     denies, never remove the org's.
+   - **`hooks` — UNION across scopes, per event, over the entry arrays.** Both authors'
+     hooks run. There is no such thing as "overriding" a hook downward: a higher scope
+     declaring its own hook does not contradict a lower scope's, and union is the only
+     semantics under which both survive. Identical entries are deduplicated, so
+     hand-declaring the telemetry hook alongside `requireAuditLog` does not double-fire it.
+   - **Every other key is won by the higher scope** (org over group over team) — but a
+     collision on **differing values now FAILS the build**. This file is the channel a
+     developer cannot override; a value silently dropped here is a control that was
+     authored, validated and signed, and enforces nothing. Identical values in two
+     fragments are normal (`claude.settings` is copied into both) and are never reported.
+
+   If the override is intended, enumerate it:
+
+   ```json
+   "managed": { "scopeMerge": { "acknowledgedOverrides": ["cleanupPeriodDays"] } }
+   ```
+
+   The loss is then reported as a warning naming the winner, the loser and both sources —
+   an acknowledged loss is still a loss. `"*"` is rejected; the point is that each accepted
+   loss is enumerated and reviewable in the hub PR diff. `permissions` and `hooks` never
+   appear here, because nothing is discarded for them.
+
+   Deploy the merged file for each fleet segment; the `managed-settings.d/` fragments
+   remain available as the reviewable composition inputs.
 3. **Verify after deployment** on one managed machine: start a Claude Code session and
    confirm (a) a denied tool from `guardrails.denyTools` is actually blocked, and
    (b) `--dangerously-skip-permissions` is rejected if `disableBypassPermissions` is set.

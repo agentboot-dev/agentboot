@@ -10,6 +10,19 @@ full PR-level detail; this file is the curated, human-readable summary.
 ## [Unreleased]
 
 ### Fixed
+- **Org-declared `claude.hooks` no longer vanish from the MDM deployable.** When
+  `managed.guardrails.requireAuditLog` was also set, `mergeScopes` overwrote the whole `hooks`
+  object, so `dist/managed/scopes/*/managed-settings.json` — the file an MDM deploys and a developer
+  cannot override — lost every event the org declared. The control survived in
+  `dist/claude/core/settings.json`, the project-level file a developer *can* override: present
+  exactly where it can be bypassed, absent where it cannot. `hooks` is now unioned per event over the
+  entry arrays, so an event declared by BOTH sides (`SubagentStart`: the org's audit hook and the
+  generated telemetry hook) keeps both. Identical entries are deduplicated.
+- **A differing-value collision in the managed scope merge now FAILS the build.** Unioning `hooks`
+  fixed the one key where losing data was never intended; it did not fix the shallow overwrite as a
+  class. Acknowledge an intended override with `managed.scopeMerge.acknowledgedOverrides` — the loss
+  is then reported as a warning naming winner, loser and both sources, because an acknowledged loss
+  is still a loss.
 - **Configured capabilities no longer vanish silently.** `compile` decided emission with eleven
   independent `outputFormats.includes(...)` tests scattered across 3,000 lines; each `if` was
   defensible and the `else` was empty everywhere. Eight capabilities — an org `PreToolUse` gate, a
