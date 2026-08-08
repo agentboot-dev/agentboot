@@ -845,7 +845,7 @@ function checkPolicyExceptions(configDir: string): CheckResult {
 // ---------------------------------------------------------------------------
 
 function checkHardGuardrails(_config: AgentBootConfig, configDir: string): CheckResult {
-  const result = check("HARD guardrails — lower scopes cannot override HARD artifacts");
+  const result = check("HARD guardrail override protection — no lower scope shadows or downgrades a HARD artifact (does NOT test whether any target can enforce it — see `doctor`)");
 
   // Scan instruction and trait files for guardrail: hard frontmatter
   const hardArtifacts = new Map<string, string>(); // name → scope

@@ -48,6 +48,7 @@ import {
 } from "./lib/config.js";
 import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
+import { inspectArtifact, unenforceableFormats } from "./lib/guardrail-scan.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -3450,38 +3451,77 @@ function main(): void {
     log(chalk.green("  → dist/copilot/.github/hooks/"));
   }
 
-  // Phase 11 C1.4: Write HARD guardrail artifacts to dist/managed/
+  // Phase 11 C1.4 + capability gate (2026-08-08): write HARD guardrail artifacts to
+  // dist/managed/, AND refuse to emit them to targets that cannot enforce anything.
+  //
+  // A directive the target cannot enforce, silently omitted, is a compliance hole
+  // with a green build and a signed manifest. That is the worst failure mode a
+  // governance product has, so it is an error rather than a warning. The escape
+  // hatch is per-artifact `advisory-on-unenforceable: acknowledged`.
+  // See docs/research/defect-hard-guardrail-silent-downgrade.md
   {
     const managedOutDir = path.join(distPath, "managed");
-    let hardCount = 0;
+    const hardArtifacts: { name: string; acknowledged: boolean }[] = [];
 
-    // Scan instructions for guardrail: hard
     const instrDirs = [coreInstructionsDir, packageInstructionsDir];
     for (const dir of instrDirs) {
       if (!fs.existsSync(dir)) continue;
       for (const file of fs.readdirSync(dir).filter(f => f.endsWith(".md"))) {
         const content = fs.readFileSync(path.join(dir, file), "utf-8");
-        const fm = content.match(/^---\n([\s\S]*?)\n---/);
-        if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
-          ensureDir(path.join(managedOutDir, "instructions"));
-          fs.writeFileSync(path.join(managedOutDir, "instructions", file), content, "utf-8");
-          hardCount++;
+        const r = inspectArtifact(content);
+        if (!r.hard) continue;
+        ensureDir(path.join(managedOutDir, "instructions"));
+        fs.writeFileSync(path.join(managedOutDir, "instructions", file), content, "utf-8");
+        hardArtifacts.push({ name: file.replace(/\.md$/, ""), acknowledged: r.acknowledgedAdvisory });
+      }
+    }
+
+    for (const [name, trait] of traits) {
+      const r = inspectArtifact(trait.content);
+      if (!r.hard) continue;
+      ensureDir(path.join(managedOutDir, "traits"));
+      fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.content, "utf-8");
+      hardArtifacts.push({ name, acknowledged: r.acknowledgedAdvisory });
+    }
+
+    if (hardArtifacts.length > 0) {
+      log(chalk.gray(`  → ${hardArtifacts.length} HARD guardrail artifact(s) written to dist/managed/`));
+
+      const advisory = unenforceableFormats(outputFormats);
+      if (advisory.length > 0) {
+        const unacked = hardArtifacts.filter(a => !a.acknowledged);
+        const acked = hardArtifacts.filter(a => a.acknowledged);
+
+        if (acked.length > 0) {
+          log(chalk.yellow(
+            `  ⚠ ${acked.length} HARD artifact(s) are advisory-only on ${advisory.join(", ")} ` +
+            `— acknowledged by the author, delivered as instructions.`
+          ));
+        }
+
+        if (unacked.length > 0) {
+          log("");
+          log(chalk.red(`  ✗ HARD guardrails cannot be enforced on: ${advisory.join(", ")}`));
+          for (const a of unacked) log(chalk.red(`      ${a.name}`));
+          log(chalk.gray(
+            `    These targets have no enforcement mechanism, so the artifact would ship as ` +
+            `ordinary advisory prose — indistinguishable from a soft preference, behind a signed manifest.`
+          ));
+          log(chalk.gray(
+            `    Fix by removing the unenforceable target from personas.outputFormats, or — if advisory ` +
+            `delivery is genuinely intended — add to the artifact's frontmatter:`
+          ));
+          log(chalk.gray(`      advisory-on-unenforceable: acknowledged`));
+          log(chalk.red(
+            `  ✗ Build failed: ${unacked.length} HARD guardrail artifact(s) target platforms that ` +
+            `cannot enforce them (${advisory.join(", ")}).`
+          ));
+          log("");
+          // Expected validation failure, not a crash — matches the exit convention
+          // used by every other fatal check in this file.
+          process.exit(1);
         }
       }
-    }
-
-    // Scan traits for guardrail: hard
-    for (const [name, trait] of traits) {
-      const fm = trait.content.match(/^---\n([\s\S]*?)\n---/);
-      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
-        ensureDir(path.join(managedOutDir, "traits"));
-        fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.content, "utf-8");
-        hardCount++;
-      }
-    }
-
-    if (hardCount > 0) {
-      log(chalk.gray(`  → ${hardCount} HARD guardrail artifact(s) written to dist/managed/`));
     }
   }
 

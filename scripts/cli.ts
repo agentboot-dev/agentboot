@@ -35,6 +35,7 @@ import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, t
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
+import { findHardArtifacts } from "./lib/guardrail-scan.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -1356,16 +1357,32 @@ program
         // which output platforms can actually enforce it and which only receive
         // instructions. Ambiguity here is how compliance theater happens.
         if (!isJson) { console.log(""); console.log(chalk.cyan("Enforcement")); }
+        // The trigger reads BOTH planes. `guardrail: hard` is an ARTIFACT-level
+        // declaration, and deriving this from config keys alone is what let a HARD
+        // guardrail ship to platforms that cannot enforce it behind a green report
+        // (confirmed 2026-08-07). Same scan the compiler uses.
+        const hardArtifacts = findHardArtifacts({
+          instructions: [path.join(cwd, "core", "instructions")],
+          traits: [path.join(cwd, "core", "traits")],
+        });
         const hasHardPolicy =
           Boolean(config.managed?.enabled) ||
           Boolean(config.managed?.guardrails?.denyTools?.length) ||
           Boolean(config.claude?.permissions?.deny?.length) ||
-          Boolean(config.compliance?.outputScan?.blocking);
+          Boolean(config.compliance?.outputScan?.blocking) ||
+          hardArtifacts.length > 0;
         const enforcementFormats = config.personas?.outputFormats ?? [];
         // D2: the classification is the conformance harness's SSOT — doctor
         // reads the same table `agentboot conformance` tests empirically.
         const ENFORCEMENT_LEVELS = PLATFORM_ENFORCEMENT;
         if (hasHardPolicy) {
+          if (hardArtifacts.length > 0) {
+            const acked = hardArtifacts.filter(a => a.acknowledgedAdvisory).length;
+            ok(
+              `${hardArtifacts.length} artifact(s) declare \`guardrail: hard\`` +
+              (acked > 0 ? ` (${acked} acknowledged as advisory-only on unenforceable targets)` : "")
+            );
+          }
           for (const fmt of enforcementFormats) {
             const e = ENFORCEMENT_LEVELS[fmt];
             if (!e) continue;

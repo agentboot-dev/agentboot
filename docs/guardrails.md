@@ -142,3 +142,37 @@ A control it cannot probe is reported `untested`, never as passing.
 - [Configuration](./configuration.md) — the full `managed` and `claude` blocks
 - [Platform capability matrix](./platform-capability-matrix.md) — what each platform enforces
 - [Assurance claims](./assurance-claims.md) — every claim on this page and the probe backing it
+
+## Targets that cannot enforce
+
+`guardrail: hard` is a claim that a control is **mechanically enforced**. Not every platform can make
+that true — see [the platform capability matrix](platform-capability-matrix.md). Cursor, Windsurf,
+JetBrains, `AGENTS.md` and skill output are **instructions only**: nothing binds a hook, so nothing
+blocks.
+
+**Building a HARD artifact for one of those targets fails the build.** A directive the target cannot
+enforce, silently emitted as ordinary prose, is a compliance hole with a green build and a signed
+manifest — the artifact would be byte-indistinguishable from a soft preference while the manifest
+attested it arrived intact.
+
+Two ways to resolve it:
+
+1. **Remove the unenforceable target** from `personas.outputFormats`, or
+2. **Acknowledge advisory delivery** on the artifact, when reaching those agents with guidance is
+   genuinely the intent:
+
+```markdown
+---
+description: Never log PHI to any sink
+applyTo: "**/*"
+guardrail: hard
+advisory-on-unenforceable: acknowledged
+---
+```
+
+The artifact still ships; the build warns instead of failing, and names the advisory targets. The
+acknowledgement is per-artifact on purpose — a global switch would let one decision quietly cover
+future artifacts nobody reconsidered.
+
+`agentboot doctor` reports the same thing from the other direction: it now counts artifacts declaring
+`guardrail: hard`, not just `managed` config keys, and warns per target that cannot enforce them.
