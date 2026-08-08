@@ -125,6 +125,44 @@ function stripYamlInlineComment(raw: string): string {
   return at === -1 ? raw : raw.slice(0, at).trimEnd();
 }
 
+/**
+ * C3: split a comma-separated glob list WITHOUT splitting inside a brace or
+ * bracket group.
+ *
+ * A naive `.split(",")` turns the entirely ordinary
+ *
+ *     applyTo: "src/**\/*.{ts,tsx}"
+ *
+ * into the two globs `src/**\/*.{ts` and `tsx}`, neither of which matches
+ * anything. Before `961bf25` this artifact was delivered always-on; after it, it
+ * is delivered scoped to two globs that match no file — so the rule reaches
+ * nothing. Exit 0, no diagnostic, and the failure mode moved from "applies
+ * everywhere" to "applies nowhere", which is quieter and therefore worse.
+ *
+ * Bracket groups `[...]` are tracked for the same reason: `*.[ch]` is legal and
+ * a comma inside a character class is a literal.
+ */
+function splitGlobList(value: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let braces = 0;
+  let brackets = 0;
+  for (const ch of value) {
+    if (ch === "{") braces++;
+    else if (ch === "}") braces = Math.max(0, braces - 1);
+    else if (ch === "[") brackets++;
+    else if (ch === "]") brackets = Math.max(0, brackets - 1);
+    if (ch === "," && braces === 0 && brackets === 0) {
+      out.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out.map((g) => g.trim()).filter(Boolean);
+}
+
 export function inspectScope(content: string): ScopeInspection {
   const fm = frontmatterBlock(content);
   // `=== null`, not falsy: an EMPTY frontmatter block ("---\n---") is a real
@@ -136,11 +174,7 @@ export function inspectScope(content: string): ScopeInspection {
   if (!m) return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null };
 
   const raw = stripYamlInlineComment(m[1]!.trim());
-  const globs = raw
-    .replace(/^["']|["']$/g, "")
-    .split(",")
-    .map((g) => g.trim())
-    .filter(Boolean);
+  const globs = splitGlobList(raw.replace(/^["']|["']$/g, ""));
 
   // A universal scope is not a scope. Losing it is a no-op, and treating it as
   // narrowing would fire the gate on every default install — which is how a

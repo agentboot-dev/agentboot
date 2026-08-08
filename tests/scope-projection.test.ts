@@ -465,3 +465,47 @@ describe("C2 — inline YAML comments in applyTo", () => {
     expect(inspectScope(`---\n---\n\n# body\n`)).toMatchObject({ globs: [], alwaysOn: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// C3 — `.split(",")` split INSIDE brace groups
+// ---------------------------------------------------------------------------
+
+describe("C3 — brace and bracket groups in an applyTo list", () => {
+  it("C3-1: a brace group survives as ONE glob", () => {
+    // `.split(",")` produced ["src/**/*.{ts", "tsx}"] — two globs that match no
+    // file, so the rule reached nothing. Exit 0, no diagnostic.
+    expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}"\n`)).globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+
+  it("C3-2: commas BETWEEN entries still split", () => {
+    expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}, docs/**/*.md"\n`)).globs)
+      .toEqual(["src/**/*.{ts,tsx}", "docs/**/*.md"]);
+  });
+
+  it("C3-3: nested braces are tracked, not merely detected", () => {
+    expect(inspectScope(fm(`applyTo: "src/{a,{b,c}}/**"\n`)).globs)
+      .toEqual(["src/{a,{b,c}}/**"]);
+  });
+
+  it("C3-4: a bracket character class is not split either", () => {
+    expect(inspectScope(fm(`applyTo: "src/*.[ch]"\n`)).globs).toEqual(["src/*.[ch]"]);
+  });
+
+  it("C3-5 (NEGATIVE): the plain multi-glob case is unchanged", () => {
+    // The regression risk of a hand-rolled splitter is that it stops splitting.
+    expect(inspectScope(fm(`applyTo: "src/api/**, src/db/**, lib/**"\n`)).globs)
+      .toEqual(["src/api/**", "src/db/**", "lib/**"]);
+  });
+
+  it("C3-6 (NEGATIVE): an unbalanced brace does not swallow the rest of the list", () => {
+    // Malformed input should degrade to something, not to one giant glob that
+    // silently matches nothing.
+    expect(inspectScope(fm(`applyTo: "src/{a/**, docs/**"\n`)).globs.length).toBeGreaterThan(0);
+  });
+
+  it("C3-7: a brace glob combined with a trailing comment (C2 + C3 together)", () => {
+    expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}"  # code only\n`)).globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+});
