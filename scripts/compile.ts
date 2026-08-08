@@ -3497,6 +3497,25 @@ function main(): void {
     process.exit(1);
   }
 
+  // B5: the third table gets the same assertion as the other two.
+  //
+  // PLATFORM_ENFORCEMENT and CAPABILITY_SUPPORT are both checked above for
+  // `validFormats ⊆ keys(...)`; APPLY_TO_PROJECTION was not, and it is the one
+  // whose gate FAILS CLOSED on an unknown format (degradedFormats treats a
+  // missing row as "unsupported"). So a format added to validFormats without a
+  // projection row would not fail loudly — it would make every scoped
+  // instruction targeting that format an error, on every build, with a message
+  // blaming the artifact rather than the missing row. That is how a gate gets
+  // switched off.
+  const unprojected = validFormats.filter((f) => !(f in APPLY_TO_PROJECTION));
+  if (unprojected.length > 0) {
+    log(chalk.red(`  ✗ Output format(s) with no applyTo-projection classification: ${unprojected.join(", ")}`));
+    log(chalk.gray(`    Add a row to APPLY_TO_PROJECTION in scripts/lib/scope-projection.ts.`));
+    log(chalk.gray(`    degradedFormats() fails closed on an unknown format, so the missing row would`));
+    log(chalk.gray(`    surface as a scope error on every artifact instead of as this message.`));
+    process.exit(1);
+  }
+
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
     console.error(chalk.red(`Unknown output format(s): ${unknownFormats.join(", ")}. Valid: ${validFormats.join(", ")}`));

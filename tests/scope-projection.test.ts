@@ -356,6 +356,7 @@ describe("emission — the unsupported tier degrades honestly", () => {
 
 import { frontmatterBlock, scopePreamble } from "../scripts/lib/scope-projection.js";
 import { inspectArtifact } from "../scripts/lib/guardrail-scan.js";
+import { VALID_OUTPUT_FORMATS } from "../scripts/lib/config.js";
 
 const C1_LF = `---\ndescription: x\napplyTo: "src/api/**"\n---\n\n# body\n`;
 const C1_CRLF = C1_LF.replace(/\n/g, "\r\n");
@@ -507,5 +508,26 @@ describe("C3 — brace and bracket groups in an applyTo list", () => {
   it("C3-7: a brace glob combined with a trailing comment (C2 + C3 together)", () => {
     expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}"  # code only\n`)).globs)
       .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B5 — APPLY_TO_PROJECTION was the one table with no coverage assertion
+// ---------------------------------------------------------------------------
+
+describe("B5 — every valid output format has a projection row", () => {
+  it("B5-1: VALID_OUTPUT_FORMATS ⊆ keys(APPLY_TO_PROJECTION)", () => {
+    // PLATFORM_ENFORCEMENT and CAPABILITY_SUPPORT both had this assertion at
+    // build start; this table did not. It is the one whose gate fails CLOSED on
+    // an unknown format, so a missing row would not fail loudly — it would make
+    // every scoped instruction targeting that format an error on every build,
+    // blaming the artifact instead of the missing row.
+    const missing = VALID_OUTPUT_FORMATS.filter((f) => !(f in APPLY_TO_PROJECTION));
+    expect(missing).toEqual([]);
+  });
+
+  it("B5-2: and no projection row names a format that is not valid", () => {
+    const stray = Object.keys(APPLY_TO_PROJECTION).filter((f) => !VALID_OUTPUT_FORMATS.includes(f));
+    expect(stray).toEqual([]);
   });
 });
