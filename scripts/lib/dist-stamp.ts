@@ -187,3 +187,21 @@ export function checkDistFreshness(distDir: string, config: unknown): DistFreshn
   }
   return { fresh: true, stamp };
 }
+
+/**
+ * One message shape for every consumer of `dist/`.
+ *
+ * `sync`, `drift-check` and `audit` all previously reported green against a
+ * stale tree, each for its own reason. Giving them three separately-worded
+ * refusals would be the same drift in a new costume — one formatter, three
+ * call sites.
+ */
+export function staleDistMessage(check: DistFreshness, command: string): string {
+  return (
+    `✗ refusing to run \`${command}\` against a stale dist/ — ${check.reason}\n` +
+    `      ${check.detail ?? ""}\n` +
+    `      A build that fails leaves the previous dist/ byte-identical, so the presence of\n` +
+    `      files is not evidence that they reflect current policy. Reporting on this tree\n` +
+    `      would report on the policy it REPLACED.`
+  );
+}

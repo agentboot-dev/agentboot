@@ -36,6 +36,7 @@ import {
   DEFAULT_OUTPUT_FORMATS,
   SYNCABLE_OUTPUT_FORMATS,
 } from "./lib/config.js";
+import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
 import { childScopeNames } from "./lib/scope-layout.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { hasBeenImported } from "./lib/import.js";
@@ -2005,6 +2006,20 @@ async function main(): Promise<void> {
         `✗ dist/ not found at ${distPath}\n  Run \`npm run build\` before syncing.`
       )
     );
+    process.exit(1);
+  }
+
+  // A2 / N1: existence is not freshness.
+  //
+  // The pre-existing check above asks "is there a dist?" — which is exactly the
+  // question that returned yes in the N1 repro, because a failed build leaves
+  // the previous tree byte-identical. Shipping from it ships the policy the
+  // operator just revoked, and signs it. Refuse, named, non-zero. This runs
+  // before the dry-run branch too: a plan derived from a stale tree is a plan
+  // for the wrong policy, and printing it as if it were current is the same lie.
+  const freshness = checkDistFreshness(distPath, config);
+  if (!freshness.fresh) {
+    console.error(chalk.red(staleDistMessage(freshness, "sync")));
     process.exit(1);
   }
 

@@ -234,3 +234,60 @@ describe("N1 integration: the build stamps its own outcome", () => {
     expect(checkDistFreshness(dist, readConfig(hub)).fresh).toBe(true);
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// Integration — the consumers refuse
+// ---------------------------------------------------------------------------
+
+function mkSpoke(base: string, name = "spoke"): string {
+  const spoke = path.join(base, name);
+  fs.mkdirSync(spoke, { recursive: true });
+  fs.writeFileSync(path.join(spoke, ".keep"), "");
+  spawnSync("git", ["init", "-q", "."], { cwd: spoke });
+  return spoke;
+}
+
+describe("N1 integration: sync / drift-check / audit refuse a stale dist/", () => {
+  it("I4: the exact N1 repro — revoke, build fails, sync must NOT report `no changes`", () => {
+    const { base, hub } = scaffoldHub("n1-sync");
+    mkSpoke(base);
+    fs.writeFileSync(
+      path.join(hub, "repos.json"),
+      JSON.stringify([{ name: "spoke", path: "../spoke", platform: "claude", scope: "core" }], null, 2),
+    );
+
+    expect(ab(["build"], hub).status).toBe(0);
+    // Precondition: sync works at all against a FRESH dist. Without this the
+    // test below cannot distinguish "the gate fired" from "sync was broken".
+    expect(ab(["sync"], hub).status).toBe(0);
+
+    // The operator revokes a control AND the rebuild fails.
+    editConfig(hub, (c) => {
+      c.instructions.enabled = ["baseline.instructions"];
+      c.personas.outputFormats = [...c.personas.outputFormats, "no-such-platform"];
+    });
+    expect(ab(["build"], hub).status).not.toBe(0);
+
+    const sync = ab(["sync"], hub);
+    expect(sync.status).toBe(1);
+    expect(sync.out).toContain("stale dist/");
+    // The old behaviour, verbatim, is what must NOT happen.
+    expect(sync.out).not.toMatch(/skipped \(no changes\)/);
+  }, 300_000);
+
+  it("I5: a dry run refuses too — a plan off a stale tree is a plan for the old policy", () => {
+    const { base, hub } = scaffoldHub("n1-dry");
+    mkSpoke(base);
+    fs.writeFileSync(
+      path.join(hub, "repos.json"),
+      JSON.stringify([{ name: "spoke", path: "../spoke", platform: "claude", scope: "core" }], null, 2),
+    );
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(ab(["sync", "--dry-run"], hub).status).toBe(0);
+
+    editConfig(hub, (c) => { c.instructions.enabled = ["baseline.instructions"]; });
+    const dry = ab(["sync", "--dry-run"], hub);
+    expect(dry.status).toBe(1);
+    expect(dry.out).toContain("config-stale");
+  }, 300_000);
+});
