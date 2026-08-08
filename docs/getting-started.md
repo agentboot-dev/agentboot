@@ -213,6 +213,25 @@ applyTo: "**"
 `applyTo` is a comma-separated glob list — `"**"` is always-on, `"src/api/**"` scopes it
 to a subtree. Keep the body short: it loads on every session and competes for context.
 
+**Scoping is not expressible everywhere.** Cursor, Windsurf and JetBrains receive the exact
+scope (translated to their native `globs:` / `trigger: glob` keys), and Copilot reads
+`applyTo` directly. Claude Code, Skill, plugin, AGENTS.md, Codex and Gemini have no scoping
+mechanism at all — a rule reaches them always-on. Because that is the *opposite* of what a
+narrow `applyTo` asks for, **the build fails** when a narrowly-scoped instruction targets one
+of those platforms. If always-on delivery is genuinely what you want, say so on the artifact:
+
+```markdown
+---
+description: "API layer rules"
+applyTo: "src/api/**"
+scope-unsupported: acknowledged
+---
+```
+
+The acknowledgement is not silence: the emitted file gains a `Scope:` preamble telling the
+agent which paths the rule is meant for, and every build reports the artifact. See
+[the platform capability matrix](/docs/platform-capability-matrix) for the per-platform table.
+
 ### Making it non-overridable
 
 By default an instruction is a **soft preference** — a team may adapt it. To make it a

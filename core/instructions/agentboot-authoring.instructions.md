@@ -1,6 +1,7 @@
 ---
 description: AgentBoot hub authoring conventions — how to create and edit personas, traits, gotchas, and lexicons
 applyTo: "core/**"
+scope-unsupported: acknowledged
 id: 01KZH2QM0CCJRF0EMPBHPBH8DA
 slug: agentboot-authoring
 hash: sha256:55f92dee8643a113
@@ -98,6 +99,7 @@ invocation: /review-code
 ---
 description: One-line summary of what this instruction enforces
 applyTo: "**"  # glob pattern for activation scope
+scope-unsupported: acknowledged
 ---
 ```
 

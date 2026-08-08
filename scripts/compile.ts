@@ -55,6 +55,10 @@ import {
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
 import { mergeManagedFragments, type MergeConflict, type MergeResult } from "./lib/managed-merge.js";
+import {
+  inspectScope, degradedFormats, scopeViolations, scopePreamble,
+  APPLY_TO_PROJECTION, type ScopedArtifact,
+} from "./lib/scope-projection.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 
 // ---------------------------------------------------------------------------
@@ -226,6 +230,17 @@ function swapDistAndReport(stagingPath: string, finalPath: string): void {
       ),
     );
   }
+}
+
+/**
+ * F-6: place a block AFTER the leading frontmatter (and therefore after the
+ * provenance header withProvenance inserts there), so frontmatter-first formats
+ * keep opening with the YAML delimiter.
+ */
+function insertAfterFrontmatter(text: string, block: string): string {
+  const m = text.match(/^---\n[\s\S]*?\n---\n*/);
+  if (!m) return `${block}\n${text}`;
+  return `${m[0]}${block}\n${text.slice(m[0].length)}`;
 }
 
 function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
@@ -1085,7 +1100,10 @@ function compileInstructions(
   distPath: string,
   scopePath: string,
   config: AgentBootConfig,
-  outputFormats: string[]
+  outputFormats: string[],
+  /** F-6: out-param collecting every enabled instruction's path scope, keyed
+   *  `<scope>/<name>` so the hub copy legitimately overwrites the package copy. */
+  scopeSeen?: Map<string, ScopedArtifact>,
 ): void {
   if (!fs.existsSync(instructionsDir)) {
     return;
@@ -1093,6 +1111,22 @@ function compileInstructions(
 
   const files = fs.readdirSync(instructionsDir).filter((f) => f.endsWith(".md"));
   const provenanceEnabled = config.output?.provenanceHeaders !== false;
+
+  // Collected BEFORE the platform loop, and independently of it: the loop skips
+  // agents/plugin/gemini/codex, so a build targeting only the unsupported tier
+  // would otherwise leave the gate blind on exactly the case it exists for.
+  if (scopeSeen) {
+    for (const file of files) {
+      const name = path.basename(file, ".md");
+      if (enabledInstructions && !enabledInstructions.includes(name)) continue;
+      const srcPath = path.join(instructionsDir, file);
+      const sc = inspectScope(fs.readFileSync(srcPath, "utf-8"));
+      scopeSeen.set(`${scopePath}/${name}`, {
+        name, file: srcPath, scopePath: sc.raw ?? "", globs: sc.globs,
+        acknowledgedUnscoped: sc.acknowledgedUnscoped,
+      });
+    }
+  }
 
   for (const platform of outputFormats) {
     if (platform === "agents" || platform === "plugin" || platform === "gemini" || platform === "codex") continue; // handled separately; gemini/codex inline instructions in their primary config file
@@ -1108,7 +1142,17 @@ function compileInstructions(
       // Phase 11 B2: Cursor instructions — use .mdc format with alwaysApply
       if (platform === "cursor") {
         const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-        const cursorContent = buildCursorRule(name, strippedContent, { alwaysApply: true });
+        // F-6: `alwaysApply: true` was HARDCODED here, so `applyTo: "src/api/**"`
+        // shipped as always-on, every file — the opposite of what was authored.
+        // buildCursorRule already accepted { globs, alwaysApply }; only the
+        // caller was missing. `alwaysApply: globs.length === 0` preserves the
+        // mutual-exclusivity invariant (globs XOR alwaysApply) asserted in
+        // tests/pipeline.test.ts.
+        const { globs } = inspectScope(content);
+        const cursorContent = buildCursorRule(name, strippedContent, {
+          globs: globs.length > 0 ? globs : undefined,
+          alwaysApply: globs.length === 0,
+        });
         const outDir = path.join(distPath, platform, scopePath, "rules");
         ensureDir(outDir);
         fs.writeFileSync(path.join(outDir, `${name}.mdc`), cursorContent, "utf-8");
@@ -1122,23 +1166,29 @@ function compileInstructions(
         // Modern format: .windsurf/rules/*.md with trigger frontmatter
         const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
         ensureDir(windsurfRulesDir);
-        const windsurfModern = [
-          "---",
-          "trigger: always_on",
-          `description: "${name}"`,
-          "---",
-          "",
-          strippedContent,
-          "",
-        ].join("\n");
-        fs.writeFileSync(path.join(windsurfRulesDir, `${name}.md`), windsurfModern, "utf-8");
-        // Legacy format: append to .windsurfrules
+        // F-6: `trigger: always_on` was a hardcoded string literal. Same shape
+        // compileGotchas already emits for this platform, ten lines away.
+        const { globs } = inspectScope(content);
+        const windsurfLines = ["---", `trigger: ${globs.length > 0 ? "glob" : "always_on"}`];
+        if (globs.length > 0) {
+          windsurfLines.push("globs:");
+          for (const g of globs) windsurfLines.push(`  - "${g}"`);
+        }
+        windsurfLines.push(`description: "${name}"`, "---", "", strippedContent, "");
+        fs.writeFileSync(path.join(windsurfRulesDir, `${name}.md`), windsurfLines.join("\n"), "utf-8");
+        // Legacy format: append to .windsurfrules. This file has no frontmatter
+        // and no scoping mechanism — a degraded channel of a translated
+        // platform — so the scope rides as prose. Dropping the block instead
+        // would be the same content-loss failure in the other direction.
         const windsurfDir = path.join(distPath, "windsurf", scopePath);
         ensureDir(windsurfDir);
         const rulesPath = path.join(windsurfDir, ".windsurfrules");
         const existing = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, "utf-8") : "";
         const separator = existing ? "\n---\n\n" : "";
-        fs.writeFileSync(rulesPath, `${existing}${separator}${strippedContent}\n`, "utf-8");
+        const legacyBody = globs.length > 0
+          ? `${scopePreamble(globs)}\n${strippedContent}`
+          : strippedContent;
+        fs.writeFileSync(rulesPath, `${existing}${separator}${legacyBody}\n`, "utf-8");
         continue;
       }
 
@@ -1162,6 +1212,29 @@ function compileInstructions(
         // .instructions.md) must open with the YAML delimiter — withProvenance
         // places the header after the frontmatter when present.
         finalContent = withProvenance(content, srcPath, config);
+      }
+
+      // F-6: project the path scope onto this platform.
+      const scope = inspectScope(content);
+      if (platform === "jetbrains" && APPLY_TO_PROJECTION["jetbrains"]?.support === "translated") {
+        // JetBrains reads `globs:`, not `applyTo:` — the key was written
+        // verbatim and was therefore inert. Rewrite the ONE line in place;
+        // regenerating the frontmatter would destroy the id/slug/hash identity
+        // stamp (decision-0005) that artifact-identity.test.ts asserts.
+        finalContent = scope.globs.length > 0
+          ? finalContent.replace(/^\s*applyTo:.*$/im, `globs: ${JSON.stringify(scope.globs)}`)
+          // No globs → always-on. JetBrains treats a rule with no `globs:` as
+          // always-on, matching what compileGotchas emits.
+          : finalContent.replace(/^\s*applyTo:.*\n/im, "");
+      } else if (
+        scope.globs.length > 0 &&
+        (APPLY_TO_PROJECTION[platform]?.support ?? "unsupported") === "unsupported"
+      ) {
+        // This target has no scoping mechanism at all. Say so IN the artifact:
+        // that converts a silent unscoped injection into an explicitly
+        // conditional instruction, and is why acknowledging the gap is a
+        // decision rather than a rubber stamp.
+        finalContent = insertAfterFrontmatter(finalContent, scopePreamble(scope.globs));
       }
       fs.writeFileSync(path.join(outDir, file), finalContent, "utf-8");
     }
@@ -1518,10 +1591,15 @@ function generateGeminiMd(
       ];
       const instrPath = candidatePaths.find((p) => fs.existsSync(p));
       if (instrPath) {
-        const content = fs.readFileSync(instrPath, "utf-8")
+        const raw = fs.readFileSync(instrPath, "utf-8");
+        const content = raw
           .replace(/^---\n[\s\S]*?\n---\n*/, "")
           .replace(/<!--[\s\S]*?-->/g, "")
           .trim();
+        // F-6: GEMINI.md is always-on, so a narrow scope is lost here. Carry it
+        // as prose rather than injecting the rule as if it were global.
+        const gScope = inspectScope(raw);
+        if (gScope.globs.length > 0) lines.push(scopePreamble(gScope.globs), "");
         lines.push(content, "");
       }
     }
@@ -1609,6 +1687,11 @@ function generateAgentsMd(
         const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
         // B4: Inline full content instead of just first line
         lines.push(`### ${instrName}`, "");
+        // F-6: AGENTS.md is always-on (feeds both `agents` and `codex`), so a
+        // narrow applyTo cannot be expressed — say so instead of shipping the
+        // rule as though it were global.
+        const aScope = inspectScope(content);
+        if (aScope.globs.length > 0) lines.push(scopePreamble(aScope.globs), "");
         lines.push(contentWithoutFrontmatter);
         lines.push("");
       }
@@ -2074,7 +2157,8 @@ function compileDomains(
   configDir: string,
   distPath: string,
   traits: Map<string, TraitContent>,
-  outputFormats: string[]
+  outputFormats: string[],
+  scopeSeen?: Map<string, ScopedArtifact>,
 ): CompileResult[] {
   const domains = config.domains;
   if (!domains || domains.length === 0) return [];
@@ -2146,7 +2230,8 @@ function compileDomains(
       distPath,
       `domains/${domainName}`,
       config,
-      outputFormats
+      outputFormats,
+      scopeSeen,
     );
   }
 
@@ -3431,13 +3516,18 @@ function main(): void {
   // Compile always-on instructions from both package and hub. Package
   // defaults are written first; hub-level instructions are written
   // second so any same-named hub file overwrites the package copy.
+  // F-6: one accumulator across every compileInstructions pass. Keyed
+  // `<scope>/<name>` with last-write-wins, so the hub copy legitimately
+  // overwrites the package copy rather than double-reporting.
+  const scopeSeen = new Map<string, ScopedArtifact>();
   compileInstructions(
     packageInstructionsDir,
     config.instructions?.enabled,
     distPath,
     "core",
     config,
-    outputFormats
+    outputFormats,
+    scopeSeen,
   );
   compileInstructions(
     coreInstructionsDir,
@@ -3445,7 +3535,8 @@ function main(): void {
     distPath,
     "core",
     config,
-    outputFormats
+    outputFormats,
+    scopeSeen,
   );
 
   // AB-52: Compile gotchas (path-scoped knowledge rules)
@@ -4018,7 +4109,67 @@ function main(): void {
   // 2b. AB-53: Compile domain layers
   // ---------------------------------------------------------------------------
 
-  const domainResults = compileDomains(config, configDir, distPath, traits, outputFormats);
+  const domainResults = compileDomains(config, configDir, distPath, traits, outputFormats, scopeSeen);
+
+  // F-6 gate: a path scope the target cannot express.
+  //
+  // Placed HERE, not beside the HARD gate: domain instructions have not been
+  // compiled at that point and would escape the scan entirely.
+  //
+  // Inversion, not omission, is what this closes. `compileInstructions` never
+  // read the source frontmatter — it stripped it and hardcoded
+  // `alwaysApply: true` / `trigger: always_on`. Cursor, Windsurf and JetBrains
+  // now receive the operator's exact scope (§2.2), so they are SILENT here:
+  // nothing was lost, so there is nothing to say, and a warning on the fixed
+  // path is how a channel gets tuned out.
+  {
+    const degraded = degradedFormats(outputFormats);
+    const scoped = [...scopeSeen.values()];
+    const violations = scopeViolations(scoped, outputFormats);
+    const acked = degraded.length > 0
+      ? scoped.filter((a) => a.globs.length > 0 && a.acknowledgedUnscoped)
+      : [];
+
+    if (acked.length > 0) {
+      log(chalk.yellow(
+        `  ⚠ ${acked.length} scoped instruction(s) are delivered always-on to: ${degraded.join(", ")}`,
+      ));
+      for (const a of acked) {
+        log(chalk.yellow(`      ${a.name.padEnd(34)} applyTo: ${a.scopePath}`));
+      }
+      log(chalk.gray(`    Acknowledged on the artifact; the emitted files carry a Scope: preamble.`));
+    }
+
+    if (violations.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Path scoping cannot be expressed on: ${degraded.join(", ")}`));
+      for (const v of violations) {
+        log(chalk.red(`      ${v.artifact.name.padEnd(34)} applyTo: ${v.artifact.scopePath}`));
+      }
+      log(chalk.gray(
+        `    These targets have no scoping mechanism, so a rule authored as narrow is`,
+      ));
+      log(chalk.gray(
+        `    delivered always-on — the operator restricted it and the platform received`,
+      ));
+      log(chalk.gray(`    the opposite instruction, behind a signed manifest.`));
+      log(chalk.gray(
+        `    Fix by removing the target from personas.outputFormats, by widening the rule`,
+      ));
+      log(chalk.gray(
+        `    to applyTo: "**", or — if always-on delivery is genuinely intended — add to`,
+      ));
+      log(chalk.gray(`    the artifact's frontmatter:`));
+      log(chalk.gray(`      scope-unsupported: acknowledged`));
+      log("");
+      log(chalk.red(
+        `  ✗ Build failed: ${violations.length} scoped instruction(s) target platforms that ` +
+        `cannot express path scoping (${degraded.join(", ")}).`,
+      ));
+      log("");
+      process.exit(1);
+    }
+  }
   allResults.push(...domainResults);
 
   // ---------------------------------------------------------------------------

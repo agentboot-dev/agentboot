@@ -10,6 +10,23 @@ full PR-level detail; this file is the curated, human-readable summary.
 ## [Unreleased]
 
 ### Fixed
+- **`applyTo` path scope is no longer INVERTED into always-on on Cursor and Windsurf.**
+  `compileInstructions` never parsed the source frontmatter: it stripped it, then hardcoded
+  `alwaysApply: true` and the literal string `trigger: always_on`. A rule authored
+  `applyTo: "src/api/**"` was delivered as *always on, every file* — not dropped, inverted — with
+  exit 0 and zero diagnostics. It happened by default to AgentBoot's own shipped
+  `security.instructions.md`. Cursor, Windsurf and JetBrains now receive the operator's exact
+  scope, using the same emitters `compileGotchas` already used ten lines away.
+- **JetBrains instructions carried an inert `applyTo:` key.** JetBrains reads `globs:` — which is
+  what `compileGotchas` emitted for the same platform, so instructions and gotchas disagreed about
+  one platform's frontmatter contract. The line is now rewritten in place, leaving the
+  `id`/`slug`/`hash` identity stamp untouched.
+- **The build now FAILS when a narrowly-scoped instruction targets a platform that cannot express
+  scope** (claude, skill, plugin, agents, codex, gemini). Acknowledge it on the artifact with
+  `scope-unsupported: acknowledged`; the emitted file then carries a `Scope:` preamble naming the
+  intended paths, so acknowledging opts into a documented degraded delivery rather than into
+  silence. The shipped `security` and `agentboot-authoring` instructions carry the
+  acknowledgement, so an operator meets the error only on their own narrow rule.
 - **Org-declared `claude.hooks` no longer vanish from the MDM deployable.** When
   `managed.guardrails.requireAuditLog` was also set, `mergeScopes` overwrote the whole `hooks`
   object, so `dist/managed/scopes/*/managed-settings.json` — the file an MDM deploys and a developer

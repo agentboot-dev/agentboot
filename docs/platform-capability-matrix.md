@@ -120,7 +120,7 @@ not intersect `personas.outputFormats`.
 | `managed.guardrails.denyTools` | ✅ | ✅ | ✅ | ✅ | – | – | – | – | – | – |
 | `managed.guardrails.requireAuditLog` | ✅ | ✅ | ✅ | ✅ | – | – | – | – | – | – |
 | `managed.guardrails.forcePlugins` | – | – | – | – | – | – | – | – | – | – |
-| `instructions[].applyTo` (narrowing) | – | – | ✅ | – | – | – | – | – | – | – |
+| `instructions[].applyTo` (narrowing) | ⚠ | ⚠ | ✅ | ⚠ | ✅ | ⚠ | ✅ | ✅ | ⚠ | ⚠ |
 | `gotchas[].paths` | – | – | ✅ | – | ✅ | – | ✅ | ✅ | – | – |
 
 **`managed.guardrails.forcePlugins` has an empty row on purpose.** It is typed,
@@ -131,3 +131,30 @@ wired to nothing.
 **`plugin` carries the generated compliance hooks, not `claude.hooks`.** Both were
 verified by building and grepping `dist/`; the distinction matters and is easy to
 assume wrongly.
+
+### Instruction path scoping (`applyTo`) — native, translated, or unsupported
+
+`applyTo` is a *third* axis: not "how strongly is it enforced" and not "is it emitted at
+all", but "did the target receive the scope the operator actually wrote".
+
+| Platform | Support | Mechanism |
+|---|---|---|
+| copilot | **native** | `applyTo:` is a first-class Copilot instruction key |
+| cursor | **translated** | `globs:` + `alwaysApply: false` in the `.mdc` frontmatter |
+| windsurf | **translated** | `trigger: glob` + `globs:` in `.windsurf/rules/` |
+| jetbrains | **translated** | `globs:` in `.aiassistant/rules/` |
+| claude | unsupported | `rules/` files are `@`-imported unconditionally from `CLAUDE.md` |
+| skill | unsupported | SKILL.md instruction files have no scoping key |
+| plugin | unsupported | plugin `rules/` load with the plugin, unscoped |
+| agents · codex | unsupported | text is inlined into `AGENTS.md`, which is always-on |
+| gemini | unsupported | text is inlined into `GEMINI.md`, which is always-on |
+
+On the **unsupported** tier a narrow rule is necessarily delivered always-on — which is the
+*opposite* of what the operator wrote, not merely a weaker version of it. That inversion
+fails the build unless the artifact carries `scope-unsupported: acknowledged`, and an
+acknowledged artifact ships with a `Scope:` preamble in its body so the agent is told which
+paths the rule is for. A universal `applyTo: "**"` is always-on by definition and never
+triggers anything.
+
+The **translated** tier produces no diagnostic at all: nothing was lost, so there is nothing
+to say.

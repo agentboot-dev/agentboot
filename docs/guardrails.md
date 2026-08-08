@@ -18,6 +18,13 @@ AgentBoot calls the second kind a **HARD guardrail**. This page is how to author
 
 Add `guardrail: hard` to the frontmatter of an instruction or trait:
 
+> **A note on `applyTo`.** `"**"` above is always-on, which every platform can honour. A
+> *narrowing* glob (`"src/api/**"`) is only expressible on Copilot (natively) and Cursor,
+> Windsurf and JetBrains (translated). Claude Code, Skill, plugin, AGENTS.md, Codex and
+> Gemini have no scoping mechanism, so the rule reaches them always-on — the build fails
+> unless the artifact carries `scope-unsupported: acknowledged`. See
+> [the platform capability matrix](/docs/platform-capability-matrix).
+
 ```markdown
 ---
 description: "Secrets are never read directly by an agent"

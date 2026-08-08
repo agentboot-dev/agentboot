@@ -39,6 +39,7 @@ import {
   findHardArtifacts, capabilityViolations,
   countNarrowlyScopedInstructions, countScopedGotchas,
 } from "./lib/guardrail-scan.js";
+import { degradedFormats } from "./lib/scope-projection.js";
 import {
   loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE,
   type PolicyException,
@@ -864,7 +865,13 @@ id: ${mintId()}
 slug: ${name}
 description: "TODO — brief description of this instruction"
 # applyTo is a comma-separated glob list. "**" = always on, every file.
+# NARROWING this requires \`scope-unsupported: acknowledged\` below when any
+# configured target cannot express path scoping (claude, skill, plugin, agents,
+# codex, gemini) — those platforms deliver the rule always-on, with a Scope:
+# preamble in the emitted file. Cursor, Windsurf and JetBrains receive the exact
+# scope; Copilot reads applyTo natively.
 applyTo: "**"
+# scope-unsupported: acknowledged
 # Uncomment to make this a HARD guardrail that lower scopes cannot override or
 # downgrade. Without it the instruction is a soft preference teams may adapt.
 # guardrail: hard
@@ -1587,6 +1594,28 @@ program
           }
         } else {
           ok("Enforcement (no hard org policy configured — nothing requires platform enforcement)");
+        }
+
+        // F-6: scoping is a THIRD question — not "how strongly is it enforced"
+        // but "did the target even receive the scope the operator wrote".
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Scoping")); }
+        {
+          const degraded = degradedFormats(enforcementFormats);
+          const scopedNarrow = countNarrowlyScopedInstructions(
+            [path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions")],
+            config.instructions?.enabled,
+          );
+          if (degraded.length === 0 || scopedNarrow === 0) {
+            ok("Path scoping is expressible on every configured target");
+          } else {
+            // warn(), not fail(): a correctly-authored hub's doctor exit code
+            // must not change. The BUILD is where an unacknowledged scope
+            // stops the pipeline.
+            warn(
+              `${scopedNarrow} scoped instruction(s) delivered always-on on ${degraded.join(", ")} ` +
+              `(acknowledged on the artifact; the emitted files carry a Scope: preamble)`,
+            );
+          }
         }
 
       } catch (e: unknown) {
