@@ -39,7 +39,7 @@ AgentBoot doesn't replace built-in settings; it emits into them. Compiled hooks 
 
 ## "But I could just copy the rules file into each repo"
 
-The honest answer: on day one, this works perfectly. A good `CLAUDE.md` copied into ten repos is ten repos improved.
+The honest answer: on day one, this works perfectly. A good `CLAUDE.md` copied into ten repos is ten repos running the same instructions.
 
 The problem is day ninety:
 
