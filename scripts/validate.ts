@@ -44,6 +44,7 @@ import {
 } from "./lib/frontmatter.js";
 import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
 import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
+import { dangerousHookFindings } from "./lib/hook-safety.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -825,74 +826,18 @@ function checkClaudeSettingsPassthrough(config: AgentBootConfig): CheckResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Patterns that make an org-authored hook command dangerous.
- *
- * A `claude.hooks` command is not ordinary config. It is a shell command the hub
- * ships into a managed settings file that then executes on every developer
- * machine in the org, at every prompt or tool call, non-overridably. Nothing
- * checked it. A hub PR adding `curl … | sh` to a PreToolUse hook was reviewable
- * only by a human noticing it in a diff.
- *
- * This does NOT try to be a sandbox — a determined author can always obfuscate.
- * It is a review aid aimed at the accidental and the copy-pasted, which is what
- * the overwhelming majority of these will be. Every entry is a pattern with a
- * named reason, because "dangerous" with no explanation gets waved through.
+ * The patterns live in scripts/lib/hook-safety.ts, NOT here, because `build` and
+ * `sync` never call validate — a hub author's `curl … | sh` reached the spoke's
+ * non-overridable managed-settings channel with both commands exiting 0. The
+ * compiler enforces the same list at the same severity; this is the report.
  */
-const DANGEROUS_HOOK_PATTERNS: Array<{ re: RegExp; why: string }> = [
-  { re: /\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*f|\brm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]/,
-    why: "recursive force-delete" },
-  { re: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba)?sh\b/,
-    why: "pipes a network download straight into a shell" },
-  { re: /\bbase64\b[^|]*\|\s*(ba)?sh\b/,
-    why: "decodes and executes an encoded payload" },
-  { re: /\beval\b/, why: "eval executes constructed strings" },
-  { re: /\bsudo\b/, why: "escalates privilege on a developer machine" },
-  { re: /\bchmod\s+(-[a-zA-Z]+\s+)*777\b/, why: "world-writable permissions" },
-  { re: /(^|[^A-Za-z0-9_])>\s*\/dev\/(sd|nvme|disk)/, why: "writes to a raw block device" },
-  { re: /\.ssh\/(id_[a-z0-9]+|authorized_keys)/, why: "touches SSH private keys or authorized_keys" },
-  { re: /\bhistory\s+-c\b|\bunset\s+HISTFILE\b|HISTFILE=\/dev\/null/,
-    why: "erases shell history — anti-forensic" },
-  { re: /\bnc\b\s+(-[a-zA-Z]+\s+)*[^\s]+\s+\d+|\/dev\/tcp\//,
-    why: "opens a raw network connection (reverse-shell shape)" },
-  { re: /\bgit\s+push\b[^\n]*--force|\bgit\s+push\b[^\n]*\s-f(\s|$)/,
-    why: "force-push from a hook rewrites history unattended" },
-];
-
-/** Every shell command string reachable from a `claude.hooks` config block. */
-function collectHookCommands(hooks: unknown): Array<{ event: string; command: string }> {
-  const out: Array<{ event: string; command: string }> = [];
-  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return out;
-  for (const [event, entries] of Object.entries(hooks as Record<string, unknown>)) {
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      if (!entry || typeof entry !== "object") continue;
-      const inner = (entry as { hooks?: unknown }).hooks;
-      if (!Array.isArray(inner)) continue;
-      for (const h of inner) {
-        if (h && typeof h === "object" && typeof (h as { command?: unknown }).command === "string") {
-          out.push({ event, command: (h as { command: string }).command });
-        }
-      }
-    }
-  }
-  return out;
-}
-
 function checkDangerousHooks(config: AgentBootConfig): CheckResult {
   const result = check("claude.hooks — no dangerous shell patterns in org-authored hook commands");
-  const commands = collectHookCommands(config.claude?.hooks);
-  for (const { event, command } of commands) {
-    for (const { re, why } of DANGEROUS_HOOK_PATTERNS) {
-      if (re.test(command)) {
-        // fail(), not warn(). This command runs on every developer machine in
-        // the org, non-overridably, and the operator can always rephrase it or
-        // move the logic into a reviewed script the hook invokes by path.
-        fail(
-          result,
-          `claude.hooks.${event}: dangerous command — ${why}\n      ${command}`,
-        );
-      }
-    }
+  for (const { event, command, why } of dangerousHookFindings(config.claude?.hooks)) {
+    // fail(), not warn(). This command runs on every developer machine in
+    // the org, non-overridably, and the operator can always rephrase it or
+    // move the logic into a reviewed script the hook invokes by path.
+    fail(result, `claude.hooks.${event}: dangerous command — ${why}\n      ${command}`);
   }
   return result;
 }

