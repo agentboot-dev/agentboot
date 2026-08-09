@@ -2916,14 +2916,28 @@ program
       approved = config.mcp?.approved ?? [];
     }
     const wanted = opts["server"] as string | undefined;
-    const targets = approved.filter((s) => (s.command || s.url) && (!wanted || s.name === wanted));
+    const inScope = approved.filter((s) => !wanted || s.name === wanted);
+    const targets = inScope.filter((s) => s.command || s.url);
+    // R1-I: an approved server with neither `command` nor `url` used to vanish —
+    // dropped from `targets` AND absent from the summary counts. An org that
+    // approved a server it cannot reach got a clean report about the ones it
+    // could, or "nothing to verify" and exit 0 if all of them were like that.
+    // An unreachable approval is an UNVERIFIED approval; it must be counted.
+    const undescribed = inScope.filter((s) => !s.command && !s.url);
 
     if (targets.length === 0) {
       if (wanted) {
         console.error(chalk.red(`  ✗ No approved MCP server named "${wanted}" with a command or url in ${configPath}`));
         process.exit(1);
       }
-      console.log(chalk.yellow("\n  No approved MCP servers with a command or url — nothing to verify.\n"));
+      if (undescribed.length > 0) {
+        console.error(chalk.red(
+          `\n  ✗ ${undescribed.length} approved MCP server(s) declare neither \`command\` nor \`url\`, so NONE could be verified:`));
+        for (const s of undescribed) console.error(chalk.red(`      ${s.name}`));
+        console.error(chalk.gray("    An approved server that cannot be reached is an unverified one, not an absent one.\n"));
+        process.exit(1);
+      }
+      console.log(chalk.yellow("\n  No approved MCP servers — nothing to verify.\n"));
       return;
     }
 
@@ -2977,8 +2991,18 @@ program
       }
     }
 
-    const summary = `${okCount} ok, ${mismatched} mismatched, ${unpinned} unpinned, ${errors} error${errors === 1 ? "" : "s"}`;
-    const failed = mismatched > 0 || errors > 0 || (strict && unpinned > 0);
+    // R1-I: undescribed servers appear in the summary. Leaving them out made the
+    // denominator smaller than the org's approved list, which is the quiet way
+    // to report a clean surface you did not look at.
+    if (undescribed.length > 0) {
+      for (const s of undescribed) {
+        console.log(chalk.yellow(`  ⚠ ${s.name} — NOT VERIFIABLE: no \`command\` or \`url\` in mcp.approved`));
+      }
+    }
+    const summary =
+      `${okCount} ok, ${mismatched} mismatched, ${unpinned} unpinned, ` +
+      `${undescribed.length} unverifiable, ${errors} error${errors === 1 ? "" : "s"}`;
+    const failed = mismatched > 0 || errors > 0 || (strict && (unpinned > 0 || undescribed.length > 0));
     if (failed) {
       console.log(chalk.red(`\n  ✗ mcp-verify: ${summary}\n`));
       process.exit(1);
@@ -2986,8 +3010,12 @@ program
     // Never render a plain green "verified" while any server is unchecked — an
     // unpinned server is not evidence of a clean surface, and a bare ✓ reads as
     // one. Only all-pinned-and-matching earns the green check.
-    if (unpinned > 0) {
-      console.log(chalk.yellow(`\n  ⚠ mcp-verify: ${summary} — ${unpinned} server(s) UNVERIFIED (unpinned). Run mcp-pin --write, or --strict to fail.\n`));
+    if (unpinned > 0 || undescribed.length > 0) {
+      const why = [
+        unpinned > 0 ? `${unpinned} unpinned` : "",
+        undescribed.length > 0 ? `${undescribed.length} with no command/url` : "",
+      ].filter(Boolean).join(", ");
+      console.log(chalk.yellow(`\n  ⚠ mcp-verify: ${summary} — UNVERIFIED: ${why}. Run mcp-pin --write, or --strict to fail.\n`));
     } else {
       console.log(chalk.green(`\n  ✓ mcp-verify: ${summary}\n`));
     }

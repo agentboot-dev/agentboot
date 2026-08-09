@@ -153,3 +153,88 @@ describe("drift-check — an unchecked repo is not a clean repo", () => {
     }
   }, 300_000);
 });
+
+/**
+ * R1-I — the same file answered "which manifest?" two different ways.
+ *
+ * `findManifestPath` returned the first EXISTING candidate; `findManifest`
+ * returned the first PARSEABLE one (`catch { continue }`). With a corrupt
+ * `.claude/.agentboot-manifest.json` and a valid `.cursor/` one,
+ * `verify-manifest` and evidence-pack's `manifestVerification` described the
+ * corrupt file while `checkDrift` silently reported on a different one — two
+ * answers about "the manifest" from one repo, and nothing anywhere said they
+ * disagreed.
+ */
+describe("R1-I — one manifest-selection rule", () => {
+  function repoWith(files: Record<string, string>): string {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "ab-r1i-"));
+    for (const [rel, body] of Object.entries(files)) {
+      const abs = path.join(repo, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, body);
+    }
+    return repo;
+  }
+
+  it("R1-I-1: a corrupt candidate does not make the two selectors disagree", async () => {
+    const { findManifestPath, selectManifest } = await import("../scripts/lib/drift.js");
+    const valid = JSON.stringify({ files: [] });
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": "{{{ not json",
+      ".cursor/.agentboot-manifest.json": valid,
+    });
+    const sel = selectManifest(repo);
+    // Both now point at the file that was actually READ.
+    expect(sel.path).toBe(findManifestPath(repo));
+    expect(sel.path!.includes(".cursor")).toBe(true);
+    expect(sel.manifest).not.toBeNull();
+    // And the corrupt one is RECORDED, not silently stepped over: "there is a
+    // manifest here and it is unreadable" is a finding.
+    expect(sel.corrupt.map((c) => path.basename(path.dirname(c)))).toEqual([".claude"]);
+  });
+
+  it("R1-I-2 (NEGATIVE): the ordinary single-manifest case is unchanged", async () => {
+    const { findManifestPath, selectManifest } = await import("../scripts/lib/drift.js");
+    const repo = repoWith({ ".claude/.agentboot-manifest.json": JSON.stringify({ files: [] }) });
+    expect(findManifestPath(repo)).toBe(selectManifest(repo).path);
+    expect(selectManifest(repo).corrupt).toEqual([]);
+  });
+
+  it("R1-I-3: drift hashes BYTES, so a tampered binary artifact cannot check clean", async () => {
+    const { checkDrift } = await import("../scripts/lib/drift.js");
+    const { createHash } = await import("node:crypto");
+    // Two DIFFERENT byte sequences that decode to the SAME utf-8 string — every
+    // invalid sequence becomes U+FFFD. Read through `readFileSync(..., "utf-8")`
+    // they are indistinguishable, so a tampered binary drift-checked CLEAN.
+    const original = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe]);
+    const tampered = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xfe, 0xff]);
+    expect(original.toString("utf-8")).toBe(tampered.toString("utf-8"));
+
+    // The manifest hash as a lossy pipeline records it: over the DECODED string.
+    const recorded = createHash("sha256").update(original.toString("utf-8")).digest("hex");
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": JSON.stringify({
+        files: [{ path: "bin.dat", hash: recorded }],
+      }),
+    });
+    fs.writeFileSync(path.join(repo, "bin.dat"), tampered);
+
+    // Pre-fix: readFileSync(..., "utf-8") reproduced `recorded` exactly and the
+    // entry was "clean". Hashing bytes cannot be fooled this way.
+    const report = checkDrift(repo);
+    expect(report.entries[0]!.status, "a tampered binary drift-checked clean").toBe("modified");
+  });
+
+  it("R1-I-4 (NEGATIVE): a TEXT file still hashes identically — the change only widens what is seen", async () => {
+    const { checkDrift } = await import("../scripts/lib/drift.js");
+    const { createHash } = await import("node:crypto");
+    const body = "# rule\nnever log secrets\n";
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": JSON.stringify({
+        files: [{ path: "r.md", hash: createHash("sha256").update(body).digest("hex") }],
+      }),
+      "r.md": body,
+    });
+    expect(checkDrift(repo).entries[0]!.status).toBe("clean");
+  });
+});

@@ -81,7 +81,7 @@ interface Manifest {
   retired?: RetiredFile[];
 }
 
-function sha256(content: string): string {
+function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
@@ -103,28 +103,55 @@ function manifestCandidates(repoPath: string): string[] {
 }
 
 /**
- * Return the path to the repo's AgentBoot manifest (first existing candidate), or
- * null if unsynced. Exposed so callers can stat the real manifest (e.g. for a
- * last-synced timestamp) instead of guessing a single location.
+ * R1-I: ONE selection rule for "the manifest".
+ *
+ * `findManifestPath` returned the first EXISTING candidate; `findManifest`
+ * returned the first PARSEABLE one (`catch { continue }`). With a corrupt
+ * `.claude/.agentboot-manifest.json` and a valid `.cursor/` one,
+ * `verify-manifest` and evidence-pack's `manifestVerification` described the
+ * corrupt file while `checkDrift` silently reported on a different one — two
+ * answers about "the manifest" from one repo, out of one file, with no
+ * indication that they disagreed.
+ *
+ * The rule is now: the first candidate that exists AND parses. A candidate that
+ * exists and does NOT parse is recorded, because "there is a manifest here and
+ * it is unreadable" is a finding, not a reason to look elsewhere quietly.
+ */
+export interface ManifestSelection {
+  /** The chosen manifest — first candidate that exists and parses. */
+  path: string | null;
+  manifest: Manifest | null;
+  /** Candidates that exist but could not be parsed, in candidate order. */
+  corrupt: string[];
+}
+
+export function selectManifest(repoPath: string): ManifestSelection {
+  const corrupt: string[] = [];
+  for (const candidate of manifestCandidates(repoPath)) {
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(candidate, "utf-8")) as Manifest;
+      return { path: candidate, manifest, corrupt };
+    } catch {
+      corrupt.push(candidate);
+    }
+  }
+  return { path: null, manifest: null, corrupt };
+}
+
+/**
+ * Return the path to the repo's AgentBoot manifest, or null if unsynced.
+ * Exposed so callers can stat the real manifest (e.g. for a last-synced
+ * timestamp) instead of guessing a single location.
+ *
+ * Same selection as `checkDrift` uses — that is the point of R1-I.
  */
 export function findManifestPath(repoPath: string): string | null {
-  for (const candidate of manifestCandidates(repoPath)) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
+  return selectManifest(repoPath).path;
 }
 
 function findManifest(repoPath: string): Manifest | null {
-  for (const candidate of manifestCandidates(repoPath)) {
-    if (fs.existsSync(candidate)) {
-      try {
-        return JSON.parse(fs.readFileSync(candidate, "utf-8")) as Manifest;
-      } catch {
-        continue;
-      }
-    }
-  }
-  return null;
+  return selectManifest(repoPath).manifest;
 }
 
 /**
@@ -180,8 +207,12 @@ export function checkDrift(repoPath: string): DriftReport {
     if (!fs.existsSync(absFilePath)) {
       pushDrift("missing");
     } else {
-      const content = fs.readFileSync(absFilePath, "utf-8");
-      const actualHash = sha256(content);
+      // R1-I: hash BYTES. Reading as utf-8 round-trips a binary managed artifact
+      // through lossy decoding (invalid sequences become U+FFFD), so two
+      // different binaries can hash the same and a tampered one can drift-check
+      // clean. Text files are unaffected — the same bytes hash the same either
+      // way — so this is strictly a widening of what the check can see.
+      const actualHash = sha256(fs.readFileSync(absFilePath));
       if (actualHash === file.hash) {
         entries.push({ file: file.path, status: "clean", expectedHash: file.hash, actualHash });
       } else {
