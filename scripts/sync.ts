@@ -31,7 +31,7 @@ import chalk from "chalk";
 import {
   type AgentBootConfig,
   resolveHubConfigOrExit,
-  loadConfig,
+  loadConfigOrExit,
   agentbootNpxSpec,
   DEFAULT_OUTPUT_FORMATS,
   SYNCABLE_OUTPUT_FORMATS,
@@ -2114,7 +2114,7 @@ async function main(): Promise<void> {
     console.log("");
   }
 
-  const config = loadConfig(configPath);
+  const config = loadConfigOrExit(configPath, "sync");
   const configDir = path.dirname(configPath);
   const dryRun = isDryRun || (config.sync?.dryRun ?? false);
 

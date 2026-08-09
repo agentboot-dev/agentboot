@@ -29,7 +29,7 @@ import {
   type AgentBootConfig,
   type PersonaConfig,
   resolveHubConfigOrExit,
-  loadConfig,
+  loadConfigOrExit,
   stripJsoncComments,
   traitRefsToNames,
   VALID_WEIGHT_NAMES,
@@ -1032,7 +1032,7 @@ async function main(): Promise<void> {
   console.log(chalk.bold("\nAgentBoot — validate"));
   console.log(chalk.gray(`Config: ${configPath}\n`));
 
-  const config = loadConfig(configPath);
+  const config = loadConfigOrExit(configPath, "validate");
   const configDir = path.dirname(configPath);
   const strictMode = forceStrict || (config.validation?.strictMode ?? false);
 

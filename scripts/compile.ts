@@ -37,7 +37,7 @@ import {
   type PluginManifest,
   type ResolvedTrait,
   resolveHubConfigOrExit,
-  loadConfig,
+  loadConfigOrExit,
   stripJsoncComments,
   flattenNodes,
   groupsToNodes,
@@ -3533,7 +3533,7 @@ function main(): void {
   log(chalk.bold("\nAgentBoot — compile"));
   log(chalk.gray(`Config: ${configPath}\n`));
 
-  const config = loadConfig(configPath);
+  const config = loadConfigOrExit(configPath, "build");
   const configDir = path.dirname(configPath);
 
   // Point HUB_ROOT at the hub being built so module-level helpers that

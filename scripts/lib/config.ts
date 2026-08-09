@@ -939,6 +939,179 @@ export function resolveConfigPath(argv: string[], root: string, cwd?: string): s
   return path.join(root, "agentboot.config.json");
 }
 
+/**
+ * NF2-3: policy-bearing config keys, and the SHAPE each must have.
+ *
+ * `managed.guardrails.denyTools: "WebFetch"` (a string where an array belongs)
+ * crashed the build with `TypeError: denyTools.map is not a function` and a raw
+ * stack trace at scripts/compile.ts:2858 — AFTER most of dist/ had been written.
+ * That is V4's malformed-policy-value class in a sibling key, and outside R1-4's
+ * probe because that probe only tests the no-hub case.
+ *
+ * The comparison that makes it a defect rather than a rough edge: the adjacent
+ * `permissions` key, with the same mistake, produces
+ * `✗ scopes/core: permissions is string, expected an object — from 00-org`.
+ * One key names itself and its expected type; its neighbour prints a stack
+ * frame. The operator cannot tell which of their keys is wrong from a stack
+ * frame in the compiler.
+ *
+ * A table, not a check per key, for the standing reason: per-key checks are how
+ * `permissions` got one and `denyTools` did not.
+ *
+ * TYPES ONLY. This deliberately does not validate VALUES (is this glob legal,
+ * is this persona known) — those are validate.ts's job and have their own
+ * verdicts. A type error makes the compiler crash; a value error does not.
+ */
+export interface ConfigShapeRule {
+  /** Dotted path. `*` matches any key of a record — `groups.*.permissions`. */
+  path: string;
+  kind: "string" | "boolean" | "number" | "string[]" | "object" | "array";
+}
+
+export const CONFIG_SHAPE: ConfigShapeRule[] = [
+  { path: "org", kind: "string" },
+  { path: "orgDisplayName", kind: "string" },
+  { path: "personas", kind: "object" },
+  { path: "personas.enabled", kind: "string[]" },
+  { path: "personas.outputFormats", kind: "string[]" },
+  { path: "personas.customDir", kind: "string" },
+  { path: "traits", kind: "object" },
+  { path: "traits.enabled", kind: "string[]" },
+  { path: "instructions", kind: "object" },
+  { path: "instructions.enabled", kind: "string[]" },
+  { path: "gotchas", kind: "object" },
+  { path: "gotchas.enabled", kind: "string[]" },
+  { path: "domains", kind: "array" },
+  { path: "output", kind: "object" },
+  { path: "output.distPath", kind: "string" },
+  { path: "sync", kind: "object" },
+  { path: "sync.retain", kind: "string[]" },
+  { path: "claude", kind: "object" },
+  { path: "claude.permissions", kind: "object" },
+  { path: "claude.permissions.allow", kind: "string[]" },
+  { path: "claude.permissions.deny", kind: "string[]" },
+  { path: "claude.hooks", kind: "object" },
+  { path: "claude.mcpServers", kind: "object" },
+  { path: "claude.settings", kind: "object" },
+  { path: "managed", kind: "object" },
+  { path: "managed.enabled", kind: "boolean" },
+  { path: "managed.guardrails", kind: "object" },
+  // The key that crashed the build.
+  { path: "managed.guardrails.denyTools", kind: "string[]" },
+  { path: "managed.guardrails.forcePlugins", kind: "string[]" },
+  { path: "managed.guardrails.requireAuditLog", kind: "boolean" },
+  { path: "managed.guardrails.disableBypassPermissions", kind: "boolean" },
+  { path: "mcp", kind: "object" },
+  { path: "mcp.approved", kind: "array" },
+  { path: "mcp.required", kind: "string[]" },
+  { path: "mcp.enforceApproved", kind: "boolean" },
+  { path: "compliance", kind: "object" },
+  { path: "compliance.inputScan", kind: "object" },
+  { path: "compliance.outputScan", kind: "object" },
+  { path: "groups", kind: "object" },
+  { path: "groups.*", kind: "object" },
+  { path: "groups.*.teams", kind: "string[]" },
+  { path: "groups.*.permissions", kind: "object" },
+  { path: "groups.*.permissions.allow", kind: "string[]" },
+  { path: "groups.*.permissions.deny", kind: "string[]" },
+  { path: "groups.*.mcpServers", kind: "object" },
+  { path: "groups.*.enabledPlugins", kind: "array" },
+  { path: "nodes", kind: "object" },
+];
+
+function describeType(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "an array";
+  return `a ${typeof v}`;
+}
+
+function shapeMatches(v: unknown, kind: ConfigShapeRule["kind"]): boolean {
+  switch (kind) {
+    case "string": return typeof v === "string";
+    case "boolean": return typeof v === "boolean";
+    case "number": return typeof v === "number";
+    case "array": return Array.isArray(v);
+    case "string[]": return Array.isArray(v) && v.every((x) => typeof x === "string");
+    case "object": return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+}
+
+const EXPECTED: Record<ConfigShapeRule["kind"], string> = {
+  string: "a string",
+  boolean: "a boolean",
+  number: "a number",
+  array: "an array",
+  "string[]": "an array of strings",
+  object: "an object",
+};
+
+/** Every value in `parsed` whose type does not match CONFIG_SHAPE, named. */
+export function configShapeErrors(parsed: unknown): string[] {
+  const errors: string[] = [];
+  const visit = (node: unknown, segs: string[], display: string[]): void => {
+    if (segs.length === 0) return;
+    const [head, ...rest] = segs;
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return;
+    const rec = node as Record<string, unknown>;
+    const keys = head === "*" ? Object.keys(rec) : [head!];
+    for (const k of keys) {
+      if (!(k in rec) || rec[k] === undefined) continue;
+      if (rest.length === 0) return; // handled by the caller
+      visit(rec[k], rest, [...display, k]);
+    }
+  };
+  for (const rule of CONFIG_SHAPE) {
+    const segs = rule.path.split(".");
+    const parents = segs.slice(0, -1);
+    const leaf = segs[segs.length - 1]!;
+    // Collect every container the rule's parent path resolves to (wildcards can
+    // produce several).
+    const containers: { node: Record<string, unknown>; label: string }[] = [];
+    const walk = (node: unknown, remaining: string[], label: string): void => {
+      if (typeof node !== "object" || node === null || Array.isArray(node)) return;
+      const rec = node as Record<string, unknown>;
+      if (remaining.length === 0) { containers.push({ node: rec, label }); return; }
+      const [head, ...rest] = remaining;
+      const keys = head === "*" ? Object.keys(rec) : [head!];
+      for (const k of keys) {
+        if (!(k in rec)) continue;
+        walk(rec[k], rest, label ? `${label}.${k}` : k);
+      }
+    };
+    walk(parsed, parents, "");
+    for (const { node, label } of containers) {
+      if (!(leaf in node) || node[leaf] === undefined) continue;
+      if (!shapeMatches(node[leaf], rule.kind)) {
+        const full = label ? `${label}.${leaf}` : leaf;
+        errors.push(`"${full}" is ${describeType(node[leaf])}, expected ${EXPECTED[rule.kind]}`);
+      }
+    }
+  }
+  void visit;
+  return errors;
+}
+
+/**
+ * `loadConfig`, with the operator-facing refusal in ONE place.
+ *
+ * `loadConfig` THROWS, and validate.ts / compile.ts / sync.ts called it with no
+ * handler — so EVERY config error, including the ones loadConfig already
+ * checked for ("Config requires a non-empty \"org\" field"), reached the
+ * operator as a raw Node stack trace. Measured before this: deleting `org` from
+ * a hub config produced `at main (…/scripts/compile.ts:3536:18)`.
+ */
+export function loadConfigOrExit(configPath: string, command: string): AgentBootConfig {
+  try {
+    return loadConfig(configPath);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`✗ \`${command}\` cannot read the hub config.`);
+    console.error(`    ${configPath}`);
+    for (const line of msg.split("\n")) console.error(`    ${line}`);
+    process.exit(1);
+  }
+}
+
 export function loadConfig(configPath: string): AgentBootConfig {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -951,6 +1124,7 @@ export function loadConfig(configPath: string): AgentBootConfig {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Config must be a JSON object");
   }
+
   if (typeof parsed.org !== "string" || parsed.org.length === 0) {
     throw new Error('Config requires a non-empty "org" field (string)');
   }
@@ -1011,6 +1185,21 @@ export function loadConfig(configPath: string): AgentBootConfig {
     if (!/^\.[a-z][a-z0-9_-]*$/i.test(parsed.sync.targetDir)) {
       throw new Error('"sync.targetDir" must be a dot-prefixed directory name (e.g., ".claude")');
     }
+  }
+
+  // NF2-3: type-check every remaining policy-bearing key, before any emitter
+  // reads them. A wrong type used to surface as a TypeError inside the compiler
+  // AFTER most of dist/ had been written (`denyTools.map is not a function`).
+  //
+  // Runs LAST so the bespoke checks above keep their more specific wording for
+  // the keys they already cover; this catches everything they do not, which was
+  // most of the config.
+  const shape = configShapeErrors(parsed);
+  if (shape.length > 0) {
+    throw new Error(
+      `${shape.length} config value(s) have the wrong type:\n` +
+        shape.map((e) => `  - ${e}`).join("\n"),
+    );
   }
 
   return parsed as AgentBootConfig;
