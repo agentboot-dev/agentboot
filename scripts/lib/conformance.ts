@@ -358,6 +358,22 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
  * doctor's Coverage block, the reporting label) goes through here, because a
  * second copy of this filter is precisely how `plugin` ended up claimed by four
  * rows and emitted by none.
+ *
+ * R1-6 — WHERE THIS ACTUALLY BITES, stated so it is not mistaken for
+ * defence-in-depth. In the BUILD path it is provably a no-op: H1's
+ * `PLATFORM_REQUIRES` gate hard-exits any build where `plugin` is in
+ * outputFormats without `claude` (compile.ts, ~line 3595), and the capability
+ * gate runs ~500 lines later — so by the time this is consulted, `plugin`
+ * implies `claude` and `effectiveEmitters(row, outputFormats) === row.emittedBy`
+ * for every row whose only `conditionalOn` key is `plugin`, which is all four
+ * that carry one. Deleting every `conditionalOn` block would leave compile-path
+ * behaviour identical.
+ *
+ * It has effect in `doctor`, `capabilityShortfalls` and the evidence surfaces,
+ * which read DECLARED formats without the build gate in front of them — i.e.
+ * exactly the paths an operator uses to ask "what would happen", and the paths
+ * that can be handed a config the build has not accepted. That is why it stays,
+ * and why it is not a second line of defence for the build.
  */
 export function effectiveEmitters(row: CapabilityRow, outputFormats: readonly string[]): string[] {
   return row.emittedBy.filter((platform) => {

@@ -780,3 +780,35 @@ describe("H5 — capabilityShortfalls: the partial-coverage axis", () => {
     expect(sf[0]!.honoured).toContain("plugin"); // claude IS built here
   });
 });
+
+/**
+ * R1-6 — `conditionalOn` is a no-op in the BUILD path, and load-bearing outside it.
+ *
+ * H1's PLATFORM_REQUIRES gate hard-exits any build where `plugin` is configured
+ * without `claude`, and it runs ~500 lines before the capability gate — so on
+ * the compile path `effectiveEmitters` can never see the state `conditionalOn`
+ * exists to describe. It is real in `doctor` and `capabilityShortfalls`, which
+ * read DECLARED formats with no build gate in front of them.
+ *
+ * Recorded as a test rather than a comment alone so that if the build gate is
+ * ever removed, the reasoning is attached to something that can fail.
+ */
+describe("R1-6 — where conditionalOn actually applies", () => {
+  it("R1-6-1: with plugin but no claude, the emitter is filtered out", () => {
+    const row = CAPABILITY_SUPPORT.find((r) => r.id === "managed.guardrails.denyTools")!;
+    expect(row.conditionalOn).toBeDefined();
+    expect(effectiveEmitters(row, ["cursor", "plugin"])).not.toContain("plugin");
+  });
+
+  it("R1-6-2 (NEGATIVE): with claude present it is not filtered", () => {
+    const row = CAPABILITY_SUPPORT.find((r) => r.id === "managed.guardrails.denyTools")!;
+    expect(effectiveEmitters(row, ["claude", "plugin"])).toContain("plugin");
+  });
+
+  it("R1-6-3: the build gate makes the filtered state unreachable from a build", () => {
+    // If this ever stops holding, conditionalOn becomes the build's only
+    // defence and its coverage stops being subsumed — which is a different
+    // risk profile and should be a deliberate decision, not a drift.
+    expect(PLATFORM_REQUIRES["plugin"]).toEqual(["claude"]);
+  });
+});
