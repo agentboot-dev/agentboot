@@ -247,6 +247,11 @@ program
       ? path.resolve(path.dirname(baselineConfigPath), baselineConfig.output?.distPath ?? "./dist")
       : path.join(cwd, "dist");
 
+    // The archive is meant to be citable years later. A snapshot taken off a
+    // stale dist/ records the previous policy under today's date, which is worse
+    // than a gap — a gap is visibly a gap.
+    if (baselineConfig) assertDistFreshOrExit(baselineConfigPath, baselineConfig, "baseline");
+
     const manifests: Record<string, unknown> = {};
     // The point of the archive is OBSERVED platform behaviour. A manifest whose
     // every control is `untested`/`not-applicable` records no observation at
@@ -2580,6 +2585,13 @@ program
       console.error(chalk.red(`dist/ not found at ${distPath} — run \`agentboot build\` first.`));
       process.exit(1);
     }
+    // A2: probing a stale dist/ measures the policy it REPLACED, and then writes
+    // that measurement into dist/<platform>/enforcement-manifest.json — where
+    // `baseline` archives it and `evidence-pack` hands it to an auditor. Verified
+    // before this gate: a failed rebuild that revoked denyTools left the deny
+    // hook on disk, and conformance reported `deny-tools not-applicable` (reading
+    // the NEW config against the OLD tree) and exited 0.
+    assertDistFreshOrExit(configPath, config, "conformance");
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
     // A5: was `?? ["claude"]` — conformance tested one platform where the build
     // produces three, so two thirds of the hub went unprobed and reported clean.
@@ -3841,6 +3853,12 @@ program
     const signKeyPath = config.sync?.signing?.enabled ? config.sync.signing.sshKeyPath : undefined;
 
     console.log(chalk.bold("\n  AgentBoot — evidence-pack\n"));
+    // The evidence pack is the artifact an AUDITOR reads, digest-protected and
+    // SSH-signed. Built off a stale dist/ it describes the policy the org
+    // REPLACED, in the present tense, under a valid signature — the exact shape
+    // this product exists to prevent. `sync`, `drift-check` and `audit` already
+    // refuse; the compliance deliverable must refuse hardest.
+    assertDistFreshOrExit(configPath, config, "evidence-pack");
     const { pack, signingError } = buildEvidencePack({
       hubPath, config, agentbootVersion: version, repos, distPath,
       telemetryBatchDir: opts["telemetryBatches"] as string | undefined,
