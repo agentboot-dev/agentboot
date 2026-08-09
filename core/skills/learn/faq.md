@@ -139,7 +139,7 @@ At build time, gotchas compile into `.claude/rules/` files. When a developer ope
 file matching the path pattern, the rule activates automatically — no manual
 invocation needed.
 
-Gotchas encode battle-tested operational knowledge: "this API has a quirk," "never
+Gotchas encode hard-won operational knowledge: "this API has a quirk," "never
 do X in this directory because of Y incident," "files here must pass compliance
 review." They are technology-specific rather than org-specific, making them
 shareable across organizations via the marketplace.

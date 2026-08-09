@@ -203,7 +203,7 @@ Each persona has a `persona.config.json` that lists the traits it uses:
 ```json
 {
   "name": "Code Reviewer",
-  "description": "Senior code reviewer — finds real bugs, not style nits",
+  "description": "Senior code reviewer — correctness, security, and maintainability",
   "invocation": "/review-code",
   "traits": [
     "critical-thinking",
@@ -225,7 +225,7 @@ implemented. Currently, traits are fully included or not included.
 
 ### Gotchas and Rules
 
-Gotchas are path-scoped knowledge rules that encode battle-tested operational
+Gotchas are path-scoped knowledge rules that encode hard-won operational
 knowledge. They activate only when the user is working on files that match the
 gotcha's `paths:` frontmatter.
 

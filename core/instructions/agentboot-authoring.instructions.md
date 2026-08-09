@@ -26,7 +26,7 @@ calibration is meaningful (HIGH/MEDIUM/LOW/MAX/OFF), and the instruction is cont
 (not scoped to specific file paths). Traits modulate how an agent thinks or communicates.
 They are not checklists, domain rules, or persona definitions.
 
-**Gotcha** (`core/gotchas/`) — a path-scoped knowledge rule encoding battle-tested
+**Gotcha** (`core/gotchas/`) — a path-scoped knowledge rule encoding hard-won
 operational knowledge. Use when: advice applies only when working in specific file paths
 or file types. Must have `paths:` frontmatter. Compiles into `.claude/rules/` and
 activates contextually. Without `paths:` frontmatter, a gotcha will not activate on
@@ -88,7 +88,7 @@ activate contextually and will not be compiled into `.claude/rules/`.
 ```yaml
 ---
 name: Code Reviewer
-description: Senior code reviewer — finds real bugs, not style nits
+description: Senior code reviewer — correctness, security, and maintainability
 invocation: /review-code
 ---
 ```

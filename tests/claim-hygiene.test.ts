@@ -28,28 +28,80 @@ import path from "node:path";
 
 const ROOT = path.resolve(__dirname, "..");
 
-/** Published surfaces. Build output is regenerated from these, so scanning the source is enough. */
-const SCAN_ROOTS = ["docs", path.join("website", "src", "pages"), path.join("website", "static")];
-const SCAN_FILES = ["README.md"];
-const SCAN_EXT = new Set([".md", ".mdx", ".tsx", ".ts", ".txt"]);
+/**
+ * NF2-2: the published corpus is not `docs/`.
+ *
+ * The first version of this gate scanned docs/, website/src/pages/,
+ * website/static/ and README.md. The banned claim "finds real bugs, not style
+ * nits" — the exact string this file's own V7-neg ORIGINALS map quotes as the
+ * README line the audit removed — survived at PERSONAS.md:10,
+ * core/personas/code-reviewer/persona.config.json:3,
+ * core/instructions/agentboot-authoring.instructions.md:91 and
+ * core/skills/learn/SKILL.md:206.
+ *
+ * `core/` is not a private directory. It is in package.json `files`, so it ships
+ * in the npm tarball, AND it is a COMPILE INPUT: `grep -rl` over a built dist/
+ * found that claim in 33 artifacts across claude, cursor, copilot, gemini,
+ * codex and skill — every platform's core/PERSONAS.md, plus
+ * dist/claude/core/agents/code-reviewer.md and
+ * dist/cursor/core/rules/code-reviewer.mdc — which `sync` then delivers into
+ * every spoke repo. The claim was deleted from the doc and
+ * left in the product.
+ *
+ * The root cause the V7 commit named — "a corpus-wide claim policed by file
+ * address" — recurred one level up as a corpus-wide claim policed by DIRECTORY
+ * ROOT. So the shipped roots are DERIVED from package.json `files` rather than
+ * listed here: a new shipped directory is scanned automatically, and it cannot
+ * be omitted by whoever adds it.
+ */
+const SCAN_EXT = new Set([".md", ".mdx", ".tsx", ".ts", ".txt", ".json"]);
+
+/** Directories npm actually ships, read from the manifest rather than remembered. */
+function shippedRoots(): string[] {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")) as {
+    files?: string[];
+  };
+  return (pkg.files ?? [])
+    .filter((f) => !f.startsWith("!"))
+    .map((f) => f.replace(/\/$/, ""))
+    .filter((f) => fs.existsSync(path.join(ROOT, f)) && fs.statSync(path.join(ROOT, f)).isDirectory());
+}
+
+/** Paths inside a shipped root that npm excludes (`!` entries in `files`). */
+function shippedExclusions(): string[] {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")) as {
+    files?: string[];
+  };
+  return (pkg.files ?? []).filter((f) => f.startsWith("!")).map((f) => f.slice(1).replace(/\/$/, ""));
+}
+
+const DOC_ROOTS = ["docs", path.join("website", "src", "pages"), path.join("website", "static")];
+/** Repo-root prose that is not in a scanned directory. */
+const SCAN_FILES = ["README.md", "PERSONAS.md", "CLAUDE.md", "CHANGELOG.md"];
 
 function publishedFiles(): string[] {
   const out: string[] = [];
+  const excluded = shippedExclusions().map((e) => path.join(ROOT, e));
   const walk = (dir: string) => {
     if (!fs.existsSync(dir)) return;
+    if (excluded.some((e) => dir === e || dir.startsWith(`${e}${path.sep}`))) return;
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) {
         if (e.name === "node_modules" || e.name === "build" || e.name === ".docusaurus") continue;
+        // dist/ is regenerated from the sources scanned here; scanning it too
+        // would report every finding twice and make the corpus depend on
+        // whether someone had just run a build.
+        if (e.name === "dist") continue;
         walk(p);
       } else if (SCAN_EXT.has(path.extname(e.name))) {
         out.push(p);
       }
     }
   };
-  for (const r of SCAN_ROOTS) walk(path.join(ROOT, r));
+  for (const r of [...DOC_ROOTS, ...shippedRoots()]) walk(path.join(ROOT, r));
   for (const f of SCAN_FILES) out.push(path.join(ROOT, f));
-  return out.filter((f) => fs.existsSync(f));
+  return [...new Set(out)].filter((f) => fs.existsSync(f));
 }
 
 interface BannedClaim {
@@ -148,6 +200,24 @@ describe("V7 — a claim removed for being unsupportable stays removed, everywhe
     for (const anchor of ["README.md", path.join("docs", "glossary.md"), path.join("docs", "concepts.md")]) {
       expect(FILES.some((f) => f.endsWith(anchor)), `${anchor} dropped out of the scan`).toBe(true);
     }
+  });
+
+  it("NF2-2: the scan covers what npm SHIPS, not just what docusaurus renders", () => {
+    // The four files that carried a banned claim while the gate was green. Each
+    // is a compile input as well as a tarball member, so a claim here reaches
+    // every spoke repo through `sync`.
+    for (const anchor of [
+      path.join("core", "personas", "code-reviewer", "persona.config.json"),
+      path.join("core", "instructions", "agentboot-authoring.instructions.md"),
+      path.join("core", "skills", "learn", "SKILL.md"),
+      "PERSONAS.md",
+    ]) {
+      expect(FILES.some((f) => f.endsWith(anchor)), `${anchor} is shipped but not scanned`).toBe(true);
+    }
+    // And the root set is DERIVED, so a newly-shipped directory is covered
+    // without anyone remembering to add it here.
+    expect(shippedRoots()).toContain("core");
+    expect(shippedRoots()).toContain("templates");
   });
 
   for (const claim of BANNED) {

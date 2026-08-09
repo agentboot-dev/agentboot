@@ -1019,7 +1019,7 @@ paths:
 
 # ${name.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
 
-<!-- Path-scoped knowledge: battle-tested rules that activate for matching files.
+<!-- Path-scoped knowledge: hard-won rules that activate for matching files.
      Sources: post-incident reviews, onboarding notes, repeated code review comments. -->
 
 - **TODO:** First gotcha rule — explain the what AND the why
