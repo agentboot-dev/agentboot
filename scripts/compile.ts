@@ -1166,9 +1166,19 @@ function compileInstructions(
   scopePath: string,
   config: AgentBootConfig,
   outputFormats: string[],
-  /** F-6: out-param collecting every enabled instruction's path scope, keyed
-   *  `<scope>/<name>` so the hub copy legitimately overwrites the package copy. */
-  scopeSeen?: Map<string, ScopedArtifact>,
+  /**
+   * F-6: out-param collecting every enabled instruction's path scope, keyed
+   * `<scope>/<name>` so the hub copy legitimately overwrites the package copy.
+   *
+   * C4: REQUIRED, not optional. As `scopeSeen?:` it was the most dangerous
+   * unpinned line on the branch — dropping the argument at the compileDomains
+   * call site silently reinstated F-6 for every `domains/*` instruction (rules
+   * authored narrow, delivered always-on to targets that cannot scope) with a
+   * fully green suite and a fully green tsc. Making it required means the
+   * compiler refuses the omission; tests/scope-projection.test.ts C4-1 covers
+   * the case where someone passes a throwaway map instead.
+   */
+  scopeSeen: Map<string, ScopedArtifact>,
 ): void {
   if (!fs.existsSync(instructionsDir)) {
     return;
@@ -1180,17 +1190,15 @@ function compileInstructions(
   // Collected BEFORE the platform loop, and independently of it: the loop skips
   // agents/plugin/gemini/codex, so a build targeting only the unsupported tier
   // would otherwise leave the gate blind on exactly the case it exists for.
-  if (scopeSeen) {
-    for (const file of files) {
-      const name = path.basename(file, ".md");
-      if (enabledInstructions && !enabledInstructions.includes(name)) continue;
-      const srcPath = path.join(instructionsDir, file);
-      const sc = inspectScope(fs.readFileSync(srcPath, "utf-8"));
-      scopeSeen.set(`${scopePath}/${name}`, {
-        name, file: srcPath, scopePath: sc.raw ?? "", globs: sc.globs,
-        acknowledgedUnscoped: sc.acknowledgedUnscoped,
-      });
-    }
+  for (const file of files) {
+    const name = path.basename(file, ".md");
+    if (enabledInstructions && !enabledInstructions.includes(name)) continue;
+    const srcPath = path.join(instructionsDir, file);
+    const sc = inspectScope(fs.readFileSync(srcPath, "utf-8"));
+    scopeSeen.set(`${scopePath}/${name}`, {
+      name, file: srcPath, scopePath: sc.raw ?? "", globs: sc.globs,
+      acknowledgedUnscoped: sc.acknowledgedUnscoped,
+    });
   }
 
   for (const platform of outputFormats) {
@@ -2227,7 +2235,8 @@ function compileDomains(
   distPath: string,
   traits: Map<string, TraitContent>,
   outputFormats: string[],
-  scopeSeen?: Map<string, ScopedArtifact>,
+  /** C4: required for the same reason as compileInstructions' — see there. */
+  scopeSeen: Map<string, ScopedArtifact>,
 ): CompileResult[] {
   const domains = config.domains;
   if (!domains || domains.length === 0) return [];

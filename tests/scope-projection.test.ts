@@ -680,3 +680,55 @@ describe("V1/V3/H3/NF-4 — one parser for every emitter", () => {
     expect(preamble).toBeGreaterThan(closing);
   });
 });
+
+/**
+ * C4 — the scope gate's coverage of `domains/*` was unpinned.
+ *
+ * `grep -rn scopeSeen scripts/ tests/` returned ten hits, all in
+ * scripts/compile.ts and ZERO in tests/. The out-param was declared
+ * `scopeSeen?:`, so dropping the argument from the `compileDomains(...)` call
+ * silently reinstated F-6 for every domain instruction — rules authored narrow,
+ * delivered ALWAYS-ON to targets that cannot express scope — with a fully green
+ * suite AND a green tsc.
+ *
+ * Two defences, because they fail differently: the parameter is now REQUIRED (a
+ * dropped argument is a type error), and this case pins the behaviour end to
+ * end (a throwaway map passed to silence the compiler still goes red).
+ */
+describe("C4 — a domain instruction reaches the scope gate", () => {
+  function hubWithDomainInstruction(acknowledged: boolean): string {
+    const hub = scaffoldHub();
+    const dom = path.join(hub, "domains", "payments", "instructions");
+    fs.mkdirSync(dom, { recursive: true });
+    fs.writeFileSync(path.join(dom, "ledger.instructions.md"),
+      `---\ndescription: Ledger rules\napplyTo: "src/ledger/**"\n` +
+      (acknowledged ? "scope-unsupported: acknowledged\n" : "") +
+      `---\n\n# Ledger\nDouble-entry only.\n`);
+    const p = path.join(hub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    // claude cannot express path scope — the gate's whole subject.
+    c.personas.outputFormats = ["claude"];
+    c.domains = [{ name: "payments" }];
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    return hub;
+  }
+
+  it("C4-1: an UNACKNOWLEDGED narrow domain instruction FAILS the build", () => {
+    const hub = hubWithDomainInstruction(false);
+    const build = ab(["build"], hub);
+    expect(build.out).toContain("Path scoping cannot be expressed");
+    expect(build.out).toContain("ledger.instructions");
+    expect(build.status, build.out).toBe(1);
+  }, 300_000);
+
+  it("C4-2: acknowledging it builds, and the artifact carries the Scope preamble", () => {
+    // The negative direction: the gate must be escapable exactly as documented,
+    // or acknowledging is not a decision, it is a dead end.
+    const hub = hubWithDomainInstruction(true);
+    const build = ab(["build"], hub);
+    expect(build.status, build.out).toBe(0);
+    expect(build.out).toContain("delivered always-on");
+    const emitted = read(hub, "claude", "domains", "payments", "rules", "ledger.instructions.md");
+    expect(emitted).toContain("**Scope — `src/ledger/**`");
+  }, 300_000);
+});
