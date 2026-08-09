@@ -672,14 +672,22 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
     }
   }
 
-  // Validate required servers are in approved list
-  if (mcpConfig.required && mcpConfig.approved) {
-    const approvedNames = new Set(mcpConfig.approved.map(s => s.name));
+  // R2-4: validate required servers are in the approved list.
+  //
+  // The guard used to be `if (mcpConfig.required && mcpConfig.approved)`, so the
+  // check could only run when an approved list already existed — i.e. it was
+  // disabled by the absence of the very thing it compares against. `required:
+  // ["vault"]` with NO `approved` list is the worst state (nothing is approved,
+  // so the required server cannot be), and it was the one state that produced no
+  // finding at all, under a green `✓ … required servers validated`.
+  if (mcpConfig.required?.length) {
+    const approvedNames = new Set((mcpConfig.approved ?? []).map(s => s.name));
     for (const required of mcpConfig.required) {
       if (!approvedNames.has(required)) {
         fail(
           result,
-          `MCP required server "${required}" is not in the approved servers list`
+          `MCP required server "${required}" is not in the approved servers list` +
+          (mcpConfig.approved ? "" : " (mcp.approved is not configured at all)")
         );
       }
     }
@@ -740,14 +748,23 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
     }
   }
 
-  // Warn about required servers not configured
-  if (mcpConfig.required && config.claude?.mcpServers) {
-    const configured = new Set(Object.keys(config.claude.mcpServers));
+  // R2-4: warn about required servers not configured.
+  //
+  // Same inversion as above, and sharper: the guard was
+  // `if (mcpConfig.required && config.claude?.mcpServers)`, so the check ran only
+  // when SOME servers were already configured. A hub declaring
+  // `mcp.required: ["vault"]` and configuring no mcpServers at all — zero of the
+  // required servers present, the maximum shortfall — fell straight through and
+  // printed `✓ MCP governance — approved servers and required servers validated`.
+  // A check that switches itself off precisely when it would fire is not a check.
+  if (mcpConfig.required?.length) {
+    const configured = new Set(Object.keys(config.claude?.mcpServers ?? {}));
     for (const required of mcpConfig.required) {
       if (!configured.has(required)) {
         warn(
           result,
-          `MCP required server "${required}" is not configured in claude.mcpServers`
+          `MCP required server "${required}" is not configured in claude.mcpServers` +
+          (config.claude?.mcpServers ? "" : " (no claude.mcpServers are configured at all)")
         );
       }
     }
