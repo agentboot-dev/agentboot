@@ -167,7 +167,7 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
     console.log(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`));
     return;
   }
-  const freshness = checkDistFreshness(distPath, config);
+  const freshness = checkDistFreshness(distPath, config, path.dirname(configPath));
   if (!freshness.fresh) {
     console.error(chalk.red(staleDistMessage(freshness, command)));
     process.exit(1);
@@ -198,7 +198,7 @@ function reportDistFreshness(
 ): DistFreshness | null {
   const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
   if (!fs.existsSync(distPath)) return null;
-  const freshness = checkDistFreshness(distPath, config);
+  const freshness = checkDistFreshness(distPath, config, path.dirname(configPath));
   if (freshness.fresh) return null;
   console.error(chalk.red(staleDistMessage(freshness, command, "report")));
   return freshness;
@@ -1504,7 +1504,7 @@ program
         // FAILED check, so `doctor` still exits non-zero.
         const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath)) {
-          const distFreshness = checkDistFreshness(distPath, config);
+          const distFreshness = checkDistFreshness(distPath, config, path.dirname(configPath));
           if (distFreshness.fresh) {
             ok(`dist/ exists and its last build succeeded against this config`);
           } else {

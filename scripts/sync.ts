@@ -2088,7 +2088,9 @@ async function main(): Promise<void> {
   // operator just revoked, and signs it. Refuse, named, non-zero. This runs
   // before the dry-run branch too: a plan derived from a stale tree is a plan
   // for the wrong policy, and printing it as if it were current is the same lie.
-  const freshness = checkDistFreshness(distPath, config);
+  // A1/A2-residual: pass the hub root so the ARTIFACT sources are covered too,
+  // not just the config JSON.
+  const freshness = checkDistFreshness(distPath, config, configDir);
   if (!freshness.fresh) {
     console.error(chalk.red(staleDistMessage(freshness, "sync")));
     process.exit(1);

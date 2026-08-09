@@ -66,7 +66,7 @@ import {
 } from "./lib/scope-projection.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 import {
-  computeConfigDigest, writeDistStamp, markDistBuildFailed,
+  computeConfigDigest, computeSourceDigest, resolveDomainRoots, writeDistStamp, markDistBuildFailed,
 } from "./lib/dist-stamp.js";
 
 // ---------------------------------------------------------------------------
@@ -4550,9 +4550,15 @@ function main(): void {
   // artifacts it describes rather than as a separate, interruptible write. A
   // `status: "success"` stamp can therefore only exist on a tree that reached
   // this line — i.e. past every gate above.
+  //
+  // A1/A2-residual: the stamp also records a digest of the ARTIFACT SOURCES.
+  // Most policy is not in agentboot.config.json — `guardrail: hard`, `applyTo:`
+  // and the control text are frontmatter and body under core/ — so a config-only
+  // digest reproduced N1 exactly for the surface where guardrails are declared.
   writeDistStamp(distPath, {
     status: "success",
     configDigest,
+    sourceDigest: computeSourceDigest(HUB_ROOT, resolveDomainRoots(HUB_ROOT, config)),
     outputFormats: [...outputFormats],
     builtAt: new Date().toISOString(),
     agentbootVersion: packageVersion(),

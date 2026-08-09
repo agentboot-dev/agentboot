@@ -68,8 +68,9 @@ afterAll(() => {
   if (base) fs.rmSync(base, { recursive: true, force: true });
 });
 
-const stampStatus = (): string =>
-  JSON.parse(fs.readFileSync(path.join(hub, "dist", ".agentboot-build.json"), "utf-8")).status;
+const stampStatusOf = (h: string): string =>
+  JSON.parse(fs.readFileSync(path.join(h, "dist", ".agentboot-build.json"), "utf-8")).status;
+const stampStatus = (): string => stampStatusOf(hub);
 
 /** Revoke a control AND trip a build gate, so the rebuild fails and dist/ ages. */
 function makeDistStale(): void {
@@ -219,5 +220,92 @@ describe("A-class — the remaining dist/ consumers", () => {
     const st = ab(["status"], hub);
     expect(st.status, st.out).toBe(0);
     expect(st.out).not.toMatch(/FAILED/);
+  }, 900_000);
+});
+
+/**
+ * A1/A2-residual — end to end: the surface where guardrails are actually declared.
+ *
+ * The config digest catches a config edit. It does not catch `guardrail: hard`,
+ * `applyTo:` or the control text, because none of those live in
+ * agentboot.config.json. This is the reported repro, run against the CLI.
+ */
+describe("A1/A2-residual — an ARTIFACT edit that never rebuilt", () => {
+  let vhub: string;
+  let vspoke: string;
+
+  const phi = (guardrail: string, body: string) =>
+    `---\ndescription: PHI handling\nguardrail: ${guardrail}\n---\n# PHI\n${body}\n`;
+
+  it("precondition: build + sync ships the SOFT control to the spoke", () => {
+    const vbase = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-srcstale-"));
+    vhub = path.join(vbase, "hub");
+    vspoke = path.join(vbase, "spoke");
+    fs.mkdirSync(vspoke, { recursive: true });
+    spawnSync("git", ["init", "-q", "."], { cwd: vspoke });
+    spawnSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], { cwd: vspoke });
+    const inst = spawnSync(
+      process.execPath,
+      [CLI, "install", "--hub", "--org", "acme", "--path", vhub, "--non-interactive", "--skip-sync"],
+      { cwd: vbase, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (inst.status !== 0) throw new Error(`scaffold failed: ${inst.stdout}${inst.stderr}`);
+
+    fs.writeFileSync(
+      path.join(vhub, "core", "instructions", "phi.instructions.md"),
+      phi("soft", "Avoid logging patient data where practical."),
+    );
+    const cfgPath = path.join(vhub, "agentboot.config.json");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+    cfg.personas = { ...(cfg.personas ?? {}), outputFormats: ["claude"] };
+    cfg.instructions = { enabled: ["phi.instructions"] };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(
+      path.join(vhub, "repos.json"),
+      JSON.stringify([{ name: "spokeV", path: "../spoke", platform: "claude" }], null, 2),
+    );
+
+    expect(ab(["build"], vhub).status).toBe(0);
+    expect(ab(["sync"], vhub).status).toBe(0);
+    const landed = path.join(vspoke, ".claude", "rules", "phi.instructions.md");
+    expect(fs.existsSync(landed)).toBe(true);
+    expect(fs.readFileSync(landed, "utf-8")).toContain("where practical");
+  }, 900_000);
+
+  it("tightening the ARTIFACT without rebuilding is caught by sync, drift-check and audit", () => {
+    fs.writeFileSync(
+      path.join(vhub, "core", "instructions", "phi.instructions.md"),
+      phi("hard", "NEVER log, trace, or print patient-identifying data. Non-overridable."),
+    );
+    // Pre-fix, measured unpiped: SYNC_EXIT=0 printing
+    // "– spokeV (claude) — skipped (no changes)" / "✓ Synced 0 of 1 repo";
+    // DRIFT_EXIT=0 "1/1 clean"; AUDIT_EXIT=0; stamp "success"; spoke still soft.
+    const s = ab(["sync"], vhub);
+    expect(s.status, s.out).toBe(1);
+    expect(s.out).toMatch(/sources-stale/);
+    expect(s.out).toMatch(/guardrail: hard/);
+    expect(ab(["drift-check"], vhub).status).toBe(1);
+    expect(ab(["audit"], vhub).status).toBe(1);
+    // And the stamp still says "success" — which is TRUE and beside the point:
+    // the last build did succeed, against sources that no longer exist.
+    expect(stampStatusOf(vhub)).toBe("success");
+  }, 600_000);
+
+  it("DELETING an artifact without rebuilding is caught too — revocation is an edit", () => {
+    fs.rmSync(path.join(vhub, "core", "instructions", "phi.instructions.md"));
+    expect(ab(["sync"], vhub).status).toBe(1);
+  }, 300_000);
+
+  it("POSITIVE: rebuilding clears it and the HARD control reaches the spoke", () => {
+    fs.writeFileSync(
+      path.join(vhub, "core", "instructions", "phi.instructions.md"),
+      phi("hard", "NEVER log, trace, or print patient-identifying data. Non-overridable."),
+    );
+    expect(ab(["build"], vhub).status).toBe(0);
+    expect(ab(["sync"], vhub).status).toBe(0);
+    expect(ab(["drift-check"], vhub).status).toBe(0);
+    const landed = fs.readFileSync(path.join(vspoke, ".claude", "rules", "phi.instructions.md"), "utf-8");
+    expect(landed).toContain("Non-overridable");
+    expect(landed).not.toContain("where practical");
   }, 900_000);
 });

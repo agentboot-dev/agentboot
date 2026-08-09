@@ -46,6 +46,28 @@ export interface DistStamp {
   status: DistBuildStatus;
   /** Digest of the resolved config the build ran against. */
   configDigest: string;
+  /**
+   * A1/A2-residual: digest of the ARTIFACT SOURCES the build ran against.
+   *
+   * The config digest alone reproduced N1 verbatim for the surface where policy
+   * is actually declared. `guardrail: hard`, `applyTo:` and the control TEXT
+   * are artifact frontmatter and body under `core/` — none of it is in
+   * agentboot.config.json. Measured on a scratch hub: tighten a shipped
+   * instruction from soft ("Avoid logging patient data where practical") to
+   * `guardrail: hard` + "NEVER log, trace, or print patient-identifying data.
+   * Non-overridable.", do not rebuild, then —
+   *     sync        EXIT 0  "– spokeV (claude) — skipped (no changes)" / "✓ Synced 0 of 1 repo"
+   *     drift-check EXIT 0  "1/1 clean"
+   *     audit       EXIT 0
+   *     stamp       "success"
+   * — and the spoke still carried the soft text. The operator edited policy and
+   * simply did not rebuild, which is the third case N1 named and the config
+   * digest could not see.
+   *
+   * Optional on read so a stamp written before this field is treated as
+   * `missing` for the source dimension rather than as a pass.
+   */
+  sourceDigest?: string;
   /** outputFormats as built — kept human-readable for the diagnostic. */
   outputFormats: string[];
   /** ISO timestamp of the build attempt. */
@@ -147,6 +169,7 @@ export function readDistStamp(distDir: string): DistStamp | null {
       outputFormats: Array.isArray(s.outputFormats) ? s.outputFormats : [],
       builtAt: typeof s.builtAt === "string" ? s.builtAt : "unknown",
       agentbootVersion: typeof s.agentbootVersion === "string" ? s.agentbootVersion : "unknown",
+      ...(typeof s.sourceDigest === "string" ? { sourceDigest: s.sourceDigest } : {}),
       ...(typeof s.failureReason === "string" ? { failureReason: s.failureReason } : {}),
     };
   } catch {
@@ -154,7 +177,99 @@ export function readDistStamp(distDir: string): DistStamp | null {
   }
 }
 
-export type DistFreshnessReason = "missing" | "failed" | "config-stale";
+export type DistFreshnessReason = "missing" | "failed" | "config-stale" | "sources-stale";
+
+/**
+ * Hub directories whose CONTENT the compiler reads as artifact source.
+ *
+ * Derived from scripts/compile.ts (`path.join(HUB_ROOT, …)` / `path.join(hubRoot, …)`)
+ * and pinned there by tests/dist-source-digest.test.ts — if the compiler learns
+ * to read a new hub directory and it is not listed here, that test fails. This
+ * is the same invariant shape as DIST_CONSUMERS: the set that must not drift is
+ * asserted in code, not remembered.
+ *
+ * `domains/` is not listed because domain paths are configurable; the caller
+ * passes the resolved paths in as `extraRoots`.
+ */
+export const HUB_SOURCE_ROOTS = ["core", "nodes", "groups", "teams"] as const;
+
+/** Files at the hub root that are build INPUT (not delivery config). */
+export const HUB_SOURCE_FILES = [".agentboot-exceptions.json"] as const;
+
+function hashFileInto(hash: crypto.Hash, rel: string, abs: string): void {
+  hash.update(rel.replace(/\\/g, "/"));
+  hash.update("\0");
+  try {
+    hash.update(fs.readFileSync(abs));
+  } catch {
+    // Unreadable input is a CHANGE, not a nothing: fold the error in so the
+    // digest moves rather than silently matching the last good build.
+    hash.update("<unreadable>");
+  }
+  hash.update("\0");
+}
+
+function walkInto(hash: crypto.Hash, root: string, rel: string, seen: Set<string>): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true });
+  } catch {
+    return;
+  }
+  // Sorted so the digest is a property of the tree, not of readdir order.
+  for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    const childRel = rel ? `${rel}/${e.name}` : e.name;
+    const abs = path.join(root, childRel);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    if (e.isDirectory()) walkInto(hash, root, childRel, seen);
+    else if (e.isFile()) hashFileInto(hash, childRel, abs);
+  }
+}
+
+/**
+ * Digest of every artifact source the build compiles from.
+ *
+ * Covers file NAMES as well as contents, so deleting an artifact moves the
+ * digest exactly as editing one does — a revocation that never rebuilt is the
+ * same lie as an edit that never rebuilt.
+ */
+export function computeSourceDigest(hubRoot: string, extraRoots: string[] = []): string {
+  const hash = crypto.createHash("sha256");
+  const seen = new Set<string>();
+  for (const root of HUB_SOURCE_ROOTS) {
+    hash.update(`::${root}::`);
+    walkInto(hash, path.join(hubRoot, root), "", seen);
+  }
+  for (const f of HUB_SOURCE_FILES) {
+    const abs = path.join(hubRoot, f);
+    hash.update(`::${f}::`);
+    if (fs.existsSync(abs)) hashFileInto(hash, f, abs);
+  }
+  // Domain roots are configurable, so they arrive resolved. Sorted for the same
+  // reason the walk is: the digest must not depend on config array order.
+  for (const d of [...extraRoots].sort()) {
+    hash.update(`::domain:${path.basename(d)}::`);
+    walkInto(hash, d, "", seen);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Resolve the domain roots a build would read, from the config.
+ *
+ * Mirrors compileDomains' own resolution (string ref → path, object ref →
+ * `.path` or `./domains/<name>`) so the digest covers exactly what compiles.
+ */
+export function resolveDomainRoots(hubRoot: string, config: unknown): string[] {
+  const domains = (config as { domains?: Array<string | { name?: string; path?: string }> })?.domains;
+  if (!Array.isArray(domains)) return [];
+  return domains.map((d) =>
+    typeof d === "string"
+      ? path.resolve(hubRoot, d)
+      : path.resolve(hubRoot, d.path ?? `./domains/${d.name}`),
+  );
+}
 
 export interface DistFreshness {
   fresh: boolean;
@@ -168,7 +283,16 @@ export interface DistFreshness {
  * The gate. FAILS CLOSED on every unknown: no stamp, unreadable stamp, failed
  * build, or a config that has moved since the last successful build.
  */
-export function checkDistFreshness(distDir: string, config: unknown): DistFreshness {
+export function checkDistFreshness(
+  distDir: string,
+  config: unknown,
+  /**
+   * Hub root, for the artifact-source dimension. Omitted only by callers that
+   * genuinely have no hub (there are none in the CLI); when omitted the source
+   * check is skipped, which is why every CLI call site passes it.
+   */
+  hubRoot?: string,
+): DistFreshness {
   const stamp = readDistStamp(distDir);
   if (!stamp) {
     return {
@@ -193,6 +317,37 @@ export function checkDistFreshness(distDir: string, config: unknown): DistFreshn
         `      was in force before your most recent edit.\n` +
         `      Fix: run \`agentboot build\` and let it succeed.`,
     };
+  }
+  if (hubRoot) {
+    const currentSources = computeSourceDigest(hubRoot, resolveDomainRoots(hubRoot, config));
+    if (!stamp.sourceDigest) {
+      return {
+        fresh: false,
+        reason: "sources-stale",
+        stamp,
+        detail:
+          `dist/ was stamped by a build that did not record an artifact-source digest\n` +
+          `      (stamped ${stamp.builtAt}). Nothing records whether core/ has been edited since,\n` +
+          `      and that is where guardrail: hard, applyTo: and the control text live.\n` +
+          `      Fix: run \`agentboot build\` and let it succeed.`,
+      };
+    }
+    if (currentSources !== stamp.sourceDigest) {
+      return {
+        fresh: false,
+        reason: "sources-stale",
+        stamp,
+        detail:
+          `the hub's ARTIFACTS have changed since dist/ was built (stamped ${stamp.builtAt}).\n` +
+          `      stamped source digest: ${stamp.sourceDigest.slice(0, 16)}…\n` +
+          `      current source digest: ${currentSources.slice(0, 16)}…\n` +
+          `      Most policy is not in agentboot.config.json: \`guardrail: hard\`, \`applyTo:\` and\n` +
+          `      the control text itself are artifact frontmatter and body under core/. Tightening\n` +
+          `      a control and not rebuilding leaves the SOFT version on every spoke, and every\n` +
+          `      command reporting green.\n` +
+          `      Fix: run \`agentboot build\` and let it succeed.`,
+      };
+    }
   }
   const current = computeConfigDigest(config);
   if (current !== stamp.configDigest) {
