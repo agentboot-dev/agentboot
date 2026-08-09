@@ -45,6 +45,8 @@ import {
 import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
 import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
 import { dangerousHookFindings, unscannableHookEvents } from "./lib/hook-safety.js";
+import { readScopeGlobs } from "./lib/scope-projection.js";
+import { isSafeRelativeSegment } from "./lib/path-containment.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -974,6 +976,83 @@ function checkPolicyExceptions(configDir: string): CheckResult {
 // Phase 11 C1.4: HARD guardrail override detection
 // ---------------------------------------------------------------------------
 
+/**
+ * NF4-8: `validate` passed artifacts that `build` refuses.
+ *
+ * Two build gates had no pre-flight equivalent, so `agentboot validate` printed
+ * "All 12 checks passed" and exited 0 on a hub that `agentboot build` then
+ * rejected:
+ *
+ *   * an UNREADABLE path scope (NF2-3) — `paths: ["src/a/**"` with no closing
+ *     bracket. An unreadable scope cannot be delivered as "no scope", because
+ *     that delivers a narrow rule as always-on.
+ *   * a path scope whose first segment ESCAPES the output root (60bc867) — the
+ *     Gemini emitter derives a directory name from `paths:`, so
+ *     `paths: "../../../../victim-repo/**"` wrote a GEMINI.md at that resolved
+ *     location. That one is a CRITICAL, caught only at build.
+ *
+ * `build` is the real gate and nothing is written outside dist/ before it
+ * refuses, so this is a pre-flight COMPLETENESS gap rather than a hole. It still
+ * matters: validate is what a hub's CI runs on a PR, and a check that passes
+ * everything the next stage will reject teaches people to skip it.
+ *
+ * Deliberately reads through the same `readScopeGlobs` and
+ * `isSafeRelativeSegment` the build uses. A second parser here would be the
+ * exact drift that produced seven hand-rolled scope readers in the first place.
+ */
+function checkScopeKeys(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check(
+    "Path scopes are readable and stay inside the output root (the same two gates `build` applies)",
+  );
+
+  const groups: Array<{ dir: string; key: "applyTo" | "paths"; enabled?: string[] | undefined }> = [
+    { dir: path.join(configDir, "core", "instructions"), key: "applyTo", enabled: config.instructions?.enabled },
+    { dir: path.join(configDir, "core", "gotchas"), key: "paths" },
+  ];
+  // Domains are compile inputs too — the gap NEW-1 closed on the build side.
+  for (const domainRef of config.domains ?? []) {
+    const domainPath = typeof domainRef === "string"
+      ? path.resolve(configDir, domainRef)
+      : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    groups.push({ dir: path.join(domainPath, "instructions"), key: "applyTo" });
+  }
+
+  for (const { dir, key, enabled } of groups) {
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+      const name = path.basename(file, ".md");
+      if (enabled && !enabled.includes(name)) continue;
+      const rel = path.relative(configDir, path.join(dir, file));
+      const content = fs.readFileSync(path.join(dir, file), "utf-8");
+      const { globs, malformed } = readScopeGlobs(content, key);
+      if (malformed) {
+        fail(
+          result,
+          `${rel}: ${key} is unreadable (${malformed}). \`build\` refuses this — an unreadable ` +
+            `scope cannot be delivered as "no scope", which would deliver a narrow rule always-on.`,
+        );
+        continue;
+      }
+      for (const glob of globs) {
+        // The first segment is what the Gemini emitter turns into a directory.
+        // An ABSOLUTE glob splits to a leading EMPTY segment, so a `if (first)`
+        // guard skips exactly the case that most obviously escapes — caught by
+        // the validate-and-build-agree fixture rather than by reading the code.
+        const first = glob.split(/[\\/]+/)[0] ?? "";
+        const escapes = path.isAbsolute(glob) || (first !== "" && first !== "**" && !isSafeRelativeSegment(first));
+        if (escapes) {
+          fail(
+            result,
+            `${rel}: ${key} entry "${glob}" escapes the output root. \`build\` refuses this — ` +
+              `the scope's first segment becomes a directory name under dist/.`,
+          );
+        }
+      }
+    }
+  }
+  return result;
+}
+
 function checkHardGuardrails(_config: AgentBootConfig, configDir: string): CheckResult {
   const result = check("HARD guardrail override protection — no lower scope shadows or downgrades a HARD artifact (does NOT test whether any target can enforce it — see `doctor`)");
 
@@ -1144,6 +1223,7 @@ async function main(): Promise<void> {
     checkDangerousHooks(config, configDir),
     checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
+    checkScopeKeys(config, configDir),
   ];
 
   // Print results.

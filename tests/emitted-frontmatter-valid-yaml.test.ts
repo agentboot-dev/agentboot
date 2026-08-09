@@ -327,3 +327,76 @@ describe("NEW-1 — the scope gate covers every scope-bearing directory, not thr
     expect({ core: a, domain: b }).toEqual({ core: 1, domain: 1 });
   }, 600_000);
 });
+
+/**
+ * NF4-8 — `validate` passed artifacts that `build` refuses.
+ *
+ * Two build gates had no pre-flight equivalent, so `agentboot validate` printed
+ * "All 12 checks passed" and exited 0 on a hub `agentboot build` then rejected:
+ * an unreadable path scope (NF2-3), and a path scope whose first segment escapes
+ * the output root (60bc867 — the Gemini emitter turns that segment into a
+ * directory name, which is how a gotcha's `paths:` could write a GEMINI.md
+ * anywhere on the filesystem).
+ *
+ * `build` is the real gate and nothing is written outside dist/ before it
+ * refuses, so this is a pre-flight COMPLETENESS gap rather than a hole. It still
+ * matters: validate is what a hub's CI runs on a PR, and a check that passes
+ * everything the next stage rejects teaches people to skip it.
+ *
+ * The invariant asserted here is agreement, not a message: for each fixture,
+ * validate and build must reach the same verdict.
+ */
+describe("NF4-8 — validate and build agree about a path scope", () => {
+  let vhub = "";
+  let vbase = "";
+
+  const run = (cmd: string) =>
+    spawnSync(process.execPath, [CLI, cmd], {
+      cwd: vhub, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000,
+    });
+
+  beforeAll(() => {
+    vbase = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-nf48-"));
+    vhub = path.join(vbase, "hub");
+    const inst = spawnSync(
+      process.execPath,
+      [CLI, "install", "--hub", "--org", "acme", "--path", vhub, "--non-interactive", "--skip-sync"],
+      { cwd: vbase, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (inst.status !== 0) throw new Error(`scaffold failed: ${inst.stdout}${inst.stderr}`);
+    const cfgPath = path.join(vhub, "agentboot.config.json");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+    // gemini is the format whose emitter derives a directory from the scope.
+    cfg["personas"] = { ...(cfg["personas"] as object), outputFormats: ["claude", "gemini", "copilot"] };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  }, 600_000);
+
+  afterAll(() => {
+    if (vbase) fs.rmSync(vbase, { recursive: true, force: true });
+  });
+
+  const FIXTURES: Array<[string, string, 0 | 1]> = [
+    ["a path scope that escapes the output root", '---\ndescription: bad\npaths: "../../../../victim-repo/**"\n---\nrule\n', 1],
+    ["an unterminated flow sequence", '---\ndescription: bad\npaths: ["src/a/**"\n---\nrule\n', 1],
+    ["an absolute path scope", '---\ndescription: bad\npaths: "/etc/**"\n---\nrule\n', 1],
+    ["a well-formed narrow scope", '---\ndescription: ok\npaths: ["src/a/**"]\n---\nrule\n', 0],
+    ["a universal scope", '---\ndescription: ok\npaths: "**"\n---\nrule\n', 0],
+  ];
+
+  for (const [label, body, want] of FIXTURES) {
+    it(`NF4-8: validate and build agree on ${label}`, () => {
+      const f = path.join(vhub, "core", "gotchas", "nf48.md");
+      fs.writeFileSync(f, body);
+      try {
+        const v = run("validate");
+        const b = run("build");
+        expect(
+          { validate: v.status, build: b.status },
+          `validate and build disagree on ${label}:\nVALIDATE\n${v.stdout}${v.stderr}\nBUILD\n${b.stdout}${b.stderr}`,
+        ).toEqual({ validate: want, build: want });
+      } finally {
+        fs.rmSync(f, { force: true });
+      }
+    }, 600_000);
+  }
+});
