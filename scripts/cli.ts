@@ -3765,13 +3765,23 @@ program
     const dryRun = opts.dryRun ?? false;
     // A-class: `publish` is `export`'s consequence made public. If the hub it
     // runs in has a config, the tree it is about to publish must be current.
-    const publishConfigPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
-    if (fs.existsSync(publishConfigPath)) {
-      assertDistFreshOrExit(publishConfigPath, loadConfig(publishConfigPath), "publish");
-    } else {
-      // NF2-1: publishing from a tree whose stamp says `failed` is publishing
-      // the previous policy under the new version number.
-      assertDistStampOrExit(path.join(cwd, "dist"), "publish");
+    // The freshness gate applies to what publish is about to SHIP. A
+    // hand-maintained `.claude-plugin/` is not built from dist/, so gating it on
+    // dist/ freshness is a false coupling — and a hub with no dist/ at all can
+    // legitimately publish one. When the plugin comes from `dist/plugin`, the
+    // gate is exactly right: publishing a tree whose stamp says `failed` ships
+    // the PREVIOUS policy under the new version number.
+    const publishesFromDist = !fs.existsSync(path.join(cwd, ".claude-plugin", "plugin.json"));
+    if (publishesFromDist) {
+      const publishConfigPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+      if (fs.existsSync(publishConfigPath)) {
+        assertDistFreshOrExit(publishConfigPath, loadConfig(publishConfigPath), "publish");
+      } else {
+        // NF2-1: `if (config)` was the whole gate, so with no config beside the
+        // tree publish shipped a failed build at exit 0. "No stamp" and
+        // "status: failed" need no config to read.
+        assertDistStampOrExit(path.join(cwd, "dist"), "publish");
+      }
     }
 
     console.log(chalk.bold("\nAgentBoot — publish\n"));

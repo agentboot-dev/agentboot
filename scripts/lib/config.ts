@@ -867,6 +867,56 @@ export function envHubConfig(): string | null {
   return fs.existsSync(p) ? p : null;
 }
 
+/**
+ * R1-4 residual: resolve a HUB config, or nothing.
+ *
+ * `resolveConfigPath`'s last fallback is `path.join(<packageRoot>,
+ * "agentboot.config.json")`, which is right for a caller whose `root` argument
+ * IS a hub (import.ts passes the hub path) and catastrophic for `validate`,
+ * `build` and `sync`, which pass the PACKAGE root:
+ *
+ *   * In the dev checkout that file exists, so `agentboot validate` in an empty
+ *     directory silently validated the AGENTBOOT REPO'S OWN hub and printed
+ *     "Config: /…/agentboot/agentboot.config.json" + "✓ All 12 checks passed",
+ *     exit 0. A false green in a directory with no hub — and it is what kept
+ *     R1-4's own enumeration test green, because that test asserts only "no
+ *     stack frame" and "status !== 7", both of which a false green satisfies.
+ *   * `npm pack` does NOT ship agentboot.config.json (89 files, confirmed with
+ *     `npm pack --dry-run --json`), so for a REAL install the same path throws
+ *     out of `loadConfig` with no handler: extracted tarball + empty cwd ->
+ *     `agentboot validate` and `agentboot build` both print
+ *     `at loadConfig (…/scripts/lib/config.ts:894:11)`.
+ *
+ * One defect, two faces, and the dev-checkout face is what hid the shipped one.
+ * These three commands take flag -> env -> cwd and then STOP; "I am not in a
+ * hub" is a fact to report, not a cue to adopt somebody else's hub.
+ */
+export function resolveHubConfigPath(argv: string[], cwd?: string): string | null {
+  const idx = argv.indexOf("--config");
+  if (idx !== -1 && argv[idx + 1]) return path.resolve(argv[idx + 1]!);
+  const fromEnv = envHubConfig();
+  if (fromEnv) return fromEnv;
+  const cwdConfig = path.join(cwd ?? process.cwd(), "agentboot.config.json");
+  return fs.existsSync(cwdConfig) ? cwdConfig : null;
+}
+
+/**
+ * `resolveHubConfigPath`, with the "not a hub" refusal in ONE place.
+ *
+ * Three scripts needed this and giving each its own wording is how the
+ * enumeration test ended up asserting a property ("no stack frame") that a
+ * false green also satisfies.
+ */
+export function resolveHubConfigOrExit(argv: string[], command: string, cwd?: string): string {
+  const p = resolveHubConfigPath(argv, cwd);
+  if (p) return p;
+  console.error(`✗ No agentboot.config.json found — \`${command}\` needs a hub.`);
+  console.error(`    Looked in: ${cwd ?? process.cwd()}`);
+  console.error("    Run it from a hub directory, pass --config <path>, or set AGENTBOOT_HUB.");
+  console.error("    To create one: agentboot install --hub");
+  process.exit(1);
+}
+
 export function resolveConfigPath(argv: string[], root: string, cwd?: string): string {
   const idx = argv.indexOf("--config");
   if (idx !== -1 && argv[idx + 1]) {

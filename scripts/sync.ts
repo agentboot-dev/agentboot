@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import {
   type AgentBootConfig,
-  resolveConfigPath,
+  resolveHubConfigOrExit,
   loadConfig,
   agentbootNpxSpec,
   DEFAULT_OUTPUT_FORMATS,
@@ -2090,7 +2090,7 @@ function printSyncResult(result: SyncResult): void {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv, ROOT);
+  const configPath = resolveHubConfigOrExit(argv, "sync");
   const isDryRun =
     argv.includes("--dry-run") || argv.includes("--dryRun");
   const isForce = argv.includes("--force");

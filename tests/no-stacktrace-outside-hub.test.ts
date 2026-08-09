@@ -87,6 +87,42 @@ describe("R1-4 — no command emits a raw stack trace outside a hub", () => {
       // Exit 7 is what an unhandled async rejection produces here. Any
       // deliberate refusal is 1 or 2; a success is 0.
       expect(r.status, `${cmd} exited ${r.status} — the unhandled-rejection code`).not.toBe(7);
+
+      // R1-4 residual: "no stack frame" and "not exit 7" are BOTH satisfied by a
+      // FALSE GREEN, which is what was actually happening. In the dev checkout
+      // `resolveConfigPath`'s last fallback is <packageRoot>/agentboot.config.json,
+      // which exists — so `agentboot validate` in an empty directory printed
+      // "Config: /…/agentboot/agentboot.config.json" and "✓ All 12 checks passed",
+      // exit 0, having validated THE AGENTBOOT REPO'S OWN HUB. The test could not
+      // see it, and `npm pack` does not ship that file, so the same code path in a
+      // real install threw a raw stack trace out of loadConfig.
+      //
+      // So: whatever a command does outside a hub, it must not claim to have
+      // acted on one. Naming the package root in the output is the tell.
+      expect(out, `${cmd} silently adopted the AgentBoot package's own hub`).not.toContain(
+        path.join(ROOT, "agentboot.config.json"),
+      );
     }, 180_000);
+  }
+
+  /**
+   * The three commands that reach a hub config through `runScript` rather than
+   * through a `loadHubConfigOrExit` call in cli.ts. They were the false-green
+   * carriers, so they get the assertion the generic probe cannot make: an exit
+   * code, not merely a shape of output.
+   */
+  for (const cmd of ["validate", "build", "sync"]) {
+    it(`${cmd}: REFUSES outside a hub — a false green is worse than a stack trace`, () => {
+      const env = { ...process.env, NODE_NO_WARNINGS: "1" };
+      delete (env as Record<string, string | undefined>)["AGENTBOOT_HUB"];
+      const r = spawnSync(process.execPath, [CLI, cmd], {
+        cwd: empty, env, encoding: "utf-8", timeout: 300_000,
+      });
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+      expect(r.status, `${cmd} exited 0 outside a hub:\n${out}`).toBe(1);
+      expect(out).toContain("needs a hub");
+      expect(out, `${cmd} validated a hub that is not here`).not.toMatch(/All \d+ checks passed/);
+      expect(out).not.toMatch(/^\s+at [A-Za-z_$][\w$.]* \(/m);
+    }, 300_000);
   }
 });

@@ -36,7 +36,7 @@ import {
   type DomainManifest,
   type PluginManifest,
   type ResolvedTrait,
-  resolveConfigPath,
+  resolveHubConfigOrExit,
   loadConfig,
   stripJsoncComments,
   flattenNodes,
@@ -3528,7 +3528,7 @@ function generateManagedSettings(
 
 function main(): void {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv, ROOT);
+  const configPath = resolveHubConfigOrExit(argv, "build");
 
   log(chalk.bold("\nAgentBoot — compile"));
   log(chalk.gray(`Config: ${configPath}\n`));

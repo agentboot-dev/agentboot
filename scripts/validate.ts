@@ -28,7 +28,7 @@ import chalk from "chalk";
 import {
   type AgentBootConfig,
   type PersonaConfig,
-  resolveConfigPath,
+  resolveHubConfigOrExit,
   loadConfig,
   stripJsoncComments,
   traitRefsToNames,
@@ -1026,7 +1026,7 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv, ROOT);
+  const configPath = resolveHubConfigOrExit(argv, "validate");
   const forceStrict = argv.includes("--strict");
 
   console.log(chalk.bold("\nAgentBoot — validate"));
