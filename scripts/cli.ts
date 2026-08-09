@@ -2069,6 +2069,20 @@ program
           `  ✗ ${f} produced NO runnable test case — every expectation in it is unevaluable.`));
         exitCode = 1;
       }
+      // NF2-6: name the SCENARIOS that did not run. A file with no cases was
+      // already reported loudly; a CASE with no runnable check was reported only
+      // as an anonymous by-key count below, so nothing told the operator WHICH
+      // scenario was skipped. Same class, finer granularity — it gets the same
+      // treatment. (Today: author-import-duplicate-detection and
+      // routing-ambiguous-clarify; 28 `tests:` entries in the YAML, 26 cases.)
+      const skippedInRunFiles = run.droppedCases.filter(
+        (d) => !run.filesWithNoCases.includes(d.file),
+      );
+      for (const d of skippedInRunFiles) {
+        console.error(chalk.red(
+          `  ✗ ${d.file}: scenario ${d.caseId ?? "(no id)"} did NOT run — ${d.reason}.`));
+        exitCode = 1;
+      }
       if (run.unevaluated.length > 0) {
         const byKey = new Map<string, number>();
         for (const u of run.unevaluated) byKey.set(u.key, (byKey.get(u.key) ?? 0) + 1);

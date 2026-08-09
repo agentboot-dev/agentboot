@@ -139,3 +139,99 @@ describe("J1 — the legacy format still parses", () => {
     expect(cases[0]!.persona).toBe("reviewer");
   });
 });
+
+/**
+ * NF2-6 / J1-residual — a CASE that produced no runnable check was dropped
+ * anonymously, while a FILE in the same state was reported loudly.
+ *
+ * `parseTestFile` `continue`d at scripts/lib/test-runner.ts:229 without
+ * recording the case id, and cli.ts reported only `run.filesWithNoCases`; the
+ * unevaluated printout aggregates by KEY, never by case. So an operator could
+ * learn "17 expectations used `mentions_persona`, which has no evaluator" and
+ * could NOT learn "the scenario `routing-ambiguous-clarify` did not run at all".
+ *
+ * Measured by calling parseTestFile directly on tests/behavioral/*.yaml: the raw
+ * YAML holds 28 `tests:` entries and parseTestFile returned 26 cases. The two
+ * missing are `author-import-duplicate-detection` (ab-author-import.yaml) and
+ * `routing-ambiguous-clarify` (ab-routing.yaml), and nothing named them.
+ *
+ * Same class as the file-granularity signal, opposite treatment. J1's own norm —
+ * silence is not success — applies at both granularities.
+ */
+describe("NF2-6 — a scenario that did not run is named", () => {
+  it("a case whose expectations are all unevaluable is RECORDED, not just skipped", () => {
+    const yaml = [
+      "persona: ab-probe",
+      "tests:",
+      "  - id: runnable",
+      "    prompt: do the thing",
+      "    expect:",
+      "      - response_contains: hello",
+      "  - id: unevaluable-scenario",
+      "    prompt: do the other thing",
+      "    expect:",
+      "      - reasoning_is_sound: true",
+      "",
+    ].join("\n");
+    const parsed = parseTestFile(yaml, "probe.yaml");
+    expect(parsed.cases.map((c) => c.name)).toEqual(["runnable"]);
+    expect(parsed.droppedCases.map((d) => d.caseId)).toEqual(["unevaluable-scenario"]);
+    expect(parsed.droppedCases[0]!.reason).toContain("unevaluable");
+  });
+
+  it("an entry with no id or no prompt is recorded too — previously dropped with NO trace", () => {
+    // scripts/lib/test-runner.ts:201 `if (!id || !prompt) continue;` left no
+    // record at all. Zero such entries ship today, so it was latent — which is
+    // the state a defect is in right before it is introduced.
+    const yaml = [
+      "persona: ab-probe",
+      "tests:",
+      "  - prompt: no id here",
+      "    expect:",
+      "      - response_contains: hello",
+      "  - id: no-prompt-here",
+      "    expect:",
+      "      - response_contains: hello",
+      "",
+    ].join("\n");
+    const parsed = parseTestFile(yaml, "probe.yaml");
+    expect(parsed.cases).toEqual([]);
+    expect(parsed.droppedCases.map((d) => d.reason)).toEqual(["no `id:`", "no `prompt:`"]);
+  });
+
+  it("the repo's OWN scenarios: every dropped case is named, and the count matches", () => {
+    // The specific finding, pinned against the real corpus so a future edit that
+    // silently loses a scenario goes red here.
+    const dir = path.join(ROOT, "tests", "behavioral");
+    const dropped: string[] = [];
+    let cases = 0;
+    for (const f of fs.readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const parsed = parseTestFile(fs.readFileSync(path.join(dir, f), "utf-8"), f);
+      cases += parsed.cases.length;
+      for (const d of parsed.droppedCases) dropped.push(`${f}:${d.caseId}`);
+    }
+    expect(cases).toBeGreaterThan(20);
+    // Every dropped case has a NAME. That is the property; the specific two are
+    // asserted so a regression that drops a third is visible.
+    expect(dropped.every((d) => !d.endsWith(":null"))).toBe(true);
+    expect(dropped.sort()).toEqual([
+      "ab-author-import.yaml:author-import-duplicate-detection",
+      "ab-routing.yaml:routing-ambiguous-clarify",
+    ]);
+  });
+
+  it("NEGATIVE: a fully-evaluable file drops nothing", () => {
+    const yaml = [
+      "persona: ab-probe",
+      "tests:",
+      "  - id: a",
+      "    prompt: p",
+      "    expect:",
+      "      - response_contains: hello",
+      "",
+    ].join("\n");
+    const parsed = parseTestFile(yaml, "probe.yaml");
+    expect(parsed.cases).toHaveLength(1);
+    expect(parsed.droppedCases).toEqual([]);
+  });
+});

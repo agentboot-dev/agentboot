@@ -47,6 +47,19 @@ export interface BehavioralTestCase {
  * layer up: a green run that checked a third of what the file asserts. They are
  * REPORTED, counted, and they fail the run unless explicitly waived.
  */
+/**
+ * NF2-6: a scenario entry that did not become a runnable case, and WHY.
+ *
+ * "Which scenarios did not run" is a different question from "how many
+ * expectation keys had no evaluator", and only the second was answerable.
+ */
+export interface DroppedCase {
+  file: string;
+  /** The scenario id, or null when the entry was too malformed to have one. */
+  caseId: string | null;
+  reason: string;
+}
+
 export interface UnevaluatedExpectation {
   file: string;
   caseId: string;
@@ -57,6 +70,8 @@ export interface UnevaluatedExpectation {
 export interface BehavioralParse {
   cases: BehavioralTestCase[];
   unevaluated: UnevaluatedExpectation[];
+  /** NF2-6: scenario entries that did not become runnable cases, and why. */
+  droppedCases: DroppedCase[];
 }
 
 /**
@@ -192,13 +207,34 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
 
   const cases: BehavioralTestCase[] = [];
   const unevaluated: UnevaluatedExpectation[] = [];
+  // NF2-6: a case that produced no runnable check, and an entry too malformed to
+  // become a case at all, are both "we did not run this scenario" — and both
+  // were `continue`d with no record. A FILE with no cases is reported loudly
+  // ("✗ … produced NO runnable test case"); a CASE with no checks was reported
+  // only as an anonymous by-key count, so nothing named the scenario. Same
+  // class, finer granularity, opposite treatment.
+  //
+  // Today `author-import-duplicate-detection` (ab-author-import.yaml) and
+  // `routing-ambiguous-clarify` (ab-routing.yaml) are dropped this way — 28
+  // `tests:` entries in the YAML, 26 cases returned — and nothing names them.
+  const droppedCases: DroppedCase[] = [];
 
   for (const entry of tests) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      droppedCases.push({ file, caseId: null, reason: "entry is not a mapping" });
+      continue;
+    }
     const tc = entry as Record<string, unknown>;
     const id = typeof tc["id"] === "string" ? tc["id"] : undefined;
     const prompt = typeof tc["prompt"] === "string" ? tc["prompt"] : undefined;
-    if (!id || !prompt) continue;
+    if (!id || !prompt) {
+      droppedCases.push({
+        file,
+        caseId: id ?? null,
+        reason: !id ? "no `id:`" : "no `prompt:`",
+      });
+      continue;
+    }
 
     const assertions: BehavioralTestCase["assertions"] = [];
     const expects = Array.isArray(tc["expect"]) ? tc["expect"] : [];
@@ -228,7 +264,14 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
 
     if (assertions.length === 0) {
       // Every expectation in this case was unevaluable. Running it would report
-      // a pass for having checked nothing.
+      // a pass for having checked nothing — so it is not run, and it IS named.
+      droppedCases.push({
+        file,
+        caseId: id,
+        reason: expects.length === 0
+          ? "no `expect:` block"
+          : "every expectation is unevaluable — no mechanical evaluator matched",
+      });
       continue;
     }
     cases.push({
@@ -240,7 +283,7 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
     });
   }
 
-  return { cases, unevaluated };
+  return { cases, unevaluated, droppedCases };
 }
 
 /**
@@ -253,7 +296,7 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
 export function parseTestFile(content: string, file = "inline.yaml"): BehavioralParse {
   const scenario = parseScenarioSchema(content, file);
   if (scenario) return scenario;
-  return { cases: parseTestCases(content), unevaluated: [] };
+  return { cases: parseTestCases(content), unevaluated: [], droppedCases: [] };
 }
 
 export function parseTestCases(content: string): BehavioralTestCase[] {
@@ -431,6 +474,15 @@ export interface BehavioralRun {
   filesWithNoCases: string[];
   /** Expectations with no mechanical evaluator, by file and case. */
   unevaluated: UnevaluatedExpectation[];
+  /**
+   * NF2-6: scenario entries that produced NO runnable case, BY NAME.
+   *
+   * `filesWithNoCases` answers the same question at file granularity and is
+   * reported loudly. At case granularity the answer existed only as an
+   * anonymous by-key count, so an operator could not learn WHICH scenarios did
+   * not run.
+   */
+  droppedCases: DroppedCase[];
 }
 
 /**
@@ -449,11 +501,12 @@ export function runBehavioralTestsDetailed(
   const results: BehavioralTestResult[] = [];
   const unevaluated: UnevaluatedExpectation[] = [];
   const filesWithNoCases: string[] = [];
+  const droppedCases: DroppedCase[] = [];
   const llm = provider ?? new ClaudeCodeProvider();
 
   if (!fs.existsSync(testDir)) {
     console.log(chalk.yellow(`  Test directory not found: ${testDir}`));
-    return { results, filesSeen: [], filesWithNoCases, unevaluated };
+    return { results, filesSeen: [], filesWithNoCases, unevaluated, droppedCases };
   }
 
   const files = fs.readdirSync(testDir).filter(f => f.endsWith(".yaml") || f.endsWith(".yml"));
@@ -463,6 +516,7 @@ export function runBehavioralTestsDetailed(
     const parsed = parseTestFile(content, file);
     const testCases = parsed.cases;
     unevaluated.push(...parsed.unevaluated);
+    droppedCases.push(...parsed.droppedCases);
     if (testCases.length === 0) filesWithNoCases.push(file);
 
     for (const tc of testCases) {
@@ -481,7 +535,7 @@ export function runBehavioralTestsDetailed(
     }
   }
 
-  return { results, filesSeen: files, filesWithNoCases, unevaluated };
+  return { results, filesSeen: files, filesWithNoCases, unevaluated, droppedCases };
 }
 
 /** Back-compatible shape: results only. Prefer runBehavioralTestsDetailed. */
