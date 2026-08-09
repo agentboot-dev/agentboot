@@ -37,7 +37,7 @@ import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, resolveEnforcement, type CapabilityContext } from "./lib/conformance.js";
 import {
   findHardArtifacts, capabilityViolations, capabilityShortfalls,
-  countNarrowlyScopedInstructions, countScopedGotchas,
+  countNarrowlyScopedInstructions, countScopedGotchas, countPersonaScopeControls,
 } from "./lib/guardrail-scan.js";
 import { degradedFormats } from "./lib/scope-projection.js";
 import {
@@ -1791,6 +1791,13 @@ program
           const scopedG = countScopedGotchas(path.join(cwd, "core", "gotchas"));
           const capCtx: CapabilityContext = {
             config, narrowlyScopedInstructions: narrow, scopedGotchas: scopedG,
+            // R2-9: same two roots, same order as compile. doctor asserting
+            // "all configured capabilities have a target" while blind to the
+            // persona scope is what made this loss silent.
+            personaControls: countPersonaScopeControls(
+              [path.join(ROOT, "core", "personas"), path.join(cwd, "core", "personas")],
+              config.personas?.enabled,
+            ),
           };
           let activeEx: PolicyException[] = [];
           try {

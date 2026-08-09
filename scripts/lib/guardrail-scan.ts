@@ -297,3 +297,102 @@ export function countScopedGotchas(gotchasDir: string): number {
   }
   return n;
 }
+
+/**
+ * R2-9 / NF3-5 / NF3-4: persona-scope controls, counted from persona.config.json.
+ *
+ * Every CAPABILITY_SUPPORT row keyed off AgentBootConfig, so CapabilityContext
+ * carried the config and two scope counters and nothing else — which means
+ * `detect()` could not SEE persona.config.json at all, and the whole persona
+ * scope was structurally invisible to the gate whose entire job is "configured,
+ * but no configured platform can honour it".
+ *
+ * The controls that live there are not cosmetic. `disallowedTools` and `hooks`
+ * are both emitted only inside `if (outputFormats.includes("claude"))`
+ * (compile.ts:1174 and the generatePersonaHooks call), so on a hub without
+ * `claude` a persona-declared PreToolUse hook — a blocking control, the same
+ * class as `claude.hooks`, which is severity `error` — vanishes with no row and
+ * no diagnostic, and doctor positively asserts full coverage over the loss.
+ *
+ * Measured on a scratch hub (persona with disallowedTools ["Bash","Write","Edit"]
+ * plus a PreToolUse hook, outputFormats ["skill","agents","copilot","cursor"]):
+ *
+ *     build  -> exit 0, no mention of the hook
+ *     doctor -> "✓ Capability coverage — all 1 configured capability/ies have a
+ *                target that emits them"
+ *
+ * Add `claude` back and the same build prints "→ 1 persona-specific hook(s)
+ * compiled" and writes `disallowedTools:` into the agent — so the control is
+ * real, and its loss was silent. Worse than absence: dist/copilot ships the
+ * disallowedTools list verbatim into persona.config.json on a platform that
+ * cannot enforce it.
+ *
+ * ONE implementation, shared by compile and doctor, for the reason the sibling
+ * counters give: a second copy is the drift that produces this defect class.
+ */
+export interface PersonaScopeCounts {
+  /** Personas declaring a non-empty `disallowedTools` deny list. */
+  disallowedTools: number;
+  /** Personas declaring `hooks`. */
+  hooks: number;
+  /** Personas declaring a `tools` allow-list. */
+  tools: number;
+  /** Personas declaring `mcpServers` (NF3-4 — read by no code path). */
+  mcpServers: number;
+}
+
+export function countPersonaScopeControls(
+  personaRootDirs: string[],
+  /**
+   * `personas.enabled`, when the hub sets it. A persona that is not enabled is
+   * not compiled, so counting its controls would fail the build over a control
+   * that was never going to ship — the over-gating that gets a gate switched
+   * off. Same argument, same shape, as countNarrowlyScopedInstructions'
+   * `enabled` parameter.
+   */
+  enabled?: string[],
+): PersonaScopeCounts {
+  const counts: PersonaScopeCounts = { disallowedTools: 0, hooks: 0, tools: 0, mcpServers: 0 };
+  // Later roots win on name, matching compile's package-then-hub merge, so a
+  // hub persona that overrides a packaged one is counted once.
+  const seen = new Map<string, string>();
+  for (const root of personaRootDirs) {
+    if (!fs.existsSync(root)) continue;
+    for (const entry of fs.readdirSync(root)) {
+      if (enabled && !enabled.includes(entry)) continue;
+      const cfg = path.join(root, entry, "persona.config.json");
+      if (fs.existsSync(cfg)) seen.set(entry, cfg);
+    }
+  }
+  for (const cfg of seen.values()) {
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const raw = fs.readFileSync(cfg, "utf-8").replace(/^\s*\/\/.*$/gm, "");
+      const v: unknown = JSON.parse(raw);
+      parsed = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      // FAIL CLOSED. A persona config we cannot read is not a persona config
+      // with no controls in it — "I could not check" must not resolve to "there
+      // is nothing there", which is the whole class this branch belongs to.
+      // Counting it under every control makes the coverage gate speak up rather
+      // than quietly under-count. (The build refuses outright on an unreadable
+      // persona config; this path is reachable from doctor, which reports.)
+      counts.disallowedTools++;
+      counts.hooks++;
+      counts.tools++;
+      counts.mcpServers++;
+      continue;
+    }
+    const arr = (k: string): boolean => Array.isArray(parsed![k]) && (parsed![k] as unknown[]).length > 0;
+    const obj = (k: string): boolean =>
+      !!parsed![k] && typeof parsed![k] === "object" && Object.keys(parsed![k] as object).length > 0;
+    if (arr("disallowedTools")) counts.disallowedTools++;
+    if (obj("hooks") || arr("hooks")) counts.hooks++;
+    if (arr("tools")) counts.tools++;
+    if (obj("mcpServers")) counts.mcpServers++;
+  }
+  return counts;
+}

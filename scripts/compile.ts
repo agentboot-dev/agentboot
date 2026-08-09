@@ -54,7 +54,7 @@ import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/teleme
 import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, type CapabilityContext } from "./lib/conformance.js";
 import {
   inspectArtifact, unenforceableFormats, capabilityViolations,
-  countNarrowlyScopedInstructions, countScopedGotchas,
+  countNarrowlyScopedInstructions, countScopedGotchas, countPersonaScopeControls,
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
 import { dangerousHookFindings, unscannableHookEvents, hookGroupsFor } from "./lib/hook-safety.js";
@@ -4447,6 +4447,12 @@ function main(): void {
         config.instructions?.enabled,
       ),
       scopedGotchas: countScopedGotchas(coreGotchasDir),
+      // R2-9: package-then-hub, matching the merge order the compiler uses, so
+      // a hub persona overriding a packaged one is counted once.
+      personaControls: countPersonaScopeControls(
+        [packagePersonasDir, corePersonasDir],
+        config.personas?.enabled,
+      ),
     };
 
     // `.active` and never the raw list — that is what makes expiry real. A

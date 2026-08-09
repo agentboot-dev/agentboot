@@ -22,7 +22,7 @@
  * See docs/research/capability-platform-matrix-2026-08-08.md §3.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -53,6 +53,7 @@ function ctx(config: Partial<AgentBootConfig>, extra: Partial<CapabilityContext>
     config: { org: "t", ...config } as AgentBootConfig,
     narrowlyScopedInstructions: 0,
     scopedGotchas: 0,
+    personaControls: { disallowedTools: 0, hooks: 0, tools: 0, mcpServers: 0 },
     ...extra,
   };
 }
@@ -294,32 +295,44 @@ describe("CAPABILITY_SUPPORT — anti-drift", () => {
   it("T5: each detect() actually fires on a config that sets its key", () => {
     // Catches a renamed config key silently disabling a row — the row would then
     // never fire and the gate would be vacuous for it.
-    const probes: Record<string, Partial<AgentBootConfig>> = {
-      "claude.hooks": { claude: { hooks: HOOKS } },
-      "claude.permissions.deny": { claude: { permissions: { deny: ["x"] } } },
-      "claude.permissions.allow": { claude: { permissions: { allow: ["x"] } } },
-      "claude.mcpServers": { claude: { mcpServers: { a: {} } } },
-      "claude.settings": { claude: { settings: { cleanupPeriodDays: 7 } } },
-      "mcp.enforceApproved": { mcp: { enforceApproved: true, approved: [{ name: "a", command: "x", args: [], toolsDigest: "sha256:1" }] } },
-      "ab.modelOverrides": { ab: { modelOverrides: { "ab-query": "opus" } } },
-      "managed.guardrails.disableBypassPermissions": { managed: { guardrails: { disableBypassPermissions: true } } },
-      "compliance.inputScan.scannerCommand": { compliance: { inputScan: { scannerCommand: "/x" } } },
-      "compliance.outputScan.blocking": { compliance: { outputScan: { blocking: true } } },
-      "managed.guardrails.denyTools": { managed: { guardrails: { denyTools: ["Bash"] } } },
-      "managed.guardrails.requireAuditLog": { managed: { guardrails: { requireAuditLog: true } } },
-      "managed.guardrails.forcePlugins": { managed: { guardrails: { forcePlugins: ["p"] } } },
+    // R2-9: probes are CONTEXTS, not configs. Four rows now read persona
+    // counters rather than AgentBootConfig, and the old config-only probe map
+    // could not express them — so they would have been skipped by the very test
+    // that exists to catch a vacuous row. The `instructions[]`/`gotchas[]` rows
+    // were being skipped outright for the same reason; they are probed now too.
+    const probes: Record<string, CapabilityContext> = {
+      "claude.hooks": ctx({ claude: { hooks: HOOKS } }),
+      "claude.permissions.deny": ctx({ claude: { permissions: { deny: ["x"] } } }),
+      "claude.permissions.allow": ctx({ claude: { permissions: { allow: ["x"] } } }),
+      "claude.mcpServers": ctx({ claude: { mcpServers: { a: {} } } }),
+      "claude.settings": ctx({ claude: { settings: { cleanupPeriodDays: 7 } } }),
+      "mcp.enforceApproved": ctx({ mcp: { enforceApproved: true, approved: [{ name: "a", command: "x", args: [], toolsDigest: "sha256:1" }] } }),
+      "ab.modelOverrides": ctx({ ab: { modelOverrides: { "ab-query": "opus" } } }),
+      "managed.guardrails.disableBypassPermissions": ctx({ managed: { guardrails: { disableBypassPermissions: true } } }),
+      "compliance.inputScan.scannerCommand": ctx({ compliance: { inputScan: { scannerCommand: "/x" } } }),
+      "compliance.outputScan.blocking": ctx({ compliance: { outputScan: { blocking: true } } }),
+      "managed.guardrails.denyTools": ctx({ managed: { guardrails: { denyTools: ["Bash"] } } }),
+      "managed.guardrails.requireAuditLog": ctx({ managed: { guardrails: { requireAuditLog: true } } }),
+      "managed.guardrails.forcePlugins": ctx({ managed: { guardrails: { forcePlugins: ["p"] } } }),
       // R2-3: group-scope twins of the four claude.* rows.
-      "groups[].permissions.deny": { groups: { g: { permissions: { deny: ["x"] } } } },
-      "groups[].permissions.allow": { groups: { g: { permissions: { allow: ["x"] } } } },
-      "groups[].mcpServers": { groups: { g: { mcpServers: { a: {} } } } },
-      "groups[].enabledPlugins": { groups: { g: { enabledPlugins: [{ url: "https://x.invalid" }] } } },
+      "groups[].permissions.deny": ctx({ groups: { g: { permissions: { deny: ["x"] } } } }),
+      "groups[].permissions.allow": ctx({ groups: { g: { permissions: { allow: ["x"] } } } }),
+      "groups[].mcpServers": ctx({ groups: { g: { mcpServers: { a: {} } } } }),
+      "groups[].enabledPlugins": ctx({ groups: { g: { enabledPlugins: [{ url: "https://x.invalid" }] } } }),
+      // R2-9 / NF3-5 / NF3-4 — the persona scope, which reads a counter.
+      "personas[*].disallowedTools": ctx({}, { personaControls: { disallowedTools: 1, hooks: 0, tools: 0, mcpServers: 0 } }),
+      "personas[*].hooks": ctx({}, { personaControls: { disallowedTools: 0, hooks: 1, tools: 0, mcpServers: 0 } }),
+      "personas[*].tools": ctx({}, { personaControls: { disallowedTools: 0, hooks: 0, tools: 1, mcpServers: 0 } }),
+      "personas[*].mcpServers": ctx({}, { personaControls: { disallowedTools: 0, hooks: 0, tools: 0, mcpServers: 1 } }),
+      // Previously skipped by an id-prefix test, so they were never probed.
+      "instructions[].applyTo": ctx({}, { narrowlyScopedInstructions: 1 }),
+      "gotchas[].paths": ctx({}, { scopedGotchas: 1 }),
     };
     for (const row of CAPABILITY_SUPPORT) {
-      if (row.id.startsWith("instructions[") || row.id.startsWith("gotchas[")) continue;
       const probe = probes[row.id];
       expect(probe, `no probe for row ${row.id} — add one`).toBeDefined();
-      expect(row.detect(ctx(probe!)), `detect() for ${row.id}`).toBe(true);
-      expect(row.detect(ctx({})), `detect() for ${row.id} on an empty config`).toBe(false);
+      expect(row.detect(probe!), `detect() for ${row.id}`).toBe(true);
+      expect(row.detect(ctx({})), `detect() for ${row.id} on an empty context`).toBe(false);
     }
   });
 });
@@ -830,4 +843,119 @@ describe("R1-6 — where conditionalOn actually applies", () => {
     // risk profile and should be a deliberate decision, not a drift.
     expect(PLATFORM_REQUIRES["plugin"]).toEqual(["claude"]);
   });
+});
+
+/**
+ * R2-9 / NF3-5 / NF3-4 — the PERSONA scope was invisible to the gate.
+ *
+ * Every row keyed off AgentBootConfig, so CapabilityContext carried the config
+ * and two scope counters and nothing else — `detect()` could not SEE
+ * persona.config.json at all. `disallowedTools` and `hooks` are both emitted
+ * only inside `if (outputFormats.includes("claude"))`, so on a hub without
+ * `claude` a persona-declared PreToolUse hook — a BLOCKING control, the same
+ * class as `claude.hooks` (severity error) — vanished with no row and no
+ * diagnostic, and doctor positively asserted full coverage over the loss.
+ *
+ * Measured on a scratch hub before the fix, persona.config.json with
+ * disallowedTools ["Bash","Write","Edit"] and a PreToolUse hook, outputFormats
+ * ["skill","agents","copilot","cursor"]:
+ *
+ *     build  -> exit 0, no mention of the hook
+ *     doctor -> "✓ Capability coverage — all 1 configured capability/ies have a
+ *                target that emits them"
+ *
+ * Worse than absence: dist/copilot/core/<persona>/persona.config.json ships the
+ * disallowedTools list verbatim to a platform that cannot enforce it, so the
+ * restriction reads as delivered.
+ */
+describe("R2-9 — persona-scope controls are gated like every other control", () => {
+  let hub = "";
+
+  const writePersona = (over: Record<string, unknown>) => {
+    const dir = path.join(hub, "core", "personas", "locked-reviewer");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: locked-reviewer\n---\n# Locked\nReview.\n");
+    fs.writeFileSync(path.join(dir, "persona.config.json"), JSON.stringify(over, null, 2));
+  };
+
+  beforeAll(() => {
+    hub = scaffoldHub();
+    writePersona({
+      disallowedTools: ["Bash", "Write", "Edit"],
+      hooks: { PreToolUse: { matcher: "Bash", hooks: [{ type: "command", command: "echo BLOCKED >&2; exit 2" }] } },
+    });
+    editConfig(hub, (c) => {
+      c.personas.enabled = [...c.personas.enabled, "locked-reviewer"];
+      c.personas.outputFormats = ["skill", "agents", "copilot", "cursor"];
+    });
+  }, 300_000);
+
+  it("R2-9: a persona deny list + hook with no `claude` target FAILS the build, by name", () => {
+    const r = ab(["build"], hub);
+    expect(r.status, `the persona's blocking controls vanished silently:\n${r.out}`).toBe(1);
+    expect(r.out).toContain("personas[*].disallowedTools");
+    expect(r.out).toContain("personas[*].hooks");
+  }, 300_000);
+
+  it("R2-9: doctor stops asserting full coverage over the loss", () => {
+    const r = ab(["doctor"], hub);
+    expect(r.out).not.toMatch(/✓ Capability coverage — all \d+ configured/);
+  }, 300_000);
+
+  it("R2-9 (NEGATIVE): adding `claude` back builds green AND emits both controls", () => {
+    // The other direction, which is what makes this a gate rather than a ban:
+    // the controls are real, and this is exactly the evidence that their loss
+    // mattered.
+    editConfig(hub, (c) => { c.personas.outputFormats = ["claude", "skill", "copilot"]; });
+    const r = ab(["build"], hub);
+    expect(r.status, r.out).toBe(0);
+    const agent = fs.readFileSync(
+      path.join(hub, "dist", "claude", "core", "agents", "locked-reviewer.md"), "utf-8");
+    expect(agent).toContain("disallowedTools:");
+    const settings = fs.readFileSync(
+      path.join(hub, "dist", "claude", "core", "settings.json"), "utf-8");
+    expect(settings).toContain("PreToolUse");
+  }, 300_000);
+
+  it("R2-9 (NEGATIVE): a persona `personas.enabled` excludes does NOT fire", () => {
+    // A control on a persona that is never compiled cannot be lost, and failing
+    // the build over it is the over-gating that gets a gate switched off.
+    editConfig(hub, (c) => {
+      c.personas.enabled = c.personas.enabled.filter((p: string) => p !== "locked-reviewer");
+      c.personas.outputFormats = ["skill", "agents", "copilot", "cursor"];
+    });
+    const r = ab(["build"], hub);
+    expect(r.status, r.out).toBe(0);
+  }, 300_000);
+
+  it("NF3-4: `mcpServers` fires on ANY hub — it is read by no code path", () => {
+    // The managed.guardrails.forcePlugins shape, in persona scope: typed,
+    // documented, copied into dist, and wired to nothing. emittedBy is empty, so
+    // even a fully-configured hub cannot satisfy it — which is the point.
+    editConfig(hub, (c) => {
+      c.personas.enabled = [...c.personas.enabled, "locked-reviewer"];
+      c.personas.outputFormats = ["claude", "skill", "copilot"];
+    });
+    writePersona({ mcpServers: { "persona-mcp": { command: "node", args: ["srv.js"] } } });
+    const r = ab(["build"], hub);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toContain("personas[*].mcpServers");
+    expect(r.out).toMatch(/NOTHING|not implemented/i);
+  }, 300_000);
+
+  it("NF3-4 (NEGATIVE): with the key removed the same hub builds green", () => {
+    writePersona({ disallowedTools: ["Bash"] });
+    expect(ab(["build"], hub).status).toBe(0);
+  }, 300_000);
+
+  it("FAIL CLOSED: an UNREADABLE persona.config.json counts as declaring controls", () => {
+    // "I could not check" must not resolve to "there is nothing there".
+    fs.writeFileSync(
+      path.join(hub, "core", "personas", "locked-reviewer", "persona.config.json"),
+      "{ this is not json",
+    );
+    editConfig(hub, (c) => { c.personas.outputFormats = ["skill", "copilot"]; });
+    const r = ab(["build"], hub);
+    expect(r.status, `an unreadable persona policy was treated as no policy:\n${r.out}`).toBe(1);
+  }, 300_000);
 });

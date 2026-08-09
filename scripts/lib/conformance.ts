@@ -31,6 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import { PLATFORM_REQUIRES, DEFAULT_OUTPUT_FORMATS, type AgentBootConfig } from "./config.js";
 import { APPLY_TO_PROJECTION } from "./scope-projection.js";
+import type { PersonaScopeCounts } from "./guardrail-scan.js";
 
 /** Same bound as every external-binary probe (v0.12.4 hang-class fix). */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -157,6 +158,16 @@ export interface CapabilityContext {
   narrowlyScopedInstructions: number;
   /** Gotchas carrying a `paths:` value. */
   scopedGotchas: number;
+  /**
+   * R2-9 / NF3-5 / NF3-4: controls declared in persona.config.json.
+   *
+   * Every row below keys off AgentBootConfig, so this context could not SEE
+   * persona.config.json and the whole persona scope was invisible to the gate.
+   * A persona-declared PreToolUse hook is a blocking control of the same class
+   * as `claude.hooks` (severity error) and vanished, silently, on any hub
+   * without `claude` in outputFormats.
+   */
+  personaControls: PersonaScopeCounts;
 }
 
 export interface CapabilityRow {
@@ -422,6 +433,78 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     severity: "error",
     consequence: "This key is accepted, typed and documented, and read by no code path in AgentBoot.",
     warrant: "NOT IMPLEMENTED — scripts/lib/config.ts type + docs/configuration.md only",
+  },
+  /**
+   * R2-9 / NF3-5 — the PERSONA-scope twins.
+   *
+   * `personas[*].disallowedTools` and `personas[*].hooks` are emitted only
+   * inside `if (outputFormats.includes("claude"))` (compile.ts:1174 and the
+   * generatePersonaHooks call), and had no row here, so the persona scope was
+   * invisible to a gate whose whole job is "configured, but no configured
+   * platform can honour it". Same shape as R2-3's group tier, one scope over.
+   *
+   * Severity `error` for both, matching `claude.hooks` and
+   * `claude.permissions.deny`: these are restrictions, and losing a restriction
+   * WIDENS what the agent may do. `tools` is the allow-list form of the same
+   * thing — a persona restricted to three tools that ships with no restriction
+   * gets all of them — so it is an error too, and NOT the
+   * `claude.permissions.allow` case, which is a pre-approval convenience whose
+   * loss only costs a prompt.
+   */
+  {
+    id: "personas[*].disallowedTools",
+    detect: (c) => c.personaControls.disallowedTools > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence:
+      "A persona's tool DENY list is applied on no target — and dist/copilot ships the " +
+      "list verbatim into persona.config.json on a platform that cannot enforce it, so " +
+      "the restriction reads as delivered while nothing enforces it.",
+    warrant: "scripts/compile.ts:1174",
+  },
+  {
+    id: "personas[*].hooks",
+    detect: (c) => c.personaControls.hooks > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence:
+      "A persona-declared PreToolUse/PostToolUse gate produces no file. Nothing runs — " +
+      "the same loss as claude.hooks, declared one scope down.",
+    warrant: "scripts/compile.ts:4795",
+  },
+  {
+    id: "personas[*].tools",
+    detect: (c) => c.personaControls.tools > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence:
+      "A persona restricted to an allow-list of tools ships with no restriction, so it " +
+      "may use every tool.",
+    warrant: "scripts/compile.ts:1180",
+  },
+  {
+    id: "personas[*].mcpServers",
+    /**
+     * NF3-4: the `managed.guardrails.forcePlugins` shape, in persona scope.
+     *
+     * Typed (config.ts, "Per-persona MCP servers"), documented, accepted, and
+     * copied verbatim into dist/skill/core/<persona>/persona.config.json and
+     * dist/copilot/.../persona.config.json — and read by NO code path:
+     * `grep -rn '\.mcpServers' scripts/ | grep 'pc\.\|personaConfig\.'` → 0 hits.
+     * No .mcp.json entry is written for it anywhere.
+     *
+     * emittedBy is EMPTY, so the intersection is empty for every configuration
+     * and this fires whenever the key is set — which is the point. Whether the
+     * resolution is to implement it or to delete it is a product call; leaving a
+     * governance knob wired to nothing while saying nothing is not.
+     */
+    detect: (c) => c.personaControls.mcpServers > 0,
+    emittedBy: [],
+    severity: "error",
+    consequence:
+      "This key is accepted, typed, documented and copied into dist, and read by no code " +
+      "path in AgentBoot. No MCP server is registered for it on any platform.",
+    warrant: "NOT IMPLEMENTED — scripts/lib/config.ts:628 type + copied-through dist only",
   },
   {
     id: "instructions[].applyTo",
