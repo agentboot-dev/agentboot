@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { select, input, confirm, checkbox } from "@inquirer/prompts";
 import { getRegistryPath } from "./registry.js";
+import { checkDistStamp } from "./dist-stamp.js";
 import { agentbootNpxSpec } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -845,7 +846,49 @@ function runSync(hubDir: string): boolean {
     encoding: "utf-8",
     stdio: "inherit",
   });
+  if (result.status !== 0) {
+    // NF3-6: every caller was `if (runSync(hubDir)) { …"Done" }` with no else,
+    // so a sync that REFUSED — which is what the dist-freshness gate does on a
+    // failed build — left install printing nothing at all. The operator was
+    // asked "Deploy personas to this repo now?", said yes, and got silence.
+    // A skip must never read as a pass.
+    console.log(chalk.red("\n  ✗ Sync did not complete — nothing was deployed to this repo."));
+    console.log(chalk.gray("    Fix the reason printed above, then run `agentboot sync` from the hub."));
+  }
   return result.status === 0;
+}
+
+/**
+ * NF3-6: is this hub's `dist/` something we may act on?
+ *
+ * `install` read `dist/` in six places, all `fs.existsSync(path.join(hubDir,
+ * "dist"))` — existence read as freshness, which is the exact pattern the whole
+ * dist-stamp subsystem was written to kill. A failed build leaves the previous
+ * `dist/` byte-identical, so existence is evidence of a build having happened
+ * ONCE, not of the tree reflecting current policy.
+ *
+ * Consequence was damped, not absent: `runSync` shells out to the gated
+ * `agentboot sync`, which refuses. But install still OFFERED to deploy from a
+ * superseded tree, and its own summary said nothing when the offer was declined
+ * by the gate. Asking a question whose answer the tool already knows is wrong is
+ * how an operator learns to distrust the prompts.
+ *
+ * Deliberately the STAMP only — install runs before a hub config is necessarily
+ * loadable, and the stamp needs none. Same reduced-but-real check
+ * `assertDistStampOrExit` applies for install-user and publish.
+ */
+export function distIsActionable(hubDir: string): boolean {
+  const distDir = path.join(hubDir, "dist");
+  if (!fs.existsSync(distDir)) return false;
+  const check = checkDistStamp(distDir);
+  if (!check.fresh) {
+    console.log(chalk.yellow(
+      `  ~ dist/ exists but its build stamp says ${check.reason} — not offering to deploy from it.`,
+    ));
+    console.log(chalk.gray("    Run `agentboot build` and let it succeed first."));
+    return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1343,7 +1386,7 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   }
 
   // Sync automatically — no confirmation prompt
-  if (registeredRepoPaths.length > 0 && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+  if (registeredRepoPaths.length > 0 && !opts.noSync && buildSucceeded && distIsActionable(hubDir)) {
     console.log(chalk.cyan("\n  Syncing..."));
     if (runSync(hubDir)) {
       console.log(chalk.green("\n  Personas deployed to all registered repos."));
@@ -1427,7 +1470,7 @@ async function path1Reconfigure(hubDir: string, opts: InstallOptions): Promise<v
 
   let importedAny = false;
   let reposAdded = false;
-  let buildSucceeded = fs.existsSync(path.join(hubDir, "dist"));
+  let buildSucceeded = distIsActionable(hubDir);
 
   // ── Import step ────────────────────────────────────────────────────────────
 
@@ -1596,7 +1639,7 @@ async function path1Reconfigure(hubDir: string, opts: InstallOptions): Promise<v
 
   // ── Build + sync ───────────────────────────────────────────────────────────
 
-  if ((importedAny || reposAdded) && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+  if ((importedAny || reposAdded) && !opts.noSync && buildSucceeded && distIsActionable(hubDir)) {
     console.log(chalk.cyan("\n  Syncing..."));
     if (runSync(hubDir)) {
       console.log(chalk.green("\n  Personas deployed to all registered repos."));
@@ -1810,7 +1853,7 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
   }
 
   // Step 2.4: Build and sync
-  if (fs.existsSync(path.join(hubDir, "dist"))) {
+  if (distIsActionable(hubDir)) {
     if (!opts.noSync) {
       const shouldSync = await confirm({
         message: "Deploy personas to this repo now?",
@@ -1897,7 +1940,7 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
       }
 
       // Optional sync
-      if (enableSync && fs.existsSync(path.join(resolvedHub, "dist"))) {
+      if (enableSync && distIsActionable(resolvedHub)) {
         console.log(chalk.cyan("  Syncing..."));
         runSync(resolvedHub);
       }
@@ -1920,7 +1963,7 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
     // Build
     const buildSucceeded = runBuild(hubDir);
 
-    if (enableSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+    if (enableSync && buildSucceeded && distIsActionable(hubDir)) {
       runSync(hubDir);
     }
 

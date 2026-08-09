@@ -60,16 +60,60 @@ interface CommandBlock {
  * `source: "dist"`) was invisible to the check written because "two lists that
  * must agree will drift". The invariant was itself derived from one file.
  *
- * Deliberately scoped to `runScript({ script: "X.ts" })` — a command whose body
- * IS a dispatch — and not to every `await import("./lib/…")`. A library import
- * is a command using a helper; a runScript dispatch is a command that has no
- * body of its own, which is precisely the shape that hid here.
+ * Originally scoped to `runScript({ script: "X.ts" })` — a command whose body IS
+ * a dispatch — on the argument that a library import is a command USING a
+ * helper while a runScript dispatch is a command with no body of its own.
+ *
+ * NF3-6 found the third shape that argument missed: `install`'s block is
+ * options plus `.action(installAction)`, with the dist/ reads in
+ * scripts/lib/install.ts. No `dist` token in the block, so `readsDist` was false
+ * and `install` was absent from DIST_CONSUMERS entirely — the same blind spot
+ * that hid `mcp-server`, one import shape over. Meanwhile install.ts read dist/
+ * in SIX places, every one `fs.existsSync(path.join(hubDir, "dist"))`:
+ * existence read as freshness, the pattern the whole registry exists to kill.
+ *
+ * So a body-less command block — one whose action is a bare identifier — now
+ * follows that identifier into the lib module it is imported from. The original
+ * distinction is preserved for blocks that DO have a body: a helper import
+ * inside real logic is still not followed, because that would pull half the
+ * codebase into every block and make `readsDist` true for everything.
  */
 function delegatedSources(body: string): string {
   let extra = "";
   for (const m of body.matchAll(/script:\s*"([A-Za-z0-9._-]+\.ts)"/g)) {
     const target = path.join(ROOT, "scripts", m[1]!);
     if (fs.existsSync(target)) extra += "\n" + fs.readFileSync(target, "utf-8");
+  }
+  // NF3-6: a block whose action is a bare IDENTIFIER has no body of its own —
+  // the work is wherever that identifier leads. `install`'s block is options
+  // plus `.action(installAction)`, and installAction is a const in cli.ts that
+  // dynamically imports ./lib/install.js. Follow both hops: the identifier to
+  // its definition, and that definition's lib imports to their files.
+  const action = /\.action\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(body);
+  if (action) {
+    const src = fs.readFileSync(CLI_SRC, "utf-8");
+    const modules = new Set<string>();
+    // Hop 1: `import { X } from "./lib/y.js"` at the top of cli.ts.
+    const staticImp = new RegExp(
+      `import\\s*\\{[^}]*\\b${action[1]!}\\b[^}]*\\}\\s*from\\s*"\\./lib/([A-Za-z0-9._-]+)\\.js"`,
+    ).exec(src);
+    if (staticImp) modules.add(staticImp[1]!);
+    // Hop 2: `const X = … => { const { … } = await import("./lib/y.js"); … }`.
+    const defIdx = src.indexOf(`const ${action[1]!} =`);
+    if (defIdx >= 0) {
+      // The definition's own text, bounded by the next top-level `const`/
+      // `program` so an unrelated import below is not attributed to it.
+      const rest = src.slice(defIdx);
+      const endRel = rest.slice(1).search(/\n(?:const |program\b|function )/);
+      const defBody = endRel >= 0 ? rest.slice(0, endRel + 1) : rest;
+      for (const m of defBody.matchAll(/import\("\.\/lib\/([A-Za-z0-9._-]+)\.js"\)/g)) {
+        modules.add(m[1]!);
+      }
+    }
+    for (const mod of modules) {
+      const target = path.join(ROOT, "scripts", "lib", `${mod}.ts`);
+      if (fs.existsSync(target)) extra += "\n" + fs.readFileSync(target, "utf-8");
+    }
   }
   return extra;
 }
@@ -149,9 +193,25 @@ describe("A-class — every dist/ consumer declares a freshness posture", () => 
         const lines = src.split("\n");
         let gates = false;
         for (let i = 0; i < lines.length; i++) {
-          if (!/assertDistFreshOrExit\(|checkDistFreshness\(/.test(lines[i]!)) continue;
+          // NF3-6: `checkDistStamp` counts too. It is the REDUCED freshness
+          // check — no config needed, so "no stamp" and "status: failed" are
+          // still caught — and it is what install-user and publish already fall
+          // back to. The accepted-function list was itself a hand-maintained
+          // second list; leaving it at two names would have forced `install` to
+          // adopt a check it cannot run (it executes before a hub config is
+          // necessarily loadable) purely to satisfy a regex.
+          if (!/assertDistFreshOrExit\(|checkDistFreshness\(|checkDistStamp\(/.test(lines[i]!)) continue;
           const window = lines.slice(i, i + 15).join("\n");
-          if (/assertDistFreshOrExit\(/.test(lines[i]!) || /process\.exit\(1\)/.test(window)) {
+          // The REFUSAL is what makes it a gate rather than a comment, and a
+          // refusal has two legitimate shapes: exit, or decline to act. An
+          // interactive installer must not `process.exit(1)` mid-onboarding —
+          // that is worse than not offering the step — so `return false` under a
+          // not-fresh branch is its refusal.
+          const refuses =
+            /assertDistFreshOrExit\(/.test(lines[i]!) ||
+            /process\.exit\(1\)/.test(window) ||
+            /return false/.test(window);
+          if (refuses) {
             gates = true;
             break;
           }

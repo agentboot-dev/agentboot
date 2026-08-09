@@ -96,6 +96,37 @@ export const DIST_CONSUMERS: Record<string, DistConsumer> = {
     gateFn: "main",
     reason: "ships dist/ to spokes — the original N1 case",
   },
+  /**
+   * NF3-6: `install` was structurally invisible to this registry.
+   *
+   * The derivation parses cli.ts command blocks, and `install`'s block is
+   * options plus `.action(installAction)` — no `dist` token anywhere in it —
+   * while the reads live in scripts/lib/install.ts. Six of them, every one
+   * `fs.existsSync(path.join(hubDir, "dist"))`: existence read as freshness,
+   * the exact pattern this registry exists to kill. Same blind spot that hid
+   * `mcp-server`, one import shape over (a bare action identifier rather than a
+   * runScript dispatch); the derivation follows that shape now.
+   *
+   * `gated`, not `reports`. install ACTS: it offers "Deploy personas to this
+   * repo now?" and shells out to sync. The consequence was damped because
+   * runSync() invokes the gated `agentboot sync`, which refuses — but install
+   * asked the question anyway, and printed NOTHING when the gate declined,
+   * which is a skip reading as a pass. Asking a question whose answer the tool
+   * already knows is wrong is how an operator learns to distrust the prompts.
+   *
+   * The gate is the STAMP only (`distIsActionable`), not full freshness:
+   * install runs before a hub config is necessarily loadable, and "no stamp" /
+   * "status: failed" need none — the same reduced-but-real check install-user
+   * and publish fall back to.
+   */
+  install: {
+    posture: "gated",
+    gateIn: "scripts/lib/install.ts",
+    gateFn: "distIsActionable",
+    reason:
+      "offers to deploy from dist/ and shells out to sync; read dist/ six times via " +
+      "fs.existsSync — existence as freshness — and said nothing when sync refused",
+  },
   "drift-check": { posture: "gated" },
   audit: { posture: "gated" },
   conformance: { posture: "gated" },
