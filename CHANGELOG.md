@@ -56,6 +56,50 @@ full PR-level detail; this file is the curated, human-readable summary.
 - **`doctor` no longer drops an unclassified platform from the Enforcement report with `continue`** —
   a silent skip in a function whose entire job is honesty. It now says so.
 
+### Security
+- **A gotcha's `paths:` frontmatter could write outside the hub.** The Gemini emitter derived a
+  directory name from the operator-authored `paths:` value and joined it to `dist/`, so
+  `paths: "../../../../victim-repo/**"` wrote a `GEMINI.md` at that resolved location — arbitrary
+  file write from an artifact source, on `agentboot build`. Every emitted path is now containment-
+  checked against the output root and the build FAILS on an escape, naming the artifact.
+- **Blocking hooks no longer fail open on a payload they cannot read, measure, or parse.** Three
+  independent routes each turned the DLP input scan and the PreToolUse deny gate into exit 0 with
+  nothing on stdout or stderr: an out-of-range `AGENTBOOT_MAX_HOOK_INPUT_BYTES`, a failing
+  `wc`/`tr` in the size measurement, and any payload that is not a JSON object (including valid
+  JSON scalars like `42`). All three now refuse, name the cause on stderr, and emit a block
+  decision. The Stop-hook output scan still exits 0 by design — a Stop hook that blocks strands the
+  session — but says `output scan SKIPPED, this response was NOT scanned`, and the telemetry hook
+  says `telemetry event NOT recorded` instead of swallowing the error.
+- **Persona-declared hooks are scanned for dangerous shell patterns.** The gate read
+  `config.claude.hooks` only, while `persona.config.json` hooks are merged into
+  `dist/claude/core/settings.json` and synced to every spoke. A persona hook piping a network
+  download into a shell built green.
+- **`mcp.enforceApproved: true` with no `mcp.approved` list now enforces.** Both the validator and
+  the emitter gated the filter on the approved list being PRESENT, so the maximum-shortfall state —
+  nothing approved — was the one state that produced no finding and shipped every configured server.
+
+### Added — new build-FAILING gates (adopters WILL meet these on upgrade)
+Each of these turns a previously-silent loss into a refusal. All are reachable from an existing
+config, so read this section before upgrading a hub in CI.
+
+- **An unreadable path scope stops the build.** A malformed `applyTo:`/`paths:` used to be read as
+  "no scope", i.e. delivered ALWAYS-ON. Covers `core/instructions`, `core/gotchas` and
+  `domains/*/instructions`. Fix the YAML, or write `applyTo: "**"` if the rule really is universal.
+- **A wrong-typed config value is a named refusal, not a stack trace.** `CONFIG_SHAPE` types every
+  policy-bearing key including the `compliance.*` leaves; a capability row with no type rule is now
+  a test failure, so the table cannot fall behind the config surface again.
+- **Persona-scope controls are capability-gated.** `personas[*].disallowedTools`, `.hooks` and
+  `.tools` are emitted only for `claude`; on a hub without `claude` they used to vanish silently
+  while `doctor` asserted full coverage. `personas[*].mcpServers` fires on ANY hub — it is typed,
+  documented, copied into `dist/`, and read by no code path (same posture as
+  `managed.guardrails.forcePlugins`).
+- **`compliance.outputScan.scannerCommand` and both `failMode` keys are capability-gated** — an
+  output scanner configured without `blocking: true` previously produced no coverage finding at all.
+- **An unreadable `persona.config.json` is fatal**, rather than a yellow warning followed by a
+  persona shipping with its tool restrictions silently absent. Same for an unreadable
+  managed-settings fragment.
+- **`output.tokenBudget.failAt` fires on every hub**, not only hubs building the `skill` format.
+
 ### Added
 - `CAPABILITY_SUPPORT` (`scripts/lib/conformance.ts`) — which platforms emit which capability, a
   separate axis from `PLATFORM_ENFORCEMENT`'s "how strongly does it enforce". Every row was verified
@@ -87,6 +131,29 @@ full PR-level detail; this file is the curated, human-readable summary.
 - **JetBrains/Windsurf concat files no longer accumulate duplicates in non-`core` scopes.** The old
   append-without-clear guard iterated `["core"]` only; a staging build cannot append to a previous
   build's file at all.
+
+### Changed — upgrade notes
+- **`agentboot test`, `baseline`, `drift-check`, `conformance`, `install-user`, `publish` and
+  `connect` now refuse to act on a `dist/` whose own build stamp says `failed`**, including when no
+  `agentboot.config.json` sits beside the tree. In particular `agentboot test --snapshot` no longer
+  banks a superseded tree as the baseline that every later `--regression` is compared against.
+- **`agentboot test --behavioral --allow-unevaluated` waives judgement-only scenarios again.** A
+  regression made every dropped case fatal regardless of the flag, so any adopter with a
+  judgement-only scenario had an unwaivable red CI. Structurally broken scenarios (no `id:`, no
+  `prompt:`, no `expect:` block) remain unwaivable, as does "no cases ran".
+- **`hub.version` is `null` when absent** rather than being omitted, on the MCP agent surface.
+- **Copilot instruction frontmatter is re-serialized rather than passed through**, and a `key:`
+  appearing inside another key's block scalar is no longer mistaken for that key. A
+  `description: |` whose prose mentioned `applyTo:` previously produced unparseable YAML and a glob
+  taken from the prose.
+- **`drift-check` reports a manifest that is present but UNREADABLE** as `UNCHECKED` /
+  `PARTIALLY CHECKED` rather than as `clean`. A repo with one corrupt manifest beside a valid one
+  used to report `1/1 clean`.
+- **The `audit` staleness check compares the artifact-source DIGEST**, not file mtimes, so an edit
+  with a rewound mtime and a deleted artifact are both caught, and `nodes/`, `groups/`, `teams/` and
+  configured domains are covered.
+- `dist/*/mcp-governance.json` carries a `note` field stating it is an evidence record read by no
+  command; the enforcement it documents is the `.mcp.json` filtering beside it.
 
 ### Changed
 - `output.failOnDirtyDist` is **deprecated and ignored** (warns when set). It was an opt-in,
