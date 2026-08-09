@@ -121,3 +121,159 @@ describe("I1 — hook stdin size cap", () => {
     expect(r.status).toBe(0);
   });
 });
+
+/**
+ * R1-1 — the cap compared a CHARACTER count against a BYTE limit.
+ *
+ * Every case above uses `"a".repeat(...)`, where bytes and characters are the
+ * same number, so the whole file passed while the gate failed open on any
+ * multibyte payload. That is the shape of a check that cannot fail: the test
+ * data was drawn from the one axis on which the two units coincide.
+ *
+ * 500_000 CJK characters is 1_500_000 bytes — over the 1 MiB cap in bytes and
+ * comfortably under it in characters. Pre-fix: `head -c` truncated it mid
+ * sequence, the comparison saw no truncation, JSON.parse threw inside the node
+ * one-liner, the catch printed '', and the blocking hooks exited 0 with no
+ * stdout and no stderr.
+ */
+const MULTIBYTE_OVER_CAP_PROMPT = JSON.stringify({
+  prompt: "密".repeat(500_000) + " password: hunter2",
+});
+const MULTIBYTE_OVER_CAP_TOOL = JSON.stringify({
+  padding: "密".repeat(500_000),
+  tool_name: "WebFetch",
+});
+
+describe("R1-1 — the cap is measured in bytes, not characters", () => {
+  it("R1-1-0: the fixture really is over the cap in bytes and under it in characters", () => {
+    // If this ever stops holding, every assertion below becomes vacuous.
+    expect(Buffer.byteLength(MULTIBYTE_OVER_CAP_PROMPT, "utf-8")).toBeGreaterThan(1_048_576);
+    expect(MULTIBYTE_OVER_CAP_PROMPT.length).toBeLessThan(1_048_576);
+  });
+
+  it("R1-1-1: a multibyte over-cap prompt FAILS CLOSED — it does not slip past as under-cap", () => {
+    const r = runHook("agentboot-input-scan.sh", MULTIBYTE_OVER_CAP_PROMPT);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain("exceeds the hook input limit");
+    expect(r.stderr).toContain("cannot scan it in full");
+  });
+
+  it("R1-1-2: the PreToolUse deny gate also fails closed on a multibyte over-cap payload", () => {
+    const r = runHook("agentboot-pretooluse.sh", MULTIBYTE_OVER_CAP_TOOL);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain("could not be inspected");
+  });
+
+  it("R1-1-3: the Stop hook says it SKIPPED — the multibyte path was quieter than the ASCII one", () => {
+    // Pre-fix this hook did not even emit its promised stderr line for a
+    // multibyte payload: it fell through the truncation branch, failed to
+    // parse, and exited 0 saying nothing at all.
+    const r = runHook("agentboot-output-scan.sh", MULTIBYTE_OVER_CAP_PROMPT);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain("output scan SKIPPED");
+  });
+
+  it("R1-1-4 (NEGATIVE): multibyte UNDER the cap is scanned normally, not blocked wholesale", () => {
+    // The opposite outage. A fix that just blocks everything multibyte is not a fix.
+    const clean = JSON.stringify({ prompt: "密".repeat(200_000) });
+    expect(Buffer.byteLength(clean, "utf-8")).toBeLessThan(1_048_576);
+    expect(runHook("agentboot-input-scan.sh", clean).status).toBe(0);
+  });
+
+  it("R1-1-5 (NEGATIVE): raising the cap makes the multibyte payload SCANNABLE, and it is scanned", () => {
+    // Proves the block above was the cap and not a parse failure: with room to
+    // read it, the same payload is blocked for the reason that actually matters.
+    const r = runHook("agentboot-input-scan.sh", MULTIBYTE_OVER_CAP_PROMPT, {
+      AGENTBOOT_MAX_HOOK_INPUT_BYTES: "5000000",
+    });
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain("Potential credential detected");
+  });
+});
+
+/**
+ * R1-2 — `AGENTBOOT_MAX_HOOK_INPUT_BYTES` was an unvalidated env var used inside
+ * `$(( ))` and `[ -gt ]`. A non-numeric value made both error under `set -u`,
+ * leaving INPUT one byte long and INPUT_TRUNCATED=0 — so a single environment
+ * variable disabled the DLP scan and the denyTools gate that the product sells
+ * as non-overridable org policy.
+ */
+describe("R1-2 — an unusable limit must not disable the gate", () => {
+  const SECRET = JSON.stringify({ prompt: "api_key = AKIAABCDEFGHIJKLMNOP" });
+
+  for (const bad of ["abc", "0", "-1", "1e6", "1048576 ", "0100"]) {
+    it(`R1-2-1[${bad}]: the input scan refuses rather than running unbounded`, () => {
+      const r = runHook("agentboot-input-scan.sh", SECRET, {
+        AGENTBOOT_MAX_HOOK_INPUT_BYTES: bad,
+      });
+      // Either the limit is honoured and the secret is caught, or the limit is
+      // rejected and the gate refuses — both are exit 2. What must never happen
+      // is exit 0, which is what the unvalidated version did.
+      expect(r.status, `AGENTBOOT_MAX_HOOK_INPUT_BYTES=${bad} allowed a secret through`).toBe(2);
+    });
+  }
+
+  it("R1-2-2: the refusal names the variable so the operator can fix it", () => {
+    const r = runHook("agentboot-input-scan.sh", SECRET, {
+      AGENTBOOT_MAX_HOOK_INPUT_BYTES: "abc",
+    });
+    expect(r.stderr).toContain("AGENTBOOT_MAX_HOOK_INPUT_BYTES");
+    expect(r.stdout).toContain("not a positive byte count");
+  });
+
+  it("R1-2-3: the deny-tools gate refuses too — same class, same posture", () => {
+    const r = runHook("agentboot-pretooluse.sh", JSON.stringify({ tool_name: "WebFetch" }), {
+      AGENTBOOT_MAX_HOOK_INPUT_BYTES: "abc",
+    });
+    expect(r.status).toBe(2);
+  });
+
+  it("R1-2-4: an advisory hook degrades to the default and SAYS SO — it does not refuse", () => {
+    // The posture split is deliberate: a Stop hook that refuses on a typo'd env
+    // var strands the session. It falls back, and it is loud about it.
+    const r = runHook("agentboot-output-scan.sh", JSON.stringify({ last_assistant_message: "fine" }), {
+      AGENTBOOT_MAX_HOOK_INPUT_BYTES: "abc",
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain("falling back to 1048576");
+  });
+
+  it("R1-2-5 (NEGATIVE): a well-formed value is still honoured on every hook", () => {
+    expect(
+      runHook("agentboot-input-scan.sh", JSON.stringify({ prompt: "hello" }), {
+        AGENTBOOT_MAX_HOOK_INPUT_BYTES: "2097152",
+      }).status
+    ).toBe(0);
+    expect(
+      runHook("agentboot-pretooluse.sh", JSON.stringify({ tool_name: "Read" }), {
+        AGENTBOOT_MAX_HOOK_INPUT_BYTES: "2097152",
+      }).status
+    ).toBe(0);
+  });
+});
+
+/**
+ * The prelude is generated from ONE place now (scripts/lib/hook-prelude.ts).
+ * Before, the same six lines were pasted into four hook templates and both
+ * defects above lived in all four copies. Assert the invariant rather than
+ * trusting that a future edit remembers all four.
+ */
+describe("R1-1/R1-2 — one prelude, not four copies", () => {
+  it("every generated hook that reads stdin uses the shared byte-measured prelude", () => {
+    const hooks = fs.readdirSync(hooksDir).filter((f) => f.endsWith(".sh"));
+    expect(hooks.length).toBeGreaterThan(0);
+    for (const h of hooks) {
+      const body = fs.readFileSync(path.join(hooksDir, h), "utf-8");
+      if (!body.includes("MAX_HOOK_INPUT_BYTES")) continue;
+      // The comparison, not the mention — the prelude's own comment explains
+      // ${#INPUT} in order to say why it is wrong.
+      expect(body, `${h} still compares a character count`).not.toMatch(
+        /\[\s*"\$\{#INPUT\}"\s*-gt/
+      );
+      expect(body, `${h} does not count bytes`).toContain("INPUT_BYTES=");
+      expect(body, `${h} does not validate the operator's limit`).toContain(
+        `''|*[!0-9]*|0*)`
+      );
+    }
+  });
+});
