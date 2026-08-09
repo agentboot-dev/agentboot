@@ -76,6 +76,27 @@ function shippedExclusions(): string[] {
 }
 
 const DOC_ROOTS = ["docs", path.join("website", "src", "pages"), path.join("website", "static")];
+/**
+ * NF4-5: roots that are PUBLIC COMPILE INPUTS but not npm-packed.
+ *
+ * The corpus was derived from package.json `files`, which is the right source
+ * for "what npm ships" and the wrong one for "what AgentBoot publishes".
+ * `domains/` is absent from `files` and is nonetheless a documented compile
+ * input in the public repo — the repo ships domains/compliance-template and
+ * domains/healthcare-template — and its content reaches every spoke.
+ *
+ * Measured on a snapshot: `echo battle-tested > domains/zz/ZZ.md` was invisible
+ * to this test while the identical line in core/ and templates/ was caught. And
+ * it really does ship: a hub with `"domains": ["./domains/zz"]` and an
+ * instruction containing "finds real bugs, not style nits" built exit 0 and put
+ * the phrase in three dist artifacts (dist/skill, dist/copilot, dist/claude).
+ *
+ * Same root cause the V7 commit named and NF2-2 named again — "a corpus-wide
+ * claim policed by directory root" — one step further out: policed by PACKING
+ * MANIFEST. No banned claim is present in domains/ today; this is a gate gap,
+ * not a live leak, and it is fixed while it is still cheap.
+ */
+const COMPILE_INPUT_ROOTS = ["domains"];
 /** Repo-root prose that is not in a scanned directory. */
 const SCAN_FILES = ["README.md", "PERSONAS.md", "CLAUDE.md", "CHANGELOG.md"];
 
@@ -99,7 +120,7 @@ function publishedFiles(): string[] {
       }
     }
   };
-  for (const r of [...DOC_ROOTS, ...shippedRoots()]) walk(path.join(ROOT, r));
+  for (const r of [...DOC_ROOTS, ...COMPILE_INPUT_ROOTS, ...shippedRoots()]) walk(path.join(ROOT, r));
   for (const f of SCAN_FILES) out.push(path.join(ROOT, f));
   return [...new Set(out)].filter((f) => fs.existsSync(f));
 }
@@ -200,6 +221,18 @@ describe("V7 — a claim removed for being unsupportable stays removed, everywhe
     for (const anchor of ["README.md", path.join("docs", "glossary.md"), path.join("docs", "concepts.md")]) {
       expect(FILES.some((f) => f.endsWith(anchor)), `${anchor} dropped out of the scan`).toBe(true);
     }
+  });
+
+  it("NF4-5: the scan covers PUBLIC COMPILE INPUTS npm does not pack", () => {
+    // domains/ is absent from package.json `files` and is nonetheless a public,
+    // documented compile input whose content reaches every spoke. Named, not
+    // counted: a total-count guard goes green again the moment the root stops
+    // being walked, which is the failure being fixed.
+    const inDomains = FILES.filter((f) => f.includes(`${path.sep}domains${path.sep}`));
+    expect(
+      inDomains.length,
+      "domains/ dropped out of the scan — a banned claim there ships to every spoke",
+    ).toBeGreaterThan(0);
   });
 
   it("NF2-2: the scan covers what npm SHIPS, not just what docusaurus renders", () => {
