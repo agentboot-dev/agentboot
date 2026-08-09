@@ -10,6 +10,8 @@ import path from "node:path";
 import os from "node:os";
 import { execSync } from "node:child_process";
 
+import { ensureRootDist } from "./setup.js";
+
 const ROOT = path.resolve(__dirname, "..");
 
 function run(script: string, cwd = ROOT): string {
@@ -24,11 +26,11 @@ function run(script: string, cwd = ROOT): string {
 // Ensure dist/ is built before tests
 // ---------------------------------------------------------------------------
 
+// R4-6: was `if (!fs.existsSync(dist/skill/core)) run("scripts/compile.ts")` —
+// existence read as freshness, in the harness. ensureRootDist() asks the build
+// stamp.
 beforeAll(() => {
-  const distSkill = path.join(ROOT, "dist", "skill", "core");
-  if (!fs.existsSync(distSkill)) {
-    run("scripts/compile.ts");
-  }
+  ensureRootDist();
 });
 
 // ---------------------------------------------------------------------------

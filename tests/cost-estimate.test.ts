@@ -8,9 +8,21 @@ import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
 import path from "node:path";
 
+import { beforeAll } from "vitest";
+import { ensureRootDist } from "./setup.js";
+
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
 const CLI = path.join(ROOT, "scripts", "cli.ts");
+
+// R4-6: `cost-estimate` is a GATED dist/ consumer, and this file had no dist
+// guard at all — it inherited whatever tree the previous file left. When an
+// earlier file rebuilt ROOT/dist against a temporarily-modified core/, every
+// CLI call here was refused for `sources-stale` and twelve tests failed for a
+// reason that had nothing to do with what they assert.
+beforeAll(() => {
+  ensureRootDist();
+});
 
 function run(args: string, cwd = ROOT): string {
   return execSync(`${TSX} ${CLI} ${args}`, {

@@ -14,14 +14,18 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { ensureRootDist } from "./setup.js";
+
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
 const SKILL_CORE = path.join(ROOT, "dist", "skill", "core");
 
+// R4-6: `if (!fs.existsSync(...))` is EXISTENCE READ AS FRESHNESS — the defect
+// tests/setup.ts::ensureRootDist() was written to end. Another file rebuilds or
+// prunes the shared ROOT/dist mid-run, this guard sees files and does nothing,
+// and the assertions below read a tree built for someone else's config.
 beforeAll(() => {
-  if (!fs.existsSync(SKILL_CORE)) {
-    execSync(`${TSX} scripts/compile.ts`, { cwd: ROOT, timeout: 60_000 });
-  }
+  ensureRootDist();
 });
 
 function skillDirs(): string[] {

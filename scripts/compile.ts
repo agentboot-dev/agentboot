@@ -2851,7 +2851,14 @@ ${hookInputCapPrelude({
 ${hookJsonExtract({
     variable: "PROMPT",
     subject: "the prompt",
-    extract: "process.stdout.write(j.prompt||'')",
+    // R4V-1: `j.prompt||''` NEVER THROWS, so the extractor's own catch could not
+    // fire and a payload with no `prompt` field was scanned as an empty string
+    // at exit 0 — on a blocking DLP gate. The object-shape check one layer up
+    // stopped `42`/`"x"`/`[]` but not `{}` or `{"promt":...}`, which is what a
+    // renamed or wrongly-framed field actually looks like.
+    // An ABSENT field is a payload we do not understand; an EMPTY STRING is a
+    // genuinely empty prompt. Only the first is a failure.
+    extract: "if(typeof j.prompt!=='string')throw 0;process.stdout.write(j.prompt)",
     action: "block",
     blockReason:
       "AgentBoot: the hook payload could not be parsed, so the prompt could not be scanned. The gate will not run on a payload it cannot understand.",
@@ -3147,7 +3154,11 @@ ${hookInputCapPrelude({
 ${hookJsonExtract({
     variable: "TOOL_NAME",
     subject: "the tool name",
-    extract: "process.stdout.write(j.tool_name||'')",
+    // R4V-1, same class. Stricter than the prompt case on purpose: this value is
+    // matched against DENY_PATTERNS, so an empty tool name matches nothing and
+    // every deny rule silently passes. There is no such thing as a legitimately
+    // empty tool name — absent OR empty is a payload we cannot gate on.
+    extract: "if(typeof j.tool_name!=='string'||!j.tool_name)throw 0;process.stdout.write(j.tool_name)",
     action: "block",
     blockReason:
       "AgentBoot: the hook payload could not be parsed, so the tool could not be identified. The deny gate will not run on a payload it cannot understand.",
