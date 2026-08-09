@@ -428,20 +428,61 @@ interface RepoEntry {
   packages?: string[];
 }
 
-/** Load repos.json from the hub. */
-function loadReposJson(): RepoEntry[] {
+/**
+ * R2-2: an unreadable repos.json is NOT an empty repos.json.
+ *
+ * `47ef85c`'s sibling fix (`337e012`) named this exact case on the CLI —
+ * "corrupt repos.json → Summary: 0/0 clean, 0 drifted, 0 no manifest, EXIT=0 …
+ * a bad merge in repos.json turns the nightly compliance job into a check of
+ * nothing that reads as a check of everything" — and fixed it in scripts/cli.ts
+ * only. The MCP surface kept degrading to `[]`. Measured on the same corrupt
+ * file:
+ *
+ *     agentboot drift-check     EXIT 1  names the file and the parse error
+ *     MCP agentboot_status              {"repos":[],"platforms":[]}
+ *     MCP agentboot_doctor              {"issues":[],"allClear":true}
+ *
+ * "I could not read the roster" and "the roster is empty" must not answer alike,
+ * because an agent asking `agentboot_status` for the org's repo posture gets a
+ * confident, complete-looking, empty answer.
+ */
+interface ReposLoad {
+  repos: RepoEntry[];
+  /** Present when the file exists but could not be read/parsed. */
+  error?: string;
+  /** Where we looked — part of the diagnostic, not a secret. */
+  reposPath: string;
+}
+
+function loadReposJsonChecked(): ReposLoad {
   const config = loadHubConfig();
   const reposFile = config?.sync?.repos ?? "./repos.json";
   const reposPath = path.resolve(HUB_ROOT, reposFile);
-  if (!fs.existsSync(reposPath)) return [];
+  if (!fs.existsSync(reposPath)) return { repos: [], reposPath };
   try {
     const raw = fs.readFileSync(reposPath, "utf-8");
     const parsed = JSON.parse(stripJsoncComments(raw));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+    if (!Array.isArray(parsed)) {
+      return { repos: [], reposPath, error: "repos.json is not a JSON array" };
+    }
+    return { repos: parsed, reposPath };
+  } catch (e: unknown) {
+    return {
+      repos: [],
+      reposPath,
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
 }
+
+/**
+ * Deliberately NOT re-added as a convenience wrapper.
+ *
+ * The old `loadReposJson(): RepoEntry[]` was the defect: its return type could
+ * not express "unreadable", so every caller silently took `[]`. Every consumer
+ * goes through `loadReposJsonChecked` and must decide what to say about
+ * `error` — which is the point.
+ */
 
 // ---------------------------------------------------------------------------
 // Tool Definitions
@@ -894,6 +935,13 @@ export function computeRepoDrift(repoPath: string): {
   hasDrift: boolean;
   driftCount: number;
   lastSyncAt: string | null;
+  /**
+   * R2-2: did the drift check actually RUN? A repo we could not check is not a
+   * repo we checked and found clean.
+   */
+  checked: boolean;
+  /** Why it could not be checked — absent when `checked`. */
+  uncheckedReason?: string;
 } {
   const manifestPath = findManifestPath(repoPath);
   let lastSyncAt: string | null = null;
@@ -902,16 +950,53 @@ export function computeRepoDrift(repoPath: string): {
       lastSyncAt = fs.statSync(manifestPath).mtime.toISOString();
     } catch { /* ignore */ }
   }
-  let synced = false;
-  let hasDrift = false;
-  let driftCount = 0;
+  // R2-2: this used to be `catch { /* best-effort */ }` over defaults of
+  // synced:false, hasDrift:false — so a drift check that THREW (repo absent
+  // from this machine, unreadable manifest, permissions) reported the repo as
+  // not-drifted, which is the reading an agent turns into "compliant". Commit
+  // 337e012 established the rule for the CLI: a missing manifest is not
+  // evidence of compliance, and every way of NOT checking must be distinct from
+  // a pass. Same rule here.
+  if (!fs.existsSync(repoPath)) {
+    return {
+      synced: false,
+      hasDrift: false,
+      driftCount: 0,
+      lastSyncAt,
+      checked: false,
+      uncheckedReason: "repo path does not exist on this machine",
+    };
+  }
   try {
     const report = checkDrift(repoPath);
-    synced = report.manifestFound;
-    driftCount = report.summary.modifiedCount + report.summary.missingCount;
-    hasDrift = report.manifestFound && driftCount > 0;
-  } catch { /* drift check is best-effort for status; keep defaults */ }
-  return { synced, hasDrift, driftCount, lastSyncAt };
+    if (!report.manifestFound) {
+      return {
+        synced: false,
+        hasDrift: false,
+        driftCount: 0,
+        lastSyncAt,
+        checked: false,
+        uncheckedReason: "no .agentboot-manifest.json — never synced, or the manifest was deleted",
+      };
+    }
+    const driftCount = report.summary.modifiedCount + report.summary.missingCount;
+    return {
+      synced: true,
+      hasDrift: driftCount > 0,
+      driftCount,
+      lastSyncAt,
+      checked: true,
+    };
+  } catch (e: unknown) {
+    return {
+      synced: false,
+      hasDrift: false,
+      driftCount: 0,
+      lastSyncAt,
+      checked: false,
+      uncheckedReason: `drift check failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 }
 
 function handleStatus(): ToolResult {
@@ -937,10 +1022,12 @@ function handleStatus(): ToolResult {
   });
 
   // Repos
-  const repoEntries = loadReposJson();
+  const reposLoad = loadReposJsonChecked();
+  const repoEntries = reposLoad.repos;
   const repos = repoEntries.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
+    const { synced, hasDrift, driftCount, lastSyncAt, checked, uncheckedReason } =
+      computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
@@ -949,8 +1036,11 @@ function handleStatus(): ToolResult {
       synced,
       hasDrift,
       driftCount,
+      checked,
+      ...(uncheckedReason ? { uncheckedReason } : {}),
     };
   });
+  const uncheckedRepos = repos.filter((r) => !r.checked).length;
 
   // Platforms
   const platformSet = new Set<string>();
@@ -1032,6 +1122,15 @@ function handleStatus(): ToolResult {
     },
     personas,
     repos,
+    // "I could not read the roster" and "the roster is empty" must not answer
+    // alike — an empty `repos` with no error reads as "this org has no repos".
+    ...(reposLoad.error
+      ? {
+          reposError: `repos.json could not be read (${reposLoad.reposPath}): ${reposLoad.error}. ` +
+            "The repo list below is EMPTY because nothing could be parsed, not because the org has no repos.",
+        }
+      : {}),
+    uncheckedRepos,
     platforms: [...platformSet],
     artifactCounts: {
       personas: { core: packagePersonaCount, orgSpecific: orgSpecificPersonas },
@@ -1064,10 +1163,11 @@ function computeMaturityLabel(
 }
 
 function handleListRepos(): ToolResult {
-  const repoEntries = loadReposJson();
-  const repos = repoEntries.map((r) => {
+  const reposLoad = loadReposJsonChecked();
+  const repos = reposLoad.repos.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
+    const { synced, hasDrift, driftCount, lastSyncAt, checked, uncheckedReason } =
+      computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
@@ -1076,9 +1176,20 @@ function handleListRepos(): ToolResult {
       synced,
       hasDrift,
       driftCount,
+      checked,
+      ...(uncheckedReason ? { uncheckedReason } : {}),
     };
   });
-  return toolOk({ repos });
+  return toolOk({
+    repos,
+    uncheckedRepos: repos.filter((r) => !r.checked).length,
+    ...(reposLoad.error
+      ? {
+          reposError: `repos.json could not be read (${reposLoad.reposPath}): ${reposLoad.error}. ` +
+            "This list is EMPTY because nothing could be parsed, not because the org has no repos.",
+        }
+      : {}),
+  });
 }
 
 function handleCostEstimate(args: Record<string, unknown>): ToolResult {
@@ -1451,16 +1562,28 @@ function handleDoctor(): ToolResult {
     });
   }
 
-  // Check repos.json exists
-  const config = loadHubConfig();
-  const reposFile = config?.sync?.repos ?? "./repos.json";
-  const reposPath = path.resolve(HUB_ROOT, reposFile);
-  if (!fs.existsSync(reposPath)) {
+  // Check repos.json — EXISTS is not READABLE. A corrupt repos.json passed this
+  // check (the file is right there) while every repo-derived answer degraded to
+  // an empty list, so doctor reported allClear on a hub whose entire spoke
+  // roster was unreadable. `agentboot drift-check` exits 1 naming the parse
+  // error; these two must not disagree about the same file.
+  const reposLoad = loadReposJsonChecked();
+  if (!fs.existsSync(reposLoad.reposPath)) {
     issues.push({
       severity: "warn",
-      description: `repos.json not found at ${reposPath}`,
+      description: `repos.json not found at ${reposLoad.reposPath}`,
       fixable: true,
       fixCommand: "echo '[]' > repos.json",
+    });
+  } else if (reposLoad.error) {
+    issues.push({
+      severity: "error",
+      description:
+        `repos.json at ${reposLoad.reposPath} could not be parsed: ${reposLoad.error}. ` +
+        "Every repo-derived answer is empty because nothing could be read, not because " +
+        "the org has no repos.",
+      fixable: false,
+      fixCommand: null,
     });
   }
 
