@@ -138,3 +138,53 @@ describe("R4N-1: an indented applyTo is refused, not silently inverted", () => {
     expect(r.globs).toContain("src/**");
   });
 });
+
+/**
+ * NEW4-1 — the read side learned to span a wrapped flow sequence; the write side
+ * did not, so it emitted INVALID YAML.
+ *
+ *     applyTo: [
+ *       "src/**",
+ *     ]          <- closes at the KEY's indent, so the indent-based consume
+ *                   loop stopped short and left this `]` behind
+ *
+ * The orphan reached Copilot and JetBrains — both v1.0 GA platforms. A reader
+ * and a writer that disagree about where a value ends is the same class of split
+ * that produced F-6.
+ */
+describe("NEW4-1: the rewriter consumes wrapped flow sequences", () => {
+  const orphaned = (fm: string) => /^\s*[[\]]\s*$/m.test(fm);
+  const frontmatter = (s: string) => /^---\n([\s\S]*?)\n---/.exec(s)?.[1] ?? "";
+
+  async function rewrite(doc: string): Promise<string> {
+    const { rewriteFrontmatterKeyBlock } = await import("../scripts/lib/scope-projection.js");
+    return frontmatter(rewriteFrontmatterKeyBlock(doc, "applyTo", null));
+  }
+
+  it("leaves no orphaned bracket for a wrapped flow sequence", async () => {
+    const fm = await rewrite('---\ndescription: x\napplyTo: [\n  "src/**",\n  "lib/**"\n]\nother: keep\n---\n# b\n');
+    expect(orphaned(fm)).toBe(false);
+    expect(fm).toContain("other: keep"); // and it did not eat the next key
+  });
+
+  it("does not miscount brackets inside a glob character class", async () => {
+    // `src/[abc]*.ts` is a legitimate glob. Counting its brackets would run the
+    // depth negative and stop consuming early.
+    const fm = await rewrite('---\ndescription: x\napplyTo: [\n  "src/[abc]*.ts"\n]\nother: keep\n---\n# b\n');
+    expect(orphaned(fm)).toBe(false);
+    expect(fm).toContain("other: keep");
+  });
+
+  it("still handles the inline, block-sequence and plain forms", async () => {
+    for (const doc of [
+      '---\ndescription: x\napplyTo: ["src/**"]\nother: keep\n---\n# b\n',
+      '---\ndescription: x\napplyTo:\n  - "src/**"\n  - "lib/**"\nother: keep\n---\n# b\n',
+      '---\ndescription: x\napplyTo: "src/**"\nother: keep\n---\n# b\n',
+    ]) {
+      const fm = await rewrite(doc);
+      expect(orphaned(fm)).toBe(false);
+      expect(fm).toContain("other: keep");
+      expect(fm).not.toContain("applyTo");
+    }
+  });
+});

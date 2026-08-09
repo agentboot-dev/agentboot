@@ -619,6 +619,43 @@ export function scopePreamble(globs: string[]): string {
  *
  * @param replacement full replacement line (no trailing newline), or null to delete.
  */
+/**
+ * Net unclosed `[` on a line, ignoring brackets inside quoted scalars.
+ *
+ * NEW4-1: the rewriter consumed block-sequence items and block-scalar content,
+ * but a WRAPPED FLOW SEQUENCE closes at the key's OWN indent:
+ *
+ *     applyTo: [
+ *       "src/**",
+ *     ]          <- indent 0, not a `-` item, so the consume loop stopped here
+ *
+ * The `]` was left behind after the key line was replaced, so the emitted
+ * frontmatter was INVALID YAML — on Copilot and JetBrains, both v1.0 GA targets.
+ * The read side had been taught to span these lines; the write side had not, and
+ * a reader and writer that disagree about where a value ends is the same class
+ * of split that produced F-6.
+ *
+ * Quoted spans are skipped because a glob may legitimately contain a character
+ * class — `src/[abc]*.ts` — and counting those would run the depth negative.
+ */
+function flowDepthDelta(line: string): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (quote) {
+      if (c === "\\") { i++; continue; }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === "#") break; // a comment cannot open or close a sequence
+    if (c === "[") depth++;
+    else if (c === "]") depth--;
+  }
+  return depth;
+}
+
 export function rewriteFrontmatterKeyBlock(
   content: string,
   key: string,
@@ -648,7 +685,16 @@ export function rewriteFrontmatterKeyBlock(
     const keyIndent = km[1]!.length;
     changed = true;
     if (replacement !== null) out.push(replacement);
+
+    // A wrapped flow sequence closes at the key's own indent, so the
+    // indent-based loop below cannot reach its `]`. Consume by bracket depth
+    // first, then fall through for the block forms.
+    let flowDepth = flowDepthDelta(lines[i]!);
     i++;
+    while (flowDepth > 0 && i < lines.length) {
+      flowDepth += flowDepthDelta(lines[i]!);
+      i++;
+    }
     // Consume every continuation line: block-sequence items and block-scalar
     // content are both "indented deeper than the key, or a `-` item at or
     // deeper than the key's indent".
