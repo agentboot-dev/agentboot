@@ -11,8 +11,8 @@
  * loop instead of a full build per mutation.
  */
 
-import { describe, it, expect } from "vitest";
-import { mergeHooks, mergeManagedFragments } from "../scripts/lib/managed-merge.js";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { mergeHooks, mergeManagedFragments, readManagedFragment } from "../scripts/lib/managed-merge.js";
 
 const orgHooks = {
   PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/opt/org/block.sh" }] }],
@@ -370,5 +370,65 @@ describe("V4 — a malformed permissions value is refused, not spread", () => {
     const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
     const r = mergeManagedFragments([{ env: { X: "1" } }], ["00-org"]);
     expect(r.malformedValues).toEqual([]);
+  });
+});
+
+/**
+ * NF3-8 — a corrupt managed fragment was indistinguishable from an absent one.
+ *
+ * generateMergedManagedArtifacts' inline reader was
+ * `try { JSON.parse(...) } catch { return null }`, and BOTH consumers treat null
+ * as "nothing here":
+ *
+ *   * `readFragment(...) ?? {}` for guardrailBase / orgFragment — the org's
+ *     permissions and hooks vanish from
+ *     dist/managed/scopes/core/managed-settings.json.
+ *   * `if (frag)` for a node scope — if that was the only extra fragment,
+ *     `fragments.length > 2` is false and NO artifact is written for that node,
+ *     with no diagnostic anywhere.
+ *
+ * compile writes these fragments itself earlier in the same run, so the corrupt
+ * path is unreachable from any CLI invocation — which is exactly why it stayed
+ * wrong and why nothing could test it. It requires external tampering, and that
+ * is precisely the MDM channel's threat model: the surface where policy is
+ * delivered NON-OVERRIDABLY. 82fbd15 fixed this same shape on the sync side.
+ *
+ * The reader lives in the lib now so the guard is testable at all.
+ */
+describe("NF3-8 — an unreadable managed fragment is not an absent one", () => {
+  let dir = "";
+  beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-nf38-")); });
+  afterAll(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  const write = (name: string, body: string) => {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, body);
+    return p;
+  };
+
+  it("ABSENT is null — the legitimate, common case stays legitimate", () => {
+    expect(readManagedFragment(path.join(dir, "nope.json"))).toBeNull();
+  });
+
+  it("PRESENT and unparseable THROWS — it must not read as absent", () => {
+    const p = write("corrupt.json", '{ "permissions": { "deny": ["Bash(rm -rf *)"]');
+    expect(() => readManagedFragment(p)).toThrow(/not readable JSON/);
+  });
+
+  it("PRESENT but not an OBJECT throws too — every setting would read as absent", () => {
+    for (const [name, body] of [["scalar.json", "42"], ["arr.json", "[]"], ["null.json", "null"]]) {
+      const p = write(name!, body!);
+      expect(() => readManagedFragment(p), body).toThrow();
+    }
+  });
+
+  it("NEGATIVE: a well-formed fragment is returned unchanged", () => {
+    // Without this the fix could be "throw always" and still look green.
+    const p = write("ok.json", JSON.stringify({ permissions: { deny: ["Bash(rm -rf *)"] } }));
+    expect(readManagedFragment(p)).toEqual({ permissions: { deny: ["Bash(rm -rf *)"] } });
+  });
+
+  it("NEGATIVE: an EMPTY object is a valid fragment, not a corrupt one", () => {
+    expect(readManagedFragment(write("empty.json", "{}"))).toEqual({});
   });
 });

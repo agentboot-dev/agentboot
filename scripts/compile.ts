@@ -59,7 +59,7 @@ import {
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
 import { dangerousHookFindings, unscannableHookEvents, hookGroupsFor } from "./lib/hook-safety.js";
 import { hookInputCapPrelude, hookJsonExtract } from "./lib/hook-prelude.js";
-import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
+import { mergeManagedFragments, readManagedFragment, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
 import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
   APPLY_TO_PROJECTION, rewriteFrontmatterKeyBlock, type ScopedArtifact,
@@ -3395,10 +3395,21 @@ function generateMergedManagedArtifacts(
   nodePaths: string[],
   config: AgentBootConfig,
 ): void {
+  // NF3-8: through the shared reader, which distinguishes ABSENT from
+  // UNREADABLE. See readManagedFragment's docstring — the inline version was
+  // unreachable from any CLI invocation by construction, which is how it stayed
+  // wrong; it lives in the lib now so it can be tested.
   const readFragment = (p: string): Record<string, unknown> | null => {
-    if (!fs.existsSync(p)) return null;
-    try { return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>; }
-    catch { return null; }
+    try {
+      return readManagedFragment(p);
+    } catch (err: unknown) {
+      fatal(
+        `${err instanceof Error ? err.message : String(err)}\n` +
+          `  This is a managed-settings fragment — the NON-OVERRIDABLE policy channel. Merging\n` +
+          `  past it would emit an MDM artifact with the org's controls silently missing, which\n` +
+          `  is indistinguishable downstream from an org that configured none.`
+      );
+    }
   };
 
   // Org-level inputs: the guardrail-derived deployable + the org fragment.

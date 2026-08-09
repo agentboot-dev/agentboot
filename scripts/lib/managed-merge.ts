@@ -32,6 +32,8 @@
  * export is named differently on purpose.
  */
 
+import fs from "node:fs";
+
 // ---------------------------------------------------------------------------
 
 export interface MergeConflict {
@@ -319,4 +321,49 @@ export function mergeManagedFragments(
       allow: ((permissions?.["allow"] as string[] | undefined) ?? []).length,
     },
   };
+}
+
+
+/**
+ * NF3-8: read a managed-settings fragment, distinguishing ABSENT from UNREADABLE.
+ *
+ * generateMergedManagedArtifacts' inline reader was
+ * `try { JSON.parse(...) } catch { return null }`, and both consumers treat null
+ * as "nothing here": `readFragment(...) ?? {}` erased the org's permissions and
+ * hooks from dist/managed/scopes/core/managed-settings.json, and for a node
+ * scope `if (frag)` skipped it — if that was the only extra fragment,
+ * `fragments.length > 2` is false and NO artifact was written for that node,
+ * with no diagnostic anywhere.
+ *
+ * compile writes these fragments itself earlier in the same run, so reaching the
+ * corrupt path requires external tampering — which is precisely the MDM
+ * channel's threat model, and it is the surface where policy is delivered
+ * NON-OVERRIDABLY. 82fbd15 fixed this exact shape on the sync side; this is the
+ * emit side of the same decision.
+ *
+ * Absent → null. Present-but-unreadable → throws, so the caller can refuse. The
+ * alternative is emitting an MDM artifact with the org's controls silently
+ * missing, which is indistinguishable downstream from an org that configured
+ * none.
+ *
+ * Lives here, and not as a closure in compile.ts, so it can be tested: the
+ * inline version was unreachable from any CLI invocation by construction, which
+ * is exactly how it stayed wrong.
+ */
+export function readManagedFragment(filePath: string): Record<string, unknown> | null {
+  if (!fs.existsSync(filePath)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch (err: unknown) {
+    throw new Error(
+      `${filePath} is present but not readable JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `${filePath} is not a JSON object, so every setting in it would read as absent.`,
+    );
+  }
+  return parsed as Record<string, unknown>;
 }
