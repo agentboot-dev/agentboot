@@ -2061,9 +2061,18 @@ function generateMcpJson(
   log(chalk.yellow("  ⚠ Generating .mcp.json with MCP servers — these will be synced to all target repos"));
 
   // AB-143: MCP governance — filter unapproved servers (without mutating original config)
+  //
+  // NF3-1: the emitter's half of the same fail-open as validate.ts. The filter
+  // was gated on `config.mcp.approved` being present, so `enforceApproved: true`
+  // with no approved list — nothing approved, therefore everything unapproved —
+  // skipped filtering entirely and wrote every configured server into
+  // dist/claude/core/.mcp.json, exit 0, no diagnostic.
+  //
+  // An absent allowlist is an EMPTY allowlist. A narrowing directive whose input
+  // is missing narrows to nothing; it never widens to everything.
   let filteredServers = mcpServers;
-  if (config.mcp?.enforceApproved && config.mcp.approved) {
-    const approvedNames = new Set(config.mcp.approved.map(s => s.name));
+  if (config.mcp?.enforceApproved) {
+    const approvedNames = new Set((config.mcp.approved ?? []).map(s => s.name));
     filteredServers = Object.fromEntries(
       Object.entries(mcpServers as Record<string, unknown>).filter(([name]) => {
         if (!approvedNames.has(name)) {

