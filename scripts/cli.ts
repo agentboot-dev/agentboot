@@ -3968,6 +3968,7 @@ program
   .option("--require-signed", "FAIL if any batch is unsigned or its signature does not verify (the only defense against signature stripping — set this in CI)")
   .option("--allowed-signers <path>", "OpenSSH allowed_signers file to authenticate batch signatures against")
   .option("--signer <principal>", "expected signer principal")
+  .option("--partial", "the directory holds a deliberate SLICE of the chain (e.g. the live spool root) — do not fail because it does not begin at batch 1")
   .action(async (opts) => {
     const { verifyTelemetryLog, verifyBatchChain } = await import("./lib/telemetry-sink.js");
     if (!opts["log"] && !opts["batches"]) {
@@ -3996,6 +3997,7 @@ program
       // signature stripping — and --allowed-signers authenticates each signer.
       const v = verifyBatchChain(dir, {
         requireSigned: opts["requireSigned"] === true,
+        allowPartial: opts["partial"] === true,
         allowedSignersPath: opts["allowedSigners"] as string | undefined,
         signerPrincipal: opts["signer"] as string | undefined,
       });
@@ -4007,8 +4009,12 @@ program
       if (!opts["requireSigned"] && !opts["allowedSigners"] && v.signed < v.batches) {
         console.log(chalk.yellow(`    ⚠ ${v.batches - v.signed} batch(es) unsigned — pass --require-signed to fail on stripped signatures.`));
       }
+      if (v.truncatedPrefix && opts["partial"]) {
+        console.log(chalk.yellow("    ⚠ this directory does not begin at batch 1 — accepted under --partial; it is a slice, not the whole chain."));
+      }
       console.log(v.ok
         ? chalk.green("  ✓ Batch chain verifies — digests intact, sequence continuous"
+            + (v.truncatedPrefix ? " within this slice" : " from batch 1")
             + (opts["requireSigned"] || opts["allowedSigners"] ? ", signatures enforced" : ""))
         : chalk.red("  ✗ Batch chain FAILED"));
       console.log("");

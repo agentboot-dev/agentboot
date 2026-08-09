@@ -88,7 +88,7 @@ export interface EvidencePack {
   telemetry: {
     batchStoreChecked: string | null;
     chain:
-      | (Pick<BatchChainVerification, "batches" | "signed" | "gaps" | "ok"> & { signatureVerified: number })
+      | (Pick<BatchChainVerification, "batches" | "signed" | "gaps" | "truncatedPrefix" | "ok"> & { signatureVerified: number })
       | null;
   };
   integrity?: {
@@ -212,7 +212,9 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     const v = verifyBatchChain(options.telemetryBatchDir, { verifySignatures: true });
     telemetryChain = {
       batchStoreChecked: options.telemetryBatchDir,
-      chain: { batches: v.batches, signed: v.signed, signatureVerified: v.signatureVerified, gaps: v.gaps, ok: v.ok },
+      // truncatedPrefix travels with the chain state: an auditor reading
+      // "12 batches, ok" must be able to see that the chain did not start at 1.
+      chain: { batches: v.batches, signed: v.signed, signatureVerified: v.signatureVerified, gaps: v.gaps, truncatedPrefix: v.truncatedPrefix, ok: v.ok },
     };
   }
 
