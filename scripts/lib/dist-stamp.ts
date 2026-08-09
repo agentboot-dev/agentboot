@@ -209,7 +209,89 @@ function hashFileInto(hash: crypto.Hash, rel: string, abs: string): void {
   hash.update("\0");
 }
 
-function walkInto(hash: crypto.Hash, root: string, rel: string, seen: Set<string>): void {
+/**
+ * NF2-2: a SYMLINK is neither `isDirectory()` nor `isFile()` on a Dirent, which
+ * is built from lstat. The walk therefore contributed NOTHING for a symlinked
+ * artifact source — while `compile.ts` reads straight through the link with
+ * `readFileSync`.
+ *
+ * Reproduced verbatim: put core/instructions/phi.instructions.md behind a
+ * symlink into a shared policy directory, build, then tighten the control from
+ * `guardrail: soft` / "Avoid logging patient data where practical" to
+ * `guardrail: hard` / "NEVER log … Non-overridable." and do not rebuild —
+ *
+ *     audit=0  drift-check=0  sync=0  conformance=0
+ *     deployed text still says "where practical"
+ *
+ * — i.e. the A1/A2-residual defect the source digest was ADDED to close,
+ * reproducing behind a symlink. Sharing a policy directory by symlink is a
+ * plausible org setup, and this is the FAIL-CLOSED-on-unknown case exactly: an
+ * unreadable file already folds `<unreadable>` into the hash, but a symlink was
+ * silently invisible.
+ *
+ * The digest follows links because the COMPILER follows links — the digest's
+ * whole job is to have the same view of the sources the compiler has. The link
+ * TARGET is hashed as well as the content, so repointing a symlink at a
+ * different file is a change even when the bytes happen to match. Directory
+ * symlinks are followed with a realpath-keyed cycle guard, and every failure
+ * mode (broken link, unresolvable target, cycle) folds a marker in rather than
+ * contributing nothing.
+ */
+function hashSymlinkInto(
+  hash: crypto.Hash,
+  root: string,
+  rel: string,
+  abs: string,
+  seen: Set<string>,
+  realSeen: Set<string>,
+): void {
+  hash.update(rel.replace(/\\/g, "/"));
+  hash.update("\0->\0");
+  try {
+    hash.update(fs.readlinkSync(abs).replace(/\\/g, "/"));
+  } catch {
+    hash.update("<unreadable-link>");
+  }
+  hash.update("\0");
+
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    // A broken symlink is a CHANGE, not a nothing — the compiler will fail on
+    // it, and the digest must not report the tree as identical to the last
+    // good build.
+    hash.update("<broken-symlink>\0");
+    return;
+  }
+  if (st.isFile()) {
+    hashFileInto(hash, rel, abs);
+    return;
+  }
+  if (st.isDirectory()) {
+    let real: string;
+    try {
+      real = fs.realpathSync(abs);
+    } catch {
+      hash.update("<unresolvable-dir-symlink>\0");
+      return;
+    }
+    if (realSeen.has(real)) {
+      hash.update("<cycle>\0");
+      return;
+    }
+    realSeen.add(real);
+    walkInto(hash, root, rel, seen, realSeen);
+  }
+}
+
+function walkInto(
+  hash: crypto.Hash,
+  root: string,
+  rel: string,
+  seen: Set<string>,
+  realSeen: Set<string>,
+): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true });
@@ -222,7 +304,8 @@ function walkInto(hash: crypto.Hash, root: string, rel: string, seen: Set<string
     const abs = path.join(root, childRel);
     if (seen.has(abs)) continue;
     seen.add(abs);
-    if (e.isDirectory()) walkInto(hash, root, childRel, seen);
+    if (e.isSymbolicLink()) hashSymlinkInto(hash, root, childRel, abs, seen, realSeen);
+    else if (e.isDirectory()) walkInto(hash, root, childRel, seen, realSeen);
     else if (e.isFile()) hashFileInto(hash, childRel, abs);
   }
 }
@@ -237,9 +320,10 @@ function walkInto(hash: crypto.Hash, root: string, rel: string, seen: Set<string
 export function computeSourceDigest(hubRoot: string, extraRoots: string[] = []): string {
   const hash = crypto.createHash("sha256");
   const seen = new Set<string>();
+  const realSeen = new Set<string>();
   for (const root of HUB_SOURCE_ROOTS) {
     hash.update(`::${root}::`);
-    walkInto(hash, path.join(hubRoot, root), "", seen);
+    walkInto(hash, path.join(hubRoot, root), "", seen, realSeen);
   }
   for (const f of HUB_SOURCE_FILES) {
     const abs = path.join(hubRoot, f);
@@ -250,7 +334,7 @@ export function computeSourceDigest(hubRoot: string, extraRoots: string[] = []):
   // reason the walk is: the digest must not depend on config array order.
   for (const d of [...extraRoots].sort()) {
     hash.update(`::domain:${path.basename(d)}::`);
-    walkInto(hash, d, "", seen);
+    walkInto(hash, d, "", seen, realSeen);
   }
   return hash.digest("hex");
 }

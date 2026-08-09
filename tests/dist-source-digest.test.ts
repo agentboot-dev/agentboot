@@ -210,3 +210,113 @@ describe("A1/A2-residual — HUB_SOURCE_ROOTS covers what the compiler reads", (
     ).toEqual([]);
   });
 });
+
+/**
+ * NF2-2 — the digest SKIPPED symlinks while the compiler FOLLOWS them.
+ *
+ * `walkInto` recursed on `e.isDirectory()` and hashed on `e.isFile()`. A Dirent
+ * is built from lstat, so a symlink is neither — it contributed nothing —
+ * while `compile.ts` reads straight through with `readFileSync`.
+ *
+ * Reproduced end to end: put core/instructions/phi.instructions.md behind a
+ * symlink into a shared policy directory, build, then tighten the control from
+ * `guardrail: soft` / "…where practical" to `guardrail: hard` / "NEVER log …
+ * Non-overridable." and do NOT rebuild —
+ *
+ *     audit=0  drift-check=0  sync=0  conformance=0
+ *     deployed text still says "where practical"
+ *
+ * — which is the A1/A2-residual defect the source digest was ADDED to close,
+ * reproducing verbatim behind a symlink. Sharing a policy directory by symlink
+ * is a plausible org setup, and this is precisely the FAIL-CLOSED-on-unknown
+ * case: an unreadable file already folds `<unreadable>` into the hash, but a
+ * symlink was silently invisible.
+ */
+describe("NF2-2 — the source digest follows symlinks, because the compiler does", () => {
+  function hubWithLinkedInstruction(body: string): { hub: string; target: string } {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-symlink-"));
+    const hub = path.join(base, "hub");
+    const policy = path.join(base, "policy");
+    fs.mkdirSync(path.join(hub, "core", "instructions"), { recursive: true });
+    fs.mkdirSync(policy, { recursive: true });
+    const target = path.join(policy, "phi.instructions.md");
+    fs.writeFileSync(target, body, "utf-8");
+    fs.symlinkSync(target, path.join(hub, "core", "instructions", "phi.instructions.md"));
+    return { hub, target };
+  }
+
+  const SOFT = '---\ndescription: PHI\nguardrail: soft\napplyTo: "**"\n---\n# PHI\nAvoid logging patient data where practical.\n';
+  const HARD = '---\ndescription: PHI\nguardrail: hard\napplyTo: "**"\n---\n# PHI\nNEVER log, trace, or print patient-identifying data. Non-overridable.\n';
+
+  it("the digest is NOT the empty-tree digest — the symlink is in it at all", () => {
+    // Pre-fix this was the assertion that would have caught it: a hub whose only
+    // artifact is symlinked hashed identically to a hub with no artifacts.
+    const { hub } = hubWithLinkedInstruction(SOFT);
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-emptyhub-"));
+    fs.mkdirSync(path.join(empty, "core", "instructions"), { recursive: true });
+    expect(computeSourceDigest(hub)).not.toBe(computeSourceDigest(empty));
+  });
+
+  it("editing the file BEHIND the symlink moves the digest", () => {
+    const { hub, target } = hubWithLinkedInstruction(SOFT);
+    const before = computeSourceDigest(hub);
+    fs.writeFileSync(target, HARD, "utf-8");
+    expect(computeSourceDigest(hub), "a tightened control behind a symlink was invisible")
+      .not.toBe(before);
+  });
+
+  it("REPOINTING the symlink moves the digest even when the bytes are identical", () => {
+    // Content-only hashing would miss this, and "which file is this?" is part
+    // of what a source digest answers.
+    const { hub, target } = hubWithLinkedInstruction(SOFT);
+    const before = computeSourceDigest(hub);
+    const other = path.join(path.dirname(target), "other.md");
+    fs.writeFileSync(other, SOFT, "utf-8");
+    const link = path.join(hub, "core", "instructions", "phi.instructions.md");
+    fs.rmSync(link);
+    fs.symlinkSync(other, link);
+    expect(computeSourceDigest(hub)).not.toBe(before);
+  });
+
+  it("BREAKING the symlink moves the digest — a broken input is a change, not a nothing", () => {
+    const { hub, target } = hubWithLinkedInstruction(SOFT);
+    const before = computeSourceDigest(hub);
+    fs.rmSync(target);
+    expect(computeSourceDigest(hub)).not.toBe(before);
+  });
+
+  it("a symlinked DIRECTORY of artifacts is walked", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-symdir-"));
+    const hub = path.join(base, "hub");
+    const shared = path.join(base, "shared");
+    fs.mkdirSync(path.join(hub, "core"), { recursive: true });
+    fs.mkdirSync(shared, { recursive: true });
+    fs.writeFileSync(path.join(shared, "a.md"), SOFT, "utf-8");
+    fs.symlinkSync(shared, path.join(hub, "core", "instructions"));
+    const before = computeSourceDigest(hub);
+    fs.writeFileSync(path.join(shared, "a.md"), HARD, "utf-8");
+    expect(computeSourceDigest(hub)).not.toBe(before);
+  });
+
+  it("a symlink CYCLE terminates instead of hanging", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-symcycle-"));
+    const hub = path.join(base, "hub");
+    fs.mkdirSync(path.join(hub, "core", "instructions"), { recursive: true });
+    // core/instructions/loop -> core   (an ancestor)
+    fs.symlinkSync(path.join(hub, "core"), path.join(hub, "core", "instructions", "loop"));
+    expect(() => computeSourceDigest(hub)).not.toThrow();
+  });
+
+  it("NEGATIVE: a hub with NO symlinks digests exactly as before — no forced rebuilds", () => {
+    // If this changed, every existing hub would report sources-stale on upgrade.
+    const h = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-plainhub-"));
+    fs.mkdirSync(path.join(h, "core", "instructions"), { recursive: true });
+    fs.writeFileSync(path.join(h, "core", "instructions", "a.md"), SOFT, "utf-8");
+    const d1 = computeSourceDigest(h);
+    const d2 = computeSourceDigest(h);
+    expect(d1).toBe(d2);
+    // And it still moves for an ordinary edit — the plain path is not broken.
+    fs.writeFileSync(path.join(h, "core", "instructions", "a.md"), HARD, "utf-8");
+    expect(computeSourceDigest(h)).not.toBe(d1);
+  });
+});
