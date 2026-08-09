@@ -83,6 +83,118 @@ function blockJson(reason: string): string {
   return `echo '${JSON.stringify({ decision: "block", reason })}'`;
 }
 
+/** One boundary case, worded per posture. */
+export interface PostureCase {
+  /** stderr sentence for a blocking gate — it refuses. */
+  block: string;
+  /** stderr sentence for a fail-open gate — it skips, and says the scan did not happen. */
+  exit0: string;
+  /** stderr sentence for a recorder — it carries on with an incomplete record. */
+  cont: string;
+  /** `reason` in the block JSON. */
+  blockReason: string;
+  /** extra shell for the `continue` posture only, after the stderr line. */
+  tail?: string[];
+}
+
+/**
+ * Render one boundary case in a hook's declared posture.
+ *
+ * Every boundary in a generated hook is the same decision — "I could not do the
+ * thing this gate depends on" — and each was hand-written as its own
+ * three-branch ternary. That is the duplicated-shell drift this file exists to
+ * end: NF4-1 was a boundary that simply forgot to grow a branch, and NF4-2 was
+ * a boundary whose branch was written but could never be reached. One renderer
+ * means a new boundary cannot be added in two-thirds of the postures.
+ */
+export function renderPosture(action: HookOverCapAction, o: PostureCase): string {
+  if (action === "block") {
+    return [`  echo "AgentBoot: ${o.block}" >&2`, `  ${blockJson(o.blockReason)}`, `  exit 2`].join("\n");
+  }
+  if (action === "exit0") {
+    return [`  echo "AgentBoot: ${o.exit0}" >&2`, `  exit 0`].join("\n");
+  }
+  return [`  echo "AgentBoot: ${o.cont}" >&2`, ...(o.tail ?? [])].join("\n");
+}
+
+export interface HookJsonExtractOptions {
+  /** Shell variable that receives the extracted value. */
+  variable: string;
+  /**
+   * Node statements run with `j` — the PARSED payload — in scope. Write the
+   * value to stdout. `return` is available (the body runs inside the stdin
+   * 'end' handler). Throwing takes the hook's posture, so a body that cannot
+   * find what it needs should throw rather than write ''.
+   */
+  extract: string;
+  /** This hook's posture at a boundary it cannot cross. */
+  action: HookOverCapAction;
+  /** What could not be determined, e.g. "the prompt". Used in the stderr line. */
+  subject: string;
+  /** `reason` for the block JSON. Required when `action === "block"`. */
+  blockReason?: string;
+}
+
+/**
+ * Extract one field from the hook payload with node, failing per posture when
+ * the payload cannot be parsed.
+ *
+ * NF4-2: every hook did this inline as
+ *
+ *     VAR=$(printf '%s' "$INPUT" | node -e "…try{…}catch{process.stdout.write('')}…") \
+ *       || { echo '{"decision":"block",…}'; exit 2; }
+ *
+ * and node exits 0 after that catch. The `||` handler was therefore unreachable
+ * dead code — a check that cannot fail — so ANY unparseable payload left the
+ * gate scanning an empty string and exiting 0, with nothing on stdout and
+ * nothing on stderr. Measured on a scratch hub:
+ * `printf 'not json password: hunter2' | agentboot-input-scan.sh` -> 0;
+ * `printf 'not json' | agentboot-pretooluse.sh` -> 0; empty stdin -> 0 on both.
+ *
+ * This is the exact mechanism this file's own header describes as R1-1's harm
+ * ("the catch printed '', and the blocking hooks exited 0"). R1-1 fixed the
+ * CAUSE that reached it (truncation) and left the mechanism in place, so any
+ * other route to a malformed payload still fails open. FAIL CLOSED on unknown
+ * data: an unparseable payload is an unscanned payload.
+ */
+export function hookJsonExtract(opts: HookJsonExtractOptions): string {
+  if (opts.action === "block" && !opts.blockReason) {
+    throw new Error("a blocking hook extractor must carry a blockReason");
+  }
+  const v = opts.variable;
+  // Distinct statuses so the operator's stderr line names which half failed:
+  // 3 = the payload is not JSON at all, 4 = it parsed but the field could not
+  // be resolved from it.
+  //   `if(!j||typeof j!=='object'||Array.isArray(j))` — parsing is not enough.
+  // `42`, `"x"`, `null` and `[]` are all valid JSON, so JSON.parse succeeds,
+  // `j.prompt` is undefined, `||''` resolves it to the empty string, and the
+  // gate scans nothing at exit 0. That is the SAME fail-open one type over, and
+  // it is what a truncated or wrongly-framed payload most often looks like. A
+  // hook payload is an object; anything else is a payload we do not understand.
+  const node =
+    `let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{` +
+    `let j;try{j=JSON.parse(d)}catch(_){process.exit(3)}` +
+    `if(!j||typeof j!=='object'||Array.isArray(j))process.exit(3);` +
+    `try{${opts.extract}}catch(_){process.exit(4)}})`;
+
+  const failure = renderPosture(opts.action, {
+    block: `could not read ${opts.subject} from the hook payload (node exited $_ab_extract_status) — refusing to run a gate on a payload it cannot understand.`,
+    exit0: `could not read ${opts.subject} from the hook payload (node exited $_ab_extract_status) — output scan SKIPPED, this response was NOT scanned.`,
+    cont: `could not read ${opts.subject} from the hook payload (node exited $_ab_extract_status) — record is incomplete.`,
+    blockReason: opts.blockReason ?? "",
+  });
+
+  return `# NF4-2: take node's exit status. The old form ended its catch with
+# \`process.stdout.write('')\`, which exits 0, so the \`|| { block; exit 2; }\`
+# beside it was unreachable and every unparseable payload was scanned as an
+# empty string at exit 0 — silently, on a DLP gate.
+_ab_extract_status=0
+${v}=$(printf '%s' "$INPUT" | node -e "${node}") || _ab_extract_status=$?
+if [ "$_ab_extract_status" -ne 0 ]; then
+${failure}
+fi`;
+}
+
 /**
  * Emit the bounded-stdin prelude. The caller pastes the result into its hook
  * template; on return `INPUT` holds the payload and is known to be complete.
@@ -110,35 +222,7 @@ export function hookInputCapPrelude(opts: HookInputCapOptions): string {
           `  MAX_HOOK_INPUT_BYTES=${DEFAULT_MAX_HOOK_INPUT_BYTES}`,
         ].join("\n");
 
-  /**
-   * Render one boundary case in this hook's declared posture.
-   *
-   * Every boundary in this prelude is the same decision — "I could not do the
-   * thing this gate depends on" — and each was previously hand-written as its
-   * own three-branch ternary. That is the duplicated-shell drift this file was
-   * created to end: NF4-1 was a boundary that simply forgot to grow a branch.
-   * One renderer means a new boundary cannot be added in only two postures.
-   *
-   * `tail` runs only in the `continue` posture, after the stderr line — the
-   * recorder still has to leave the shell in a usable state.
-   */
-  const postureAction = (o: {
-    /** stderr sentence for a blocking gate — it refuses. */
-    block: string;
-    /** stderr sentence for a fail-open gate — it skips, and says the scan did not happen. */
-    exit0: string;
-    /** stderr sentence for a recorder — it carries on with an incomplete record. */
-    cont: string;
-    /** `reason` in the block JSON. */
-    blockReason: string;
-    /** extra shell for the `continue` posture only. */
-    tail?: string[];
-  }): string =>
-    opts.action === "block"
-      ? [`  echo "AgentBoot: ${o.block}" >&2`, `  ${blockJson(o.blockReason)}`, `  exit 2`].join("\n")
-      : opts.action === "exit0"
-        ? [`  echo "AgentBoot: ${o.exit0}" >&2`, `  exit 0`].join("\n")
-        : [`  echo "AgentBoot: ${o.cont}" >&2`, ...(o.tail ?? [])].join("\n");
+  const postureAction = (o: PostureCase) => renderPosture(opts.action, o);
 
   // What a hook does when `head` itself fails — a class strictly larger than
   // "the operator's cap was silly": head unavailable, EINTR, a read error on the

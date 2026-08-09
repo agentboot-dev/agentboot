@@ -58,7 +58,7 @@ import {
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
 import { dangerousHookFindings, unscannableHookEvents, hookGroupsFor } from "./lib/hook-safety.js";
-import { hookInputCapPrelude } from "./lib/hook-prelude.js";
+import { hookInputCapPrelude, hookJsonExtract } from "./lib/hook-prelude.js";
 import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
 import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
@@ -2720,7 +2720,14 @@ ${hookInputCapPrelude({
     blockReason:
       "AgentBoot: prompt exceeds the hook input limit and could not be scanned. Split it, or raise AGENTBOOT_MAX_HOOK_INPUT_BYTES deliberately.",
   })}
-PROMPT=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.prompt||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
+${hookJsonExtract({
+    variable: "PROMPT",
+    subject: "the prompt",
+    extract: "process.stdout.write(j.prompt||'')",
+    action: "block",
+    blockReason:
+      "AgentBoot: the hook payload could not be parsed, so the prompt could not be scanned. The gate will not run on a payload it cannot understand.",
+  })}
 
 # Scan for potential credential leaks in prompts
 PATTERNS=(
@@ -2790,7 +2797,23 @@ ${hookInputCapPrelude({
       "response payload exceeds $MAX_HOOK_INPUT_BYTES bytes — output scan SKIPPED for this turn.",
     action: "exit0",
   })}
-RESPONSE=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);if(typeof j.last_assistant_message==='string'&&j.last_assistant_message){process.stdout.write(j.last_assistant_message);return;}if(j.transcript_path){const fs=require('fs');const lines=fs.readFileSync(j.transcript_path,'utf-8').split('\\n');for(let i=lines.length-1;i>=0;i--){const l=lines[i].trim();if(!l)continue;try{const e=JSON.parse(l);const m=(e.message&&e.message.role==='assistant')?e.message:null;if(m){const c=m.content;const t=typeof c==='string'?c:(Array.isArray(c)?c.filter(p=>p&&p.type==='text').map(p=>p.text).join('\\n'):'');process.stdout.write(t);return;}}catch(_){}}}process.stdout.write('');}catch(_){process.stdout.write('')}})") || exit 0
+${hookJsonExtract({
+    // A transcript_path that cannot be read now THROWS rather than resolving to
+    // '': the payload named where the response is and we could not get it, which
+    // is "unscanned", not "clean". Finding no assistant message anywhere still
+    // resolves to '' — that is genuinely nothing to scan, not a failure.
+    variable: "RESPONSE",
+    subject: "the assistant response",
+    extract:
+      "if(typeof j.last_assistant_message==='string'&&j.last_assistant_message){process.stdout.write(j.last_assistant_message);return;}" +
+      "if(j.transcript_path){const fs=require('fs');const lines=fs.readFileSync(j.transcript_path,'utf-8').split('\\n');" +
+      "for(let i=lines.length-1;i>=0;i--){const l=lines[i].trim();if(!l)continue;" +
+      "try{const e=JSON.parse(l);const m=(e.message&&e.message.role==='assistant')?e.message:null;" +
+      "if(m){const c=m.content;const t=typeof c==='string'?c:(Array.isArray(c)?c.filter(p=>p&&p.type==='text').map(p=>p.text).join('\\n'):'');" +
+      "process.stdout.write(t);return;}}catch(_){}}}" +
+      "process.stdout.write('');",
+    action: "exit0",
+  })}
 
 # Scan for accidental credential exposure in output
 PATTERNS=(
@@ -2913,6 +2936,14 @@ printf '%s' "$INPUT" | node -e "
   process.stdin.on('end',()=>{
     try {
       const input = JSON.parse(d);
+      // Parsing is not enough: 42, a bare string, null and [] all parse, and
+      // every field read off them is undefined — which this hook would then
+      // record as an empty event, or skip silently as an unmatched event type.
+      // (No double quotes in this comment: it is emitted inside a bash
+      // double-quoted node -e string, where one would end the script.)
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error('hook payload is not a JSON object');
+      }
       const event = input.hook_event_name || '';
       const ts = process.env.TIMESTAMP || new Date().toISOString();
       const dev = process.env.DEV_ID || '';
@@ -2936,7 +2967,15 @@ printf '%s' "$INPUT" | node -e "
       } catch {}
       entry.chain = createHash('sha256').update(prev + canonical(entry)).digest('hex');
       fs.appendFileSync(log, JSON.stringify(entry) + '\\n', { mode: 0o600 });
-    } catch {}
+    } catch (e) {
+      // NF4-2 sibling: this catch used to be bare. An unparseable payload, an
+      // unwritable log, a full disk — every one of them produced a telemetry
+      // hook that recorded nothing and exited 0, which every dashboard reads as
+      // a healthy audit trail. This hook fails OPEN by design (a recorder must
+      // not break the developer's session) but a component that did nothing has
+      // to SAY SO. exit 0 stays; the silence does not.
+      process.stderr.write('AgentBoot: telemetry event NOT recorded (' + (e && e.message ? e.message : e) + ')\\n');
+    }
   });
 "
 
@@ -2977,7 +3016,14 @@ ${hookInputCapPrelude({
     blockReason:
       "AgentBoot: tool-use payload exceeds the hook input limit and could not be inspected.",
   })}
-TOOL_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.tool_name||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
+${hookJsonExtract({
+    variable: "TOOL_NAME",
+    subject: "the tool name",
+    extract: "process.stdout.write(j.tool_name||'')",
+    action: "block",
+    blockReason:
+      "AgentBoot: the hook payload could not be parsed, so the tool could not be identified. The deny gate will not run on a payload it cannot understand.",
+  })}
 
 DENY_PATTERNS=(
 ${patterns}
