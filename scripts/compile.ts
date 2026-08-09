@@ -127,6 +127,18 @@ interface CompileResult {
   platforms: string[];
   traitsInjected: string[];
   scope: "core" | "group" | "team";
+  /**
+   * NF3-3: size of the COMPOSED persona prompt (SKILL.md body + injected
+   * traits), in characters, measured where it is composed.
+   *
+   * The token-budget gate used to measure `dist/skill/core/<persona>/SKILL.md`
+   * behind an `fs.existsSync`, which made `output.tokenBudget.failAt` — a
+   * build-failing gate the operator configures — silently inert on any hub that
+   * does not build the `skill` format. Prompt size is a property of the composed
+   * persona, not of one platform's wrapper, so there is no platform whose
+   * absence can switch the budget off.
+   */
+  composedChars: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -986,7 +998,7 @@ function compilePersona(
 
   if (!fs.existsSync(skillPath)) {
     log(chalk.yellow(`  ⚠ [${personaName}] No SKILL.md found — skipping`));
-    return { persona: personaName, platforms: [], traitsInjected: [], scope };
+    return { persona: personaName, platforms: [], traitsInjected: [], scope, composedChars: 0 };
   }
 
   const personaConfig = loadPersonaConfig(personaDir);
@@ -1189,7 +1201,7 @@ function compilePersona(
     if (!platforms.includes("jetbrains")) platforms.push("jetbrains");
   }
 
-  return { persona: personaName, platforms, traitsInjected: injected, scope };
+  return { persona: personaName, platforms, traitsInjected: injected, scope, composedChars: composed.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -4735,27 +4747,42 @@ function main(): void {
   const sizeReport: Record<string, number> = {};
   const overBudget: string[] = [];
 
+  // NF3-3: measured from the COMPOSED persona, not from one platform's file.
+  //
+  // This loop used to open `dist/skill/core/<persona>/SKILL.md` behind an
+  // `fs.existsSync`. On any hub without `skill` in outputFormats that file does
+  // not exist, so the body never ran and:
+  //
+  //   - `failAt` — a build-failing gate the operator explicitly configured —
+  //     could not fire. A check that cannot fail is not a check.
+  //   - `warnAt` never warned.
+  //   - `dist/persona-sizes.json` was written with `"personas": {}` — the
+  //     PR-diff artifact B11 exists to produce, present and empty.
+  //   - "Token estimates:" printed as a header with nothing under it, which
+  //     reads as "measured, all fine".
+  //
+  // Observed on a scratch hub with four ~8k–11k-token personas and failAt 200:
+  // outputFormats ["skill",…] → exit 1 naming all four; drop "skill" → exit 0,
+  // zero mentions of failAt. Prompt size is a property of the composed persona,
+  // so it is carried on the compile result and no platform's absence can switch
+  // the budget off.
   for (const result of allResults.filter((r) => r.platforms.length > 0)) {
-    const skillPath = path.join(distPath, "skill", "core", result.persona, "SKILL.md");
-    if (fs.existsSync(skillPath)) {
-      const content = fs.readFileSync(skillPath, "utf-8");
-      // Heuristic: ~4 chars/token for English/markdown prose. Not a tokenizer —
-      // treat as a stable relative measure, not an exact count.
-      const estimatedTokens = Math.ceil(content.length / 4);
-      sizeReport[result.persona] = estimatedTokens;
+    // Heuristic: ~4 chars/token for English/markdown prose. Not a tokenizer —
+    // treat as a stable relative measure, not an exact count.
+    const estimatedTokens = Math.ceil(result.composedChars / 4);
+    sizeReport[result.persona] = estimatedTokens;
 
-      if (tokenFailAt !== undefined && estimatedTokens > tokenFailAt) {
-        overBudget.push(`${result.persona} (~${estimatedTokens} tokens > failAt ${tokenFailAt})`);
-        log(chalk.red(`  ✗ [${result.persona}] estimated ${estimatedTokens} tokens exceeds tokenBudget.failAt (${tokenFailAt})`));
-      } else if (estimatedTokens > tokenBudget) {
-        log(
-          chalk.yellow(
-            `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
-          )
-        );
-      } else {
-        log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
-      }
+    if (tokenFailAt !== undefined && estimatedTokens > tokenFailAt) {
+      overBudget.push(`${result.persona} (~${estimatedTokens} tokens > failAt ${tokenFailAt})`);
+      log(chalk.red(`  ✗ [${result.persona}] estimated ${estimatedTokens} tokens exceeds tokenBudget.failAt (${tokenFailAt})`));
+    } else if (estimatedTokens > tokenBudget) {
+      log(
+        chalk.yellow(
+          `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
+        )
+      );
+    } else {
+      log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
     }
   }
 
