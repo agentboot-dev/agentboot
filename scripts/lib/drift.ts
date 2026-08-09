@@ -127,16 +127,32 @@ export interface ManifestSelection {
 
 export function selectManifest(repoPath: string): ManifestSelection {
   const corrupt: string[] = [];
+  let selected: { path: string; manifest: Manifest } | null = null;
+  // NF2-4: EVERY candidate is examined, not just those preceding the selected
+  // one. The old loop `return`ed from inside itself on the first parseable
+  // candidate, so a corrupt manifest in a LOWER-priority location was never
+  // stat'd — and the docstring's contract ("a candidate that exists and does NOT
+  // parse is recorded, because 'there is a manifest here and it is unreadable'
+  // is a finding") held only for the one candidate order it happens to cite.
+  //
+  // Measured before this fix, with a VALID .claude/ and a corrupt .cursor/:
+  //   selected: <repo>/.claude/.agentboot-manifest.json
+  //   corrupt reported: []
+  // Reverse the two files and the same repo reports the corruption. Whether an
+  // unreadable manifest is a finding must not depend on which directory it is
+  // in.
   for (const candidate of manifestCandidates(repoPath)) {
     if (!fs.existsSync(candidate)) continue;
     try {
       const manifest = JSON.parse(fs.readFileSync(candidate, "utf-8")) as Manifest;
-      return { path: candidate, manifest, corrupt };
+      if (!selected) selected = { path: candidate, manifest };
     } catch {
       corrupt.push(candidate);
     }
   }
-  return { path: null, manifest: null, corrupt };
+  return selected
+    ? { path: selected.path, manifest: selected.manifest, corrupt }
+    : { path: null, manifest: null, corrupt };
 }
 
 /**

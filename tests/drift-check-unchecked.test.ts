@@ -193,6 +193,41 @@ describe("R1-I — one manifest-selection rule", () => {
     expect(sel.corrupt.map((c) => path.basename(path.dirname(c)))).toEqual([".claude"]);
   });
 
+  it("NF2-4: a corrupt manifest is recorded in EITHER candidate order", async () => {
+    // R1-I-1 above places the corrupt file FIRST, which is the one order the old
+    // loop handled: it `return`ed from inside itself on the first parseable
+    // candidate, so a corrupt manifest in a LOWER-priority location was never
+    // stat'd at all. Measured before the fix, with a VALID .claude/ and a
+    // corrupt .cursor/:
+    //     selected: <repo>/.claude/.agentboot-manifest.json
+    //     corrupt reported: []
+    // The docstring's stated contract held only for the example order it cites.
+    // Whether an unreadable manifest is a finding cannot depend on which
+    // directory it happens to be in.
+    const { selectManifest } = await import("../scripts/lib/drift.js");
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": JSON.stringify({ version: 1, files: [] }),
+      ".cursor/.agentboot-manifest.json": "NOT JSON {{{",
+    });
+    const sel = selectManifest(repo);
+    // Selection is unchanged — priority order still decides which one is READ.
+    expect(sel.path!.includes(".claude")).toBe(true);
+    expect(sel.manifest).not.toBeNull();
+    // And the corruption behind it is reported.
+    expect(sel.corrupt.map((c) => path.basename(path.dirname(c)))).toEqual([".cursor"]);
+  });
+
+  it("NF2-4: EVERY corrupt candidate is reported, not just one", async () => {
+    const { selectManifest } = await import("../scripts/lib/drift.js");
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": "{{{",
+      ".cursor/.agentboot-manifest.json": "]]]",
+    });
+    const sel = selectManifest(repo);
+    expect(sel.path).toBeNull();
+    expect(sel.corrupt.length).toBe(2);
+  });
+
   it("R1-I-2 (NEGATIVE): the ordinary single-manifest case is unchanged", async () => {
     const { findManifestPath, selectManifest } = await import("../scripts/lib/drift.js");
     const repo = repoWith({ ".claude/.agentboot-manifest.json": JSON.stringify({ files: [] }) });
