@@ -170,6 +170,101 @@ describe("A-class — every dist/ consumer declares a freshness posture", () => 
   });
 
   /**
+   * NF4-4 — A-2 asserted that a STRING appears, not that the gate is reachable.
+   *
+   * A-2 is `if (!/assertDistFreshOrExit\(/.test(block.body)) missing.push(name)`.
+   * That is satisfied by
+   *
+   *     if (config) assertDistFreshOrExit(configPath, config, "test");
+   *
+   * which is why `test` sat in DIST_CONSUMERS as `gated` while exiting 0 on a
+   * dist/ whose own stamp said status:"failed" — and banking it as a snapshot
+   * baseline. The invariant that would have caught NF4-3 is the invariant that
+   * let it through: it measured the presence of a call, and the defect was in
+   * the CONDITION around the call.
+   *
+   * "A check that cannot fail is not a check" applies to invariants too. So:
+   * every `gated` consumer must either reach the gate unconditionally, or
+   * declare what happens on the other branch. Exactly two fallbacks count, and
+   * both are real code that runs:
+   *
+   *   assertDistStampOrExit — for commands whose job is to act on dist/. "No
+   *       stamp" and "status: failed" need no config to read.
+   *   announceUngatedDist   — for commands that legitimately have nothing to
+   *       check (drift-check answering a spoke-local question), which must still
+   *       SAY the dimension went unchecked.
+   *
+   * `reports` consumers are out of scope by construction: their posture IS to
+   * describe the state rather than refuse, so a conditional read is correct.
+   */
+  it("A-2c: a `gated` consumer never reaches its gate through an unguarded `if`", () => {
+    const strip = (src: string): string =>
+      src
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .map((l) => l.replace(/\/\/.*$/, ""))
+        .join("\n");
+
+    /** Is every path to the freshness gate in this body guarded by an `if`? */
+    const gateIsConditional = (body: string): boolean => {
+      const L = strip(body).split("\n");
+      for (let i = 0; i < L.length; i++) {
+        const line = L[i]!;
+        if (!/assertDistFreshOrExit\(|checkDistFreshness\(/.test(line)) continue;
+        // `if (cond) assertDistFreshOrExit(...)` — the NF4-3 shape.
+        if (/\bif\s*\([^;]*\)\s*(await\s+)?(assertDistFreshOrExit|checkDistFreshness)\(/.test(line)) {
+          return true;
+        }
+        // `if (cond) { ... assertDistFreshOrExit(...) ... }` — walk outward
+        // through enclosing blocks looking for an `if` that opened one.
+        let depth = 0;
+        for (let k = i - 1; k >= 0; k--) {
+          const t = L[k]!;
+          depth += (t.match(/\}/g) ?? []).length;
+          depth -= (t.match(/\{/g) ?? []).length;
+          if (depth < 0) {
+            if (/\bif\s*\(/.test(t)) return true;
+            depth = 0; // keep walking outward through the next enclosing block
+          }
+        }
+      }
+      return false;
+    };
+
+    const FALLBACKS = /assertDistStampOrExit\(|announceUngatedDist\(/;
+    const hatches: string[] = [];
+    for (const [name, decl] of Object.entries(DIST_CONSUMERS)) {
+      if (decl.posture !== "gated") continue;
+      if (decl.gateIn) continue; // covered by A-2/A-2b against the named file
+      const block = BLOCKS.find((b) => b.name === name);
+      if (!block) continue; // A-2 already fails loudly on an unknown command
+      if (!gateIsConditional(block.body)) continue;
+      if (!FALLBACKS.test(block.body)) hatches.push(name);
+    }
+    expect(
+      hatches,
+      `these commands are declared \`gated\` but reach the gate only through an \`if\` ` +
+        `with no fallback on the other branch — the NF4-3 shape. Add ` +
+        `assertDistStampOrExit (act-on-dist commands) or announceUngatedDist ` +
+        `(nothing to check, say so): ${hatches.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  /**
+   * The two fallbacks must not become names that nothing implements — the
+   * failure mode one level up from the one A-2c fixes.
+   */
+  it("A-2d: both declared fallbacks exist as real functions in cli.ts", () => {
+    const src = fs.readFileSync(path.join(ROOT, "scripts", "cli.ts"), "utf-8");
+    for (const fn of ["assertDistStampOrExit", "announceUngatedDist"]) {
+      expect(
+        new RegExp(`function\\s+${fn}\\s*\\(`).test(src),
+        `A-2c accepts \`${fn}\` as a fallback, but no such function exists`,
+      ).toBe(true);
+    }
+  });
+
+  /**
    * NF2-5 — a `gateIn` entry stated WHERE the gate lives and nothing checked it.
    *
    * The field's own doc comment claimed "`sync` asserts inside `syncRepos()`".

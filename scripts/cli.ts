@@ -175,6 +175,30 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
 }
 
 /**
+ * NF4-4: the third posture a conditional gate can legitimately take — SAY the
+ * dimension went unchecked.
+ *
+ * `assertDistStampOrExit` is right when the command's job is to act on dist/
+ * (install-user, publish, test, baseline): a `dist/` under those commands IS
+ * the agentboot output tree, so "no stamp" is evidence and refusing is correct.
+ *
+ * It is wrong for `drift-check --repo <spoke>`, which answers a purely
+ * spoke-local question from a cwd that has no hub in it. Any `dist/` sitting
+ * there belongs to the spoke's own build (webpack, tsc, whatever), so gating on
+ * its stamp would refuse real work over an unrelated directory — a gate that
+ * fires on the wrong evidence gets disabled, and then protects nothing.
+ *
+ * What is NOT acceptable is what was there: nothing at all. A skip must never
+ * read as a pass. This says the hub-side dimension was not checked, which is
+ * the honest third answer between "verified" and "refused".
+ */
+function announceUngatedDist(command: string, why: string): void {
+  console.log(
+    chalk.yellow(`  ~ \`${command}\` did NOT verify hub build freshness — ${why}`),
+  );
+}
+
+/**
  * NF2-1: the gate for a `gated` consumer that has NO hub config in reach.
  *
  * `install-user` and `publish` guarded their gate on `if (config)` /
@@ -3329,6 +3353,14 @@ program
         : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
       if (fs.existsSync(hubConfigPath)) {
         assertDistFreshOrExit(hubConfigPath, loadConfig(hubConfigPath), "drift-check");
+      } else {
+        // NF4-4: this branch is legitimate — with no hub in reach the command is
+        // answering a spoke-local question and any dist/ here belongs to the
+        // spoke's own build — but it was SILENT, which reads as a pass.
+        announceUngatedDist(
+          "drift-check",
+          "no hub config in reach, so this is a spoke-local answer only.",
+        );
       }
     }
 
