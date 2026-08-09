@@ -254,13 +254,46 @@ function copyDirContents(
   }
 }
 
-/** POSIX-normalized path relative to ~/.claude/, matching the manifest format. */
-function toManifestPath(claudeDir: string, absPath: string): string {
-  return path.relative(claudeDir, absPath).replace(/\\/g, "/");
+/**
+ * POSIX-normalized path relative to a root, and the ONLY way a path may enter
+ * or leave the user manifest.
+ *
+ * R1-3: this existed and the manifest writer did not use it. `generateUserManifest`
+ * called bare `path.relative()`, so on Windows the manifest held
+ * `skills\ab\SKILL.md` while the keep-set built here held `skills/ab/SKILL.md`.
+ * Every previously-delivered file then missed `kept.has()`, was classified as a
+ * revoked orphan, hashed equal (it had just been rewritten unchanged), and was
+ * UNLINKED — a second `agentboot install-user` deleted the artifacts the first
+ * one installed. On POSIX the two forms coincide, which is why the suite was
+ * green: the divergence is invisible on the only OS the tests had actually run on.
+ *
+ * prune.ts states the contract in its own header ("relative POSIX paths"); this
+ * is that contract, enforced in one place instead of restated at each call site.
+ */
+export function toManifestPath(root: string, absPath: string): string {
+  return path.relative(root, absPath).replace(/\\/g, "/");
 }
 
-/** E1: previous manifest as path → hash, or null when there is no previous install. */
-function loadUserManifestHashes(claudeDir: string): Map<string, string> | null {
+/**
+ * Normalize a path READ from a manifest.
+ *
+ * A manifest written by a pre-R1-3 build on Windows carries backslashes. Fixing
+ * only the writer would make the first post-upgrade install treat every legacy
+ * entry as an orphan — the same deletion, once, on the way out. Normalizing on
+ * read makes the transition inert.
+ */
+export function fromManifestPath(rel: string): string {
+  return rel.replace(/\\/g, "/");
+}
+
+/**
+ * E1: previous manifest as path → hash, or null when there is no previous install.
+ *
+ * Exported for R1-3: the read side normalizes too, so a legacy backslash
+ * manifest written by a pre-fix Windows build does not read as one big orphan
+ * set on the first run after the upgrade.
+ */
+export function loadUserManifestHashes(claudeDir: string): Map<string, string> | null {
   const manifestPath = path.join(claudeDir, ".agentboot-user-manifest.json");
   if (!fs.existsSync(manifestPath)) return null;
   try {
@@ -269,7 +302,7 @@ function loadUserManifestHashes(claudeDir: string): Map<string, string> | null {
     };
     const out = new Map<string, string>();
     for (const f of manifest.files ?? []) {
-      if (f.path && f.hash) out.set(f.path, f.hash);
+      if (f.path && f.hash) out.set(fromManifestPath(f.path), f.hash);
     }
     return out;
   } catch {
@@ -287,7 +320,10 @@ export function generateUserManifest(
   claudeDir: string,
 ): Record<string, unknown> {
   const files = writtenFiles.map(f => {
-    const relPath = path.relative(claudeDir, f);
+    // R1-3: POSIX-normalized, because the keep-set that is compared against
+    // this manifest on the next run is POSIX-normalized. Two path spellings for
+    // one file is the drift that made install-user delete its own output.
+    const relPath = toManifestPath(claudeDir, f);
     let hash = "";
     try {
       const content = fs.readFileSync(f, "utf-8");
@@ -389,7 +425,10 @@ export function stageForHandoff(
     apply_target: "~/.claude",
     written_at: new Date().toISOString(),
     files: result.staged.map((f) => {
-      const rel = path.relative(stagingDir, f);
+      // R1-3: same normalization as the install manifest. This one is consumed
+      // by an EXTERNAL provider, so a backslash spelling would be someone
+      // else's bug report.
+      const rel = toManifestPath(stagingDir, f);
       let hash = "";
       try {
         hash = createHash("sha256").update(fs.readFileSync(f)).digest("hex");

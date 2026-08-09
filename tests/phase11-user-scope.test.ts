@@ -462,3 +462,73 @@ describe("E1 — install-user withdraws revoked artifacts", () => {
     expect(first.out).toContain("pruned: 0 revoked artifact(s)");
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// R1-3 — one path spelling for the user manifest
+// ---------------------------------------------------------------------------
+
+/**
+ * E1's prune builds its keep-set with `toManifestPath()` (POSIX-normalized)
+ * while `generateUserManifest()` wrote `path.relative()` unmodified. On Windows
+ * the manifest held `skills\ab\SKILL.md` and the keep-set held
+ * `skills/ab/SKILL.md`, so every previously-delivered file missed `kept.has()`,
+ * was classified as a revoked orphan, hashed equal (it had just been rewritten
+ * unchanged), and was UNLINKED: a second `agentboot install-user` on Windows
+ * deleted the artifacts it had installed a moment earlier.
+ *
+ * The E1 cases above cannot see this — on POSIX the two spellings coincide, and
+ * the Windows leg of CI (validate.yml runs `npm test` on windows-latest) had not
+ * been run for this branch. These assertions are OS-independent: they pin the
+ * INVARIANT (the two producers agree) rather than the platform.
+ */
+describe("R1-3 — the manifest and the keep-set must spell a path the same way", () => {
+  it("R1-3-1: generateUserManifest records exactly what toManifestPath produces", async () => {
+    const { generateUserManifest, toManifestPath } = await import("../scripts/lib/user-scope.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-r13-"));
+    const file = path.join(dir, "skills", "ab", "SKILL.md");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "x");
+
+    const manifest = generateUserManifest([file], dir) as { files: Array<{ path: string }> };
+    // This equality IS the defect: pre-fix the left side was path.relative()
+    // and the right side was path.relative().replace(/\\/g, "/").
+    expect(manifest.files[0].path).toBe(toManifestPath(dir, file));
+  });
+
+  it("R1-3-2: a Windows-shaped path is normalized, not recorded with backslashes", async () => {
+    const { generateUserManifest } = await import("../scripts/lib/user-scope.js");
+    // Windows-shaped inputs, evaluated on whatever OS is running. The recorded
+    // path must not carry a separator the keep-set will never produce.
+    const claudeDir = "C:\\Users\\x\\.claude";
+    const file = "C:\\Users\\x\\.claude\\skills\\ab\\SKILL.md";
+    const manifest = generateUserManifest([file], claudeDir) as { files: Array<{ path: string }> };
+    expect(manifest.files[0].path).not.toContain("\\");
+  });
+
+  it("R1-3-3: a legacy backslash manifest is read as POSIX, so the upgrade prunes nothing", async () => {
+    const { loadUserManifestHashes } = await import("../scripts/lib/user-scope.js");
+    // Fixing only the writer would make the FIRST post-upgrade install treat
+    // every legacy entry as an orphan — the same deletion, once, on the way out.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-r13b-"));
+    fs.writeFileSync(
+      path.join(dir, ".agentboot-user-manifest.json"),
+      JSON.stringify({ files: [{ path: "skills\\ab\\SKILL.md", hash: "deadbeef" }] })
+    );
+    const loaded = loadUserManifestHashes(dir)!;
+    expect(loaded.has("skills/ab/SKILL.md")).toBe(true);
+    expect(loaded.has("skills\\ab\\SKILL.md")).toBe(false);
+  });
+
+  it("R1-3-4: the staging handoff manifest normalizes too — an external provider consumes it", () => {
+    // Same class, second producer. Asserted by reading the source rather than
+    // by running Windows: what must hold is that neither manifest writer calls
+    // bare path.relative().
+    const src = fs.readFileSync(path.join(ROOT, "scripts", "lib", "user-scope.ts"), "utf-8");
+    const manifestBlocks = src.split("\n").filter((l) => /path:\s*rel/.test(l));
+    expect(manifestBlocks.length).toBeGreaterThan(0);
+    // Every `rel`/`relPath` fed into a manifest entry is produced by toManifestPath.
+    for (const m of src.matchAll(/const (rel|relPath) = (.+);/g)) {
+      expect(m[2], `${m[1]} bypasses toManifestPath`).toContain("toManifestPath(");
+    }
+  });
+});
