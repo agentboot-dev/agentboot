@@ -629,18 +629,58 @@ function compileLexiconBlock(entries: LexiconEntry[]): string {
 // Persona config loading
 // ---------------------------------------------------------------------------
 
+/**
+ * NF3-7: an unreadable persona policy is FATAL, not a warning.
+ *
+ * This used to catch the parse error, print a yellow `⚠ Failed to parse
+ * persona.config.json in <dir>`, and return null. Every downstream reader is
+ * `personaConfig?.disallowedTools`, `personaConfig?.tools`, `pc?.hooks` — all
+ * no-ops on null — so the persona then compiled and SHIPPED with its entire
+ * config silently absent, including its tool restrictions, and the build exited
+ * 0. "I could not read the policy" resolved to "there is no policy", which is
+ * the fail-open-on-unknown-data class this branch keeps producing.
+ *
+ * The asymmetry that makes this the right call: a persona with NO
+ * persona.config.json is a legitimate, common state and still returns null. A
+ * persona with a config file that cannot be parsed is an operator who wrote a
+ * policy and got none of it, and the only two outcomes are "stop" or "ship the
+ * agent unrestricted". Every other unreadable-policy path on this branch stops.
+ *
+ * Fatal here rather than at the capability gate on purpose: the gate reasons
+ * about which PLATFORM can carry a control, and cannot distinguish "this
+ * persona declares nothing" from "this persona's declaration is unreadable".
+ * countPersonaScopeControls() fails closed for the doctor path, which reports
+ * rather than refuses; the build refuses outright.
+ */
 function loadPersonaConfig(personaDir: string): PersonaConfig | null {
   const configPath = path.join(personaDir, "persona.config.json");
   if (!fs.existsSync(configPath)) {
     return null;
   }
   const raw = fs.readFileSync(configPath, "utf-8");
+  let parsed: unknown;
   try {
-    return JSON.parse(stripJsoncComments(raw)) as PersonaConfig;
-  } catch {
-    log(chalk.yellow(`  ⚠ Failed to parse persona.config.json in ${personaDir}`));
-    return null;
+    parsed = JSON.parse(stripJsoncComments(raw));
+  } catch (err: unknown) {
+    fatal(
+      `${path.relative(process.cwd(), configPath)} is not readable JSON:\n` +
+        `      ${err instanceof Error ? err.message : String(err)}\n` +
+        `  This file carries the persona's tool restrictions (disallowedTools, tools) and\n` +
+        `  its hooks. Compiling past it would ship the persona with NO restrictions, which\n` +
+        `  is the opposite of what the file says. Fix the JSON, or delete the file if the\n` +
+        `  persona is meant to have no config.`
+    );
   }
+  // Parsing is not enough: 42, a bare string, null and [] all parse, and every
+  // field read off them is undefined — the same silent no-policy outcome by
+  // another route.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fatal(
+      `${path.relative(process.cwd(), configPath)} is not a JSON object.\n` +
+        `  Every restriction in it would read as absent, shipping the persona unrestricted.`
+    );
+  }
+  return parsed as PersonaConfig;
 }
 
 // ---------------------------------------------------------------------------
