@@ -4253,9 +4253,17 @@ function main(): void {
     // object cannot be scanned AND cannot be compiled into anything Claude Code
     // will run — so it fails the build rather than passing through the scanner
     // as zero findings.
-    const unscannable = sources.flatMap((s) =>
-      unscannableHookEvents(s.hooks).map((u) => ({ ...u, label: s.label })),
-    );
+    //
+    // Scoped to the PERSONA sources on purpose. `claude.hooks`'s unreadable case
+    // already fails the build in generateMergedManagedArtifacts (D1), and that
+    // gate names the SCOPE and the FRAGMENT the bad value came from — provenance
+    // this gate does not have, because it reads the config rather than the
+    // emitted fragments. Refusing here first would replace a more informative
+    // refusal with a less informative one. Persona hooks reach no fragment, so
+    // D1 never sees them: this is their only gate.
+    const unscannable = sources
+      .filter((s) => s.label !== "claude.hooks")
+      .flatMap((s) => unscannableHookEvents(s.hooks).map((u) => ({ ...u, label: s.label })));
     if (unscannable.length > 0) {
       log("");
       log(chalk.red(`  ✗ Unreadable hook value(s) — cannot be scanned and cannot be compiled:`));
