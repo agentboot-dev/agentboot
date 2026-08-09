@@ -302,6 +302,30 @@ export function readScopeGlobs(content: string, key: "applyTo" | "paths"): Scope
  * scalar with a space in it, which is not a glob anyone meant. Line-per-glob is
  * the only reading that agrees with the block-sequence form directly above it.
  */
+/**
+ * Net bracket depth of a line, ignoring brackets inside quotes.
+ *
+ * A glob legitimately contains `[` — `src/**\/*.[jt]s` is a character class —
+ * so counting raw characters would make a single-line sequence look unbalanced.
+ * Quoted spans are skipped for the same reason.
+ */
+function bracketDepth(line: string): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let k = 0; k < line.length; k++) {
+    const ch = line[k]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === "#") break; // trailing comment
+    if (ch === "[") depth++;
+    else if (ch === "]") depth--;
+  }
+  return depth;
+}
+
 function readScopeGlobsFromBlock(fm: string, key: string): ScopeRead {
   const lines = fm.split("\n");
   // Anchored to the line, and `[ \t]*` never crosses a newline — that crossing
@@ -338,16 +362,49 @@ function readScopeGlobsFromBlock(fm: string, key: string): ScopeRead {
     if (inline !== "") {
       // A YAML FLOW sequence.
       if (inline.startsWith("[")) {
-        if (!inline.endsWith("]")) {
-          // Present and unparseable. Reporting this as "no scope" would report
-          // it as ALWAYS-ON — the inversion this module exists to prevent — so
-          // it is surfaced instead. FAIL CLOSED on unknown data.
+        // NF4-7: a flow sequence may span LINES. This is legal YAML and it is
+        // the form the product's own docs teach, just wrapped:
+        //
+        //     paths: [
+        //       "src/n/**",
+        //       "src/o/**"
+        //     ]
+        //
+        // The reader only handled a sequence that opens and closes on ONE line,
+        // so the above hit the unterminated branch and — correctly, given what
+        // it believed — FAILED THE BUILD with "unterminated flow sequence: [".
+        // The posture was right and the parse was wrong, which is the worst
+        // combination: a loud, well-worded refusal of valid input teaches the
+        // operator that the gate is broken, and a gate the operator works around
+        // protects nothing.
+        //
+        // Continuation lines are gathered until the brackets balance. If they
+        // never do, it is genuinely unterminated and still fails closed — an
+        // unreadable scope reported as "no scope" is reported as ALWAYS-ON, the
+        // inversion this module exists to prevent.
+        let flow = inline;
+        let depth = bracketDepth(inline);
+        let j = i;
+        while (depth > 0 && j + 1 < lines.length) {
+          j++;
+          const cont = lines[j]!;
+          // A line at column 0 that looks like `key:` is the NEXT key, not a
+          // continuation: stop rather than swallowing the rest of the block.
+          if (/^[^\s#][^:]*:/.test(cont) && depth > 0 && !cont.trim().startsWith("[")) {
+            const looksLikeItem = /^[\s]*["'\[]|^[\s]*[^\s:]+\s*,\s*$/.test(cont);
+            if (!looksLikeItem) break;
+          }
+          flow += ` ${cont.trim()}`;
+          depth += bracketDepth(cont);
+        }
+        if (depth !== 0 || !flow.trimEnd().endsWith("]")) {
           return { globs: [], raw: inline, malformed: `unterminated flow sequence: ${inline}` };
         }
-        const items = splitFlowItems(inline.slice(1, -1));
+        const body = flow.trim().slice(1, -1);
+        const items = splitFlowItems(body);
         return {
           globs: items.flatMap((v) => parseGlobList(v)),
-          raw: inline,
+          raw: flow.trim(),
           malformed: null,
         };
       }

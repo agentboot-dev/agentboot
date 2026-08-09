@@ -1021,3 +1021,96 @@ describe("NEW-2 — a key inside a block scalar is text, not structure", () => {
     expect(() => yaml.load(block)).not.toThrow();
   });
 });
+
+/**
+ * NF4-7 — a multi-line YAML flow sequence hard-failed the build.
+ *
+ * The reader handled a flow sequence only when it opened and closed on ONE
+ * line, so this — legal YAML, and the form the product's own docs teach, just
+ * wrapped —
+ *
+ *     paths: [
+ *       "src/n/**",
+ *       "src/o/**"
+ *     ]
+ *
+ * hit the unterminated branch: `agentboot build` exit 1, "✗ FATAL: 1
+ * artifact(s) have an unreadable path scope: … paths: unterminated flow
+ * sequence: [".
+ *
+ * The POSTURE was right — it failed closed, loudly, naming the file — and the
+ * PARSE was wrong, which is the worst combination available. A well-worded
+ * refusal of valid input teaches the operator that the gate is broken, and a
+ * gate the operator works around protects nothing.
+ *
+ * Asserted as EQUIVALENCE rather than against an expected list: the wrapped and
+ * unwrapped forms are the same YAML, so they must produce the same globs. A
+ * literal expectation would let the two drift apart while both looked correct.
+ */
+describe("NF4-7 — a flow sequence may span lines", () => {
+  const fmOf = (body: string) => `---\ndescription: x\n${body}\n---\n# t\nbody\n`;
+
+  it("the wrapped and unwrapped forms are the SAME scope", () => {
+    const oneLine = readScopeGlobs(fmOf('paths: ["src/n/**", "src/o/**"]'), "paths");
+    const wrapped = readScopeGlobs(fmOf('paths: [\n  "src/n/**",\n  "src/o/**"\n]'), "paths");
+    expect(wrapped.malformed, "legal YAML the docs teach was refused").toBeNull();
+    expect(wrapped.globs).toEqual(oneLine.globs);
+  });
+
+  it("a trailing comma before the close is accepted — YAML allows it", () => {
+    const r = readScopeGlobs(fmOf('paths: [\n  "a/**",\n  "b/**",\n]'), "paths");
+    expect(r.malformed).toBeNull();
+    expect(r.globs).toEqual(["a/**", "b/**"]);
+  });
+
+  it("applyTo takes the same treatment — one reader, not two", () => {
+    const r = readScopeGlobs(fmOf('applyTo: [\n  "src/pay/**"\n]'), "applyTo");
+    expect(r.malformed).toBeNull();
+    expect(r.globs).toEqual(["src/pay/**"]);
+  });
+
+  it("the key AFTER a wrapped sequence is not swallowed", () => {
+    const src = '---\npaths: [\n  "a/**"\n]\napplyTo: "src/z/**"\n---\nbody\n';
+    expect(readScopeGlobs(src, "paths").globs).toEqual(["a/**"]);
+    expect(readScopeGlobs(src, "applyTo").globs).toEqual(["src/z/**"]);
+  });
+
+  it("NEGATIVE: a genuinely unterminated sequence still FAILS CLOSED", () => {
+    // The whole point of the branch. Widening the parser must not widen it into
+    // accepting a scope it cannot read — that would report the scope as absent,
+    // i.e. as ALWAYS-ON.
+    const r = readScopeGlobs(fmOf('paths: [\n  "src/n/**",'), "paths");
+    expect(r.malformed).toMatch(/unterminated flow sequence/);
+    expect(r.globs).toEqual([]);
+  });
+
+  it("NEGATIVE: a character-class glob is not a bracket to balance", () => {
+    // `src/**/*.[jt]s` is a legitimate glob. Counting raw brackets would make a
+    // sequence look unbalanced and swallow the rest of the block.
+    expect(readScopeGlobs(fmOf('paths: "src/**/*.[jt]s"'), "paths").globs).toEqual(["src/**/*.[jt]s"]);
+    const inFlow = readScopeGlobs(fmOf('paths: ["src/**/*.[jt]s", "b/**"]'), "paths");
+    expect(inFlow.malformed).toBeNull();
+    expect(inFlow.globs).toEqual(["src/**/*.[jt]s", "b/**"]);
+  });
+
+  it("NEGATIVE: an UNBALANCED bracket inside a quoted glob is still just text", () => {
+    // The case that makes quote-skipping load-bearing rather than decorative:
+    // a balanced character class cancels itself out even when counted raw, so
+    // it proves nothing. `"src/[a.md"` does not, and a raw count would leave
+    // depth at 1 and swallow the following key.
+    const src = '---\npaths: ["src/[a.md", "b/**"]\napplyTo: "src/z/**"\n---\nbody\n';
+    const r = readScopeGlobs(src, "paths");
+    expect(r.malformed).toBeNull();
+    expect(r.globs).toEqual(["src/[a.md", "b/**"]);
+    expect(readScopeGlobs(src, "applyTo").globs, "the next key was swallowed").toEqual(["src/z/**"]);
+  });
+
+  it("NEGATIVE: every other YAML form is unchanged", () => {
+    expect(readScopeGlobs(fmOf('paths: []'), "paths").globs).toEqual([]);
+    expect(readScopeGlobs(fmOf('paths:\n  - "src/x/**"\n  - "src/y/**"'), "paths").globs)
+      .toEqual(["src/x/**", "src/y/**"]);
+    expect(readScopeGlobs(fmOf("paths: |\n  src/one/**\n  src/two/**"), "paths").globs)
+      .toEqual(["src/one/**", "src/two/**"]);
+    expect(readScopeGlobs(fmOf('paths: "src/a/**"  # a comment'), "paths").globs).toEqual(["src/a/**"]);
+  });
+});
