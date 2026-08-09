@@ -65,6 +65,7 @@ import {
   APPLY_TO_PROJECTION, type ScopedArtifact,
 } from "./lib/scope-projection.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
+import { resolveWithin, PathEscapeError } from "./lib/path-containment.js";
 import {
   computeConfigDigest, computeSourceDigest, resolveDomainRoots, writeDistStamp, markDistBuildFailed,
 } from "./lib/dist-stamp.js";
@@ -1426,8 +1427,35 @@ function compileGotchas(
           }
         }
         if (targetDir) {
-          // Directory-scoped: write GEMINI.md in the target directory
-          const geminiSubDir = path.join(distPath, "gemini", scopePath, targetDir);
+          // Directory-scoped: write GEMINI.md in the target directory.
+          //
+          // `targetDir` is CONTENT, not config — it is sliced out of a gotcha's
+          // `paths:` frontmatter, which arrives via `agentboot import`, via a
+          // contributed gotcha, via the marketplace. GEMINI.md is auto-loaded by
+          // the Gemini CLI, so an unchecked join here plants an unsigned,
+          // unmanifested, unprunable instruction file at an attacker-chosen
+          // absolute path. Contained, and fatal on violation: a gotcha that
+          // tries to escape dist/ is a finding, and dropping it quietly would be
+          // the silence-is-not-success failure one level down.
+          const geminiScopeRoot = path.join(distPath, "gemini", scopePath);
+          let geminiSubDir: string;
+          try {
+            geminiSubDir = resolveWithin(
+              geminiScopeRoot,
+              [targetDir],
+              `gotcha ${path.basename(file)}: paths: "${targetDir}"`
+            );
+          } catch (err) {
+            if (err instanceof PathEscapeError) {
+              fatal(
+                `gotcha ${path.relative(HUB_ROOT, file)} has a paths: pattern that escapes dist/: ` +
+                  `"${targetDir}". Gemini writes GEMINI.md into the directory a pattern names, and ` +
+                  `GEMINI.md is auto-loaded as instructions — a pattern that climbs out of dist/ would ` +
+                  `plant instructions outside the build tree. Use a pattern relative to the repo root.`
+              );
+            }
+            throw err;
+          }
           ensureDir(geminiSubDir);
           const geminiSubPath = path.join(geminiSubDir, "GEMINI.md");
           const existingGemini = fs.existsSync(geminiSubPath) ? fs.readFileSync(geminiSubPath, "utf-8") : "";
