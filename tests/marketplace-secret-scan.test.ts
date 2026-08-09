@@ -1,0 +1,124 @@
+/**
+ * R2-6 — the pre-publish secret scan read `.md` files in ONE directory.
+ *
+ * `contentFiles` is `readdirSync(componentDir)` filtered to `.md`,
+ * non-recursive, while `publish` ships the whole component directory. So the
+ * two files most likely to carry a credential — a config, and anything one
+ * directory down — were the two the scan could not see.
+ *
+ * Repro on a snapshot: `sk-…` in the SHIPPED persona.config.json and
+ * `AKIAIOSFODNN7EXAMPLE` in nested/leak.md, then
+ * `marketplace publish persona/code-reviewer --dry-run` -> "✓ No secrets
+ * detected", EXIT=0.
+ *
+ * The round-3 report said this was left open for want of an end-to-end repro.
+ * The repro is above and takes two file writes; what was actually missing was
+ * the manifest `license` the check requires before it reaches the scan.
+ *
+ * Severity stays LOW — `publish` is `{hidden:true}` and submits nothing today —
+ * which is a reason it has not bitten, not a reason to ship a scan whose green
+ * tick means "the top-level markdown is clean".
+ */
+
+import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+const ROOT = path.resolve(__dirname, "..");
+const CLI = path.join(ROOT, "bin", "agentboot.js");
+
+/**
+ * The command reads `core/personas/<name>` relative to the CLI's own ROOT, so
+ * the fixture is a COPY of the repo tree, never the repo itself.
+ */
+let snap = "";
+let personaDir = "";
+
+const publish = () => {
+  const r = spawnSync(
+    process.execPath,
+    [path.join(snap, "bin", "agentboot.js"), "marketplace", "publish", "persona/code-reviewer", "--dry-run"],
+    { cwd: snap, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 120_000 },
+  );
+  return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+};
+
+beforeEach(() => {
+  if (snap) fs.rmSync(snap, { recursive: true, force: true });
+  snap = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-r26-"));
+  for (const d of ["bin", "scripts", "core", "package.json", "node_modules"]) {
+    const src = path.join(ROOT, d);
+    if (!fs.existsSync(src)) continue;
+    if (d === "node_modules") fs.symlinkSync(src, path.join(snap, d));
+    else fs.cpSync(src, path.join(snap, d), { recursive: true });
+  }
+  personaDir = path.join(snap, "core", "personas", "code-reviewer");
+  // The license gate runs BEFORE the scan; without it the scan is never reached,
+  // which is what made this look un-reproducible.
+  fs.writeFileSync(
+    path.join(personaDir, "manifest.json"),
+    JSON.stringify({ name: "code-reviewer", license: "Apache-2.0" }, null, 2),
+  );
+});
+
+afterAll(() => {
+  if (snap) fs.rmSync(snap, { recursive: true, force: true });
+});
+
+describe("R2-6 — the pre-publish scan covers what publish SHIPS", () => {
+  it("PRECONDITION: a clean component passes, and says how much it scanned", () => {
+    const r = publish();
+    expect(r.status, r.out).toBe(0);
+    expect(r.out, "a green tick with no coverage stated is the shape of this whole finding")
+      .toMatch(/file\(s\) scanned, recursively/);
+  }, 120_000);
+
+  it("R2-6: a secret in the SHIPPED persona.config.json is found", () => {
+    const p = path.join(personaDir, "persona.config.json");
+    const cfg = JSON.parse(fs.readFileSync(p, "utf-8"));
+    cfg.note = "sk-abcdefghijklmnopqrstuvwxyz012345";
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
+    const r = publish();
+    expect(r.status, `a credential shipped in a config the scan could not see:\n${r.out}`).toBe(1);
+    expect(r.out).toContain("persona.config.json");
+  }, 120_000);
+
+  it("R2-6: a secret one directory DOWN is found", () => {
+    fs.mkdirSync(path.join(personaDir, "nested"), { recursive: true });
+    fs.writeFileSync(path.join(personaDir, "nested", "leak.md"), "AKIAIOSFODNN7EXAMPLE\n");
+    const r = publish();
+    expect(r.status, r.out).toBe(1);
+    expect(r.out).toContain("nested/leak.md");
+  }, 120_000);
+
+  it("R2-6: the widened pattern set catches a private key and a Slack token", () => {
+    fs.writeFileSync(
+      path.join(personaDir, "extra.txt"),
+      "-----BEGIN RSA PRIVATE KEY-----\nxox" + "b-1234-abcd\n",
+    );
+    expect(publish().status).toBe(1);
+  }, 120_000);
+
+  it("R2-6: EVERY offending file is named, not just the first", () => {
+    fs.writeFileSync(path.join(personaDir, "a.md"), "AKIAIOSFODNN7EXAMPLE\n");
+    fs.mkdirSync(path.join(personaDir, "n"), { recursive: true });
+    fs.writeFileSync(path.join(personaDir, "n", "b.md"), "ghp_" + "a".repeat(36) + "\n");
+    const r = publish();
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("a.md");
+    expect(r.out).toContain(path.join("n", "b.md"));
+  }, 120_000);
+
+  it("NEGATIVE: prose about credentials does not trip it", () => {
+    // A persona ABOUT credential handling legitimately contains the words. A
+    // scan that cries wolf on documentation gets bypassed, and then finds
+    // nothing at all.
+    fs.writeFileSync(
+      path.join(personaDir, "guide.md"),
+      "# Handling credentials\nNever paste a password or api_key into a PR description.\n",
+    );
+    expect(publish().status).toBe(0);
+  }, 120_000);
+});

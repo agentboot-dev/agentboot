@@ -4547,14 +4547,67 @@ marketplaceCmd
     const licenseCheck = validateLicense(license);
     if (!licenseCheck.valid) { console.error(chalk.red(`  ✗ ${licenseCheck.reason}`)); process.exit(1); }
     console.log(chalk.green(`  ✓ License: ${license}`));
-    const secretPatterns = [/AKIA[A-Z0-9]{16}/, /sk-[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/];
-    let secretsFound = false;
-    for (const file of contentFiles) {
-      const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
-      for (const p of secretPatterns) { if (p.test(content)) { secretsFound = true; break; } }
+    // R2-6: scan what SHIPS, not the .md files in one directory.
+    //
+    // The scan read `contentFiles` — `readdirSync(componentDir)` filtered to
+    // `.md`, non-recursive — while publish ships the whole component directory.
+    // Repro: put `sk-abcdefghijklmnopqrstuvwxyz012345` in the SHIPPED
+    // persona.config.json and `AKIAIOSFODNN7EXAMPLE` in nested/leak.md, then
+    // `marketplace publish persona/code-reviewer --dry-run` -> "✓ No secrets
+    // detected", exit 0. The two files most likely to carry a credential — a
+    // config and anything one directory down — were the two it could not see.
+    //
+    // Severity is LOW because `publish` is `{hidden:true}` and submits nothing
+    // today. That is a reason it has not bitten, not a reason to ship a scan
+    // whose green tick means "the top-level markdown is clean".
+    //
+    // Patterns match the generated hooks' bundled set, minus the `password[:=]`
+    // family: a persona ABOUT credential handling legitimately contains the word,
+    // and a scan that cries wolf on documentation gets bypassed.
+    const secretPatterns = [
+      /AKIA[A-Z0-9]{16}/,
+      /sk-[a-zA-Z0-9]{20,}/,
+      /ghp_[a-zA-Z0-9]{36}/,
+      /xox[bp]-[a-zA-Z0-9-]+/,
+      /sk_live_[a-zA-Z0-9]+/,
+      /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
+      /eyJ[a-zA-Z0-9_-]{10,}\.eyJ/,
+    ];
+    const scanned: string[] = [];
+    const secretHits: string[] = [];
+    const scanTree = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, e.name);
+        if (e.isDirectory()) { scanTree(abs); continue; }
+        if (!e.isFile()) continue;
+        let content: string;
+        try {
+          content = fs.readFileSync(abs, "utf-8");
+        } catch {
+          // Unreadable is not clean. A file that ships and could not be scanned
+          // is exactly the state this check exists to refuse.
+          secretHits.push(`${path.relative(componentDir, abs)} (UNREADABLE — not scanned)`);
+          continue;
+        }
+        scanned.push(abs);
+        for (const p of secretPatterns) {
+          if (p.test(content)) { secretHits.push(path.relative(componentDir, abs)); break; }
+        }
+      }
+    };
+    scanTree(componentDir);
+    if (secretHits.length > 0) {
+      console.error(chalk.red(`  ✗ Secrets detected in ${secretHits.length} file(s):`));
+      for (const f of secretHits) console.error(chalk.red(`      ${f}`));
+      process.exit(1);
     }
-    if (secretsFound) { console.error(chalk.red("  ✗ Secrets detected")); process.exit(1); }
-    console.log(chalk.green("  ✓ No secrets detected"));
+    // Silence is not success: say what was covered. "No secrets detected" over
+    // zero files is the shape this whole finding is made of.
+    if (scanned.length === 0) {
+      console.error(chalk.red("  ✗ No files could be scanned — this is not evidence that the component is clean."));
+      process.exit(1);
+    }
+    console.log(chalk.green(`  ✓ No secrets detected (${scanned.length} file(s) scanned, recursively)`));
     if (opts.dryRun) { console.log(chalk.yellow(`\n  [dry-run] Would submit PR for ${component}`)); return; }
     console.log(chalk.green("\n  All pre-publish checks passed."));
   });
