@@ -111,12 +111,27 @@ const CORE_GOTCHAS = path.join(HUB_ROOT, "core", "gotchas");
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = "agentboot";
+/**
+ * R2-8: AgentBoot's OWN version, read from the INSTALL directory.
+ *
+ * This read `path.join(HUB_ROOT, "package.json")` — the operator's hub — so on a
+ * scaffolded hub `agentboot_status` reported `hub.version: "0.0.0"` while the
+ * CLI was 0.20.2: either the hub repo's unrelated package version, or a silent
+ * "0.0.0" from a bare catch. This surface is read by an AGENT, and it feeds the
+ * evidence pack, where it is taken as provenance — so a wrong or invented
+ * version is a provenance error, not a cosmetic one.
+ *
+ * DEFAULT_ROOT is the package directory (resolved from import.meta.url), which
+ * is where AgentBoot's own package.json always is, hub or no hub. A failure to
+ * read it is reported rather than smoothed to "0.0.0", because "I do not know
+ * what version I am" and "I am version 0.0.0" are different facts.
+ */
 const SERVER_VERSION = (() => {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(HUB_ROOT, "package.json"), "utf-8"));
-    return pkg.version ?? "0.0.0";
+    const pkg = JSON.parse(fs.readFileSync(path.join(DEFAULT_ROOT, "package.json"), "utf-8"));
+    return typeof pkg.version === "string" && pkg.version ? pkg.version : "unknown";
   } catch {
-    return "0.0.0";
+    return "unknown";
   }
 })();
 
@@ -1105,12 +1120,25 @@ function handleStatus(): ToolResult {
   // Maturity label
   const maturityLabel = computeMaturityLabel(orgSpecificPersonas, orgSpecificTraits, coreGotchaCount, repos.length, lastBuiltAt);
 
+  // R2-8: `version` here was SERVER_VERSION read from the HUB's package.json,
+  // so this field answered neither question honestly: an agent reading
+  // `hub.version` got AgentBoot's label on the hub repo's version number, or a
+  // silent "0.0.0". They are two different facts and now have two fields.
+  let hubVersion: string | null = null;
+  try {
+    const hubPkg = JSON.parse(fs.readFileSync(path.join(HUB_ROOT, "package.json"), "utf-8"));
+    hubVersion = typeof hubPkg.version === "string" ? hubPkg.version : null;
+  } catch {
+    hubVersion = null; // no hub package.json is normal; null says so, "0.0.0" lies
+  }
+
   return toolOk({
+    agentbootVersion: SERVER_VERSION,
     hub: {
       path: HUB_ROOT,
       org: config?.org ?? "unknown",
       displayName: config?.orgDisplayName ?? config?.org ?? "unknown",
-      version: SERVER_VERSION,
+      version: hubVersion,
     },
     build: {
       lastBuiltAt,

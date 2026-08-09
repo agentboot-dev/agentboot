@@ -161,7 +161,25 @@ function checkManifestDrift(hubRoot: string, findings: AuditFinding[]): void {
   };
   walkForMtime(distDir);
 
-  if (newestDistMtime === 0) return;
+  // R2-7: `return;` here made "I could not compare" print identically to
+  // "nothing is stale". dist/ exists (checked above) and yet not one file under
+  // it could be stat'd — a permission problem, a racing rebuild, an empty tree —
+  // and the check pushed NO finding, so the audit reported clean.
+  //
+  // Silence is not success: a check that examined nothing must say so. This is
+  // redundant defence — `audit` is gated on `assertDistFreshOrExit`, which is
+  // digest-based and authoritative — but a second staleness signal that can go
+  // quiet is worse than no second signal.
+  if (newestDistMtime === 0) {
+    findings.push({
+      type: "manifest-drift",
+      severity: "warn",
+      message:
+        "dist/ exists but no file under it could be read — the source-vs-dist staleness " +
+        "comparison did NOT run. This is not evidence that dist/ is current.",
+    });
+    return;
+  }
 
   // Check source files recursively (including persona subdirectories)
   const sourceDirs = ["core/traits", "core/personas", "core/instructions", "core/gotchas"];
