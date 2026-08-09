@@ -133,6 +133,67 @@ const FIXTURES: Record<string, RowFixture> = {
     config: { compliance: { outputScan: { enabled: true, blocking: true } } },
     marker: { kind: "file", suffix: "agentboot-output-scan.sh" },
   },
+  // NF3-9: the compliance keys that had no row until this round. All three land
+  // in the generated compliance hook scripts, same as their siblings above.
+  "compliance.outputScan.scannerCommand": {
+    config: { compliance: { outputScan: { enabled: true, scannerCommand: "/zzoutscanzz" } } },
+    marker: { kind: "content", text: "zzoutscanzz" },
+  },
+  "compliance.inputScan.failMode": {
+    config: { compliance: { inputScan: { enabled: true, scannerCommand: "/zzinzz", failMode: "closed" } } },
+    marker: { kind: "content", text: "failMode is closed" },
+  },
+  "compliance.outputScan.failMode": {
+    config: { compliance: { outputScan: { enabled: true, scannerCommand: "/zzoutzz", failMode: "closed" } } },
+    marker: { kind: "content", text: "zzoutzz" },
+  },
+  /**
+   * R2-9 — the persona scope. These four are declared in persona.config.json
+   * rather than agentboot.config.json, so the fixture supplies the persona FILE
+   * and leaves `config` to enabling it.
+   */
+  "personas[*].disallowedTools": {
+    config: { personas: { enabled: ["zzlockedzz"] } },
+    files: {
+      "core/personas/zzlockedzz/SKILL.md": "---\nname: zzlockedzz\n---\n# zzlockedzz\nReview.\n",
+      "core/personas/zzlockedzz/persona.config.json": JSON.stringify({ disallowedTools: ["ZZBANNEDZZ"] }),
+    },
+    marker: { kind: "content", text: "ZZBANNEDZZ" },
+  },
+  "personas[*].tools": {
+    config: { personas: { enabled: ["zztoolszz"] } },
+    files: {
+      "core/personas/zztoolszz/SKILL.md": "---\nname: zztoolszz\n---\n# zztoolszz\nReview.\n",
+      "core/personas/zztoolszz/persona.config.json": JSON.stringify({ tools: ["ZZALLOWEDZZ"] }),
+    },
+    marker: { kind: "content", text: "ZZALLOWEDZZ" },
+  },
+  "personas[*].hooks": {
+    config: { personas: { enabled: ["zzhookedzz"] } },
+    files: {
+      "core/personas/zzhookedzz/SKILL.md": "---\nname: zzhookedzz\n---\n# zzhookedzz\nReview.\n",
+      "core/personas/zzhookedzz/persona.config.json": JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/zzpersonahookzz.sh" }] }] },
+      }),
+    },
+    marker: { kind: "content", text: "zzpersonahookzz" },
+  },
+  "personas[*].mcpServers": {
+    config: { personas: { enabled: ["zzmcpzz"] } },
+    files: {
+      "core/personas/zzmcpzz/SKILL.md": "---\nname: zzmcpzz\n---\n# zzmcpzz\nReview.\n",
+      "core/personas/zzmcpzz/persona.config.json": JSON.stringify({
+        mcpServers: { zzsrvzz: { command: "node", args: ["srv.js"] } },
+      }),
+    },
+    // The copied persona.config.json in dist is not EMISSION — nothing reads
+    // it — so the marker deliberately names an .mcp.json registration, which no
+    // platform performs.
+    marker: { kind: "content", text: "zzsrvzz-registered" },
+    landsNowhere:
+      "emittedBy is EMPTY by declaration — typed, documented, copied verbatim into dist, and " +
+      "read by no code path. No .mcp.json entry is written for it on any platform.",
+  },
   "managed.guardrails.denyTools": {
     config: { managed: { enabled: true, guardrails: { denyTools: ["ZZDENYTOOLZZ"] } } },
     marker: { kind: "content", text: "ZZDENYTOOLZZ" },
