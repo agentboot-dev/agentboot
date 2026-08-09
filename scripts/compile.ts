@@ -49,7 +49,7 @@ import {
   VALID_OUTPUT_FORMATS,
   PLATFORM_REQUIRES,
 } from "./lib/config.js";
-import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
+import { parseFrontmatter, resolveCompositionType, normalizeForFrontmatter } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
 import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, type CapabilityContext } from "./lib/conformance.js";
 import {
@@ -61,13 +61,35 @@ import { dangerousHookFindings } from "./lib/hook-safety.js";
 import { hookInputCapPrelude } from "./lib/hook-prelude.js";
 import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook } from "./lib/managed-merge.js";
 import {
-  inspectScope, degradedFormats, scopeViolations, scopePreamble,
+  inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
   APPLY_TO_PROJECTION, type ScopedArtifact,
 } from "./lib/scope-projection.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 import {
   computeConfigDigest, computeSourceDigest, resolveDomainRoots, writeDistStamp, markDistBuildFailed,
 } from "./lib/dist-stamp.js";
+
+
+/**
+ * V3: strip a leading frontmatter block from an artifact BODY.
+ *
+ * The twenty hand-written frontmatter-stripping regexes (`^---` … `---`, LF only)
+ * did not match
+ * CRLF frontmatter, so a CRLF-authored instruction shipped its raw YAML
+ * frontmatter inside the compiled body — Cursor received TWO frontmatter blocks,
+ * the generated one followed by `applyTo:` / `scope-unsupported:` rendered as
+ * instruction text. C1 fixed the gate for that input class and left the
+ * emitters. One tolerant stripper, matching frontmatterBlock's own
+ * normalization.
+ */
+function stripFrontmatterBody(content: string): string {
+  return normalizeForFrontmatter(content).replace(/^---\n[\s\S]*?\n---\n*/, "");
+}
+
+/** Escape a value for interpolation into a double-quoted YAML scalar. */
+function yamlDoubleQuoted(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -283,9 +305,13 @@ function swapDistAndReport(stagingPath: string, finalPath: string): void {
  * keep opening with the YAML delimiter.
  */
 function insertAfterFrontmatter(text: string, block: string): string {
-  const m = text.match(/^---\n[\s\S]*?\n---\n*/);
-  if (!m) return `${block}\n${text}`;
-  return `${m[0]}${block}\n${text.slice(m[0].length)}`;
+  // V3: normalize first. Against CRLF content this regex matched nothing, so
+  // the Scope preamble was prepended ABOVE the frontmatter and the raw YAML
+  // then rendered as body text underneath it.
+  const normalized = normalizeForFrontmatter(text);
+  const m = normalized.match(/^---\n[\s\S]*?\n---\n*/);
+  if (!m) return `${block}\n${normalized}`;
+  return `${m[0]}${block}\n${normalized.slice(m[0].length)}`;
 }
 
 function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
@@ -359,7 +385,7 @@ function loadTraits(
     // stripping would have leaked `id:`/`hash:` into every compiled persona.
     // `content` is the composable body; `raw` keeps the file verbatim for the
     // copy-out paths that reproduce the source artifact.
-    const content = raw.replace(/^---\n[\s\S]*?\n---\n*/, "");
+    const content = stripFrontmatterBody(raw);
 
     traits.set(traitName, {
       name: traitName,
@@ -787,7 +813,7 @@ function buildClaudeOutput(
   frontmatterLines.push("---", "");
 
   // Strip any existing frontmatter from composed content (it's SKILL.md format)
-  const withoutFrontmatter = composedContent.replace(/^---\n[\s\S]*?\n---\n*/, "");
+  const withoutFrontmatter = stripFrontmatterBody(composedContent);
 
   return {
     content: `${frontmatterLines.join("\n")}\n${withoutFrontmatter}`,
@@ -855,7 +881,7 @@ function buildCopilotAgent(
   const model = personaConfig?.model ?? "claude-sonnet-4-6";
   const safeName = name.replace(/"/g, '\\"');
   const safeDescription = description.replace(/"/g, '\\"');
-  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   const frontmatter = [
     "---",
     `name: "AgentBoot ${safeName}"`,
@@ -881,10 +907,7 @@ function buildWindsurfRules(
 ): string {
   const header = `# ${personaConfig?.name ?? personaName}\n# ${personaConfig?.description ?? ""}\n\n`;
   // Strip HTML comments and frontmatter for clean Windsurf output
-  const stripped = composedContent
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/^---\n[\s\S]*?\n---\n*/, "")
-    .trim();
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   return `${header}${stripped}\n`;
 }
 
@@ -903,10 +926,7 @@ function buildGeminiOutput(
     ? `${personaConfig.description}\n\n---\n\n`
     : "";
   // Strip HTML comments for Gemini output
-  const stripped = composedContent
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/^---\n[\s\S]*?\n---\n*/, "")
-    .trim();
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   return `${header}${description}${stripped}\n`;
 }
 
@@ -1015,7 +1035,7 @@ function compilePersona(
       .replace(/\0/g, "")       // null bytes → remove
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "") // other control chars → remove
       .replace(/---/g, "\\-\\-\\-"); // prevent YAML document markers
-    const withoutFrontmatter = composed.replace(/^---\n[\s\S]*?\n---\n*/, "");
+    const withoutFrontmatter = stripFrontmatterBody(composed);
     const agentFrontmatter: string[] = [
       "---",
       `name: "${personaName}"`,
@@ -1114,8 +1134,7 @@ function compilePersona(
     const jetbrainsDir = path.join(distPath, "jetbrains", scopePath);
     ensureDir(jetbrainsDir);
     // Build content: strip frontmatter and HTML comments for clean markdown
-    const cleanContent = composed
-      .replace(/^---\n[\s\S]*?\n---\n*/, "")
+    const cleanContent = stripFrontmatterBody(composed)
       .replace(/<!--[\s\S]*?-->/g, "")
       .trim();
     const personaHeader = `## ${personaConfig?.name ?? personaName}\n\n`;
@@ -1187,7 +1206,7 @@ function compileInstructions(
 
       // Phase 11 B2: Cursor instructions — use .mdc format with alwaysApply
       if (platform === "cursor") {
-        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const strippedContent = stripFrontmatterBody(content).trim();
         // F-6: `alwaysApply: true` was HARDCODED here, so `applyTo: "src/api/**"`
         // shipped as always-on, every file — the opposite of what was authored.
         // buildCursorRule already accepted { globs, alwaysApply }; only the
@@ -1208,7 +1227,7 @@ function compileInstructions(
       // Phase 11 A1e: Windsurf instructions — write to .windsurf/rules/ with trigger: always_on
       // Also append to legacy .windsurfrules for backward compat
       if (platform === "windsurf") {
-        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+        const strippedContent = stripFrontmatterBody(content).replace(/<!--[\s\S]*?-->/g, "").trim();
         // Modern format: .windsurf/rules/*.md with trigger frontmatter
         const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
         ensureDir(windsurfRulesDir);
@@ -1333,30 +1352,33 @@ function compileGotchas(
     // AB-129: Cursor output — gotchas become glob-scoped .mdc rules
     if (outputFormats.includes("cursor")) {
       const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      // Strip surrounding quotes from YAML values (parseFrontmatter preserves them)
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+      // V1: ONE glob parser (scope-projection.ts), not a seventh hand-rolled
+      // `.replace(quotes).split(",")` — that one splits `{ts,tsx}` into two dead
+      // globs and bakes a trailing YAML comment into the glob.
+      const scopeGlobs = readScopeGlobs(content, "paths").globs;
+      const globs = scopeGlobs.length > 0 ? scopeGlobs : undefined;
       const name = path.basename(file, ".md");
       const cursorRulesDir = path.join(distPath, "cursor", scopePath, "rules");
       ensureDir(cursorRulesDir);
       const cursorDesc = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
       const cursorContent = buildCursorRule(
         cursorDesc,
-        content.replace(/^---\n[\s\S]*?\n---\n*/, ""), // strip frontmatter
-        { globs, alwaysApply: false }
+        stripFrontmatterBody(content),
+        // H3: `alwaysApply: false` with NO globs is a rule that applies
+        // NOWHERE. compileInstructions was fixed to `globs.length === 0` and
+        // this sibling emitter kept the hardcoded false — the same two-call-site
+        // drift, one round later. An unscoped gotcha is always-on by definition.
+        { globs, alwaysApply: !globs }
       );
       fs.writeFileSync(path.join(cursorRulesDir, `${name}.mdc`), cursorContent, "utf-8");
     }
 
     // AB-146 + Phase 11 A1e: Windsurf gotchas — .windsurf/rules/*.md (modern) + legacy .windsurfrules
     if (outputFormats.includes("windsurf")) {
-      const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+      const scopeGlobs = readScopeGlobs(content, "paths").globs;
+      const globs = scopeGlobs.length > 0 ? scopeGlobs : undefined;
       const gotchaName = path.basename(file, ".md");
-      const gotchaContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+      const gotchaContent = stripFrontmatterBody(content).replace(/<!--[\s\S]*?-->/g, "").trim();
 
       // Modern format: .windsurf/rules/*.md with trigger frontmatter
       const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
@@ -1381,14 +1403,11 @@ function compileGotchas(
 
     // Phase 11 A1c: Gemini gotchas — subdirectory GEMINI.md (NOT .gemini/rules/)
     if (outputFormats.includes("gemini")) {
-      const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      const geminiContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+      const patterns = readScopeGlobs(content, "paths").globs;
+      const geminiContent = stripFrontmatterBody(content).replace(/<!--[\s\S]*?-->/g, "").trim();
 
-      if (pathsStr) {
+      if (patterns.length > 0) {
         // Extract directory component from path patterns
-        const patterns = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
         let targetDir: string | null = null;
         for (const pattern of patterns) {
           // Extract directory: "src/auth/**" → "src/auth", "**/*.lambda.ts" → null (wildcard-only)
@@ -1425,19 +1444,25 @@ function compileGotchas(
     // AB-130: Copilot scoped instructions — gotchas with paths: become .instructions.md
     if (outputFormats.includes("copilot")) {
       const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      // Strip surrounding quotes from YAML values (parseFrontmatter preserves them)
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      if (pathsStr) {
+      const copilotGlobs = readScopeGlobs(content, "paths").globs;
+      // H3: a gotcha with no `paths:` used to be emitted to NOTHING on Copilot —
+      // `grep -c unscoped.instructions.md` was 0 — while claude and skill both
+      // received it. Silently dropping an artifact on one configured platform is
+      // the same class as delivering it unscoped: the operator is not told.
+      // Copilot's universal scope is `**`.
+      {
+        const copilotApplyTo = copilotGlobs.length > 0 ? copilotGlobs.join(",") : "**";
         const name = path.basename(file, ".md");
         const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
         const copilotInstrDir = path.join(distPath, "copilot", scopePath, "instructions");
         ensureDir(copilotInstrDir);
-        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const strippedContent = stripFrontmatterBody(content).trim();
         const copilotInstrContent = [
           "---",
-          `description: "${description}"`,
-          `applyTo: "${pathsStr}"`,
+          `description: "${yamlDoubleQuoted(description)}"`,
+          // Re-serialized from the PARSED globs, so a comment or a block
+          // sequence in the source cannot travel into the emitted frontmatter.
+          `applyTo: "${yamlDoubleQuoted(copilotApplyTo)}"`,
           "---",
           "",
           strippedContent,
@@ -1450,18 +1475,16 @@ function compileGotchas(
     // AB-158: JetBrains AI Assistant gotchas — .aiassistant/rules/ with globs: frontmatter
     if (outputFormats.includes("jetbrains")) {
       const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      const jbGlobs = readScopeGlobs(content, "paths").globs;
       const name = path.basename(file, ".md");
       const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
       const jetbrainsRulesDir = path.join(distPath, "jetbrains", scopePath, ".aiassistant", "rules");
       ensureDir(jetbrainsRulesDir);
-      const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+      const strippedContent = stripFrontmatterBody(content).trim();
 
       const frontmatterLines = ["---"];
-      if (pathsStr) {
-        const globs = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
-        frontmatterLines.push(`globs: ${JSON.stringify(globs)}`);
+      if (jbGlobs.length > 0) {
+        frontmatterLines.push(`globs: ${JSON.stringify(jbGlobs)}`);
       }
       frontmatterLines.push(`description: "${description}"`);
       frontmatterLines.push("---");
@@ -1638,8 +1661,7 @@ function generateGeminiMd(
       const instrPath = candidatePaths.find((p) => fs.existsSync(p));
       if (instrPath) {
         const raw = fs.readFileSync(instrPath, "utf-8");
-        const content = raw
-          .replace(/^---\n[\s\S]*?\n---\n*/, "")
+        const content = stripFrontmatterBody(raw)
           .replace(/<!--[\s\S]*?-->/g, "")
           .trim();
         // F-6: GEMINI.md is always-on, so a narrow scope is lost here. Carry it
@@ -1730,7 +1752,7 @@ function generateAgentsMd(
 
       if (instrPath) {
         const content = fs.readFileSync(instrPath, "utf-8");
-        const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const contentWithoutFrontmatter = stripFrontmatterBody(content).trim();
         // B4: Inline full content instead of just first line
         lines.push(`### ${instrName}`, "");
         // F-6: AGENTS.md is always-on (feeds both `agents` and `codex`), so a
@@ -1754,7 +1776,7 @@ function generateAgentsMd(
         const trait = traitsMap.get(traitName)!;
         lines.push(`### ${traitName}`, "");
         // Include trait content (strip frontmatter, keep concise)
-        const traitContent = trait.content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const traitContent = stripFrontmatterBody(trait.content).trim();
         // Limit to first ~50 lines to prevent oversized AGENTS.md
         const traitLines = traitContent.split("\n").slice(0, 50);
         lines.push(traitLines.join("\n"));
@@ -1773,11 +1795,10 @@ function generateAgentsMd(
       lines.push("## Path-Scoped Rules", "");
       for (const gFile of gotchaFiles) {
         const gContent = fs.readFileSync(path.join(gotchasDir, gFile), "utf-8");
-        const fm = parseFrontmatter(gContent);
-        const rawPaths = fm?.get("paths");
-        const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+        const gGlobs = readScopeGlobs(gContent, "paths").globs;
+        const pathsStr = gGlobs.length > 0 ? gGlobs.join(", ") : undefined;
         const gName = path.basename(gFile, ".md");
-        const gBody = gContent.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const gBody = stripFrontmatterBody(gContent).trim();
 
         lines.push(`### ${gName}`);
         if (pathsStr) lines.push(`**Applies to:** \`${pathsStr}\``);
@@ -3011,12 +3032,10 @@ function generatePersonaHooks(
 
     for (const file of gotchaFiles) {
       const content = fs.readFileSync(path.join(gotchasDir, file), "utf-8");
-      const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      if (rawPaths) {
-        const pathsStr = rawPaths.replace(/^["']|["']$/g, "");
-        sensitiveGlobs.push(...pathsStr.split(",").map(p => p.trim()).filter(Boolean));
-      }
+      // V1, seventh site: the PreToolUse sensitive-path hook. A `{ts,tsx}` group
+      // split here produced two globs that match nothing, so the hook that is
+      // supposed to warn on edits to sensitive paths warned on none of them.
+      sensitiveGlobs.push(...readScopeGlobs(content, "paths").globs);
     }
 
     if (sensitiveGlobs.length > 0) {

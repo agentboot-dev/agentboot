@@ -21,7 +21,7 @@
  * See docs/research/capability-platform-matrix-2026-08-08.md §4, F-6.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -245,26 +245,59 @@ describe("emission — the translated tier receives the operator's exact scope",
       .toContain(`applyTo: "src/api/**"`);
   }, 300_000);
 
-  it("27: one scoping projection, not two — instruction and gotcha agree for the same globs", () => {
-    const hub = scaffoldHub();
-    fs.mkdirSync(path.join(hub, "core", "instructions"), { recursive: true });
-    fs.mkdirSync(path.join(hub, "core", "gotchas"), { recursive: true });
-    fs.writeFileSync(path.join(hub, "core", "instructions", "x.instructions.md"),
-      `---\ndescription: "x"\napplyTo: "src/api/**"\n---\n\nbody\n`);
-    fs.writeFileSync(path.join(hub, "core", "gotchas", "x.md"),
-      `---\ndescription: "x"\npaths: "src/api/**"\n---\n\nbody\n`);
-    const p = path.join(hub, "agentboot.config.json");
-    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
-    c.personas.outputFormats = ["cursor"];
-    c.instructions = { enabled: ["x.instructions"] };
-    fs.writeFileSync(p, JSON.stringify(c, null, 2));
-    expect(ab(["build"], hub).status).toBe(0);
+  /**
+   * V2 — this test was written to catch V1 and could not fail.
+   *
+   * It used the single simple glob `src/api/**` — the one input on which the
+   * instruction parser and the seven hand-rolled gotcha parsers coincidentally
+   * agree. Mutating only the fixture to `src/**\/*.{ts,tsx}` turned it RED
+   * immediately: the instruction path emitted one correct glob and the gotcha
+   * path emitted `["src/**\/*.{ts", "tsx}"]`. The assertion was right; the data
+   * was drawn from the axis where the two implementations cannot disagree.
+   *
+   * It is now table-driven over the inputs that actually distinguish them: a
+   * brace group, a bracket class, a trailing YAML comment, a comma list, and a
+   * block sequence.
+   */
+  const SCOPE_FORMS: Array<{ name: string; value: string }> = [
+    { name: "simple glob", value: `"src/api/**"` },
+    { name: "brace group (C3)", value: `"src/**/*.{ts,tsx}"` },
+    { name: "bracket class", value: `"src/*.[ch]"` },
+    { name: "trailing YAML comment (C2)", value: `"src/**/*.ts"  # activation scope` },
+    { name: "comma list", value: `"src/api/**, src/db/**"` },
+    { name: "block sequence (NF-4)", value: `\n  - "src/db/**"\n  - "src/auth/**"` },
+  ];
 
-    const fmOf = (t: string) => t.match(/^---\n[\s\S]*?\n---/)![0]
-      .split("\n").filter((l) => l.startsWith("globs") || l.startsWith("alwaysApply")).join("\n");
-    expect(fmOf(read(hub, "cursor", "core", "rules", "x.instructions.mdc")))
-      .toBe(fmOf(read(hub, "cursor", "core", "rules", "x.mdc")));
-  }, 300_000);
+  for (const form of SCOPE_FORMS) {
+    it(`27[${form.name}]: one scoping projection, not two — instruction and gotcha agree`, () => {
+      const hub = scaffoldHub();
+      fs.mkdirSync(path.join(hub, "core", "instructions"), { recursive: true });
+      fs.mkdirSync(path.join(hub, "core", "gotchas"), { recursive: true });
+      fs.writeFileSync(path.join(hub, "core", "instructions", "x.instructions.md"),
+        `---\ndescription: "x"\napplyTo: ${form.value}\n---\n\nbody\n`);
+      fs.writeFileSync(path.join(hub, "core", "gotchas", "x.md"),
+        `---\ndescription: "x"\npaths: ${form.value}\n---\n\nbody\n`);
+      const p = path.join(hub, "agentboot.config.json");
+      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      c.personas.outputFormats = ["cursor"];
+      c.instructions = { enabled: ["x.instructions"] };
+      c.gotchas = { enabled: ["x"] };
+      fs.writeFileSync(p, JSON.stringify(c, null, 2));
+      expect(ab(["build"], hub).status).toBe(0);
+
+      const fmOf = (t: string) => t.match(/^---\n[\s\S]*?\n---/)![0]
+        .split("\n").filter((l) => /^(globs|alwaysApply|\s+- )/.test(l)).join("\n");
+      const instr = fmOf(read(hub, "cursor", "core", "rules", "x.instructions.mdc"));
+      const gotcha = fmOf(read(hub, "cursor", "core", "rules", "x.mdc"));
+      expect(gotcha).toBe(instr);
+      // And neither may be empty, or "they agree" is agreeing about nothing.
+      expect(instr).toMatch(/globs/);
+      // The corruption signature: an unbalanced quote or a YAML list marker
+      // that leaked into a scalar.
+      expect(instr).not.toMatch(/globs: "- /);
+      expect(gotcha).not.toMatch(/globs: "- /);
+    }, 300_000);
+  }
 
   it("35 (NEGATIVE): the translated tier produces NO diagnostic at the CLI boundary", () => {
     // A guard that also fires on the fixed path is how a channel gets tuned out.
@@ -529,5 +562,121 @@ describe("B5 — every valid output format has a projection row", () => {
   it("B5-2: and no projection row names a format that is not valid", () => {
     const stray = Object.keys(APPLY_TO_PROJECTION).filter((f) => !VALID_OUTPUT_FORMATS.includes(f));
     expect(stray).toEqual([]);
+  });
+});
+
+/**
+ * V1 / V3 / H3 / NF-4 — the gotcha emitters, the CRLF body strippers, and the
+ * unscoped case.
+ *
+ * C2 and C3 were fixed in `inspectScope` (the instruction path) and the seven
+ * hand-rolled `paths` parsers in the gotcha emitters kept the defect — the exact
+ * shape commit 6c5ffdc described as "the correct implementation ten lines away",
+ * in the opposite direction. These build one hub carrying every input class and
+ * read the emitted artifacts on every platform that can express scope.
+ */
+describe("V1/V3/H3/NF-4 — one parser for every emitter", () => {
+  let vhub: string;
+
+  const gotcha = (desc: string, paths?: string) =>
+    `---\ndescription: ${desc}\n${paths ? `paths: ${paths}\n` : ""}---\n# ${desc}\nBody.\n`;
+
+  beforeAll(() => {
+    vhub = scaffoldHub();
+    fs.mkdirSync(path.join(vhub, "core", "gotchas"), { recursive: true });
+    fs.mkdirSync(path.join(vhub, "core", "instructions"), { recursive: true });
+    fs.writeFileSync(path.join(vhub, "core", "gotchas", "bracescope.md"),
+      gotcha("brace scope", `"src/**/*.{ts,tsx}"`));
+    fs.writeFileSync(path.join(vhub, "core", "gotchas", "commentscope.md"),
+      gotcha("comment scope", `"src/**"  # glob pattern for activation scope`));
+    fs.writeFileSync(path.join(vhub, "core", "gotchas", "unscoped.md"),
+      gotcha("unscoped gotcha"));
+    fs.writeFileSync(path.join(vhub, "core", "instructions", "multi.instructions.md"),
+      `---\ndescription: multi\napplyTo:\n  - "src/db/**"\n  - "src/auth/**"\nscope-unsupported: acknowledged\n---\n# Multi\nBody.\n`);
+    // Authored with CRLF, as a Windows checkout produces.
+    fs.writeFileSync(path.join(vhub, "core", "instructions", "crlfnarrow.instructions.md"),
+      '---\r\ndescription: crlf narrow\r\napplyTo: "src/api/**"\r\nscope-unsupported: acknowledged\r\n---\r\n# CRLF\r\nBody.\r\n');
+
+    const p = path.join(vhub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    c.personas.outputFormats = ["claude", "cursor", "windsurf", "jetbrains", "copilot", "gemini"];
+    c.instructions = { enabled: ["multi.instructions", "crlfnarrow.instructions"] };
+    c.gotchas = { enabled: ["bracescope", "commentscope", "unscoped"] };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    expect(ab(["build"], vhub).status).toBe(0);
+  }, 600_000);
+
+  it("V1-1: a brace group survives to cursor, windsurf, jetbrains and copilot as ONE glob", () => {
+    // Was: ["src/**/*.{ts", "tsx}"] — two globs that match nothing, exit 0.
+    expect(read(vhub, "cursor", "core", "rules", "bracescope.mdc"))
+      .toContain(`globs: "src/**/*.{ts,tsx}"`);
+    expect(read(vhub, "windsurf", "core", ".windsurf", "rules", "gotcha-bracescope.md"))
+      .toContain(`  - "src/**/*.{ts,tsx}"`);
+    expect(read(vhub, "jetbrains", "core", ".aiassistant", "rules", "bracescope.rules.md"))
+      .toContain(`globs: ["src/**/*.{ts,tsx}"]`);
+    expect(read(vhub, "copilot", "core", "instructions", "bracescope.instructions.md"))
+      .toContain(`applyTo: "src/**/*.{ts,tsx}"`);
+  });
+
+  it("V1-2: a trailing YAML comment is stripped, not baked into the glob", () => {
+    // jetbrains was the worst: JSON.stringify escaped the quote, so YAML could
+    // not strip the comment either — globs: ["src/**\"  # glob pattern …"].
+    for (const [plat, file] of [
+      ["cursor", ["core", "rules", "commentscope.mdc"]],
+      ["jetbrains", ["core", ".aiassistant", "rules", "commentscope.rules.md"]],
+      ["copilot", ["core", "instructions", "commentscope.instructions.md"]],
+    ] as const) {
+      const t = read(vhub, plat, ...(file as unknown as string[]));
+      expect(t, `${plat} baked the comment into the glob`).not.toContain("glob pattern for activation");
+      expect(t).toMatch(/src\/\*\*/);
+    }
+  });
+
+  it("H3-1: an UNSCOPED gotcha is always-on on cursor, not scoped-to-nothing", () => {
+    // Was `alwaysApply: false` with no globs — a rule that applies NOWHERE.
+    // compileInstructions was fixed to `globs.length === 0` and this sibling
+    // emitter kept the hardcoded false: the same drift, one round later.
+    const t = read(vhub, "cursor", "core", "rules", "unscoped.mdc");
+    expect(t).toContain("alwaysApply: true");
+    expect(t).not.toMatch(/^globs:/m);
+  });
+
+  it("H3-2: an UNSCOPED gotcha reaches copilot at all", () => {
+    // Was emitted to nothing on copilot while claude and skill both got it.
+    expect(read(vhub, "copilot", "core", "instructions", "unscoped.instructions.md"))
+      .toContain(`applyTo: "**"`);
+  });
+
+  it("NF-4-1: a block-sequence applyTo keeps EVERY path and emits valid YAML", () => {
+    // Was: cursor `globs: "- "src/db/**"` and windsurf `- "- "src/db/**"` —
+    // unbalanced quotes, and src/auth/** silently gone.
+    const cur = read(vhub, "cursor", "core", "rules", "multi.instructions.mdc");
+    expect(cur).toContain(`  - "src/db/**"`);
+    expect(cur).toContain(`  - "src/auth/**"`);
+    expect(cur).not.toContain(`globs: "- `);
+    const ws = read(vhub, "windsurf", "core", ".windsurf", "rules", "multi.instructions.md");
+    expect(ws).toContain(`  - "src/db/**"`);
+    expect(ws).toContain(`  - "src/auth/**"`);
+    expect(ws).not.toContain(`- "- `);
+  });
+
+  it("V3-1: a CRLF-authored instruction does not ship its raw frontmatter as body text", () => {
+    // Was: TWO frontmatter blocks in the .mdc — the generated one, then the raw
+    // source block with applyTo:/scope-unsupported: rendered as instruction text.
+    const cur = read(vhub, "cursor", "core", "rules", "crlfnarrow.instructions.mdc");
+    expect(cur.split("---").length - 1, "more than one frontmatter block").toBeLessThanOrEqual(2);
+    expect(cur).not.toMatch(/^applyTo:/m);
+    expect(cur).not.toMatch(/^scope-unsupported:/m);
+    expect(cur).toContain(`globs: "src/api/**"`);
+  });
+
+  it("V3-2: the claude Scope preamble lands AFTER the frontmatter, not above it", () => {
+    // insertAfterFrontmatter could not find CRLF frontmatter either, so the
+    // preamble was prepended and the raw YAML rendered underneath it.
+    const cl = read(vhub, "claude", "core", "rules", "crlfnarrow.instructions.md");
+    expect(cl.startsWith("---\n")).toBe(true);
+    const preamble = cl.indexOf("**Scope —");
+    const closing = cl.indexOf("\n---\n");
+    expect(preamble).toBeGreaterThan(closing);
   });
 });

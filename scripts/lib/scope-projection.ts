@@ -163,6 +163,78 @@ function splitGlobList(value: string): string[] {
   return out.map((g) => g.trim()).filter(Boolean);
 }
 
+/**
+ * The ONE glob-list parser: strip the YAML inline comment, strip the surrounding
+ * quotes, split on commas that are not inside a brace or bracket group.
+ *
+ * V1: this existed and only `inspectScope` used it. The gotcha emitters
+ * hand-rolled `rawPaths.replace(/^["\']|["\']$/g,"").split(",")` at SEVEN sites
+ * (cursor, windsurf, gemini, copilot, jetbrains, the AGENTS.md section and the
+ * skills index), so `paths: "src/**\/*.{ts,tsx}"` became the two globs
+ * `src/**\/*.{ts` and `tsx}` — two globs that match nothing — and
+ * `paths: "src/**"  # glob pattern for activation scope` became one glob that
+ * matches nothing. Exit 0, no diagnostic. That is the C2/C3 defect class
+ * surviving in "the correct implementation ten lines away", which is the phrase
+ * commit 6c5ffdc used about the opposite direction.
+ */
+export function parseGlobList(raw: string): string[] {
+  return splitGlobList(stripYamlInlineComment(raw.trim()).replace(/^["']|["']$/g, "").trim());
+}
+
+/**
+ * Read a path-scope key out of an artifact's frontmatter, in EITHER YAML form.
+ *
+ * NF-4: the old single-line regex `/^\s*applyTo:\s*(.+)$/im` crossed the
+ * newline — `\s*` matches `\n` — so the perfectly legal block sequence
+ *
+ *     applyTo:
+ *       - "src/db/**"
+ *       - "src/auth/**"
+ *
+ * captured the literal text `- "src/db/**"` as the glob and dropped
+ * `src/auth/**` entirely. That value was then interpolated verbatim into the
+ * emitted frontmatter, so Cursor received `globs: "- "src/db/**"` and Windsurf
+ * `- "- "src/db/**"` — unbalanced quotes, i.e. the emitted .mdc/.md frontmatter
+ * was not valid YAML. Build exit 0, no diagnostic: the "applies nowhere" class
+ * this branch calls quieter-and-therefore-worse, plus a corrupted artifact,
+ * reachable through ordinary YAML rather than a brace group.
+ */
+export function readScopeGlobs(
+  content: string,
+  key: "applyTo" | "paths",
+): { globs: string[]; raw: string | null } {
+  const fm = frontmatterBlock(content);
+  if (fm === null) return { globs: [], raw: null };
+  return readScopeGlobsFromBlock(fm, key);
+}
+
+function readScopeGlobsFromBlock(fm: string, key: string): { globs: string[]; raw: string | null } {
+  const lines = fm.split("\n");
+  // Anchored to the line, and `[ \t]*` never crosses a newline — that crossing
+  // is the whole of NF-4.
+  const keyRe = new RegExp(`^[ \\t]*${key}:[ \\t]*(.*)$`, "i");
+  for (let i = 0; i < lines.length; i++) {
+    const m = keyRe.exec(lines[i]!);
+    if (!m) continue;
+    const inline = stripYamlInlineComment(m[1]!.trim());
+    if (inline !== "") return { globs: parseGlobList(inline), raw: inline };
+
+    // Empty after the colon → a block sequence may follow.
+    const items: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]!;
+      if (/^[ \t]*(#.*)?$/.test(line)) continue; // blank or comment line
+      const item = /^[ \t]*-[ \t]*(.+)$/.exec(line);
+      if (!item) break; // next key — the sequence is over
+      const v = stripYamlInlineComment(item[1]!.trim()).replace(/^["']|["']$/g, "").trim();
+      if (v) items.push(v);
+    }
+    if (items.length === 0) return { globs: [], raw: null };
+    return { globs: items.flatMap((v) => parseGlobList(v)), raw: items.join(", ") };
+  }
+  return { globs: [], raw: null };
+}
+
 export function inspectScope(content: string): ScopeInspection {
   const fm = frontmatterBlock(content);
   // `=== null`, not falsy: an EMPTY frontmatter block ("---\n---") is a real
@@ -170,11 +242,8 @@ export function inspectScope(content: string): ScopeInspection {
   if (fm === null) return { globs: [], alwaysOn: true, acknowledgedUnscoped: false, raw: null };
 
   const acknowledgedUnscoped = /^\s*scope-unsupported:\s*acknowledged\s*$/im.test(fm);
-  const m = fm.match(/^\s*applyTo:\s*(.+)$/im);
-  if (!m) return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null };
-
-  const raw = stripYamlInlineComment(m[1]!.trim());
-  const globs = splitGlobList(raw.replace(/^["']|["']$/g, ""));
+  const { globs, raw } = readScopeGlobsFromBlock(fm, "applyTo");
+  if (raw === null) return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null };
 
   // A universal scope is not a scope. Losing it is a no-op, and treating it as
   // narrowing would fire the gate on every default install — which is how a

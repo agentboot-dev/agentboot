@@ -27,7 +27,7 @@
  * identifies a *version*, not an artifact, so lineage dies at the first edit.
  */
 import crypto from "crypto";
-import { frontmatterBlock } from "./frontmatter.js";
+import { frontmatterBlock, normalizeForFrontmatter } from "./frontmatter.js";
 
 /** Crockford base32 — excludes I, L, O, U to avoid transcription ambiguity. */
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -65,9 +65,15 @@ export function isValidId(id: string): boolean {
   return /^[0-9A-HJKMNP-TV-Z]{26}$/.test(id);
 }
 
-/** Content hash of the artifact BODY, excluding frontmatter. */
+/**
+ * Content hash of the artifact BODY, excluding frontmatter.
+ *
+ * V3: normalize first. Against CRLF content the strip matched nothing, so the
+ * hash covered the FRONTMATTER as well — an id/description edit then read as a
+ * body change, and the same artifact hashed differently on Windows and macOS.
+ */
 export function contentHash(content: string): string {
-  const body = content.replace(/^---\n[\s\S]*?\n---\n?/, "");
+  const body = normalizeForFrontmatter(content).replace(/^---\n[\s\S]*?\n---\n?/, "");
   return "sha256:" + crypto.createHash("sha256").update(body, "utf-8").digest("hex").slice(0, 16);
 }
 
