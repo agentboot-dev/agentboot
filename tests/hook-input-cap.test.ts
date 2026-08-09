@@ -401,3 +401,105 @@ describe("R1-1/R1-2 — one prelude, not four copies", () => {
     }
   });
 });
+
+/**
+ * NF4-1 — the measurement's exit status was structurally discarded too.
+ *
+ * R3/NF2-6 above fixed `INPUT=$(head …)`. One line later the prelude had the
+ * identical shape: `INPUT_BYTES=$(printf '%s' "$INPUT" | wc -c | tr -d …)`
+ * throws the pipeline's status away. A wc or tr that fails — unavailable, a
+ * busybox build without the flag, a shadowing stub on PATH, ENOMEM on a large
+ * payload — yields an empty INPUT_BYTES; `[ "" -gt N ]` then errors with bash's
+ * own `[: : integer expected`, INPUT_TRUNCATED stays 0, and the blocking gates
+ * fall through to exit 0. Measured before the fix on a scratch hub with an
+ * `exit 3` wc stub and a 1.2 MB payload: input scan 2 → 0 (allowed
+ * `password: hunter2`), PreToolUse 2 → 0 (allowed a denied WebFetch), and the
+ * Stop hook's honest "output scan SKIPPED" line REPLACED by the bash error.
+ *
+ * The size is what decides whether the payload is complete, so failing to
+ * measure it disqualifies the gate exactly as failing to read it does.
+ * Exercised with both pipeline stages, because fixing only the one that was
+ * reported is how this class keeps coming back.
+ */
+describe("NF4-1 — a payload of unknown size is not a payload of size zero", () => {
+  let stubDir = "";
+  afterAll(() => {
+    if (stubDir) fs.rmSync(stubDir, { recursive: true, force: true });
+  });
+
+  /**
+   * A stub for `tool` earlier on PATH that fails.
+   *
+   * Two flavours, because the guard has two independent halves and a stub that
+   * trips both proves neither:
+   *   `silent` — fails and prints nothing, so INPUT_BYTES is empty. Only the
+   *              digit backstop sees this.
+   *   `noisy`  — fails but prints a plausible count, so INPUT_BYTES parses as a
+   *              number. ONLY the exit status sees this, and it is the realistic
+   *              shape: a wc that wrote a partial count before erroring.
+   */
+  const withStub = (tool: "wc" | "tr", flavour: "silent" | "noisy" = "silent") => {
+    stubDir = fs.mkdtempSync(path.join(os.tmpdir(), `agentboot-${tool}stub-`));
+    const stub = path.join(stubDir, tool);
+    const body = flavour === "noisy" ? "#!/bin/sh\necho 12\nexit 3\n" : "#!/bin/sh\nexit 3\n";
+    fs.writeFileSync(stub, body, "utf-8");
+    fs.chmodSync(stub, 0o755);
+    return { PATH: `${stubDir}${path.delimiter}${process.env["PATH"] ?? ""}` };
+  };
+
+  const SECRET = JSON.stringify({
+    prompt: `password: hunter2 ${"a".repeat(1_200_000)}`,
+    tool_name: "WebFetch",
+  });
+
+  for (const tool of ["wc", "tr"] as const) {
+    it(`NF4-1-a/${tool}: the input scan REFUSES rather than allowing an unmeasured secret`, () => {
+      const r = runHook("agentboot-input-scan.sh", SECRET, withStub(tool));
+      expect(r.status, `a failing ${tool} turned the DLP gate back into a fail-open`).toBe(2);
+      expect(r.stderr).toContain("could not measure the hook payload");
+    });
+
+    it(`NF4-1-b/${tool}: the deny-tools gate refuses too — same class, same posture`, () => {
+      const r = runHook("agentboot-pretooluse.sh", SECRET, withStub(tool));
+      expect(r.status, `a failing ${tool} let a denied tool through`).toBe(2);
+      expect(r.stderr).toContain("could not measure the hook payload");
+    });
+  }
+
+  it("NF4-1-f: a measurement that FAILS while printing a plausible count still refuses", () => {
+    // The half the digit backstop cannot see. Without the pipeline's status the
+    // gate reads `12`, decides a 1.2 MB payload is 12 bytes, and allows it.
+    const r = runHook("agentboot-input-scan.sh", SECRET, withStub("wc", "noisy"));
+    expect(r.status, "a wrong-but-numeric byte count was taken at face value").toBe(2);
+    expect(r.stderr).toContain("could not measure the hook payload");
+  });
+
+  it("NF4-1-g: the deny-tools gate refuses a plausible-but-failed measurement too", () => {
+    const r = runHook("agentboot-pretooluse.sh", SECRET, withStub("wc", "noisy"));
+    expect(r.status).toBe(2);
+  });
+
+  it("NF4-1-c: the output scan exits 0 but SAYS the response was not scanned", () => {
+    const r = runHook("agentboot-output-scan.sh", SECRET, withStub("wc"));
+    expect(r.status).toBe(0);
+    // The bug replaced this honest line with bash's `[: : integer expected`.
+    expect(r.stderr, "an unmeasured response looked exactly like a clean one").toContain(
+      "NOT scanned"
+    );
+    expect(r.stderr).not.toContain("integer expected");
+  });
+
+  it("NF4-1-d: the recorder carries on but never claims the record is complete", () => {
+    const r = runHook("agentboot-telemetry.sh", SECRET, withStub("wc"));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain("record is incomplete");
+    expect(r.stderr).not.toContain("integer expected");
+  });
+
+  it("NF4-1-e (NEGATIVE): with wc and tr working, an ordinary prompt is still allowed", () => {
+    // A measurement guard that refuses everything is an outage, not a control.
+    const ok = JSON.stringify({ prompt: "refactor the parser", tool_name: "Read" });
+    expect(runHook("agentboot-input-scan.sh", ok).status).toBe(0);
+    expect(runHook("agentboot-pretooluse.sh", ok).status).toBe(0);
+  });
+});

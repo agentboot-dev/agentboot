@@ -110,6 +110,36 @@ export function hookInputCapPrelude(opts: HookInputCapOptions): string {
           `  MAX_HOOK_INPUT_BYTES=${DEFAULT_MAX_HOOK_INPUT_BYTES}`,
         ].join("\n");
 
+  /**
+   * Render one boundary case in this hook's declared posture.
+   *
+   * Every boundary in this prelude is the same decision — "I could not do the
+   * thing this gate depends on" — and each was previously hand-written as its
+   * own three-branch ternary. That is the duplicated-shell drift this file was
+   * created to end: NF4-1 was a boundary that simply forgot to grow a branch.
+   * One renderer means a new boundary cannot be added in only two postures.
+   *
+   * `tail` runs only in the `continue` posture, after the stderr line — the
+   * recorder still has to leave the shell in a usable state.
+   */
+  const postureAction = (o: {
+    /** stderr sentence for a blocking gate — it refuses. */
+    block: string;
+    /** stderr sentence for a fail-open gate — it skips, and says the scan did not happen. */
+    exit0: string;
+    /** stderr sentence for a recorder — it carries on with an incomplete record. */
+    cont: string;
+    /** `reason` in the block JSON. */
+    blockReason: string;
+    /** extra shell for the `continue` posture only. */
+    tail?: string[];
+  }): string =>
+    opts.action === "block"
+      ? [`  echo "AgentBoot: ${o.block}" >&2`, `  ${blockJson(o.blockReason)}`, `  exit 2`].join("\n")
+      : opts.action === "exit0"
+        ? [`  echo "AgentBoot: ${o.exit0}" >&2`, `  exit 0`].join("\n")
+        : [`  echo "AgentBoot: ${o.cont}" >&2`, ...(o.tail ?? [])].join("\n");
+
   // What a hook does when `head` itself fails — a class strictly larger than
   // "the operator's cap was silly": head unavailable, EINTR, a read error on the
   // fd. The old prelude could not see any of it, because
@@ -117,32 +147,48 @@ export function hookInputCapPrelude(opts: HookInputCapOptions): string {
   // printf (always 0) and `set -o pipefail` does not apply to a command LIST.
   // Any head failure therefore left INPUT empty, INPUT_TRUNCATED=0, and a
   // blocking gate at exit 0 — a component that failed and did not say so.
-  const readFailAction =
-    opts.action === "block"
-      ? [
-          `  echo "AgentBoot: could not read the hook payload from stdin (head exited $_ab_read_status) — refusing to run a gate on an unread payload." >&2`,
-          `  ${blockJson(
-            "AgentBoot: could not read the hook payload from stdin. The gate will not run on an unread payload."
-          )}`,
-          `  exit 2`,
-        ].join("\n")
-      : opts.action === "exit0"
-        ? [
-            `  echo "AgentBoot: could not read the hook payload from stdin (head exited $_ab_read_status) — output scan SKIPPED, this response was NOT scanned." >&2`,
-            `  exit 0`,
-          ].join("\n")
-        : `  echo "AgentBoot: could not read the hook payload from stdin (head exited $_ab_read_status) — record is incomplete." >&2`;
+  const readFailAction = postureAction({
+    block: `could not read the hook payload from stdin (head exited $_ab_read_status) — refusing to run a gate on an unread payload.`,
+    exit0: `could not read the hook payload from stdin (head exited $_ab_read_status) — output scan SKIPPED, this response was NOT scanned.`,
+    cont: `could not read the hook payload from stdin (head exited $_ab_read_status) — record is incomplete.`,
+    blockReason:
+      "AgentBoot: could not read the hook payload from stdin. The gate will not run on an unread payload.",
+  });
 
-  const overCapAction =
-    opts.action === "block"
-      ? [
-          `  echo "AgentBoot: ${opts.overCapStderr}" >&2`,
-          `  ${blockJson(opts.blockReason!)}`,
-          `  exit 2`,
-        ].join("\n")
-      : opts.action === "exit0"
-        ? [`  echo "AgentBoot: ${opts.overCapStderr}" >&2`, `  exit 0`].join("\n")
-        : `  echo "AgentBoot: ${opts.overCapStderr}" >&2`;
+  // NF4-1: the SAME defect the `head &&` fix above closed, one line later.
+  // `INPUT_BYTES=$(printf '%s' "$INPUT" | wc -c | tr -d '[:space:]')` discarded
+  // the pipeline's status, so a `wc` or `tr` that failed (unavailable, a busybox
+  // build without the flag, a shadowing stub on PATH, ENOMEM on a large payload)
+  // left INPUT_BYTES empty. `[ "" -gt N ]` then errors under `set -u` with
+  // bash's own `[: : integer expected`, INPUT_TRUNCATED stays 0, and the gate
+  // falls through to exit 0. Measured on a scratch hub with an `exit 3` wc stub
+  // and a 1.2 MB payload: the DLP input scan went 2 → 0 and allowed
+  // `password: hunter2`; the PreToolUse deny gate went 2 → 0 and allowed a
+  // denied WebFetch; the Stop hook printed bash's error INSTEAD of its honest
+  // "output scan SKIPPED" line, at exit 0.
+  //
+  // The size is what decides whether the payload is complete, so failing to
+  // measure it is exactly as disqualifying as failing to read it, and takes the
+  // same posture. Checked on BOTH axes for the same reason the cap is: the
+  // status catches a tool that fails loudly, the digit test catches one that
+  // fails at status 0 (pipefail is not set in every generated hook, and the
+  // middle of a pipeline can fail while the last stage succeeds).
+  const measureFailAction = postureAction({
+    block: `could not measure the hook payload (wc/tr gave "$INPUT_BYTES", status $_ab_measure_status) — refusing to run a gate on a payload of unknown size.`,
+    exit0: `could not measure the hook payload (wc/tr gave "$INPUT_BYTES", status $_ab_measure_status) — output scan SKIPPED, this response was NOT scanned.`,
+    cont: `could not measure the hook payload (wc/tr gave "$INPUT_BYTES", status $_ab_measure_status) — record is incomplete.`,
+    blockReason:
+      "AgentBoot: could not measure the hook payload, so it cannot be known to be complete. The gate will not run on a payload of unknown size.",
+    // A recorder still has to reach the comparison below without erroring.
+    tail: [`  INPUT_BYTES=0`],
+  });
+
+  const overCapAction = postureAction({
+    block: opts.overCapStderr,
+    exit0: opts.overCapStderr,
+    cont: opts.overCapStderr,
+    blockReason: opts.blockReason ?? "",
+  });
 
   return `# I1: bound what a hook will read from stdin.
 #
@@ -210,7 +256,21 @@ esac
 if [ "$_ab_read_status" -ne 0 ]; then
 ${readFailAction}
 fi
-INPUT_BYTES=$(printf '%s' "$INPUT" | wc -c | tr -d '[:space:]')
+# NF4-1: take the MEASUREMENT's status, for the same reason the read above takes
+# head's. A bare \`INPUT_BYTES=$(… | wc -c | tr …)\` throws the pipeline's status
+# away, so a failing wc/tr yielded an empty INPUT_BYTES, \`[ "" -gt N ]\` errored,
+# and the gate fell through to exit 0 — the head defect, one line later.
+_ab_measure_status=0
+INPUT_BYTES=$(printf '%s' "$INPUT" | wc -c | tr -d '[:space:]') || _ab_measure_status=$?
+# Backstop for a measurement that fails at status 0 (pipefail is not set in every
+# generated hook, and a middle pipeline stage can fail while the last succeeds):
+# a byte count that is not a plain number is not a byte count.
+case "$INPUT_BYTES" in
+  ''|*[!0-9]*) if [ "$_ab_measure_status" -eq 0 ]; then _ab_measure_status=1; fi ;;
+esac
+if [ "$_ab_measure_status" -ne 0 ]; then
+${measureFailAction}
+fi
 INPUT_TRUNCATED=0
 if [ "$INPUT_BYTES" -gt "$MAX_HOOK_INPUT_BYTES" ]; then INPUT_TRUNCATED=1; fi
 if [ "$INPUT_TRUNCATED" -eq 1 ]; then
