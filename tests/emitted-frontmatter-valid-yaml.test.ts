@@ -215,3 +215,115 @@ describe("NF2-3 — an unreadable scope stops the build", () => {
     }
   }, 300_000);
 });
+
+/**
+ * NEW-1 — the fail-closed scope gate enumerated three directories by hand.
+ *
+ * assertScopeKeysParse() checked packageInstructionsDir, coreInstructionsDir and
+ * core/gotchas, and omitted `domains/*&#47;instructions` — which compileDomains()
+ * pushes through the SAME emitters. The F-6 scope-degradation gate did not catch
+ * it either, because F-6 keys off globs.length and a MALFORMED value yields no
+ * globs at all. So the inversion NF2-3 exists to prevent was fully live one tier
+ * over. Measured on a scratch hub, an unterminated flow sequence in
+ * domains/fin/instructions gave:
+ *
+ *     build=0  validate=0 ("All 12 checks passed")  audit=0  conformance=0
+ *
+ * and dist/copilot/domains/fin/instructions/bad.instructions.md carried the
+ * broken frontmatter verbatim (js-yaml: "missed comma between flow collection
+ * entries"), while dist/claude got the same rule always-on because claude cannot
+ * express scope at all. The SAME BYTES in core/instructions exited 1.
+ *
+ * The fixture above writes only into core/, which is exactly why the round's own
+ * corpus test could not see this. So this one is parametrised over EVERY
+ * scope-bearing source location, and adding a location without adding it to
+ * scopeBearingSourceGroups() is what turns it red.
+ */
+describe("NEW-1 — the scope gate covers every scope-bearing directory, not three of them", () => {
+  let nhub = "";
+  let nbase = "";
+
+  /** Every place a path-scope key can be authored and still reach an emitter. */
+  const LOCATIONS: Array<{ label: string; rel: string; key: "applyTo" | "paths" }> = [
+    { label: "core/instructions", rel: "core/instructions/zz.instructions.md", key: "applyTo" },
+    { label: "core/gotchas", rel: "core/gotchas/zz.md", key: "paths" },
+    { label: "domains/*/instructions", rel: "domains/fin/instructions/zz.instructions.md", key: "applyTo" },
+  ];
+
+  const malformed = (key: string) =>
+    `---\ndescription: zz\n${key}: ["src/pay/**", "src/card/**"\n---\n# zz\nNever log a PAN.\n`;
+  const wellFormed = (key: string) =>
+    `---\ndescription: zz\n${key}: ["src/pay/**", "src/card/**"]\n---\n# zz\nNever log a PAN.\n`;
+
+  const build = () =>
+    spawnSync(process.execPath, [CLI, "build"], {
+      cwd: nhub, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000,
+    });
+
+  beforeAll(() => {
+    nbase = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-new1-"));
+    nhub = path.join(nbase, "hub");
+    const inst = spawnSync(
+      process.execPath,
+      [CLI, "install", "--hub", "--org", "acme", "--path", nhub, "--non-interactive", "--skip-sync"],
+      { cwd: nbase, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (inst.status !== 0) throw new Error(`scaffold failed: ${inst.stdout}${inst.stderr}`);
+    fs.mkdirSync(path.join(nhub, "domains", "fin", "instructions"), { recursive: true });
+
+    const cfgPath = path.join(nhub, "agentboot.config.json");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+    cfg["domains"] = ["./domains/fin"];
+    cfg["instructions"] = { enabled: ["zz.instructions"] };
+    // Scope-CAPABLE targets only, so the F-6 degradation gate does not fire on
+    // the well-formed control and mask which gate is under test.
+    cfg["personas"] = { ...(cfg["personas"] as object), outputFormats: ["copilot", "cursor"] };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  }, 600_000);
+
+  afterAll(() => {
+    if (nbase) fs.rmSync(nbase, { recursive: true, force: true });
+  });
+
+  for (const loc of LOCATIONS) {
+    it(`NEW-1: an unreadable scope in ${loc.label} STOPS the build`, () => {
+      const abs = path.join(nhub, loc.rel);
+      fs.writeFileSync(abs, malformed(loc.key), "utf-8");
+      try {
+        const b = build();
+        const out = `${b.stdout}${b.stderr}`;
+        expect(b.status, `an unreadable scope in ${loc.label} built green:\n${out}`).toBe(1);
+        expect(out).toContain("unreadable path scope");
+        expect(out, "the refusal did not name the file").toContain(path.basename(loc.rel));
+      } finally {
+        fs.rmSync(abs, { force: true });
+      }
+    }, 300_000);
+
+    it(`NEW-1 (NEGATIVE): a well-formed scope in ${loc.label} builds`, () => {
+      // The gate must refuse unreadable scopes, not narrow ones. Without this
+      // direction the fix could be "refuse every domain" and still look green.
+      const abs = path.join(nhub, loc.rel);
+      fs.writeFileSync(abs, wellFormed(loc.key), "utf-8");
+      try {
+        const b = build();
+        expect(b.status, `a valid scope in ${loc.label} was refused:\n${b.stdout}${b.stderr}`).toBe(0);
+      } finally {
+        fs.rmSync(abs, { force: true });
+      }
+    }, 300_000);
+  }
+
+  it("NEW-1: same bytes, same verdict — the directory must not decide it", () => {
+    // The reported repro in one assertion: identical content, two locations.
+    const core = path.join(nhub, "core", "instructions", "zz.instructions.md");
+    const domain = path.join(nhub, "domains", "fin", "instructions", "zz.instructions.md");
+    fs.writeFileSync(core, malformed("applyTo"), "utf-8");
+    const a = build().status;
+    fs.rmSync(core, { force: true });
+    fs.writeFileSync(domain, malformed("applyTo"), "utf-8");
+    const b = build().status;
+    fs.rmSync(domain, { force: true });
+    expect({ core: a, domain: b }).toEqual({ core: 1, domain: 1 });
+  }, 600_000);
+});

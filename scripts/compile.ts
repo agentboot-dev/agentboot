@@ -161,6 +161,73 @@ function fatal(msg: string): never {
  * because per-emitter checks are exactly how the seven hand-rolled parsers
  * drifted apart.
  */
+/**
+ * Where a configured domain lives on disk.
+ *
+ * NEW-1: this expression used to exist only inside compileDomains(), so the
+ * fail-closed scope gate could not enumerate domains without re-deriving it —
+ * and re-deriving is how two lists that must agree drift. One resolver, two
+ * callers.
+ */
+function resolveDomainPath(
+  domainRef: NonNullable<AgentBootConfig["domains"]>[number],
+  configDir: string,
+): string {
+  return typeof domainRef === "string"
+    ? path.resolve(configDir, domainRef)
+    : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+}
+
+/**
+ * Every directory whose `.md` files carry a path-scope key an emitter reads.
+ *
+ * NEW-1: the NF2-3 gate enumerated exactly three directories — the package and
+ * core instruction dirs and core/gotchas — and omitted `domains/*&#47;instructions`,
+ * which compileDomains() pushes through the SAME emitters. So a malformed
+ * `applyTo:` in a domain escaped both this gate and the F-6 scope-degradation
+ * gate (F-6 keys off globs.length, which is empty for a malformed value), and
+ * the inversion NF2-3 closed was fully live one tier over. Measured on a
+ * scratch hub: an unterminated flow sequence in domains/fin/instructions gave
+ * build=0, validate=0 ("All 12 checks passed"), audit=0, conformance=0, and
+ * shipped the broken frontmatter verbatim to dist/copilot — while the SAME
+ * BYTES in core/instructions exited 1. Same file, opposite verdict, decided
+ * only by which directory it sat in.
+ *
+ * This is the c836c46 shape ("the whole GROUP tier was invisible to the gate
+ * that exists to see it") one directory over, so the fix is the enumeration,
+ * not another entry in a hand-kept list.
+ *
+ * Domain `gotchas/` is deliberately absent: compileGotchas() is only ever
+ * called for core/gotchas, so a domain gotcha reaches no emitter. Gating a file
+ * that ships nowhere would be a false refusal, and a gate that refuses on the
+ * wrong evidence gets disabled. If domain gotchas are ever compiled, they get
+ * added here and tests/scope-fail-closed.test.ts's parametrised list is what
+ * fails until they are.
+ */
+function scopeBearingSourceGroups(
+  config: AgentBootConfig,
+  configDir: string,
+  packageInstructionsDir: string,
+  coreInstructionsDir: string,
+  coreDir: string,
+): { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[] {
+  const groups: { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[] = [
+    { dir: packageInstructionsDir, key: "applyTo", enabled: config.instructions?.enabled },
+    { dir: coreInstructionsDir, key: "applyTo", enabled: config.instructions?.enabled },
+    { dir: path.join(coreDir, "gotchas"), key: "paths", enabled: undefined },
+  ];
+  for (const domainRef of config.domains ?? []) {
+    // `enabled: undefined` mirrors compileDomains(), which passes undefined —
+    // every instruction in a configured domain is compiled.
+    groups.push({
+      dir: path.join(resolveDomainPath(domainRef, configDir), "instructions"),
+      key: "applyTo",
+      enabled: undefined,
+    });
+  }
+  return groups;
+}
+
 function assertScopeKeysParse(
   groups: { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[],
 ): void {
@@ -2352,9 +2419,7 @@ function compileDomains(
   const results: CompileResult[] = [];
 
   for (const domainRef of domains) {
-    const domainPath = typeof domainRef === "string"
-      ? path.resolve(configDir, domainRef)
-      : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    const domainPath = resolveDomainPath(domainRef, configDir);
 
     if (!fs.existsSync(domainPath)) {
       log(chalk.yellow(`  ⚠ Domain not found: ${domainPath}`));
@@ -3939,11 +4004,7 @@ function main(): void {
   // unreadable `applyTo:` reported as "no scope" is reported as ALWAYS-ON, which
   // is the inversion this whole subsystem exists to prevent. FAIL CLOSED.
   assertScopeKeysParse(
-    [
-      { dir: packageInstructionsDir, key: "applyTo" as const, enabled: config.instructions?.enabled },
-      { dir: coreInstructionsDir, key: "applyTo" as const, enabled: config.instructions?.enabled },
-      { dir: path.join(coreDir, "gotchas"), key: "paths" as const, enabled: undefined },
-    ],
+    scopeBearingSourceGroups(config, configDir, packageInstructionsDir, coreInstructionsDir, coreDir),
   );
 
   compileInstructions(
