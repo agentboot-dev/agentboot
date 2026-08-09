@@ -3012,17 +3012,36 @@ program
         : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
       const config = loadConfig(configPath);
       const reposPath = config.sync?.repos ? path.resolve(path.dirname(configPath), config.sync.repos) : path.join(path.dirname(configPath), "repos.json");
+      // An unreadable repos.json used to degrade to `repos = []`, which produced
+      // "Summary: 0/0 clean, 0 drifted" and exit 0 — a compliance report that
+      // checked nothing, in the sentence shape of a clean one. Reproduced by
+      // writing `{{{` into repos.json. Say what happened and fail.
       let repos: Array<{ path: string; label?: string }> = [];
       try {
-        repos = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
-      } catch { /* empty or missing */ }
+        const parsed: unknown = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+        if (!Array.isArray(parsed)) throw new Error("not a JSON array of repo entries");
+        repos = parsed as Array<{ path: string; label?: string }>;
+      } catch (err: unknown) {
+        console.error(chalk.red(`\n  ✗ Cannot read the repo registry — no repo was checked.`));
+        console.error(chalk.gray(`      ${reposPath}`));
+        console.error(chalk.gray(`      ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exit(1);
+      }
+      if (repos.length === 0) {
+        // Zero registered repos is a legitimate state, but it is "nothing to
+        // check", not "everything is clean". They must not print alike.
+        console.log(chalk.yellow(`\n  ⚠ No repos registered in ${path.basename(reposPath)} — nothing was checked.\n`));
+        return;
+      }
       const report = generateComplianceReport(repos, path.dirname(configPath));
       if (opts.format === "json") {
         console.log(JSON.stringify(report, null, 2));
       } else {
         console.log(chalk.bold(`\n  Compliance Report — ${report.generatedAt}\n`));
         for (const r of report.repos) {
-          const icon = r.clean ? chalk.green("✓") : r.manifestFound ? chalk.red("✗") : chalk.yellow("?");
+          // An unchecked repo is not a yellow footnote. Deleting one JSON file
+          // was the cheapest way to make an org-wide compliance report green.
+          const icon = r.clean ? chalk.green("✓") : chalk.red("✗");
           const label = path.basename(r.repoPath);
           // A repo can drift by modification OR deletion. Reporting only
           // modifiedCount rendered a deletion-only drift as "0 modified" — a line
@@ -3036,8 +3055,10 @@ program
           // F-1: a revoked control still live here must be named, not folded
           // into a generic "drifted" — it is a different remediation entirely.
           if (r.summary.retiredCount > 0) parts.push(`${r.summary.retiredCount} retired-but-present`);
-          const detail = !r.manifestFound
-            ? "(no manifest)"
+          const detail = !r.pathExists
+            ? "UNCHECKED — repo path not found on this machine"
+            : !r.manifestFound
+            ? "UNCHECKED — no AgentBoot manifest (never synced, or the manifest was deleted)"
             : r.clean
               ? "clean"
               : parts.length > 0
@@ -3059,9 +3080,19 @@ program
             }
           }
         }
-        console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${report.summary.noManifestRepos} no manifest\n`);
+        const unchecked = report.summary.noManifestRepos;
+        console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${unchecked} UNCHECKED (${report.summary.unreachableRepos} unreachable)\n`);
+        if (unchecked > 0) {
+          console.log(chalk.red(`  ✗ ${unchecked} repo(s) could not be checked — this report does not speak for them.`));
+          console.log(chalk.gray(`      A missing manifest is not evidence of compliance. Re-sync the repo, or`));
+          console.log(chalk.gray(`      remove it from ${path.basename(reposPath)} if it is no longer governed.\n`));
+        }
       }
-      process.exit(report.summary.driftedRepos > 0 ? 1 : 0);
+      // A repo that was not checked must not exit 0. `drift-check --repo` has
+      // always exited 2 on a missing manifest; the all-repos path folded the
+      // same state into the green branch, so deleting .agentboot-manifest.json
+      // on a spoke made the org-wide report pass. The two modes now agree.
+      process.exit(report.summary.driftedRepos > 0 || report.summary.noManifestRepos > 0 ? 1 : 0);
     }
   });
 

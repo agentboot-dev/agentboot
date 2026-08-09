@@ -24,6 +24,12 @@ export interface DriftEntry {
 
 export interface DriftReport {
   repoPath: string;
+  /**
+   * Does the repo exist on disk at all? "Unreachable" and "synced but the
+   * manifest was deleted" are different remediations and used to print the same
+   * `? (no manifest)` line, so neither could be acted on.
+   */
+  pathExists: boolean;
   manifestFound: boolean;
   entries: DriftEntry[];
   clean: boolean;
@@ -49,7 +55,10 @@ export interface ComplianceReport {
     totalRepos: number;
     cleanRepos: number;
     driftedRepos: number;
+    /** Repos with no readable manifest — UNCHECKED, not clean. */
     noManifestRepos: number;
+    /** Repos whose path does not exist locally — also unchecked. */
+    unreachableRepos: number;
   };
 }
 
@@ -128,6 +137,7 @@ export function checkDrift(repoPath: string): DriftReport {
   if (!manifest) {
     return {
       repoPath: absPath,
+      pathExists: fs.existsSync(absPath),
       manifestFound: false,
       entries: [],
       clean: false,
@@ -218,6 +228,7 @@ export function checkDrift(repoPath: string): DriftReport {
 
   return {
     repoPath: absPath,
+    pathExists: true,
     manifestFound: true,
     entries,
     // "clean" = AgentBoot-managed content is intact (nothing modified or missing).
@@ -261,6 +272,7 @@ export function generateComplianceReport(
       // Skip remote/missing repos with a stub report
       reports.push({
         repoPath,
+        pathExists: false,
         manifestFound: false,
         entries: [],
         clean: false,
@@ -278,7 +290,11 @@ export function generateComplianceReport(
       totalRepos: reports.length,
       cleanRepos: reports.filter(r => r.clean).length,
       driftedRepos: reports.filter(r => r.manifestFound && !r.clean).length,
+      // A repo whose manifest is absent was NOT checked. It is not clean and it
+      // is not drifted — it is unknown, and the caller must be able to tell the
+      // difference, because "unknown" was previously folded into the exit-0 path.
       noManifestRepos: reports.filter(r => !r.manifestFound).length,
+      unreachableRepos: reports.filter(r => !r.pathExists).length,
     },
   };
 }
