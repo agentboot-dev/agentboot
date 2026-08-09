@@ -151,18 +151,32 @@ describe("capabilityViolations — the gate", () => {
   });
 
   it("U12: a narrowly-scoped instruction fires row 14 at warn severity", () => {
-    const v = capabilityViolations(ctx({}, { narrowlyScopedInstructions: 1 }), ["cursor"]);
+    // NF2-3: this used to probe with ["cursor"], which was the DEFECT — the row
+    // declared emittedBy ["copilot"] while cursor emits `globs:` +
+    // `alwaysApply: false`, a real functional scope, and APPLY_TO_PROJECTION in
+    // the same repo already said so. `gemini` genuinely has no scoping key
+    // (the text is inlined into an always-on GEMINI.md), so it is the honest
+    // probe for "this platform cannot express it".
+    const v = capabilityViolations(ctx({}, { narrowlyScopedInstructions: 1 }), ["gemini"]);
     expect(v.map((x) => x.row.id)).toEqual(["instructions[].applyTo"]);
     expect(v[0]!.row.severity).toBe("warn");
   });
 
   it("U13 (NEGATIVE): a universal applyTo is not narrowing, so nothing fires", () => {
     // The highest-value negative: every default hub is this shape.
-    expect(capabilityViolations(ctx({}, { narrowlyScopedInstructions: 0 }), ["cursor"])).toEqual([]);
+    expect(capabilityViolations(ctx({}, { narrowlyScopedInstructions: 0 }), ["gemini"])).toEqual([]);
   });
 
-  it("U14 (NEGATIVE): copilot honours applyTo natively", () => {
-    expect(capabilityViolations(ctx({}, { narrowlyScopedInstructions: 1 }), ["copilot"])).toEqual([]);
+  it("U14 (NEGATIVE): every platform that CAN express a scope is silent", () => {
+    // copilot natively, cursor/windsurf/jetbrains by translation. Probing only
+    // copilot here is what let the under-declaration sit: the row and the test
+    // agreed with each other and both disagreed with the emitters.
+    for (const p of ["copilot", "cursor", "windsurf", "jetbrains"]) {
+      expect(
+        capabilityViolations(ctx({}, { narrowlyScopedInstructions: 1 }), [p]),
+        `${p} emits a path scope but the gate says it cannot`,
+      ).toEqual([]);
+    }
   });
 
   it("capabilityExceptionFor matches only the exact capability: key", () => {

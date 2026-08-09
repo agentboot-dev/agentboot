@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { CAPABILITY_SUPPORT, effectiveEmitters } from "../scripts/lib/conformance.js";
+import { APPLY_TO_PROJECTION } from "../scripts/lib/scope-projection.js";
 import { PLATFORM_REQUIRES } from "../scripts/lib/config.js";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -263,6 +264,84 @@ describe("B3 — every CAPABILITY_SUPPORT row's artifact lands on every platform
           `or the CAPABILITY_SUPPORT row overstates its reach — the plugin row shipped wrong ` +
           `three times through exactly this gap.`
       ).toEqual([]);
+    }, 300_000);
+  }
+});
+
+/**
+ * NF2-3 — the harness above only checks the POSITIVE direction, so an
+ * UNDER-declared row is green by construction.
+ *
+ * `instructions[].applyTo` declared `emittedBy: ["copilot"]` while cursor,
+ * windsurf and jetbrains all emit a real, functional path scope — and
+ * APPLY_TO_PROJECTION in the same repo classifies all three as `translated`.
+ * The harness could not see it, because "every claimed platform emits it" is
+ * satisfied by claiming fewer platforms. This round then wired that
+ * under-declaration into an operator-facing sentence asserting a control is
+ * "absent, not weaker" on three platforms where it demonstrably is not:
+ *
+ *   "instructions[].applyTo - configured, but needs one of: copilot"
+ *      printed on a hub where dist/cursor/…/zznarrow.instructions.mdc already
+ *      carried `globs: "src/zzscopezz/**"` and `alwaysApply: false`
+ *
+ * The emitter set is now DERIVED from APPLY_TO_PROJECTION so the two cannot
+ * disagree. This asserts the other half: a platform NOT declared must actually
+ * not emit — so over-declaring is caught above and under-declaring is caught
+ * here.
+ */
+describe("NF2-3 — a row that UNDER-declares its emitters is caught too", () => {
+  const SCOPE_ROWS = ["instructions[].applyTo", "gotchas[].paths"];
+
+  it("the scope rows agree with APPLY_TO_PROJECTION — one table, not two", () => {
+    const expected = Object.entries(APPLY_TO_PROJECTION)
+      .filter(([, p]) => p.support === "native" || p.support === "translated")
+      .map(([n]) => n)
+      .sort();
+    expect(expected.length).toBeGreaterThan(1);
+    for (const id of SCOPE_ROWS) {
+      const row = CAPABILITY_SUPPORT.find((r) => r.id === id)!;
+      expect([...row.emittedBy].sort(), `${id} disagrees with APPLY_TO_PROJECTION`).toEqual(expected);
+    }
+  });
+
+  for (const id of SCOPE_ROWS) {
+    it(`NF2-3 [${id}]: every declared emitter really lands the scope, and it is not just copilot`, () => {
+      const row = CAPABILITY_SUPPORT.find((r) => r.id === id)!;
+      const fx = FIXTURES[id]!;
+      const formats = [...row.emittedBy];
+      // The specific regression: a set of exactly ["copilot"] is what the row
+      // used to declare, and it is what this test exists to make impossible.
+      expect(formats).not.toEqual(["copilot"]);
+
+      const hub = scaffold(`nf23-${id.replace(/[^a-z0-9]+/gi, "-")}`);
+      for (const [rel, body] of Object.entries(fx.files ?? {})) {
+        const abs = path.join(hub, rel);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, body);
+      }
+      const cfgPath = path.join(hub, "agentboot.config.json");
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+      cfg.personas = { ...(cfg.personas ?? {}), outputFormats: formats };
+      Object.assign(cfg, fx.config);
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+      const b = spawnSync(process.execPath, [CLI, "build"], {
+        cwd: hub, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000,
+      });
+      expect(b.status, `build failed: ${b.stdout}${b.stderr}`).toBe(0);
+
+      const dist = path.join(hub, "dist");
+      const missing = formats.filter((p) => !markerPresent(path.join(dist, p), fx.marker));
+      expect(missing, `${id}: declared emitters that did not land the scope: ${missing.join(", ")}`)
+        .toEqual([]);
+
+      // And doctor must not tell the operator to add a platform it already has.
+      const d = spawnSync(process.execPath, [CLI, "doctor"], {
+        cwd: hub, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000,
+      });
+      const out = `${d.stdout ?? ""}${d.stderr ?? ""}`;
+      expect(out, `doctor claims ${id} is absent on platforms that emit it:\n${out}`)
+        .not.toMatch(new RegExp(`${id.replace(/[[\]().*+?^$|\\]/g, "\\$&")}[^\n]*needs one of`));
     }, 300_000);
   }
 });

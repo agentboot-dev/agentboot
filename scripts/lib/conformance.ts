@@ -30,6 +30,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PLATFORM_REQUIRES, DEFAULT_OUTPUT_FORMATS, type AgentBootConfig } from "./config.js";
+import { APPLY_TO_PROJECTION } from "./scope-projection.js";
 
 /** Same bound as every external-binary probe (v0.12.4 hang-class fix). */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -202,6 +203,33 @@ export interface CapabilityRow {
  * `plugin` does NOT carry `claude.hooks` (it carries the generated compliance
  * hooks only), and `plugin`/`copilot` DO receive the denyTools PreToolUse hook.
  */
+/**
+ * NF2-3: the platforms that CAN express a path scope, derived from the ONE table
+ * that answers that question.
+ *
+ * `instructions[].applyTo` declared `emittedBy: ["copilot"]` while
+ * APPLY_TO_PROJECTION in this same repo classifies cursor, windsurf and
+ * jetbrains as `translated` — and all three demonstrably emit a real, functional
+ * scope (`globs:` + `alwaysApply: false`, `trigger: glob` + `globs:`, and
+ * `globs: [...]` respectively, verified in the emitted frontmatter). The
+ * under-declaration was then wired into an operator-facing sentence:
+ *
+ *   "instructions[].applyTo - configured, but needs one of: copilot"
+ *      (on a hub where cursor ALREADY received the scope)
+ *   "…reaches copilot but NOT claude, cursor, windsurf, jetbrains;
+ *    on those targets this control is absent, not weaker"
+ *      (false for three of the four)
+ *
+ * Two lists that must agree, with nothing asserting it — and the sibling row
+ * `gotchas[].paths` had the correct four, which is what an unasserted invariant
+ * looks like from the inside. Derived here so the disagreement is not
+ * expressible.
+ */
+export const SCOPE_EMITTERS: string[] = Object.entries(APPLY_TO_PROJECTION)
+  .filter(([, p]) => p.support === "native" || p.support === "translated")
+  .map(([name]) => name)
+  .sort();
+
 export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   {
     id: "claude.hooks",
@@ -402,7 +430,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     // and firing on it would make every default install warn, which is how a
     // check becomes noise inside a week.
     detect: (c) => c.narrowlyScopedInstructions > 0,
-    emittedBy: ["copilot"],
+    emittedBy: SCOPE_EMITTERS,
     severity: "warn",
     consequence: "Narrowly-scoped instructions ship unscoped.",
     warrant: "scripts/compile.ts:1196",
@@ -410,7 +438,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   {
     id: "gotchas[].paths",
     detect: (c) => c.scopedGotchas > 0,
-    emittedBy: ["copilot", "cursor", "windsurf", "jetbrains"],
+    emittedBy: SCOPE_EMITTERS,
     severity: "warn",
     consequence: "Path-scoped gotchas ship unscoped.",
     warrant: "scripts/compile.ts:1265",

@@ -34,7 +34,7 @@ import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
-import { PLATFORM_ENFORCEMENT, effectiveEmitters, resolveEnforcement, type CapabilityContext } from "./lib/conformance.js";
+import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, resolveEnforcement, type CapabilityContext } from "./lib/conformance.js";
 import {
   findHardArtifacts, capabilityViolations, capabilityShortfalls,
   countNarrowlyScopedInstructions, countScopedGotchas,
@@ -1749,8 +1749,20 @@ program
           } catch { /* unreadable → treated as empty, so the gate still fires */ }
 
           const capViolations = capabilityViolations(capCtx, covFormats, activeEx);
-          if (capViolations.length === 0) {
-            ok("Capability coverage — every configured capability has a target that emits it");
+          // NF2-4: how many rows were EVALUATED at all. A gate that examined zero
+          // capabilities is not a passing gate, it is an absent one — the same
+          // shape NF-5 fixed for the Enforcement and Scoping blocks, which the
+          // Coverage ticks did not get. On a hub with instructions.enabled = []
+          // and no managed config, `detect()` is false for every row and both
+          // ticks below printed a pass over nothing.
+          const configuredRows = CAPABILITY_SUPPORT.filter((r) => r.detect(capCtx));
+          if (configuredRows.length === 0) {
+            ok(
+              "Capability coverage — nothing to check: no capability in the support table is " +
+              "configured on this hub",
+            );
+          } else if (capViolations.length === 0) {
+            ok(`Capability coverage — all ${configuredRows.length} configured capability/ies have a target that emits them`);
           } else {
             for (const v of capViolations) {
               // B1: report the EFFECTIVE emitters. Naming a platform whose
@@ -1793,8 +1805,21 @@ program
               `on those targets this control is absent, not weaker`,
             );
           }
-          if (shortfalls.length === 0 && capViolations.length === 0 && covFormats.length > 1) {
-            ok("Capability coverage — every configured capability reaches every configured platform");
+          // NF2-4: this tick ALSO printed over zero evaluated rows, and it
+          // duplicated the wording of the tick above, so the operator read
+          // coverage as verified twice. It is now conditioned on something
+          // actually having been evaluated, and says what it adds over the first
+          // tick — reach across ALL platforms, not merely reach across one.
+          if (
+            configuredRows.length > 0 &&
+            shortfalls.length === 0 &&
+            capViolations.length === 0 &&
+            covFormats.length > 1
+          ) {
+            ok(
+              `Capability coverage — each of those ${configuredRows.length} also reaches all ` +
+              `${covFormats.length} configured platforms`,
+            );
           }
         }
 
