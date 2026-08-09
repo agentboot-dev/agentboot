@@ -97,3 +97,69 @@ describe("V6 — every GitHub Action is pinned to a commit SHA", () => {
     expect(wf, "the PIN REQUIRED marker outlived the pin").not.toContain("PIN REQUIRED");
   });
 });
+
+/**
+ * NF2-5 — the repo's own published GUIDANCE was exempt from the invariant.
+ *
+ * `.github/workflows/agentboot-ci.yml:9` told adopters
+ *
+ *     uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@main
+ *
+ * inside the file's "Usage in your personas repo" header block, and
+ * docs/enterprise-operations.md:179 said the same in a YAML code fence — three
+ * lines above a parenthetical advising the reader to pin. `allUses()` skips
+ * lines beginning with `#`, and it does not read docs/ at all, so the V6
+ * invariant this repo just asserted for itself could not see either one.
+ *
+ * `@main` is a mutable ref: it re-points under the consumer. That is precisely
+ * the supply-chain shape every `uses:` in these workflows is SHA-pinned to
+ * avoid, so publishing it as the recommended call is the same defect as an
+ * unpinned action, aimed at everyone downstream instead of at us.
+ *
+ * These are EXAMPLES, so they must stay copy-pasteable — the rule asserted is
+ * therefore "not a mutable branch ref", not "a 40-character SHA".
+ */
+describe("NF2-5 — documented usage examples are pinned too", () => {
+  const MUTABLE = /@(main|master|HEAD|latest)$/;
+
+  function documentedRefs(): { where: string; ref: string }[] {
+    const out: { where: string; ref: string }[] = [];
+    const scan = (file: string, body: string) => {
+      body.split("\n").forEach((line, i) => {
+        const m = /uses:\s*(\S+)/.exec(line);
+        if (m) out.push({ where: `${file}:${i + 1}`, ref: m[1]! });
+      });
+    };
+    // Commented usage blocks inside the workflows themselves...
+    for (const f of fs.readdirSync(WF_DIR).filter((n) => /\.ya?ml$/.test(n))) {
+      scan(path.join(".github/workflows", f), fs.readFileSync(path.join(WF_DIR, f), "utf-8"));
+    }
+    // ...and the published docs, which is where an adopter actually reads it.
+    const docs = path.join(ROOT, "docs");
+    if (fs.existsSync(docs)) {
+      for (const f of fs.readdirSync(docs).filter((n) => n.endsWith(".md"))) {
+        scan(path.join("docs", f), fs.readFileSync(path.join(docs, f), "utf-8"));
+      }
+    }
+    return out;
+  }
+
+  const DOCUMENTED = documentedRefs();
+
+  it("the scan found the guidance — an empty list is a vacuous check", () => {
+    expect(DOCUMENTED.length).toBeGreaterThan(0);
+    expect(
+      DOCUMENTED.some((d) => d.ref.includes("agentboot-ci.yml@")),
+      "the reusable-workflow usage example dropped out of the scan",
+    ).toBe(true);
+  });
+
+  it("no documented `uses:` points at a MUTABLE ref", () => {
+    const mutable = DOCUMENTED.filter((d) => MUTABLE.test(d.ref) && !d.ref.startsWith("./"));
+    expect(
+      mutable,
+      "AgentBoot tells adopters to consume a workflow at a ref that can re-point " +
+        `under them: ${mutable.map((m) => `${m.where} → ${m.ref}`).join(", ")}`,
+    ).toEqual([]);
+  });
+});

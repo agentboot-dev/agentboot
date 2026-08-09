@@ -176,14 +176,16 @@ the workflow if the version resolves to `latest`:
 ```yaml
 jobs:
   agentboot:
-    uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@main
+    uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@v0.20.2
     with:
       agentboot-version: "X.Y.Z"
       forbid-latest: true
 ```
 
-(Pin the workflow ref itself to a tag or SHA rather than `@main` if your policy
-requires it — standard GitHub Actions hygiene.)
+(The workflow ref itself is pinned to a release tag above. A commit SHA is
+stronger still, since a tag can be moved; `@main` is a mutable ref that
+re-points under you and should not be used. This is the same discipline
+AgentBoot applies to its own workflows, where every `uses:` is SHA-pinned.)
 
 **Generated MCP config is pinned for you.** Every artifact the build emits that
 launches AgentBoot via npx — MCP server entries in `.mcp.json` / `mcp.json` / the

@@ -169,6 +169,62 @@ describe("A-class — every dist/ consumer declares a freshness posture", () => 
     ).toEqual([]);
   });
 
+  /**
+   * NF2-5 — a `gateIn` entry stated WHERE the gate lives and nothing checked it.
+   *
+   * The field's own doc comment claimed "`sync` asserts inside `syncRepos()`".
+   * There is no `syncRepos` symbol anywhere in scripts/sync.ts; the gate is in
+   * `main()` at sync.ts:2093. A-2 only greps the named FILE for
+   * `assertDistFreshOrExit|checkDistFreshness`, so any stated call-site location
+   * was unverified prose — and this file is the registry of record for which
+   * surfaces are gated, which makes a false statement in it exactly the kind
+   * that gets believed later. A concurrent session was already adding two more
+   * `gateIn` entries in the same unchecked shape.
+   *
+   * `gateFn` is the verifiable form of that claim. Absent means "no claim" (the
+   * gate is at module top level, as in dev-sync); present means the gate call
+   * must actually be inside that function's body.
+   */
+  it("A-2b: every declared `gateFn` really contains the gate call", () => {
+    const checked: string[] = [];
+    for (const [name, decl] of Object.entries(DIST_CONSUMERS)) {
+      if (!decl.gateFn) continue;
+      expect(decl.gateIn, `${name} declares gateFn without gateIn`).toBeDefined();
+      const src = fs.readFileSync(path.join(ROOT, decl.gateIn!), "utf-8");
+      const lines = src.split("\n");
+
+      const start = lines.findIndex((l) =>
+        new RegExp(`^\\s*(export\\s+)?(async\\s+)?function\\s+${decl.gateFn}\\s*[(<]`).test(l),
+      );
+      expect(
+        start,
+        `${name}: DIST_CONSUMERS says the gate is in \`${decl.gateFn}()\` in ${decl.gateIn}, ` +
+          `and that function does not exist — which is exactly what "syncRepos()" was.`,
+      ).toBeGreaterThanOrEqual(0);
+
+      // Walk braces from the function header to its close.
+      let depth = 0;
+      let seenOpen = false;
+      let end = lines.length - 1;
+      for (let i = start; i < lines.length; i++) {
+        for (const ch of lines[i]!) {
+          if (ch === "{") { depth++; seenOpen = true; }
+          else if (ch === "}") depth--;
+        }
+        if (seenOpen && depth <= 0) { end = i; break; }
+      }
+
+      const body = lines.slice(start, end + 1).join("\n");
+      expect(
+        /assertDistFreshOrExit\(|checkDistFreshness\(|checkDistStamp\(/.test(body),
+        `${name}: \`${decl.gateFn}()\` in ${decl.gateIn} does not contain the freshness call`,
+      ).toBe(true);
+      checked.push(name);
+    }
+    // A check that examined zero entries is not a passing check.
+    expect(checked.length, "no gateFn entries were examined").toBeGreaterThan(0);
+  });
+
   it("A-3: every command declared `reports` actually reports", () => {
     const missing: string[] = [];
     for (const [name, decl] of Object.entries(DIST_CONSUMERS)) {

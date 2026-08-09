@@ -6,7 +6,10 @@
 #   on: [push, pull_request]
 #   jobs:
 #     agentboot:
-#       uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@main
+#       # Pin to a release tag or a commit SHA. `@main` is a mutable ref: it
+#       # re-points under you, which is the supply-chain shape this workflow's own
+#       # `uses:` lines are SHA-pinned to avoid.
+#       uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@v0.20.2
 #       with:
 #         snapshot: true
 #

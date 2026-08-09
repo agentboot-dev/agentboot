@@ -50,10 +50,28 @@ export interface DistConsumer {
   /** Why this posture and not `gated`. Required for `reports` and `producer`. */
   reason?: string;
   /**
-   * File the gate call lives in, when it is not `scripts/cli.ts` — `sync`
-   * asserts inside `syncRepos()` so the refusal is shared with the MCP surface.
+   * File the gate call lives in, when it is not `scripts/cli.ts`.
+   *
+   * `sync` asserts in scripts/sync.ts rather than in the CLI command block, so
+   * the refusal is shared with every entry point that shells out to the script
+   * — including the MCP surface, which runs `npx tsx scripts/sync.ts`.
    */
   gateIn?: string;
+  /**
+   * NF2-5: the ENCLOSING FUNCTION of the gate call, when there is one.
+   *
+   * This field exists because the `gateIn` comment above used to claim "`sync`
+   * asserts inside `syncRepos()`" — and there is no `syncRepos` symbol anywhere
+   * in scripts/sync.ts. The A-2 assertion only greps the named FILE for
+   * `assertDistFreshOrExit|checkDistFreshness`, so any stated CALL-SITE location
+   * was unverified prose. That is benign right now (the gate really does run),
+   * and this file is the registry of record for which surfaces are gated, so a
+   * false statement in it is exactly the kind that gets believed later.
+   *
+   * Omit only when the gate is at module top level, which is a real shape
+   * (dev-sync). Absent means "no claim"; present means "asserted".
+   */
+  gateFn?: string;
 }
 
 export const DIST_CONSUMERS: Record<string, DistConsumer> = {
@@ -75,6 +93,7 @@ export const DIST_CONSUMERS: Record<string, DistConsumer> = {
   sync: {
     posture: "gated",
     gateIn: "scripts/sync.ts",
+    gateFn: "main",
     reason: "ships dist/ to spokes — the original N1 case",
   },
   "drift-check": { posture: "gated" },
@@ -110,6 +129,8 @@ export const DIST_CONSUMERS: Record<string, DistConsumer> = {
     reason: "states what the deployed prompt costs; from a stale tree that is a wrong number stated as fact",
   },
   "dev-sync": {
+    // No gateFn: the gate is a module-top-level block, which is a real shape and
+    // not an omission. Absent means "no claim made", never "not checked".
     posture: "gated",
     gateIn: "scripts/dev-sync.ts",
     reason:
@@ -137,6 +158,7 @@ export const DIST_CONSUMERS: Record<string, DistConsumer> = {
   "mcp-server": {
     posture: "reports",
     gateIn: "scripts/mcp-server.ts",
+    gateFn: "distFreshness",
     reason:
       "R2-1: the whole MCP surface was outside this invariant, because the derivation " +
       "parses scripts/cli.ts and the `mcp-server` command block only spawns " +
