@@ -70,3 +70,44 @@ describe("A5 — one definition of the output-format lists", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * R1-5 — unification resolved the drift by deleting an output surface.
+ *
+ * A5 unified four different answers to "what is the default outputFormats?"
+ * onto one constant, and picked the SHORTEST of them. That dropped `agents`
+ * from `compilePersona`'s fallback — the one site whose in-code comment
+ * specifically asserted it had to be there ("agents is a first-class official
+ * output — the fallback must agree with the install/export defaults, which
+ * always include it").
+ *
+ * Reproduced: a hub whose config omits `personas.outputFormats` built
+ * "✓ Compiled 4 persona(s) × 3 platform(s)" and `ls dist` showed no `agents/`.
+ * Because sync prunes against the previous manifest, the next sync would then
+ * WITHDRAW AGENTS.md artifacts already delivered to spokes.
+ *
+ * Either default is defensible; silently removing a shipped output surface is
+ * not. The invariant asserted here is the one that was actually violated: the
+ * fallback and what `install` scaffolds must agree.
+ */
+describe("R1-5 — the default and what install scaffolds agree", () => {
+  it("R1-5-1: `agents` is in DEFAULT_OUTPUT_FORMATS", () => {
+    expect(DEFAULT_OUTPUT_FORMATS).toContain("agents");
+  });
+
+  it("R1-5-2: install.ts scaffolds every format the fallback claims", () => {
+    // The two lists that must agree, compared in code. `scaffoldConfig` seeds
+    // `["skill", "agents"]` and pushes per-tool formats on top, so the
+    // unconditional seed is the part a config-less hub must match.
+    const src = fs.readFileSync(path.join(ROOT, "scripts", "lib", "install.ts"), "utf-8");
+    const seed = /const outputFormats = \[([^\]]*)\]/.exec(src)?.[1] ?? "";
+    expect(seed, "install.ts no longer seeds outputFormats where expected").toContain("skill");
+    for (const f of seed.split(",").map((x) => x.trim().replace(/['"]/g, "")).filter(Boolean)) {
+      expect(
+        DEFAULT_OUTPUT_FORMATS,
+        `install always scaffolds "${f}" but a config that omits personas.outputFormats ` +
+          `would not build it — that is the drift A5 unified away and then re-created`
+      ).toContain(f);
+    }
+  });
+});

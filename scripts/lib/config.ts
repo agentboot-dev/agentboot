@@ -33,8 +33,21 @@ export const VALID_OUTPUT_FORMATS: readonly string[] = [
  * unspecified config produced an EMPTY format list, so every capability and
  * enforcement check iterated over nothing and reported clean. A gate that
  * evaluates zero platforms is not a passing gate, it is an absent one.
+ *
+ * R1-5: `agents` is in the list. Unifying the four answers resolved the drift by
+ * silently picking the SHORTEST of them, which dropped `agents` from
+ * compilePersona's fallback — where an in-code comment specifically asserted it
+ * had to be there ("agents is a first-class official output — the fallback must
+ * agree with the install/export defaults, which always include it"). The
+ * consequence was not cosmetic: a hub whose config omits
+ * `personas.outputFormats` stopped emitting `dist/agents/` entirely, and because
+ * sync prunes against the previous manifest, the next sync would then WITHDRAW
+ * AGENTS.md artifacts already delivered to spokes. `scaffoldConfig` in
+ * install.ts still writes `agents` into every hub it creates, so the two agree
+ * again; unification is supposed to remove a contradiction, not resolve it by
+ * quietly deleting an output surface.
  */
-export const DEFAULT_OUTPUT_FORMATS: readonly string[] = ["skill", "claude", "copilot"];
+export const DEFAULT_OUTPUT_FORMATS: readonly string[] = ["skill", "claude", "copilot", "agents"];
 
 /**
  * Formats that can be SYNCED into a spoke repo.
