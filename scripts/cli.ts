@@ -175,6 +175,35 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
 }
 
 /**
+ * R1-4: load a hub config, or say "this is not a hub" and exit 1.
+ *
+ * `loadConfig` THROWS when the file is absent. Every command action here is an
+ * async function with no handler, so an unguarded call does not print an error —
+ * it prints a raw Node stack trace and exits 7. Measured outside a hub before
+ * this: `audit`, `drift-check`, `mcp-verify` and `telemetry-inspect` all did,
+ * `--format json` included, so a machine consumer got a stack trace on stderr
+ * where it expected JSON.
+ *
+ * `drift-check` had been given an fs.existsSync guard for exactly this and the
+ * siblings had not — the recurring shape. One helper, and a test that runs every
+ * command in an empty directory and asserts none of them emits a stack trace.
+ */
+function loadHubConfigOrExit(configPath: string, command: string): AgentBootConfig {
+  if (!fs.existsSync(configPath)) {
+    console.error(chalk.red(`✗ No agentboot.config.json found — \`${command}\` needs a hub.`));
+    console.error(chalk.gray(`    Looked for: ${configPath}`));
+    console.error(chalk.gray("    Run it from a hub directory, or pass -c <path>."));
+    process.exit(1);
+  }
+  try {
+    return loadConfig(configPath);
+  } catch (e: unknown) {
+    console.error(chalk.red(`✗ Failed to read ${configPath}: ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+}
+
+/**
  * The `reports` posture (see scripts/lib/dist-consumers.ts).
  *
  * `doctor`, `status` and `lint` exist to TELL the operator what state the hub is
@@ -2792,7 +2821,7 @@ program
     // there, so read the merged view.
     const opts = cmd.optsWithGlobals();
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "mcp-pin");
     const approved = config.mcp?.approved ?? [];
     const wanted = opts["server"] as string | undefined;
     const targets = approved.filter((s) => (s.command || s.url) && (!wanted || s.name === wanted));
@@ -2877,7 +2906,7 @@ program
       approved = pinsFile.approved ?? [];
     } else {
       configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-      const config = loadConfig(configPath);
+      const config = loadHubConfigOrExit(configPath, "mcp-verify");
       approved = config.mcp?.approved ?? [];
     }
     const wanted = opts["server"] as string | undefined;
@@ -3136,7 +3165,10 @@ program
       const configPath = globalOpts.config
         ? path.resolve(globalOpts.config)
         : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
-      const config = loadConfig(configPath);
+      // R1-4: the all-repos branch is the HUB side of drift-check; without a hub
+      // config there is no repos.json to read. It used to reach loadConfig
+      // unguarded and die with a stack trace at exit 7.
+      const config = loadHubConfigOrExit(configPath, "drift-check");
       const reposPath = config.sync?.repos ? path.resolve(path.dirname(configPath), config.sync.repos) : path.join(path.dirname(configPath), "repos.json");
       // An unreadable repos.json used to degrade to `repos = []`, which produced
       // "Summary: 0/0 clean, 0 drifted" and exit 0 — a compliance report that
@@ -3239,7 +3271,10 @@ program
     // found" as "the hub is in the state I asked for". After a failed build the
     // hub SOURCES are healthy and the deployed tree is not — so the clean
     // verdict is true and misleading. Refuse rather than qualify.
-    assertDistFreshOrExit(configPath, loadConfig(configPath), "audit");
+    //
+    // R1-4: through the helper, because A3's unconditional loadConfig made
+    // `agentboot audit` outside a hub die with a stack trace and exit 7.
+    assertDistFreshOrExit(configPath, loadHubConfigOrExit(configPath, "audit"), "audit");
 
     const report = runAudit(hubRoot);
 
@@ -3916,10 +3951,10 @@ program
   .action(async (_opts, cmd: Command) => {
     // Merged view — the program-level -c/--config global captures the value.
     const opts = cmd.optsWithGlobals();
-    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+    const { resolveConfigPath } = await import("./lib/config.js");
     const { TELEMETRY_EVENTS, TELEMETRY_SCHEMA_VERSION, sampleEvents } = await import("./lib/telemetry-schema.js");
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "telemetry-inspect");
     const t = config.telemetry ?? {};
     const enabled = t.enabled === true;
     const devIdMode = (t.includeDevId ?? false) as false | string;
@@ -3965,10 +4000,10 @@ program
     // Merged view — the program-level -c/--config global captures the value.
     const opts = cmd.optsWithGlobals();
     const { buildEvidencePack } = await import("./lib/evidence-pack.js");
-    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+    const { resolveConfigPath } = await import("./lib/config.js");
 
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "evidence-pack");
     const hubPath = path.dirname(configPath);
     const distPath = path.resolve(hubPath, config.output?.distPath ?? "./dist");
 
