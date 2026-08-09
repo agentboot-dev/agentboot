@@ -601,20 +601,94 @@ function loadManifestHashes(
   repoPath: string,
   targetDir: string
 ): Map<string, string> | null {
-  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
-  if (!fs.existsSync(manifestPath)) return null;
+  return readSpokeManifest(repoPath, targetDir).hashes;
+}
 
+/**
+ * R2-5: an UNREADABLE spoke manifest is not an ABSENT spoke manifest.
+ *
+ * Every reader here collapsed a parse failure into the same value as "no
+ * manifest, first sync" — `loadManifestHashes` returned `null` under the comment
+ * *"Corrupt manifest — sync as normal"*, `loadManifestMeta` returned
+ * `{platform: null, retired: []}`, `loadManagedMcpServers` returned `[]`. The
+ * manifest is the ONLY record of what AgentBoot previously delivered, so losing
+ * it silently does not degrade sync to "write everything again" — it degrades
+ * sync to **write everything again and delete nothing**, which is revocation
+ * turned off.
+ *
+ * Reproduced end to end on two scaffolded spokes, same hub, same revocation
+ * (drop `security.instructions` from `instructions.enabled`):
+ *
+ *   spokeY, manifest intact
+ *     ✓ spokeY (claude) — 3 written, 27 unchanged, 1 removed
+ *     spokeY/.claude/rules/ → baseline.instructions.md
+ *
+ *   spokeX, manifest replaced with `{ "files": [ ,,,`
+ *     SYNC_FORCE_EXIT=0
+ *     ✓ spokeX (claude) — 3 written, 27 unchanged          ← no "removed"
+ *     spokeX/.claude/rules/ → baseline.instructions.md  security.instructions.md
+ *     drift-check EXIT 0  "1/1 clean, 0 drifted, 0 UNCHECKED"
+ *
+ * The revoked control is still live, and because sync rewrote the manifest it is
+ * now RE-ADOPTED as a legitimately managed artifact and signed — so drift-check
+ * reports clean precisely because the evidence of the revocation was destroyed.
+ * Corrupting one JSON file in a spoke is the cheapest possible way to make a
+ * control permanently un-revokable, and nothing said a word.
+ *
+ * The path is fully documented, too: B9's import-first guard fires (a manifest
+ * with no hashes makes every file look locally modified) and tells the operator
+ * *"To override: agentboot sync --force"* — and `--force` is what completes the
+ * hole.
+ *
+ * The `prunable` guard below already prints a loud skip line for the
+ * platform-mismatch case. It was written `if (prevManifest !== null && !prunable)`,
+ * so the corrupt case — the one where `prevManifest` IS null — fell into the
+ * silent branch. A skip must alarm as loudly as a failure.
+ */
+export interface SpokeManifestRead {
+  /** null when absent OR unreadable — callers must consult `parseError`. */
+  hashes: Map<string, string> | null;
+  platform: string | null;
+  retired: Array<{ path: string; reason: string; hash_expected: string | null }>;
+  managedMcpServers: string[];
+  /** File exists on disk. */
+  present: boolean;
+  /** Set when the file exists but could not be parsed. */
+  parseError?: string;
+}
+
+function readSpokeManifest(repoPath: string, targetDir: string): SpokeManifestRead {
+  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
+  const empty: SpokeManifestRead = {
+    hashes: null, platform: null, retired: [], managedMcpServers: [], present: false,
+  };
+  if (!fs.existsSync(manifestPath)) return empty;
   try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+      files?: Array<{ path?: string; hash?: string }>;
+      platform?: string;
+      retired?: Array<{ path: string; reason: string; hash_expected: string | null }>;
+      mcp_managed_servers?: unknown;
+    };
     const hashes = new Map<string, string>();
-    for (const entry of manifest.files ?? []) {
-      if (entry.path && entry.hash) {
-        hashes.set(entry.path, entry.hash);
-      }
+    for (const entry of m.files ?? []) {
+      if (entry.path && entry.hash) hashes.set(entry.path, entry.hash);
     }
-    return hashes;
-  } catch {
-    return null; // Corrupt manifest — sync as normal
+    return {
+      hashes,
+      platform: m.platform ?? null,
+      retired: m.retired ?? [],
+      managedMcpServers: Array.isArray(m.mcp_managed_servers)
+        ? m.mcp_managed_servers.filter((x): x is string => typeof x === "string")
+        : [],
+      present: true,
+    };
+  } catch (e: unknown) {
+    return {
+      ...empty,
+      present: true,
+      parseError: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
@@ -632,17 +706,8 @@ function loadManifestMeta(
   repoPath: string,
   targetDir: string,
 ): { platform: string | null; retired: Array<{ path: string; reason: string; hash_expected: string | null }> } {
-  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
-  if (!fs.existsSync(manifestPath)) return { platform: null, retired: [] };
-  try {
-    const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
-      platform?: string;
-      retired?: Array<{ path: string; reason: string; hash_expected: string | null }>;
-    };
-    return { platform: m.platform ?? null, retired: m.retired ?? [] };
-  } catch {
-    return { platform: null, retired: [] };
-  }
+  const m = readSpokeManifest(repoPath, targetDir);
+  return { platform: m.platform, retired: m.retired };
 }
 
 /**
@@ -715,16 +780,7 @@ function managedMcpServerNames(mergedFiles: Map<string, ScopedFile>): string[] {
 
 /** F1: server names the PREVIOUS manifest recorded as AgentBoot-delivered. */
 function loadManagedMcpServers(repoPath: string, targetDir: string): string[] {
-  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
-  if (!fs.existsSync(manifestPath)) return [];
-  try {
-    const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as { mcp_managed_servers?: unknown };
-    return Array.isArray(m.mcp_managed_servers)
-      ? m.mcp_managed_servers.filter((x): x is string => typeof x === "string")
-      : [];
-  } catch {
-    return [];
-  }
+  return readSpokeManifest(repoPath, targetDir).managedMcpServers;
 }
 
 /**
@@ -1404,6 +1460,24 @@ function syncRepoTarget(
           : `the existing ${targetDir}/ manifest was written by \`${prevMeta.platform}\`.`) +
         ` Re-run sync to prune revoked artifacts.`,
       ),
+    );
+  }
+  // R2-5: the corrupt case. `prevManifest` is null here, so it fell through the
+  // branch above in SILENCE — and the pass it silently skipped is the one that
+  // deletes revoked controls. This is an ERROR, not a warning: unlike the
+  // platform-retag case (a state sync itself creates when two platforms share a
+  // targetDir), an unparseable manifest is damage or tampering, and it is
+  // exactly the file someone would corrupt to make a control un-revokable.
+  // Recorded on `result.errors` so the run keeps going for the other repos and
+  // still exits non-zero — keep-going and fail-loudly are not in tension.
+  const prevRead = readSpokeManifest(effectivePath, targetDir);
+  if (prevRead.parseError) {
+    result.errors.push(
+      `${targetDir}/.agentboot-manifest.json could not be parsed (${prevRead.parseError}). ` +
+      "Revocation propagation was SKIPPED for this repo: the manifest is the only record of " +
+      "what was previously delivered, so nothing can be identified as revoked and any control " +
+      "the org has withdrawn REMAINS LIVE in this repo. Restore the manifest from version " +
+      "control, or delete the managed directory and re-sync from scratch.",
     );
   }
   let orphanPlan;
