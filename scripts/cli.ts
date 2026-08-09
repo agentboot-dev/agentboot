@@ -3377,6 +3377,12 @@ program
         if (report.exceptionIssues) {
           for (const issue of report.exceptionIssues) console.log(chalk.yellow(`    ⚠ ${issue}`));
         }
+        // NF4-4: an unreadable manifest is red, not yellow — it means a set of
+        // managed files went unchecked, which is the state this report exists
+        // to distinguish from clean.
+        if (report.manifestIssues) {
+          for (const issue of report.manifestIssues) console.log(chalk.red(`    ✗ ${issue}`));
+        }
         console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.exceptedCount} excepted (approved), ${report.summary.cleanCount} clean\n`);
       }
       process.exit(report.clean ? 0 : 1);
@@ -3433,16 +3439,27 @@ program
           // F-1: a revoked control still live here must be named, not folded
           // into a generic "drifted" — it is a different remediation entirely.
           if (r.summary.retiredCount > 0) parts.push(`${r.summary.retiredCount} retired-but-present`);
+          // NF4-4: "present but unreadable" is its own state. Reporting it as
+          // "no manifest (never synced, or the manifest was deleted)" sends the
+          // operator to the wrong remediation, and reporting it as `clean` —
+          // which is what happened when a READABLE manifest sat beside it —
+          // sends them nowhere at all.
+          const corruptCount = r.manifestIssues?.length ?? 0;
           const detail = !r.pathExists
             ? "UNCHECKED — repo path not found on this machine"
             : !r.manifestFound
-            ? "UNCHECKED — no AgentBoot manifest (never synced, or the manifest was deleted)"
-            : r.clean
-              ? "clean"
-              : parts.length > 0
-                ? parts.join(", ")
-                : "drifted";
+            ? corruptCount > 0
+              ? `UNCHECKED — ${corruptCount} manifest(s) present but UNREADABLE`
+              : "UNCHECKED — no AgentBoot manifest (never synced, or the manifest was deleted)"
+            : corruptCount > 0
+              ? `PARTIALLY CHECKED — ${corruptCount} other manifest(s) present but UNREADABLE`
+              : r.clean
+                ? "clean"
+                : parts.length > 0
+                  ? parts.join(", ")
+                  : "drifted";
           console.log(`    ${icon} ${label} — ${detail}`);
+          for (const issue of r.manifestIssues ?? []) console.log(chalk.red(`        ✗ ${issue}`));
           // --verbose names the individual files. Without this the compliance
           // report says a repo drifted but never which file, so the operator has
           // to re-run per-repo to act on it.

@@ -273,3 +273,89 @@ describe("R1-I — one manifest-selection rule", () => {
     expect(checkDrift(repo).entries[0]!.status).toBe("clean");
   });
 });
+
+/**
+ * NF4-4 — `ManifestSelection.corrupt` had no PRODUCTION consumer.
+ *
+ * 235cf70 fixed the enumeration inside selectManifest — every unparseable
+ * candidate is collected — and then both internal callers dropped the field:
+ * `findManifestPath` returned `.path`, `findManifest` returned `.manifest`.
+ * grep showed the only readers of `.corrupt` were the tests directly above.
+ *
+ * So the fix was real, tested, and reached no operator. Measured end to end on a
+ * spoke with a VALID .claude manifest and
+ * `printf '{ this is not json' > .cursor/.agentboot-manifest.json`:
+ *
+ *     agentboot drift-check  ->  exit 0
+ *       ✓ dspoke — clean
+ *       Summary: 1/1 clean, 0 drifted, 0 UNCHECKED
+ *     grep -ic 'cursor|corrupt|unreadable' log  ->  0
+ *
+ * selectManifest's own docstring states the contract — "there is a manifest here
+ * and it is unreadable is a finding" — and it was unmet at every surface an
+ * operator can see. These tests assert the REPORT, not the selection, because
+ * the selection was already right.
+ */
+describe("NF4-4 — an unreadable manifest reaches the drift REPORT", () => {
+  function repoWith(files: Record<string, string>): string {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "ab-nf44-"));
+    for (const [rel, body] of Object.entries(files)) {
+      const abs = path.join(repo, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, body);
+    }
+    return repo;
+  }
+
+  it("NF4-4: a corrupt manifest beside a VALID one is a finding, and not clean", async () => {
+    const { checkDrift } = await import("../scripts/lib/drift.js");
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": JSON.stringify({ version: 1, files: [] }),
+      ".cursor/.agentboot-manifest.json": "{ this is not json",
+    });
+    const report = checkDrift(repo);
+    expect(report.manifestFound, "the valid manifest is still selected and read").toBe(true);
+    expect(
+      report.manifestIssues,
+      "the corrupt manifest never reached the report — the exact NF4-4 repro",
+    ).toBeDefined();
+    expect(report.manifestIssues!.join("\n")).toContain(".cursor");
+    expect(report.manifestIssues!.join("\n")).toContain("UNREADABLE");
+    expect(
+      report.clean,
+      "part of this repo went unchecked and it reported clean — the whole point of the report",
+    ).toBe(false);
+  });
+
+  it("NF4-4: when EVERY manifest is corrupt, the report says unreadable, not absent", async () => {
+    // "Never synced, or the manifest was deleted" sends the operator to a
+    // different remediation than "the file is here and I cannot parse it".
+    const { checkDrift } = await import("../scripts/lib/drift.js");
+    const repo = repoWith({ ".claude/.agentboot-manifest.json": "{{{" });
+    const report = checkDrift(repo);
+    expect(report.manifestFound).toBe(false);
+    expect(report.clean).toBe(false);
+    expect(report.manifestIssues?.length).toBe(1);
+  });
+
+  it("NF4-4 (NEGATIVE): a repo with only READABLE manifests carries no issues", async () => {
+    // Without this, "always report an issue" would pass the test above and make
+    // every real repo permanently dirty — the over-gating that gets a check
+    // switched off.
+    const { checkDrift } = await import("../scripts/lib/drift.js");
+    const repo = repoWith({
+      ".claude/.agentboot-manifest.json": JSON.stringify({ version: 1, files: [] }),
+      ".cursor/.agentboot-manifest.json": JSON.stringify({ version: 1, files: [] }),
+    });
+    const report = checkDrift(repo);
+    expect(report.manifestIssues).toBeUndefined();
+    expect(report.clean).toBe(true);
+  });
+
+  it("NF4-4 (NEGATIVE): a repo with NO manifest at all is unchanged", async () => {
+    const { checkDrift } = await import("../scripts/lib/drift.js");
+    const report = checkDrift(repoWith({ "README.md": "hi" }));
+    expect(report.manifestFound).toBe(false);
+    expect(report.manifestIssues).toBeUndefined();
+  });
+});
