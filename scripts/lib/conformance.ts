@@ -686,6 +686,12 @@ export function runPlatformConformance(
 
 export interface ConformanceRun {
   manifests: EnforcementManifest[];
+  /**
+   * Path of the manifest ACTUALLY written, per platform. A platform absent from
+   * this map had no dist/ tree, so no manifest exists — the report must not name
+   * a file the run did not produce.
+   */
+  manifestPaths: Record<string, string>;
   /** Platforms whose manifest contains at least one FAILED control. */
   failedPlatforms: string[];
   /**
@@ -716,6 +722,8 @@ export function runConformance(
   const manifests: EnforcementManifest[] = [];
   const failedPlatforms: string[] = [];
   const untestedPlatforms: string[] = [];
+  /** Written manifests only, keyed by platform. Absent means nothing was written. */
+  const manifestPaths: Record<string, string> = {};
   let probedControls = 0;
 
   for (const platform of platforms) {
@@ -728,15 +736,26 @@ export function runConformance(
       untestedPlatforms.push(platform);
     }
     probedControls += manifest.controls.filter((c) => c.status === "pass" || c.status === "fail").length;
+    // Report the path only when the file was actually written. The CLI used to
+    // print `manifest: dist/<platform>/enforcement-manifest.json` unconditionally
+    // while this write was guarded by `fs.existsSync(platformDir)` with no else
+    // branch — so with the platform trees deleted, conformance named two files
+    // that did not exist. 1feb969 fixed the exit code (untested is no longer a
+    // pass) and left the phantom path in the report.
     const platformDir = path.join(distPath, platform);
     if (fs.existsSync(platformDir)) {
-      fs.writeFileSync(
-        path.join(platformDir, "enforcement-manifest.json"),
-        JSON.stringify(manifest, null, 2) + "\n",
-        "utf-8",
-      );
+      const manifestPath = path.join(platformDir, "enforcement-manifest.json");
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+      manifestPaths[platform] = path.relative(path.dirname(distPath), manifestPath);
     }
   }
 
-  return { manifests, failedPlatforms, untestedPlatforms, probedControls, bashAvailable: bashPath !== null };
+  return {
+    manifests,
+    failedPlatforms,
+    untestedPlatforms,
+    probedControls,
+    manifestPaths,
+    bashAvailable: bashPath !== null,
+  };
 }

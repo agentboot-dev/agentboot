@@ -23,6 +23,7 @@ import path from "node:path";
 import os from "node:os";
 
 import { runConformance, isUntested, type ControlResult } from "../scripts/lib/conformance.js";
+import type { AgentBootConfig } from "../scripts/lib/config.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "agentboot.js");
@@ -119,5 +120,38 @@ describe("runConformance — the counts the CLI gates on", () => {
   it("isUntested is the single predicate — a status rename cannot silently un-gate the CLI", () => {
     expect(isUntested({ control: "x", mechanism: "hook script", declared_level: "enforced", status: "untested", probes: [] })).toBe(true);
     expect(isUntested({ control: "x", mechanism: "hook script", declared_level: "enforced", status: "pass", probes: [] })).toBe(false);
+  });
+});
+
+/**
+ * conformance printed a manifest path for a file it did not write.
+ *
+ * `runConformance` writes dist/<platform>/enforcement-manifest.json only
+ * `if (fs.existsSync(platformDir))`, with no else branch, while the CLI printed
+ * `manifest: dist/${m.platform}/enforcement-manifest.json` unconditionally.
+ * Verified with dist/claude and dist/cursor deleted: both paths were printed and
+ * `ls` confirmed neither file existed. 1feb969 fixed the exit code — untested is
+ * no longer a pass — and left the phantom path in the report.
+ *
+ * A report that names a nonexistent evidence file is worse than one that says
+ * nothing: the path is what an auditor is told to go and read.
+ */
+describe("conformance — the report names only files that exist", () => {
+  it("manifestPaths carries a platform only when its manifest was written", () => {
+    const hub = fs.mkdtempSync(path.join(os.tmpdir(), "ab-phantom-"));
+    const dist = path.join(hub, "dist");
+    fs.mkdirSync(path.join(dist, "claude"), { recursive: true });
+    // cursor is configured but has NO tree — the state that produced the phantom.
+    const config = {
+      org: "acme", personas: { outputFormats: ["claude", "cursor"] },
+    } as unknown as AgentBootConfig;
+
+    const run = runConformance(dist, ["claude", "cursor"], config, "0.0.0");
+    expect(Object.keys(run.manifestPaths)).toEqual(["claude"]);
+    expect(fs.existsSync(path.join(dist, "claude", "enforcement-manifest.json"))).toBe(true);
+    expect(fs.existsSync(path.join(dist, "cursor", "enforcement-manifest.json"))).toBe(false);
+    // Both platforms still get a manifest OBJECT in the run — the reading
+    // happened, it just could not be persisted. The two facts are separate.
+    expect(run.manifests.map((m) => m.platform).sort()).toEqual(["claude", "cursor"]);
   });
 });

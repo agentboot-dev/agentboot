@@ -2781,7 +2781,13 @@ program
           console.log(chalk.red(`        FAILED: ${p.probe} — expected ${p.expected}, observed ${p.observed}`));
         }
       }
-      console.log(chalk.gray(`    manifest: dist/${m.platform}/enforcement-manifest.json`));
+      // Only name a file that exists. This line was unconditional while the
+      // write was guarded — verified with dist/claude and dist/cursor deleted:
+      // both paths printed, `ls` confirmed neither file was there.
+      const written = run.manifestPaths[m.platform];
+      console.log(written
+        ? chalk.gray(`    manifest: ${written}`)
+        : chalk.yellow(`    manifest: NOT WRITTEN — no dist/${m.platform}/ tree to write it into`));
       console.log("");
     }
     if (run.failedPlatforms.length > 0) {
