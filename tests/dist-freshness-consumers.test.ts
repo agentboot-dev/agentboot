@@ -356,9 +356,21 @@ describe("NF2-1 — a gated consumer with no hub config still checks the stamp",
 
     // ...then a build that FAILS, which leaves that same tree in place and
     // stamps it `failed`.
+    //
+    // The failure has to happen AFTER the build arms its invalidation context,
+    // which means a well-formed config that the build then refuses. An earlier
+    // draft used `claude: { permissions: "deny-everything" }`; once
+    // configShapeErrors landed, that is rejected at config LOAD, so the build
+    // never starts, no stamp is written, and the previous "success" stamp
+    // correctly survives. Correct behaviour, wrong fixture. The capability gate
+    // is the right lever: declare claude.hooks with `claude` removed from
+    // outputFormats, so nothing can emit it and the gate refuses mid-build.
     const cfgPath = path.join(fhub, "agentboot.config.json");
     const c = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
-    c.claude = { permissions: "deny-everything" };
+    c.personas = { ...(c.personas ?? {}), outputFormats: ["cursor"] };
+    c.claude = {
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/zz.sh" }] }] },
+    };
     fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2));
     expect(ab(["build"], fhub).status).toBe(1);
     expect(JSON.parse(fs.readFileSync(path.join(fhub, "dist", ".agentboot-build.json"), "utf-8")).status)
