@@ -252,7 +252,9 @@ agentboot validate --strict
 > `build` will compile a guardrail violation and ship it.
 
 On Claude Code, Codex CLI and Copilot CLI a HARD guardrail compiles to a **blocking
-hook**. On `AGENTS.md` and the community-tier platforms it is delivered as instruction
+hook** — with Copilot's ceiling stated: its exit-2 blocking is documented platform
+behaviour we have not yet verified end to end, and its command-hook timeouts fail open.
+On `AGENTS.md` and the community-tier platforms it is delivered as instruction
 text with no blocking mechanism — see [Guardrails](guardrails.md) for the full picture
 and how to verify enforcement rather than assume it.
 

@@ -758,10 +758,13 @@ configurable per organization through the domain layer.
 
 **Honest limitation:** Hook support varies by platform. AgentBoot emits compliance hooks
 for Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), and GitHub Copilot
-(`.github/hooks/agentboot.json`), all of which block on exit code 2. IDE-based
+(`.github/hooks/agentboot.json`), all of which block on exit code 2 — with Copilot's
+ceiling stated: its exit-2 blocking is documented platform behaviour we have not yet
+verified end to end, and its command-hook timeouts fail open. IDE-based
 community-tier platforms (Cursor, JetBrains) generally have no hook mechanism, so
 enforcement there is advisory only. AgentBoot documents these gaps per platform rather
-than promising universal enforcement.
+than promising universal enforcement — see the
+[platform capability matrix](platform-capability-matrix.md).
 
 ---
 
