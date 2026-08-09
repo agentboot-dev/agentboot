@@ -94,3 +94,47 @@ describe("blocking hook gates fail CLOSED on an unreadable payload", () => {
     expect(run(hooks.preToolUse, '{"tool_name":"Read"}')).toBe(0);
   });
 });
+
+/**
+ * R4N-1 — the fix for the applyTo inversion (F-6) reintroduced F-6.
+ *
+ * Anchoring the key at column 0 is correct: matching at any indent lets a
+ * `description: |` whose prose mentions applyTo be read as the glob. But the
+ * consequence was that an INDENTED applyTo produced `raw === null`, which means
+ * "no scope declared", which means ALWAYS-ON — a narrowing directive delivered
+ * as its opposite, at build exit 0, with no diagnostic. That is F-6 exactly.
+ *
+ * The fix keeps the anchor and removes the silence.
+ */
+describe("R4N-1: an indented applyTo is refused, not silently inverted", () => {
+  it("flags an indented key instead of returning always-on", async () => {
+    const { inspectScope } = await import("../scripts/lib/scope-projection.js");
+    const r = inspectScope('---\n  description: x\n  applyTo: "src/**"\n---\n# b\n');
+    expect(r.malformed).not.toBeNull();
+    expect(r.alwaysOn).toBe(false); // fail closed — the degradation gate must fire
+  });
+
+  it("does NOT flag applyTo appearing inside a block scalar", async () => {
+    // The false positive the column-0 anchor exists to prevent. If this ever
+    // fails, the fix has traded one silent inversion for a noisy one.
+    const { inspectScope } = await import("../scripts/lib/scope-projection.js");
+    const r = inspectScope('---\ndescription: |\n  set applyTo: "src/**" to scope it\n---\n# b\n');
+    expect(r.malformed).toBeNull();
+    expect(r.alwaysOn).toBe(true);
+  });
+
+  it("leaves a genuinely unscoped artifact always-on and unflagged", async () => {
+    const { inspectScope } = await import("../scripts/lib/scope-projection.js");
+    const r = inspectScope("---\ndescription: x\n---\n# b\n");
+    expect(r.malformed).toBeNull();
+    expect(r.alwaysOn).toBe(true);
+  });
+
+  it("still reads a normal column-0 scope", async () => {
+    const { inspectScope } = await import("../scripts/lib/scope-projection.js");
+    const r = inspectScope('---\ndescription: x\napplyTo: "src/**"\n---\n# b\n');
+    expect(r.malformed).toBeNull();
+    expect(r.alwaysOn).toBe(false);
+    expect(r.globs).toContain("src/**");
+  });
+});

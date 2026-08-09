@@ -444,6 +444,42 @@ function collectIndentedLines(lines: string[], start: number, keyIndent: number)
   return out;
 }
 
+/**
+ * R4N-1: find a path-scope key the reader deliberately did NOT match because it
+ * is indented, and which is not merely the word appearing inside another key's
+ * block scalar.
+ *
+ * The column-0 anchor above is correct and must stay — matching at any indent
+ * lets a `description: |` whose prose explains applyTo be read as the glob. But
+ * the consequence was that an operator who indents their frontmatter gets
+ * `raw === null`, which means "no scope declared", which means ALWAYS-ON. A
+ * narrowing directive silently inverted to its opposite is the exact defect
+ * class this module exists to close (F-6), so the answer is not to loosen the
+ * anchor — it is to stop being silent about the case we decline to honour.
+ *
+ * Returns the offending line, or null.
+ */
+function findIndentedScopeKey(fm: string, key: string): string | null {
+  const lines = fm.split("\n");
+  const keyRe = new RegExp(`^[ \\t]+${key}:`, "i");
+  const blockOpen = /^([ \t]*)[A-Za-z0-9_-]+:[ \t]*[|>][-+0-9]*[ \t]*$/;
+  let blockIndent: number | null = null;
+
+  for (const line of lines) {
+    if (blockIndent !== null) {
+      // Still inside a block scalar while the line is blank or more indented
+      // than the key that opened it.
+      const indent = /^[ \t]*/.exec(line)![0]!.length;
+      if (line.trim() === "" || indent > blockIndent) continue;
+      blockIndent = null;
+    }
+    const open = blockOpen.exec(line);
+    if (open) { blockIndent = open[1]!.length; continue; }
+    if (keyRe.test(line)) return line.trim();
+  }
+  return null;
+}
+
 export function inspectScope(content: string): ScopeInspection {
   const fm = frontmatterBlock(content);
   // `=== null`, not falsy: an EMPTY frontmatter block ("---\n---") is a real
@@ -460,6 +496,21 @@ export function inspectScope(content: string): ScopeInspection {
     return { globs, alwaysOn: false, acknowledgedUnscoped, raw, malformed };
   }
   if (raw === null) {
+    // Before concluding "no scope declared" — which means ALWAYS-ON — check
+    // whether the operator wrote one at an indent the reader will not honour.
+    // Saying nothing here delivers the opposite of what they asked for.
+    const indented = findIndentedScopeKey(fm, "applyTo");
+    if (indented !== null) {
+      return {
+        globs: [],
+        alwaysOn: false,
+        acknowledgedUnscoped,
+        raw: indented,
+        malformed:
+          `\`applyTo:\` must start at column 0 of the frontmatter; found indented (\`${indented}\`). ` +
+          `An indented key is not read as the artifact's scope, and an unscoped artifact is delivered always-on.`,
+      };
+    }
     return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null, malformed: null };
   }
 
