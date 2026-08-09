@@ -31,16 +31,58 @@ interface Use {
   ref: string;
 }
 
+/** Every file under `dir` matching `re`, RECURSIVELY. */
+function walk(dir: string, re: RegExp): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...walk(abs, re));
+    else if (re.test(e.name)) out.push(abs);
+  }
+  return out;
+}
+
+/**
+ * NF4-5: every file in this repo that carries a workflow `uses:` an adopter
+ * will EXECUTE.
+ *
+ * V6 read `.github/workflows/` and nothing else, so `templates/ci/*.yml` — the
+ * adopter-facing workflow AgentBoot actually SHIPS (it is in package.json
+ * `files`, and templates/ci/drift-check.yml is cited as the evidence for
+ * assurance claim #10 in docs/assurance-claims.md) — was outside the pinning
+ * invariant entirely. Changing templates/ci/drift-check.yml:31 to
+ * `actions/checkout@main` left all six tests green.
+ *
+ * This is the corpus-wide-policy-policed-by-directory-root shape NF2-2 named,
+ * and the same one that hid domains/ from the scope gate. An unpinned action in
+ * a template is strictly worse than one here: it runs in every adopter's repo,
+ * and we do not get to fix it for them.
+ */
+function executedWorkflowFiles(): { label: string; abs: string }[] {
+  return [
+    ...walk(WF_DIR, /\.ya?ml$/).map((abs) => ({
+      label: path.join(".github/workflows", path.basename(abs)),
+      abs,
+    })),
+    ...walk(path.join(ROOT, "templates"), /\.ya?ml$/).map((abs) => ({
+      label: path.relative(ROOT, abs),
+      abs,
+    })),
+  ];
+}
+
 function allUses(): Use[] {
   const out: Use[] = [];
-  for (const f of fs.readdirSync(WF_DIR).filter((n) => /\.ya?ml$/.test(n))) {
-    const lines = fs.readFileSync(path.join(WF_DIR, f), "utf-8").split("\n");
+  for (const { label, abs } of executedWorkflowFiles()) {
+    const lines = fs.readFileSync(abs, "utf-8").split("\n");
     lines.forEach((line, i) => {
       // Skip commented-out examples — the usage block at the top of
-      // agentboot-ci.yml documents how a CONSUMER calls this workflow.
+      // agentboot-ci.yml documents how a CONSUMER calls this workflow. Those are
+      // covered by the NF2-5 block below, which scans comments deliberately.
       if (/^\s*#/.test(line)) return;
       const m = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line);
-      if (m) out.push({ file: f, line: i + 1, ref: m[1]! });
+      if (m) out.push({ file: label, line: i + 1, ref: m[1]! });
     });
   }
   return out;
@@ -61,6 +103,19 @@ describe("V6 — every GitHub Action is pinned to a commit SHA", () => {
   it("the enumeration found the workflows at all — an empty scan is a vacuous check", () => {
     expect(fs.readdirSync(WF_DIR).filter((n) => /\.ya?ml$/.test(n)).length).toBeGreaterThanOrEqual(5);
     expect(USES.length).toBeGreaterThan(10);
+  });
+
+  it("NF4-5: the SHIPPED templates are in the corpus, not just .github/workflows", () => {
+    // Named explicitly rather than left to the total count: templates/ci is the
+    // adopter-facing workflow AgentBoot ships, and it is the surface V6 could
+    // not see. A count-only assertion would go green again the moment the
+    // recursion silently stopped matching it.
+    const templateUses = USES.filter((u) => u.file.startsWith("templates/"));
+    expect(
+      templateUses.length,
+      "templates/**/*.yml is outside the pinning invariant again — that file runs " +
+        "in every adopter's repo and we do not get to fix it for them",
+    ).toBeGreaterThan(0);
   });
 
   it("V6-1: no `uses:` references a mutable tag or branch", () => {
@@ -130,16 +185,20 @@ describe("NF2-5 — documented usage examples are pinned too", () => {
         if (m) out.push({ where: `${file}:${i + 1}`, ref: m[1]! });
       });
     };
-    // Commented usage blocks inside the workflows themselves...
-    for (const f of fs.readdirSync(WF_DIR).filter((n) => /\.ya?ml$/.test(n))) {
-      scan(path.join(".github/workflows", f), fs.readFileSync(path.join(WF_DIR, f), "utf-8"));
+    // Commented usage blocks inside the workflows AND the shipped templates...
+    for (const { label, abs } of executedWorkflowFiles()) {
+      scan(label, fs.readFileSync(abs, "utf-8"));
     }
     // ...and the published docs, which is where an adopter actually reads it.
-    const docs = path.join(ROOT, "docs");
-    if (fs.existsSync(docs)) {
-      for (const f of fs.readdirSync(docs).filter((n) => n.endsWith(".md"))) {
-        scan(path.join("docs", f), fs.readFileSync(path.join(docs, f), "utf-8"));
-      }
+    // NF4-5: recursively. This was `readdirSync(docs)`, so docs/_archive and any
+    // future subdirectory were exempt by default — the same directory-root
+    // scoping the executed scan had.
+    for (const abs of walk(path.join(ROOT, "docs"), /\.md$/)) {
+      scan(path.relative(ROOT, abs), fs.readFileSync(abs, "utf-8"));
+    }
+    // ...and the website, the other place an adopter copies from.
+    for (const abs of walk(path.join(ROOT, "website", "src", "pages"), /\.(md|mdx|tsx)$/)) {
+      scan(path.relative(ROOT, abs), fs.readFileSync(abs, "utf-8"));
     }
     return out;
   }
