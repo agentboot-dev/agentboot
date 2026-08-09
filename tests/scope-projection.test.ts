@@ -29,6 +29,7 @@ import os from "node:os";
 
 import {
   inspectScope, degradedFormats, scopeViolations, APPLY_TO_PROJECTION,
+  readScopeGlobs, rewriteFrontmatterKeyBlock,
   type ScopedArtifact,
 } from "../scripts/lib/scope-projection.js";
 
@@ -781,4 +782,144 @@ describe("C5/NF-5 — doctor says what it checked", () => {
     expect(d.out).not.toContain("✓ Path scoping is expressible on every configured target");
     expect(d.status).not.toBe(0);
   }, 300_000);
+});
+
+/**
+ * NF2-3 / V1 — the one scope parser handled BLOCK sequences and nothing else.
+ *
+ * YAML FLOW sequences and BLOCK SCALARS are ordinary YAML, and AgentBoot's own
+ * documentation teaches the flow form (docs/concepts.md `paths:
+ * ["packages/api-service/**"]`, docs/prompt-guide.md) while the repo's own
+ * fixtures use it. Before this fix:
+ *
+ *     applyTo: ["src/db/**", "src/auth/**"]
+ *       → ONE glob: the literal string `["src/db/**", "src/auth/**"]`
+ *     applyTo: >  /  applyTo: |
+ *       → ONE glob: `>` / `|`, and the real scope on the next line DROPPED
+ *
+ * End to end at `agentboot build`, exit 0 and no diagnostic:
+ *   dist/cursor/…/phi.instructions.mdc   globs: "["src/db/**", "src/auth/**"]"
+ *   dist/windsurf/…/phi.instructions.md  - "["src/db/**", "src/auth/**"]"
+ * both of which FAIL a js-yaml parse — the NF-4 symptom verbatim, restored on a
+ * different YAML form. Routing all seven gotcha emitters through one parser (V1)
+ * made the defect UNIFORM rather than closing it.
+ *
+ * Zero cases in this file previously covered a flow sequence or a block scalar.
+ */
+describe("NF2-3 — every ordinary YAML form of a scope key parses", () => {
+  const doc = (fm: string) => `---\n${fm}\n---\nbody\n`;
+
+  it("FLOW sequence: two globs, not one literal string", () => {
+    const r = readScopeGlobs(doc('applyTo: ["src/db/**", "src/auth/**"]'), "applyTo");
+    expect(r.globs).toEqual(["src/db/**", "src/auth/**"]);
+    expect(r.malformed).toBeNull();
+  });
+
+  it("FLOW sequence, unquoted items", () => {
+    expect(readScopeGlobs(doc("applyTo: [src/db/**, src/auth/**]"), "applyTo").globs)
+      .toEqual(["src/db/**", "src/auth/**"]);
+  });
+
+  it("FLOW sequence: a comma INSIDE a quoted item is not a separator", () => {
+    // Distinct from the C3 brace case: here the comma is protected by YAML
+    // quoting, not by a brace group, and one splitter cannot be right for both.
+    expect(readScopeGlobs(doc('applyTo: ["src/**/*.{ts,tsx}"]'), "applyTo").globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+
+  it("FOLDED block scalar: the scope on the next line is NOT dropped", () => {
+    expect(readScopeGlobs(doc("applyTo: >\n  src/api/**"), "applyTo").globs)
+      .toEqual(["src/api/**"]);
+  });
+
+  it("LITERAL block scalar, multi-line: one glob per line", () => {
+    expect(readScopeGlobs(doc("applyTo: |\n  src/api/**\n  src/db/**"), "applyTo").globs)
+      .toEqual(["src/api/**", "src/db/**"]);
+  });
+
+  it("block scalar with a chomping indicator", () => {
+    expect(readScopeGlobs(doc("applyTo: |-\n  src/api/**"), "applyTo").globs)
+      .toEqual(["src/api/**"]);
+  });
+
+  it("a block scalar stops at the next key — it does not swallow the frontmatter", () => {
+    const r = readScopeGlobs(doc("applyTo: >\n  src/api/**\ndescription: x"), "applyTo");
+    expect(r.globs).toEqual(["src/api/**"]);
+  });
+
+  it("the `paths:` key gets the identical treatment — same parser, same forms", () => {
+    // The gotcha variant hit all seven emitters identically. It must not need a
+    // second fix.
+    expect(readScopeGlobs(doc('paths: ["packages/api-service/**"]'), "paths").globs)
+      .toEqual(["packages/api-service/**"]);
+    expect(readScopeGlobs(doc("paths: |\n  a/**\n  b/**"), "paths").globs).toEqual(["a/**", "b/**"]);
+  });
+
+  it("NEGATIVE: the forms that already worked still work", () => {
+    expect(readScopeGlobs(doc('applyTo: "src/api/**"'), "applyTo").globs).toEqual(["src/api/**"]);
+    expect(readScopeGlobs(doc('applyTo: "src/**/*.{ts,tsx}"'), "applyTo").globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+    expect(readScopeGlobs(doc('applyTo: "**"  # glob pattern'), "applyTo").globs).toEqual(["**"]);
+    expect(readScopeGlobs(doc('applyTo:\n  - "src/db/**"\n  - "src/auth/**"'), "applyTo").globs)
+      .toEqual(["src/db/**", "src/auth/**"]);
+  });
+
+  it("an EMPTY flow sequence is an empty scope, not a malformed one", () => {
+    const r = readScopeGlobs(doc("applyTo: []"), "applyTo");
+    expect(r.globs).toEqual([]);
+    expect(r.malformed).toBeNull();
+  });
+});
+
+describe("NF2-3 — an UNPARSEABLE scope is reported, never treated as absent", () => {
+  const doc = (fm: string) => `---\n${fm}\n---\nbody\n`;
+
+  it("an unterminated flow sequence is malformed", () => {
+    const r = readScopeGlobs(doc('applyTo: ["src/db/**"'), "applyTo");
+    expect(r.malformed).toContain("unterminated flow sequence");
+  });
+
+  it("a mapping where a glob belongs is malformed", () => {
+    expect(readScopeGlobs(doc("applyTo: {a: 1}"), "applyTo").malformed).toContain("mapping");
+  });
+
+  it("FAIL CLOSED: inspectScope reports a malformed scope as NARROW, not always-on", () => {
+    // Always-on is the inversion this module exists to prevent. "I could not
+    // read it" must make the degradation gate fire, not wave the artifact past.
+    const s = inspectScope(doc('applyTo: ["src/db/**"'));
+    expect(s.alwaysOn).toBe(false);
+    expect(s.malformed).not.toBeNull();
+  });
+});
+
+describe("NF2-3 — the frontmatter rewriter handles a MULTI-LINE value", () => {
+  it("replacing a block-scalar key leaves no orphaned continuation line", () => {
+    // The JetBrains emitter used .replace(/^\s*applyTo:.*$/im, …) — one line —
+    // so a block scalar left `  src/api/**` dangling under the new `globs:`
+    // value, which js-yaml rejects. Getting the parser right and leaving the
+    // rewriter single-line only moves the invalid YAML to another platform.
+    const src = `---\ndescription: d\napplyTo: >\n  src/api/**\n---\nbody\n`;
+    const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["src/api/**"]');
+    expect(out).toContain('globs: ["src/api/**"]');
+    expect(out.split("---")[1]).not.toContain("src/api/**\n  ");
+    expect(out).toBe(`---\ndescription: d\nglobs: ["src/api/**"]\n---\nbody\n`);
+  });
+
+  it("replacing a block-SEQUENCE key consumes every item", () => {
+    const src = `---\napplyTo:\n  - "a/**"\n  - "b/**"\ndescription: d\n---\nbody\n`;
+    const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["a/**","b/**"]');
+    expect(out).toBe(`---\nglobs: ["a/**","b/**"]\ndescription: d\n---\nbody\n`);
+  });
+
+  it("DELETING a multi-line key removes the whole value", () => {
+    const src = `---\napplyTo:\n  - "a/**"\ndescription: d\n---\nbody\n`;
+    expect(rewriteFrontmatterKeyBlock(src, "applyTo", null))
+      .toBe(`---\ndescription: d\n---\nbody\n`);
+  });
+
+  it("NEGATIVE: a single-line key still rewrites, and the body is untouched", () => {
+    const src = `---\napplyTo: "a/**"\ndescription: d\n---\napplyTo: not frontmatter\n`;
+    const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["a/**"]');
+    expect(out).toBe(`---\nglobs: ["a/**"]\ndescription: d\n---\napplyTo: not frontmatter\n`);
+  });
 });

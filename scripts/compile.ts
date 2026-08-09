@@ -62,7 +62,7 @@ import { hookInputCapPrelude } from "./lib/hook-prelude.js";
 import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
 import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
-  APPLY_TO_PROJECTION, type ScopedArtifact,
+  APPLY_TO_PROJECTION, rewriteFrontmatterKeyBlock, type ScopedArtifact,
 } from "./lib/scope-projection.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 import { resolveWithin, PathEscapeError } from "./lib/path-containment.js";
@@ -136,6 +136,42 @@ interface CompileResult {
 function fatal(msg: string): never {
   console.error(chalk.red(`✗ FATAL: ${msg}`));
   process.exit(1);
+}
+
+
+/**
+ * NF2-3: a path-scope key that is present but unparseable stops the build.
+ *
+ * "I could not read the scope" and "there is no scope" are different facts, and
+ * conflating them delivers a narrowly-scoped rule as global — inversion, which
+ * this codebase already established is strictly worse than omission. One sweep
+ * over the sources rather than a check inside each of the seven emitters,
+ * because per-emitter checks are exactly how the seven hand-rolled parsers
+ * drifted apart.
+ */
+function assertScopeKeysParse(
+  groups: { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[],
+): void {
+  const bad: string[] = [];
+  for (const { dir, key, enabled } of groups) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith(".md")) continue;
+      const name = path.basename(f, ".md");
+      if (enabled && !enabled.includes(name)) continue;
+      const content = fs.readFileSync(path.join(dir, f), "utf-8");
+      const { malformed } = readScopeGlobs(content, key);
+      if (malformed) bad.push(`  ${path.join(dir, f)}\n      ${key}: ${malformed}`);
+    }
+  }
+  if (bad.length > 0) {
+    fatal(
+      `${bad.length} artifact(s) have an unreadable path scope:\n${bad.join("\n")}\n` +
+        `  An unreadable scope cannot be delivered as "no scope" — that would deliver a\n` +
+        `  narrow rule as always-on, every file. Fix the YAML, or write applyTo: "**" if\n` +
+        `  the rule really is universal.`
+    );
+  }
 }
 
 function log(msg: string): void {
@@ -1295,11 +1331,30 @@ function compileInstructions(
         // verbatim and was therefore inert. Rewrite the ONE line in place;
         // regenerating the frontmatter would destroy the id/slug/hash identity
         // stamp (decision-0005) that artifact-identity.test.ts asserts.
+        // NF2-3: the key's VALUE may span multiple lines (a block sequence or a
+        // block scalar). A single-line `.replace(/^\s*applyTo:.*$/im, …)` left
+        // the continuation lines orphaned under the new `globs:` value, which
+        // js-yaml rejects ("bad indentation of a mapping entry (3:3)") — so
+        // fixing the parser and leaving the rewriter single-line just moved the
+        // invalid-YAML artifact from one platform to another.
         finalContent = scope.globs.length > 0
-          ? finalContent.replace(/^\s*applyTo:.*$/im, `globs: ${JSON.stringify(scope.globs)}`)
+          ? rewriteFrontmatterKeyBlock(finalContent, "applyTo", `globs: ${JSON.stringify(scope.globs)}`)
           // No globs → always-on. JetBrains treats a rule with no `globs:` as
           // always-on, matching what compileGotchas emits.
-          : finalContent.replace(/^\s*applyTo:.*\n/im, "");
+          : rewriteFrontmatterKeyBlock(finalContent, "applyTo", null);
+      } else if (platform === "copilot" && scope.globs.length > 0) {
+        // NF2-3: Copilot's `applyTo:` is a COMMA-SEPARATED STRING, and this
+        // emitter passed the source line through verbatim. A source authored as
+        // a YAML flow sequence therefore reached Copilot as a flow sequence
+        // while cursor/windsurf/jetbrains got a re-serialized list — two
+        // platforms disagreeing about the same rule's scope, from one source.
+        // Re-serialize here too, from the same parsed globs, so all four agree
+        // by construction rather than by coincidence.
+        finalContent = rewriteFrontmatterKeyBlock(
+          finalContent,
+          "applyTo",
+          `applyTo: "${yamlDoubleQuoted(scope.globs.join(", "))}"`,
+        );
       } else if (
         scope.globs.length > 0 &&
         (APPLY_TO_PROJECTION[platform]?.support ?? "unsupported") === "unsupported"
@@ -3787,6 +3842,23 @@ function main(): void {
   // `<scope>/<name>` with last-write-wins, so the hub copy legitimately
   // overwrites the package copy rather than double-reporting.
   const scopeSeen = new Map<string, ScopedArtifact>();
+
+  // NF2-3: refuse a source whose path-scope key is present but UNPARSEABLE,
+  // BEFORE any emitter runs.
+  //
+  // Seven emitters read this key. Checking in each of them is how the seven
+  // hand-rolled parsers drifted in the first place; the check belongs where the
+  // sources are enumerated, once. And it must be a refusal, not a warning: an
+  // unreadable `applyTo:` reported as "no scope" is reported as ALWAYS-ON, which
+  // is the inversion this whole subsystem exists to prevent. FAIL CLOSED.
+  assertScopeKeysParse(
+    [
+      { dir: packageInstructionsDir, key: "applyTo" as const, enabled: config.instructions?.enabled },
+      { dir: coreInstructionsDir, key: "applyTo" as const, enabled: config.instructions?.enabled },
+      { dir: path.join(coreDir, "gotchas"), key: "paths" as const, enabled: undefined },
+    ],
+  );
+
   compileInstructions(
     packageInstructionsDir,
     config.instructions?.enabled,

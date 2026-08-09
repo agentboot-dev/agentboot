@@ -76,6 +76,14 @@ export interface ScopeInspection {
   acknowledgedUnscoped: boolean;
   /** The raw `applyTo` value, for reporting. */
   raw: string | null;
+  /**
+   * Non-null when `applyTo` is present but unparseable. NOT folded into
+   * `alwaysOn`: "I could not read the scope" and "there is no scope" are
+   * different facts, and reporting the first as the second reports a
+   * narrowly-scoped rule as global — the inversion this module exists to
+   * prevent.
+   */
+  malformed: string | null;
 }
 
 /**
@@ -89,7 +97,7 @@ export interface ScopeInspection {
  * away, unused by both copies.
  */
 export { frontmatterBlock } from "./frontmatter.js";
-import { frontmatterBlock } from "./frontmatter.js";
+import { frontmatterBlock, normalizeForFrontmatter } from "./frontmatter.js";
 
 /**
  * Parse an artifact's path scope.
@@ -182,6 +190,65 @@ export function parseGlobList(raw: string): string[] {
 }
 
 /**
+ * NF2-3 / V1: split a YAML FLOW sequence body on its top-level commas.
+ *
+ * Distinct from `splitGlobList` because the two split at different depths:
+ * `splitGlobList` operates on an already-unquoted scalar and must NOT split
+ * inside `{...}` or `[...]` (a brace group is one glob), while a flow sequence's
+ * commas are item separators and its quotes are YAML quoting, so a comma inside
+ * a quoted item is literal. Sharing one splitter between the two would make one
+ * of them wrong.
+ */
+function splitFlowItems(inner: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]!;
+    if (quote) {
+      if (ch === "\\" && quote === '"') {
+        current += ch + (inner[++i] ?? "");
+        continue;
+      }
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "[" || ch === "{") depth++;
+    else if (ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      out.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out
+    .map((s) => s.trim().replace(/^(["'])([\s\S]*)\1$/, "$2").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Result of reading a path-scope key. `malformed` is non-null when the value is
+ * present but cannot be parsed — a state that must NOT be reported as "no
+ * scope", because "no scope" means always-on and always-on is the inversion this
+ * whole module exists to prevent.
+ */
+export interface ScopeRead {
+  globs: string[];
+  raw: string | null;
+  /** Non-null when the value is present and unparseable. */
+  malformed: string | null;
+}
+
+/**
  * Read a path-scope key out of an artifact's frontmatter, in EITHER YAML form.
  *
  * NF-4: the old single-line regex `/^\s*applyTo:\s*(.+)$/im` crossed the
@@ -199,25 +266,88 @@ export function parseGlobList(raw: string): string[] {
  * this branch calls quieter-and-therefore-worse, plus a corrupted artifact,
  * reachable through ordinary YAML rather than a brace group.
  */
-export function readScopeGlobs(
-  content: string,
-  key: "applyTo" | "paths",
-): { globs: string[]; raw: string | null } {
+export function readScopeGlobs(content: string, key: "applyTo" | "paths"): ScopeRead {
   const fm = frontmatterBlock(content);
-  if (fm === null) return { globs: [], raw: null };
+  if (fm === null) return { globs: [], raw: null, malformed: null };
   return readScopeGlobsFromBlock(fm, key);
 }
 
-function readScopeGlobsFromBlock(fm: string, key: string): { globs: string[]; raw: string | null } {
+/**
+ * NF2-3: block sequences were handled; FLOW sequences and BLOCK SCALARS were
+ * not, and both are ordinary YAML that this product's own documentation teaches
+ * authors to write (docs/concepts.md:1407 `paths: ["packages/api-service/**"]`,
+ * docs/prompt-guide.md:859, and the repo's own fixtures).
+ *
+ *     applyTo: ["src/db/**", "src/auth/**"]
+ *       → ONE glob, the literal string `["src/db/**", "src/auth/**"]`
+ *     applyTo: >            applyTo: |
+ *       src/api/**            src/api/**
+ *       → ONE glob, `>` / `|`, and the real scope on the next line DROPPED
+ *
+ * End to end at `agentboot build`, exit 0 with no diagnostic:
+ * dist/cursor/…/phi.instructions.mdc emitted `globs: "["src/db/**", "src/auth/**"]"`
+ * and dist/windsurf/… emitted `- "["src/db/**", "src/auth/**"]"` — BOTH fail a
+ * js-yaml parse ("bad indentation of a mapping entry (2:11)" / "bad indentation
+ * of a sequence entry (3:8)"). That is the NF-4 symptom verbatim, on a form the
+ * docs recommend. Meanwhile jetbrains and copilot got syntactically valid
+ * frontmatter carrying a glob that matches nothing, and copilot's native
+ * passthrough of `applyTo: >` resolved CORRECTLY — so two platforms disagreed
+ * about the same rule's scope from one source.
+ *
+ * Routing all seven gotcha emitters through one parser (V1) made this UNIFORM
+ * rather than closing it. The fix has to be in the parser.
+ *
+ * Block scalars are read line-per-glob rather than by YAML's folding rules,
+ * because a folded `>` over two lines yields `src/api/** src/db/**` — one
+ * scalar with a space in it, which is not a glob anyone meant. Line-per-glob is
+ * the only reading that agrees with the block-sequence form directly above it.
+ */
+function readScopeGlobsFromBlock(fm: string, key: string): ScopeRead {
   const lines = fm.split("\n");
   // Anchored to the line, and `[ \t]*` never crosses a newline — that crossing
   // is the whole of NF-4.
-  const keyRe = new RegExp(`^[ \\t]*${key}:[ \\t]*(.*)$`, "i");
+  const keyRe = new RegExp(`^([ \\t]*)${key}:[ \\t]*(.*)$`, "i");
   for (let i = 0; i < lines.length; i++) {
     const m = keyRe.exec(lines[i]!);
     if (!m) continue;
-    const inline = stripYamlInlineComment(m[1]!.trim());
-    if (inline !== "") return { globs: parseGlobList(inline), raw: inline };
+    const keyIndent = m[1]!.length;
+    const rawAfterColon = m[2]!.trim();
+
+    // A block scalar header (`|`, `>`, with optional chomping/indent indicators
+    // such as `>-`, `|+`, `|2`). Checked BEFORE the inline branch, because these
+    // are non-empty inline text that means "the value is on the following lines".
+    if (/^[|>][+-]?\d*$|^[|>]\d*[+-]?$/.test(rawAfterColon)) {
+      const items = collectIndentedLines(lines, i + 1, keyIndent);
+      if (items.length === 0) return { globs: [], raw: null, malformed: null };
+      return {
+        globs: items.flatMap((v) => parseGlobList(v)),
+        raw: items.join(", "),
+        malformed: null,
+      };
+    }
+
+    const inline = stripYamlInlineComment(rawAfterColon);
+    if (inline !== "") {
+      // A YAML FLOW sequence.
+      if (inline.startsWith("[")) {
+        if (!inline.endsWith("]")) {
+          // Present and unparseable. Reporting this as "no scope" would report
+          // it as ALWAYS-ON — the inversion this module exists to prevent — so
+          // it is surfaced instead. FAIL CLOSED on unknown data.
+          return { globs: [], raw: inline, malformed: `unterminated flow sequence: ${inline}` };
+        }
+        const items = splitFlowItems(inline.slice(1, -1));
+        return {
+          globs: items.flatMap((v) => parseGlobList(v)),
+          raw: inline,
+          malformed: null,
+        };
+      }
+      if (inline.startsWith("{")) {
+        return { globs: [], raw: inline, malformed: `${key} is a mapping, expected a glob or a list of globs` };
+      }
+      return { globs: parseGlobList(inline), raw: inline, malformed: null };
+    }
 
     // Empty after the colon → a block sequence may follow.
     const items: string[] = [];
@@ -229,29 +359,52 @@ function readScopeGlobsFromBlock(fm: string, key: string): { globs: string[]; ra
       const v = stripYamlInlineComment(item[1]!.trim()).replace(/^["']|["']$/g, "").trim();
       if (v) items.push(v);
     }
-    if (items.length === 0) return { globs: [], raw: null };
-    return { globs: items.flatMap((v) => parseGlobList(v)), raw: items.join(", ") };
+    if (items.length === 0) return { globs: [], raw: null, malformed: null };
+    return { globs: items.flatMap((v) => parseGlobList(v)), raw: items.join(", "), malformed: null };
   }
-  return { globs: [], raw: null };
+  return { globs: [], raw: null, malformed: null };
+}
+
+/** Lines of a block scalar: everything indented strictly deeper than the key. */
+function collectIndentedLines(lines: string[], start: number, keyIndent: number): string[] {
+  const out: string[] = [];
+  for (let j = start; j < lines.length; j++) {
+    const line = lines[j]!;
+    if (/^[ \t]*$/.test(line)) continue; // blank lines are part of the scalar
+    const indent = /^[ \t]*/.exec(line)![0]!.length;
+    if (indent <= keyIndent) break; // dedented → the next key
+    const v = line.trim().replace(/^["']|["']$/g, "").trim();
+    if (v) out.push(v);
+  }
+  return out;
 }
 
 export function inspectScope(content: string): ScopeInspection {
   const fm = frontmatterBlock(content);
   // `=== null`, not falsy: an EMPTY frontmatter block ("---\n---") is a real
   // block that happens to be empty, and `!fm` conflated it with "no frontmatter".
-  if (fm === null) return { globs: [], alwaysOn: true, acknowledgedUnscoped: false, raw: null };
+  if (fm === null) {
+    return { globs: [], alwaysOn: true, acknowledgedUnscoped: false, raw: null, malformed: null };
+  }
 
   const acknowledgedUnscoped = /^\s*scope-unsupported:\s*acknowledged\s*$/im.test(fm);
-  const { globs, raw } = readScopeGlobsFromBlock(fm, "applyTo");
-  if (raw === null) return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null };
+  const { globs, raw, malformed } = readScopeGlobsFromBlock(fm, "applyTo");
+  // FAIL CLOSED: an unreadable scope is treated as narrowing, so the
+  // degradation gate FIRES rather than waving the artifact through as global.
+  if (malformed !== null) {
+    return { globs, alwaysOn: false, acknowledgedUnscoped, raw, malformed };
+  }
+  if (raw === null) {
+    return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw: null, malformed: null };
+  }
 
   // A universal scope is not a scope. Losing it is a no-op, and treating it as
   // narrowing would fire the gate on every default install — which is how a
   // check becomes noise inside a week.
   if (globs.length === 0 || globs.every((g) => UNIVERSAL_GLOBS.has(g))) {
-    return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw };
+    return { globs: [], alwaysOn: true, acknowledgedUnscoped, raw, malformed: null };
   }
-  return { globs, alwaysOn: false, acknowledgedUnscoped, raw };
+  return { globs, alwaysOn: false, acknowledgedUnscoped, raw, malformed: null };
 }
 
 /**
@@ -303,4 +456,84 @@ export function scopePreamble(globs: string[]): string {
     `> **Scope — \`${globs.join(", ")}\`.** This target cannot express path scoping, so the rule is\n` +
     `> delivered always-on. Apply it only when working on files matching that pattern.\n`
   );
+}
+
+/**
+ * NF2-3 (emit side): replace or delete a frontmatter key whose value MAY SPAN
+ * MULTIPLE LINES.
+ *
+ * The JetBrains emitter rewrote the scope key with
+ * `.replace(/^\s*applyTo:.*$/im, …)` and deleted it with
+ * `.replace(/^\s*applyTo:.*\n/im, "")`. Both operate on ONE line. A block
+ * sequence or a block scalar leaves its continuation lines behind, so
+ *
+ *     applyTo: >              becomes      globs: ["src/api/**"]
+ *       src/api/**                           src/api/**
+ *
+ * — an orphaned indented line under a flow-sequence value, which js-yaml
+ * rejects with "bad indentation of a mapping entry (3:3)". Getting the PARSER
+ * right and leaving the rewriter single-line just moves the invalid-YAML
+ * artifact from one platform to another.
+ *
+ * Operates only inside the first frontmatter block, and only on a key at the
+ * TOP level of it: a nested `applyTo:` under some other mapping is not this key.
+ *
+ * @param replacement full replacement line (no trailing newline), or null to delete.
+ */
+export function rewriteFrontmatterKeyBlock(
+  content: string,
+  key: string,
+  replacement: string | null,
+): string {
+  const normalized = normalizeForFrontmatter(content);
+  const m = /^---\n([\s\S]*?)\n---/.exec(normalized);
+  if (!m) return content;
+  const block = m[1] ?? "";
+  const blockStart = 4; // "---\n"
+  const lines = block.split("\n");
+  const keyRe = new RegExp(`^([ \\t]*)${key}:`, "i");
+
+  const out: string[] = [];
+  let i = 0;
+  let changed = false;
+  while (i < lines.length) {
+    const km = keyRe.exec(lines[i]!);
+    if (!km) {
+      out.push(lines[i]!);
+      i++;
+      continue;
+    }
+    const keyIndent = km[1]!.length;
+    changed = true;
+    if (replacement !== null) out.push(replacement);
+    i++;
+    // Consume every continuation line: block-sequence items and block-scalar
+    // content are both "indented deeper than the key, or a `-` item at or
+    // deeper than the key's indent".
+    while (i < lines.length) {
+      const line = lines[i]!;
+      if (/^[ \t]*$/.test(line)) {
+        // A blank line inside a block scalar belongs to it; a blank line before
+        // the next key does not. Look ahead: keep consuming only if what
+        // follows is still a continuation.
+        let k = i + 1;
+        while (k < lines.length && /^[ \t]*$/.test(lines[k]!)) k++;
+        if (k >= lines.length) break;
+        const nextIndent = /^[ \t]*/.exec(lines[k]!)![0]!.length;
+        if (nextIndent <= keyIndent && !/^[ \t]*-[ \t]/.test(lines[k]!)) break;
+        i++;
+        continue;
+      }
+      const indent = /^[ \t]*/.exec(line)![0]!.length;
+      const isSeqItem = /^[ \t]*-[ \t]*\S/.test(line);
+      if (indent > keyIndent || (isSeqItem && indent >= keyIndent)) {
+        i++;
+        continue;
+      }
+      break;
+    }
+  }
+  if (!changed) return content;
+  const newBlock = out.join("\n");
+  return normalized.slice(0, blockStart) + newBlock + normalized.slice(blockStart + block.length);
 }
