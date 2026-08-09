@@ -3903,6 +3903,27 @@ program
       const outputPath = opts.output ?? path.join(distPath, "skills-index.json");
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
       fs.writeFileSync(outputPath, JSON.stringify(index, null, 2) + "\n", "utf-8");
+      // R4-5: an empty export is a SKIP, and a skip must never read as a pass.
+      //
+      // `generateSkillsIndex` reads dist/skill/core/, and `skill` is one of ten
+      // output formats. On a hub that does not build it the command printed
+      // "No dist/skill/core/ found. Run: agentboot build" — advice that is
+      // simply wrong, the build had just succeeded — then a GREEN
+      // "✓ Exported 0 skill(s)" and exit 0, and wrote a well-formed index with
+      // `"skills": []` for the operator to submit to a public directory.
+      if (index.skills.length === 0) {
+        console.error(chalk.red(`\n✗ Exported 0 skill(s) — ${outputPath} is an empty listing.`));
+        const formats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+        console.error(chalk.gray(
+          formats.includes("skill")
+            ? "    dist/skill/core/ carries no persona with a SKILL.md. Run `agentboot build`\n" +
+              "    and check personas.enabled."
+            : `    The agentskills export is built from dist/skill/, and personas.outputFormats\n` +
+              `    is [${formats.join(", ")}] — "skill" is not among them, so nothing was\n` +
+              `    compiled to export. Add "skill" to personas.outputFormats and rebuild.`,
+        ));
+        process.exit(1);
+      }
       console.log(chalk.green(`\n✓ Exported ${index.skills.length} skill(s) to ${outputPath}`));
       console.log(chalk.gray("  Submit this file to agentskills.io for directory listing."));
 

@@ -44,7 +44,13 @@ export function generateSkillsIndex(
   const skills: SkillsIndexEntry[] = [];
 
   if (!fs.existsSync(skillsDir)) {
-    console.log(chalk.yellow("  No dist/skill/core/ found. Run: agentboot build"));
+    // R4-5: "Run: agentboot build" was wrong advice on the common cause — the
+    // build had just succeeded and simply does not emit `skill`. Wrong advice
+    // that precedes a green tick is how an operator learns to ignore the line.
+    console.log(chalk.yellow(
+      "  No dist/skill/core/ found — either the hub does not build the `skill` output\n" +
+      "  format, or no persona compiled. This export is derived from dist/skill/.",
+    ));
     return {
       $schema: "https://agentskills.io/schema/skills-index/v1.json",
       generator: "agentboot",
