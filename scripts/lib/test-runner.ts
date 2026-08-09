@@ -121,6 +121,12 @@ export interface BehavioralTestResult {
   attempts: number;
   passes: number;
   failures: string[];
+  /**
+   * R4-4: did the persona's compiled SKILL.md actually get loaded as the system
+   * prompt? `false` means the scenario exercised the BARE MODEL, and its verdict
+   * says nothing about the compiled persona it is named for.
+   */
+  personaContextLoaded: boolean;
 }
 
 /**
@@ -448,12 +454,27 @@ export function runBehavioralTest(
   let attempts = 0;
   const allFailures: string[] = [];
 
-  // Load persona SKILL.md as system context
-  const skillPath = path.join(distPath, "skill", "core", "personas", testCase.persona, "SKILL.md");
+  // Load persona SKILL.md as system context.
+  //
+  // R4-4: this path carried a `personas` segment the compiler has never written.
+  // compileInstructions writes `dist/skill/<scope>/<persona>/SKILL.md`
+  // (compile.ts: `path.join(distPath, "skill", scopePath, personaName)`), so
+  // `dist/skill/core/personas/<persona>/SKILL.md` did not exist on ANY hub, in
+  // any configuration. `systemPrompt` was therefore always "" and every
+  // behavioral scenario ran against the bare model — while the runner printed
+  // "Running: <case> (<persona>)" and reported the verdict as a persona result.
+  //
+  // The existsSync was written as tolerance ("runBehavioralTest tolerates a
+  // missing SKILL.md by running with no system prompt") and became total
+  // vacuity, because a tolerance with no diagnostic cannot distinguish "this hub
+  // does not build skill" from "the path is wrong". It says so now, and the
+  // caller turns it into a finding.
+  const skillPath = path.join(distPath, "skill", "core", testCase.persona, "SKILL.md");
   let systemPrompt = "";
   if (fs.existsSync(skillPath)) {
     systemPrompt = fs.readFileSync(skillPath, "utf-8");
   }
+  const personaContextLoaded = systemPrompt.length > 0;
 
   for (let i = 0; i < maxAttempts; i++) {
     attempts++;
@@ -482,6 +503,7 @@ export function runBehavioralTest(
     attempts,
     passes,
     failures: allFailures,
+    personaContextLoaded,
   };
 }
 
@@ -546,6 +568,11 @@ export function runBehavioralTestsDetailed(
       const result = runBehavioralTest(tc, llm, distPath);
       results.push(result);
 
+      if (!result.personaContextLoaded) {
+        console.log(chalk.yellow(
+          `    ~ no compiled SKILL.md for "${tc.persona}" — this case ran against the BARE MODEL`,
+        ));
+      }
       if (result.passed) {
         console.log(chalk.green(`    ✓ Passed (${result.passes}/${result.attempts})`));
       } else {
@@ -745,6 +772,32 @@ export function behavioralFindings(
 ): BehavioralFinding[] {
   const findings: BehavioralFinding[] = [];
   const allow = opts.allowUnevaluated;
+
+  // R4-4: a scenario that ran WITHOUT the compiled persona as its system prompt
+  // did not test the persona. It tested the bare model, and reported the verdict
+  // under the persona's name.
+  //
+  // This was total, not occasional: the loader looked for
+  // `dist/skill/core/personas/<p>/SKILL.md` and the compiler writes
+  // `dist/skill/core/<p>/SKILL.md`, so the system prompt was empty on every hub
+  // in every configuration, silently, behind an `fs.existsSync` written as
+  // tolerance. Not waivable by --allow-unevaluated: that flag waives
+  // expectations we cannot MECHANICALLY check, and this is a run whose subject
+  // was absent.
+  const contextless = run.results.filter((r) => !r.personaContextLoaded);
+  if (contextless.length > 0) {
+    const personas = [...new Set(contextless.map((r) => r.persona))].sort();
+    findings.push({
+      level: "error",
+      message:
+        `✗ ${contextless.length} of ${run.results.length} scenario(s) ran with NO compiled persona ` +
+        `as system prompt (${personas.join(", ")}) — those verdicts describe the bare model, not the persona.`,
+      detail:
+        "    The prompt comes from dist/skill/core/<persona>/SKILL.md. Build `skill` in\n" +
+        "    personas.outputFormats, or name a persona the hub compiles (`persona:` /\n" +
+        "    `skill:` in the scenario file, else the file stem).",
+    });
+  }
 
   // J1: a directory with no scenario files checked nothing. Not waivable —
   // there is no judgement gap here, there is no corpus.

@@ -42,7 +42,11 @@ import {
 const ROOT = path.resolve(__dirname, "..");
 
 const emptyRun = (over: Partial<BehavioralRun> = {}): BehavioralRun => ({
-  results: [{ name: "x", passed: true, assertions: [] }] as unknown as BehavioralRun["results"],
+  // R4-4: `personaContextLoaded: true` is stated, not omitted. These fixtures
+  // exist to test the GATING of dropped/unevaluable cases; a stub that left the
+  // field undefined would trip the contextless finding and mask what is actually
+  // under test here.
+  results: [{ name: "x", passed: true, personaContextLoaded: true, assertions: [] }] as unknown as BehavioralRun["results"],
   filesSeen: ["a.yaml"],
   filesWithNoCases: [],
   unevaluated: [],
@@ -127,7 +131,7 @@ describe("NEW-4 — the flag waives the state it names", () => {
 
   it("a real test FAILURE is never waivable", () => {
     const run = emptyRun({
-      results: [{ name: "x", passed: false, assertions: [] }] as unknown as BehavioralRun["results"],
+      results: [{ name: "x", passed: false, personaContextLoaded: true, assertions: [] }] as unknown as BehavioralRun["results"],
     });
     expect(failed(behavioralFindings(run, { allowUnevaluated: true, testDirLabel: "t" }))).toBe(true);
   });
@@ -183,7 +187,7 @@ describe("NEW-4 — DroppedCase.kind classifies the real corpus", () => {
       // Stand in for the LLM: every parsed case passes. The question under test
       // is the GATING, not the assertions.
       results: parsed.flatMap((x) =>
-        x.p.cases.map((c) => ({ name: c.name, passed: true, assertions: [] })),
+        x.p.cases.map((c) => ({ name: c.name, passed: true, personaContextLoaded: true, assertions: [] })),
       ) as unknown as BehavioralRun["results"],
       filesSeen: files,
       filesWithNoCases: parsed.filter((x) => x.p.cases.length === 0).map((x) => x.f),
@@ -201,5 +205,84 @@ describe("NEW-4 — DroppedCase.kind classifies the real corpus", () => {
       behavioralFindings(run, { allowUnevaluated: false, testDirLabel: "tests/behavioral" })
         .some((x) => x.level === "error"),
     ).toBe(true);
+  });
+});
+
+/**
+ * R4-4 — every behavioral scenario ran against the BARE MODEL.
+ *
+ * `runBehavioralTest` loaded its system prompt from
+ * `dist/skill/core/personas/<persona>/SKILL.md`. The compiler writes
+ * `path.join(distPath, "skill", scopePath, personaName)` — i.e.
+ * `dist/skill/core/<persona>/SKILL.md`. There is no `personas` segment, in any
+ * scope, in any configuration, so the file NEVER existed and `systemPrompt` was
+ * always "". The runner still printed "Running: <case> (<persona>)" and reported
+ * the verdict as a persona result.
+ *
+ * The `fs.existsSync` around it was written as tolerance — the parser's own
+ * comment says "runBehavioralTest tolerates a missing SKILL.md by running with
+ * no system prompt" — and a tolerance with no diagnostic cannot tell "this hub
+ * does not build skill" from "the path is wrong". So it became total vacuity
+ * that nothing could report. K.1 fixed the PARSE (0 of 7 files → 26 cases); the
+ * cases then ran without their subject.
+ */
+describe("R4-4 — the compiled persona is actually loaded as the system prompt", () => {
+  const os = require("node:os") as typeof import("node:os");
+
+  function mkDist(rel: string[], persona: string): string {
+    const dist = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-r4-beh-"));
+    const dir = path.join(dist, ...rel, persona);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "# ORGPERSONA MARKER\nYou are the org persona.\n");
+    return dist;
+  }
+
+  const tc = { name: "c1", persona: "alpha", prompt: "hello", assertions: [] as never[] };
+
+  it("reads dist/skill/core/<persona>/SKILL.md — the layout the compiler writes", async () => {
+    const { runBehavioralTest } = await import("../scripts/lib/test-runner.js");
+    let seen = "";
+    const provider = { classify: (p: string) => { seen = p; return { data: "" }; } };
+    const r = runBehavioralTest(
+      tc as never,
+      provider as never,
+      mkDist(["skill", "core"], "alpha"),
+    );
+    expect(seen, "the compiled persona must reach the model").toContain("ORGPERSONA MARKER");
+    expect(r.personaContextLoaded).toBe(true);
+  });
+
+  it("NEGATIVE: the old `personas` segment is not a layout the compiler produces", async () => {
+    // Pinning the defect itself: a tree shaped the way the loader used to expect
+    // must NOT satisfy it, or the fix would be a second accepted layout rather
+    // than a correction.
+    const { runBehavioralTest } = await import("../scripts/lib/test-runner.js");
+    const provider = { classify: () => ({ data: "" }) };
+    const r = runBehavioralTest(
+      tc as never,
+      provider as never,
+      mkDist(["skill", "core", "personas"], "alpha"),
+    );
+    expect(r.personaContextLoaded).toBe(false);
+  });
+
+  it("a contextless run is an unwaivable ERROR, naming the personas", async () => {
+    const { behavioralFindings } = await import("../scripts/lib/test-runner.js");
+    const run = emptyRun({
+      results: [
+        { name: "c1", persona: "alpha", passed: true, personaContextLoaded: false },
+        { name: "c2", persona: "beta", passed: true, personaContextLoaded: true },
+      ] as unknown as BehavioralRun["results"],
+    });
+    for (const allowUnevaluated of [true, false]) {
+      const errs = behavioralFindings(run, { allowUnevaluated, testDirLabel: "tests/behavioral" })
+        .filter((x) => x.level === "error")
+        .map((x) => x.message);
+      expect(
+        errs.some((m) => m.includes("NO compiled persona") && m.includes("alpha")),
+        "--allow-unevaluated waives expectations we cannot check, not a run with no subject",
+      ).toBe(true);
+      expect(errs.some((m) => m.includes("beta")), "the measured persona must not be named").toBe(false);
+    }
   });
 });
