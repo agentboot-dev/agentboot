@@ -29,8 +29,8 @@ always inconsistently. When you wanted to improve how all your personas handle u
 you had to touch every file.
 
 Traits solve this. You write `critical-thinking` once. Every persona that needs skeptical
-review simply composes it with a weight. Improve the trait definition, and all composing
-personas improve automatically.
+review simply composes it with a weight. Change the trait definition, and every persona
+that composes it picks the change up on the next build.
 
 A trait is not:
 - A checklist of domain rules. "Verify that GDPR consent is captured" is not a trait;
@@ -208,8 +208,8 @@ on every matching file access, lifecycle hooks, managed settings, and MCP server
 
 Key architectural insight: CLAUDE.md content is injected as `<system-reminder>` tags
 (not in the cached system prompt). Rules in `.claude/rules/` are re-injected every
-time a matching file is touched. This makes gotchas (path-scoped rules) the
-highest-impact artifact AgentBoot produces.
+time a matching file is touched. So a gotcha stays in context for the work it applies
+to and costs nothing for the work it doesn't.
 
 ### What Claude Code reads natively (no build step required)
 
