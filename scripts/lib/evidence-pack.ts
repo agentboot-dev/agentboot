@@ -32,7 +32,7 @@ import {
   type ManifestVerification,
 } from "./provenance.js";
 import { checkDrift, findManifestPath, type DriftReport } from "./drift.js";
-import { PLATFORM_ENFORCEMENT, configuredPlatforms } from "./conformance.js";
+import { PLATFORM_ENFORCEMENT, configuredPlatforms, resolveEnforcement } from "./conformance.js";
 import { verifyBatchChain, type BatchChainVerification } from "./telemetry-sink.js";
 import { loadExceptionsFile, HUB_EXCEPTIONS_FILE } from "./exceptions.js";
 
@@ -59,7 +59,20 @@ export interface EvidencePack {
   generated_at: string;
   hub: HubProvenance;
   enforcement: {
-    declared: typeof PLATFORM_ENFORCEMENT;
+    /**
+     * R1-H: the RESOLVED enforcement for the platforms this org actually
+     * builds — not the whole PLATFORM_ENFORCEMENT table verbatim.
+     *
+     * The pack used to ship all ten rows including `plugin: {level: "enforced"}`
+     * unqualified, for nine platforms the org does not build. `plugin`'s
+     * enforcement is conditional on `claude` being in outputFormats (that is
+     * what its `requires` says), so the unqualified row is a claim that is only
+     * conditionally true, handed to an auditor as though it were unconditional.
+     * Blast-limited today because commit 883253e makes a plugin-without-claude
+     * build fail — but a stale or hand-assembled dist still reaches this code,
+     * and "currently unreachable" is not the same as "not asserted".
+     */
+    declared: Record<string, { level: string; detail: string; unmetRequires: string[] }>;
     /** Per-platform enforcement manifests from the last conformance run, verbatim. */
     manifests: Record<string, unknown>;
     /**
@@ -258,7 +271,11 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     generated_at: new Date().toISOString(),
     hub: collectHubProvenance(hubPath, agentbootVersion),
     enforcement: {
-      declared: PLATFORM_ENFORCEMENT,
+      declared: Object.fromEntries(
+        configured
+          .filter((f) => f in PLATFORM_ENFORCEMENT)
+          .map((f) => [f, resolveEnforcement(f, configured)]),
+      ),
       manifests,
       unprobed_platforms: unprobed,
       platform_set: { platforms: configured, source: "personas.outputFormats" },

@@ -593,7 +593,12 @@ export interface EnforcementManifest {
   platform: string;
   agentboot_version: string;
   generated_at: string;
-  declared: PlatformEnforcement;
+  /**
+   * R1-H: the RESOLVED enforcement for this platform in THIS hub's
+   * configuration, not the raw table row. `unmetRequires` travels with it, so a
+   * consumer reading `level: "advisory"` can see WHY it is not `enforced`.
+   */
+  declared: EnforcementResolution;
   controls: ControlResult[];
 }
 
@@ -610,7 +615,15 @@ export function runPlatformConformance(
   agentbootVersion: string,
   bashPath: string | null,
 ): EnforcementManifest {
-  const declared = PLATFORM_ENFORCEMENT[platform] ?? { level: "advisory" as const, detail: "unknown platform — treated as advisory" };
+  // R1-H: RESOLVED, not raw. `PLATFORM_ENFORCEMENT.plugin` says `enforced`
+  // unconditionally, but plugin's enforcement is conditional on `claude` being
+  // built — that is what `requires` means and what `resolveEnforcement` applies.
+  // Stamping the raw row into dist/<platform>/enforcement-manifest.json wrote an
+  // unconditional claim into the artifact `baseline` archives and
+  // `evidence-pack` signs. doctor and guardrail-scan both resolve; these were
+  // the leftovers of the same `plugin` class this branch has now fixed three
+  // times.
+  const declared = resolveEnforcement(platform, configuredPlatforms(config));
   const controls: ControlResult[] = [];
   const hookDir = hookDirForPlatform(distPath, platform);
   // Output-match blocking is governed by compliance.outputScan.blocking
