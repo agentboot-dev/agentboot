@@ -93,8 +93,13 @@ jobs:
         if: inputs.snapshot
         run: npx agentboot test --regression
 
+      # J1: the runner used to parse 0 cases out of every scenario file and
+      # return [] with no diagnostic, so this step passed by doing nothing. It
+      # now exits non-zero when a file yields no runnable case, when no case
+      # ran, or when expectations have no evaluator — the last is waivable with
+      # --allow-unevaluated, which still prints the count.
       - name: Behavioral Tests
         if: inputs.behavioral
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: npx agentboot test --behavioral
+        run: npx agentboot test --behavioral --allow-unevaluated

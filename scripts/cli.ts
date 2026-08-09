@@ -1840,9 +1840,10 @@ program
   .addOption(new Option("--verbose", "show detailed rationale per dimension (for --judge)").hideHelp())
   .addOption(new Option("--min-score <score>", "minimum passing score for --judge (default: 3.0)").argParser(parseFloat).hideHelp())
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
+  .option("--allow-unevaluated", "proceed when scenario expectations have no mechanical evaluator (the count is still reported)")
   .action(async (opts, cmd) => {
     const {
-      runBehavioralTests, createSnapshot, compareSnapshots,
+      runBehavioralTestsDetailed, createSnapshot, compareSnapshots,
       saveSnapshot, loadSnapshot, printSnapshotDiff,
     } = await import("./lib/test-runner.js");
 
@@ -1908,24 +1909,42 @@ program
     if (opts["behavioral"]) {
       console.log(chalk.cyan("  Running behavioral tests...\n"));
       const testDir = path.resolve(cwd, opts["testDir"] as string);
-      const results = runBehavioralTests(testDir, distPath);
+      const run = runBehavioralTestsDetailed(testDir, distPath);
+      const results = run.results;
+
+      // J1: SILENCE IS NOT SUCCESS. A scenario file that produced no runnable
+      // case, and an `expect:` key with no evaluator, are both "we did not
+      // check this" — and both used to be invisible. `agentboot test
+      // --behavioral` returned [] for every file in this repo and said nothing,
+      // under a CI step that treats exit 0 as a pass.
+      if (run.filesSeen.length === 0) {
+        console.error(chalk.red(
+          `  ✗ No scenario files in ${path.relative(cwd, testDir) || testDir}/ — nothing was checked.\n`));
+        exitCode = 1;
+      }
+      for (const f of run.filesWithNoCases) {
+        console.error(chalk.red(
+          `  ✗ ${f} produced NO runnable test case — every expectation in it is unevaluable.`));
+        exitCode = 1;
+      }
+      if (run.unevaluated.length > 0) {
+        const byKey = new Map<string, number>();
+        for (const u of run.unevaluated) byKey.set(u.key, (byKey.get(u.key) ?? 0) + 1);
+        const top = [...byKey.entries()].sort((a, b) => b[1] - a[1]);
+        console.error(chalk.yellow(
+          `\n  ⚠ ${run.unevaluated.length} expectation(s) across ${run.filesSeen.length} file(s) have NO evaluator:`));
+        for (const [key, n] of top) console.error(chalk.gray(`      ${key} ×${n}`));
+        console.error(chalk.gray(
+          "    These are judgements about a conversation, not string matches. They are NOT\n" +
+          "    checked. A run that ignored them and reported green would be checking a\n" +
+          "    fraction of what the scenario files assert.\n" +
+          "    Pass --allow-unevaluated to proceed anyway (the count is still printed).\n"));
+        if (!opts["allowUnevaluated"]) exitCode = 1;
+      }
 
       if (results.length === 0) {
-        // The scenario schema is still in flux and the runner does not yet parse
-        // the set that ships with the repo. Saying "no test cases found" implies
-        // the operator authored their files wrongly and sends them to debug a
-        // schema that isn't published — so state the actual situation instead.
-        const yamlPresent = fs.existsSync(testDir) &&
-          fs.readdirSync(testDir).some(f => f.endsWith(".yaml") || f.endsWith(".yml"));
-        console.log(chalk.yellow("  No behavioral test cases were parsed.\n"));
-        if (yamlPresent) {
-          console.log(chalk.yellow(
-            `  YAML files ARE present in ${path.relative(cwd, testDir)}/ — this is not your schema.\n`));
-        }
-        console.log(chalk.gray(
-          "  --behavioral is EXPERIMENTAL: the scenario schema is not yet stabilised or\n" +
-          "  published, and the runner does not yet parse it. Do not use it as a CI gate.\n" +
-          "  Track: https://github.com/agentboot-dev/agentboot/issues\n"));
+        console.error(chalk.red("  ✗ No behavioral test cases ran.\n"));
+        exitCode = 1;
       } else {
         const passed = results.filter(r => r.passed).length;
         const failed = results.length - passed;
@@ -1934,7 +1953,9 @@ program
           console.log(chalk.red(`  ✗ ${failed}/${results.length} behavioral test(s) failed.\n`));
           exitCode = 1;
         } else {
-          console.log(chalk.green(`  ✓ All ${passed} behavioral test(s) passed.\n`));
+          console.log(chalk.green(
+            `  ✓ All ${passed} behavioral test(s) passed ` +
+            `(${run.unevaluated.length} expectation(s) unevaluated).\n`));
         }
       }
     }

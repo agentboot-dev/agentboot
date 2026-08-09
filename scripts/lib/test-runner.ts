@@ -23,10 +23,64 @@ export interface BehavioralTestCase {
   assertions: Array<{
     type: "contains" | "not-contains" | "regex";
     value: string;
+    /** The `expect:` key this assertion was derived from, for the report. */
+    from?: string;
   }>;
   /** Number of retries for flake tolerance. Default: 3 (pass 2-of-3). */
   retries?: number;
 }
+
+/**
+ * J1 — what a parse could NOT turn into a check.
+ *
+ * The runner used to return `[]` for every scenario file in this repo and say
+ * nothing: `parseTestCases` split on `/^---$/m` and required name+persona+prompt
+ * +assertions, while all seven files use `tests:` / `- id:` / `prompt:` /
+ * `expect:`. `agentboot test --behavioral` therefore ran VACUOUSLY in
+ * .github/workflows/agentboot-ci.yml — the largest check-that-cannot-fail on
+ * the branch.
+ *
+ * Parsing the real schema is half the fix. The other half is that most `expect:`
+ * keys (`confirms_scope`, `asks_for_base_persona`, `groups_by_confidence_tier`,
+ * …) are judgements about a conversation, not string matches, and have no
+ * mechanical evaluator. Silently ignoring them would rebuild the same lie one
+ * layer up: a green run that checked a third of what the file asserts. They are
+ * REPORTED, counted, and they fail the run unless explicitly waived.
+ */
+export interface UnevaluatedExpectation {
+  file: string;
+  caseId: string;
+  /** The `expect:` key with no evaluator. */
+  key: string;
+}
+
+export interface BehavioralParse {
+  cases: BehavioralTestCase[];
+  unevaluated: UnevaluatedExpectation[];
+}
+
+/**
+ * `expect:` keys that map onto a mechanical check of the transcript.
+ *
+ * Deliberately small and literal. An evaluator that "sort of" checks a
+ * judgement key is worse than one that declares it unevaluated: it converts an
+ * honest gap into a false pass.
+ */
+const MECHANICAL_EXPECTATIONS: Record<string, "contains" | "regex" | "not-contains"> = {
+  calls_tool: "contains",
+  routes_to: "contains",
+  intent: "contains",
+  artifact_type: "contains",
+  proposed_artifact_type: "contains",
+  promotion_target_scope: "contains",
+  runs_command: "contains",
+  response_contains: "contains",
+  response_includes: "contains",
+  summary_includes: "contains",
+  table_includes: "contains",
+  response_matches: "regex",
+  does_not_call_tool_before_clarification: "not-contains",
+};
 
 export interface BehavioralTestResult {
   name: string;
@@ -100,7 +154,114 @@ function extractYamlAssertions(parsed: Record<string, unknown>): BehavioralTestC
  *
  * Blocks are separated by `---`.
  */
+/**
+ * J1: parse the `tests:` scenario schema every file in tests/behavioral/ uses.
+ *
+ *     tests:
+ *       - id: author-add-gotcha
+ *         prompt: "..."
+ *         expect:
+ *           - calls_tool: agentboot_propose_change
+ *           - confirms_scope: true
+ *
+ * Returns null when the document is not in this shape, so the legacy
+ * `---`-separated parser still runs for files that are.
+ */
+function parseScenarioSchema(content: string, file: string): BehavioralParse | null {
+  let doc: unknown;
+  try {
+    doc = yaml.load(content);
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return null;
+  const root = doc as Record<string, unknown>;
+  const tests = root["tests"];
+  if (!Array.isArray(tests)) return null;
+
+  // The persona under test: an explicit key, else the file stem. The scenario
+  // files are named for the skill they exercise (ab-author-add.yaml →
+  // ab-author), and guessing is stated rather than hidden — runBehavioralTest
+  // tolerates a missing SKILL.md by running with no system prompt.
+  const declaredPersona =
+    (typeof root["persona"] === "string" && root["persona"]) ||
+    (typeof root["skill"] === "string" && root["skill"]) ||
+    null;
+  const stem = file.replace(/\.(ya?ml)$/, "");
+  const persona = declaredPersona ?? (stem.match(/^(ab-[a-z]+)/)?.[1] ?? stem);
+
+  const cases: BehavioralTestCase[] = [];
+  const unevaluated: UnevaluatedExpectation[] = [];
+
+  for (const entry of tests) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const tc = entry as Record<string, unknown>;
+    const id = typeof tc["id"] === "string" ? tc["id"] : undefined;
+    const prompt = typeof tc["prompt"] === "string" ? tc["prompt"] : undefined;
+    if (!id || !prompt) continue;
+
+    const assertions: BehavioralTestCase["assertions"] = [];
+    const expects = Array.isArray(tc["expect"]) ? tc["expect"] : [];
+    for (const e of expects) {
+      if (!e || typeof e !== "object" || Array.isArray(e)) continue;
+      for (const [key, value] of Object.entries(e as Record<string, unknown>)) {
+        const kind = MECHANICAL_EXPECTATIONS[key];
+        if (!kind) {
+          unevaluated.push({ file, caseId: id, key });
+          continue;
+        }
+        // A mechanical key whose value is not a string (e.g. `calls_tool: true`)
+        // asserts nothing checkable — count it as unevaluated rather than
+        // silently dropping it.
+        const values = typeof value === "string"
+          ? [value]
+          : Array.isArray(value) && value.every((v) => typeof v === "string")
+            ? (value as string[])
+            : null;
+        if (!values || values.length === 0) {
+          unevaluated.push({ file, caseId: id, key });
+          continue;
+        }
+        for (const v of values) assertions.push({ type: kind, value: v, from: key });
+      }
+    }
+
+    if (assertions.length === 0) {
+      // Every expectation in this case was unevaluable. Running it would report
+      // a pass for having checked nothing.
+      continue;
+    }
+    cases.push({
+      name: id,
+      persona,
+      prompt,
+      assertions,
+      ...(typeof tc["retries"] === "number" ? { retries: tc["retries"] } : {}),
+    });
+  }
+
+  return { cases, unevaluated };
+}
+
+/**
+ * Parse one scenario FILE, reporting what it could not turn into a check.
+ *
+ * `parseTestCases` (below) remains the string-in/cases-out entry point the older
+ * tests use; this is the one the runner calls, because the runner needs to know
+ * about the gaps.
+ */
+export function parseTestFile(content: string, file = "inline.yaml"): BehavioralParse {
+  const scenario = parseScenarioSchema(content, file);
+  if (scenario) return scenario;
+  return { cases: parseTestCases(content), unevaluated: [] };
+}
+
 export function parseTestCases(content: string): BehavioralTestCase[] {
+  // J1: the scenario schema first — every file that ships with this repo is in
+  // it, and the legacy splitter returned 0 cases for all of them.
+  const scenario = parseScenarioSchema(content, "inline.yaml");
+  if (scenario) return scenario.cases;
+
   const cases: BehavioralTestCase[] = [];
 
   // Split by "---" test case separator
@@ -262,24 +423,47 @@ export function runBehavioralTest(
 /**
  * Run all behavioral tests from a directory.
  */
-export function runBehavioralTests(
+export interface BehavioralRun {
+  results: BehavioralTestResult[];
+  /** Scenario files present in the directory. */
+  filesSeen: string[];
+  /** Files that produced ZERO runnable cases — the vacuity signal. */
+  filesWithNoCases: string[];
+  /** Expectations with no mechanical evaluator, by file and case. */
+  unevaluated: UnevaluatedExpectation[];
+}
+
+/**
+ * Run all behavioral tests from a directory.
+ *
+ * J1: returns the GAPS as well as the results. Returning only `[]` — which is
+ * what it did for every file in this repo — is indistinguishable from "all
+ * tests passed" to anything that counts failures, and that is precisely how
+ * `agentboot test --behavioral` ran vacuously in CI.
+ */
+export function runBehavioralTestsDetailed(
   testDir: string,
   distPath: string,
   provider?: LLMProvider,
-): BehavioralTestResult[] {
+): BehavioralRun {
   const results: BehavioralTestResult[] = [];
+  const unevaluated: UnevaluatedExpectation[] = [];
+  const filesWithNoCases: string[] = [];
   const llm = provider ?? new ClaudeCodeProvider();
 
   if (!fs.existsSync(testDir)) {
     console.log(chalk.yellow(`  Test directory not found: ${testDir}`));
-    return results;
+    return { results, filesSeen: [], filesWithNoCases, unevaluated };
   }
 
   const files = fs.readdirSync(testDir).filter(f => f.endsWith(".yaml") || f.endsWith(".yml"));
 
   for (const file of files) {
     const content = fs.readFileSync(path.join(testDir, file), "utf-8");
-    const testCases = parseTestCases(content);
+    const parsed = parseTestFile(content, file);
+    const testCases = parsed.cases;
+    unevaluated.push(...parsed.unevaluated);
+    if (testCases.length === 0) filesWithNoCases.push(file);
 
     for (const tc of testCases) {
       console.log(chalk.cyan(`  Running: ${tc.name} (${tc.persona})...`));
@@ -297,7 +481,16 @@ export function runBehavioralTests(
     }
   }
 
-  return results;
+  return { results, filesSeen: files, filesWithNoCases, unevaluated };
+}
+
+/** Back-compatible shape: results only. Prefer runBehavioralTestsDetailed. */
+export function runBehavioralTests(
+  testDir: string,
+  distPath: string,
+  provider?: LLMProvider,
+): BehavioralTestResult[] {
+  return runBehavioralTestsDetailed(testDir, distPath, provider).results;
 }
 
 // ---------------------------------------------------------------------------
