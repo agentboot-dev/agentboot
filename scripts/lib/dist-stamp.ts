@@ -220,9 +220,25 @@ export function checkDistFreshness(distDir: string, config: unknown): DistFreshn
  * refusals would be the same drift in a new costume — one formatter, three
  * call sites.
  */
-export function staleDistMessage(check: DistFreshness, command: string): string {
+export function staleDistMessage(
+  check: DistFreshness,
+  command: string,
+  /**
+   * `refuse` — the command stops (the `gated` posture).
+   * `report` — the command continues and folds this into its own result (the
+   *            `reports` posture: doctor, status, lint). Same finding, same
+   *            wording, honest verb. Printing "refusing to run `status`" from a
+   *            command that then runs is a small lie that trains operators to
+   *            stop reading the message.
+   */
+  mode: "refuse" | "report" = "refuse",
+): string {
+  const lead =
+    mode === "refuse"
+      ? `✗ refusing to run \`${command}\` against a stale dist/`
+      : `✗ \`${command}\` is reporting on a stale dist/`;
   return (
-    `✗ refusing to run \`${command}\` against a stale dist/ — ${check.reason}\n` +
+    `${lead} — ${check.reason}\n` +
     `      ${check.detail ?? ""}\n` +
     `      A build that fails leaves the previous dist/ byte-identical, so the presence of\n` +
     `      files is not evidence that they reflect current policy. Reporting on this tree\n` +

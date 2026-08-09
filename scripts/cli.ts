@@ -45,7 +45,7 @@ import {
   type PolicyException,
 } from "./lib/exceptions.js";
 import { stampIdentity, mintId } from "./lib/artifact-identity.js";
-import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
+import { checkDistFreshness, staleDistMessage, readDistStamp, type DistFreshness } from "./lib/dist-stamp.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -172,6 +172,36 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
     console.error(chalk.red(staleDistMessage(freshness, command)));
     process.exit(1);
   }
+}
+
+/**
+ * The `reports` posture (see scripts/lib/dist-consumers.ts).
+ *
+ * `doctor`, `status` and `lint` exist to TELL the operator what state the hub is
+ * in. Exiting before their checks run would withhold the very answer they were
+ * run to get — "why is my hub unhealthy?" is not usefully answered by refusing
+ * to look. They print the same finding, in the same words as the gate, and get
+ * it back so they can fold it into their own result and exit code.
+ *
+ * This is not a weaker posture. What is forbidden is SILENCE, not continuing:
+ * `status` printing a successful-looking build time for a build that failed is
+ * the defect; `status` printing "the last build FAILED" and carrying on is the
+ * fix.
+ *
+ * Returns null when dist/ has never been built (nothing to be stale about), or
+ * the failed freshness result otherwise.
+ */
+function reportDistFreshness(
+  configPath: string,
+  config: AgentBootConfig,
+  command: string,
+): DistFreshness | null {
+  const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
+  if (!fs.existsSync(distPath)) return null;
+  const freshness = checkDistFreshness(distPath, config);
+  if (freshness.fresh) return null;
+  console.error(chalk.red(staleDistMessage(freshness, command, "report")));
+  return freshness;
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +615,12 @@ program
       ? path.resolve(globalOpts.config as string)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
+    // A2-residual: install-user is a SECOND delivery channel — it writes org
+    // policy onto a developer's machine — and its only precondition was
+    // fs.existsSync(distCore). That is existence read as freshness, the exact
+    // pattern the sync gate was written to kill: a failed build leaves dist/
+    // byte-identical, so a revoked control installs with two green ticks.
+    if (config) assertDistFreshOrExit(configPath, config, "install-user");
     const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
     if (!fs.existsSync(distCore)) {
       console.error(chalk.red("dist/claude/core not found — run `agentboot build` first."));
@@ -1459,9 +1495,26 @@ program
         }
 
         // Check dist/
+        //
+        // V5: `dist/ exists (built)` was a green tick for a tree whose last
+        // build FAILED — in the one command an operator runs to ask whether
+        // the hub is healthy. Existence is not builtness. doctor takes the
+        // `reports` posture (dist-consumers.ts): it says what is wrong instead
+        // of refusing to run its other checks, and the finding counts as a
+        // FAILED check, so `doctor` still exits non-zero.
         const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath)) {
-          ok(`dist/ exists (built)`);
+          const distFreshness = checkDistFreshness(distPath, config);
+          if (distFreshness.fresh) {
+            ok(`dist/ exists and its last build succeeded against this config`);
+          } else {
+            fail(
+              `dist/ exists but is NOT trustworthy — ${distFreshness.reason}. ` +
+              `A failed build leaves the previous dist/ byte-identical, so the files being ` +
+              `there is not evidence they reflect current policy. Fix: run \`agentboot build\` ` +
+              `and let it succeed.`,
+            );
+          }
         } else if (fixMode) {
           if (!isJson) console.log(`  ${chalk.cyan("→")} Building dist/...`);
           if (!dryRun) {
@@ -1801,6 +1854,10 @@ program
       ? path.resolve(globalOpts.config as string)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : null;
+    // A-class: snapshots and behavioral runs are claims ABOUT the compiled
+    // tree. A green run against a superseded tree is a false pass, and
+    // --snapshot banks it as the baseline every later run is compared to.
+    if (config) assertDistFreshOrExit(configPath, config, "test");
     const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
 
     console.log(chalk.bold("\nAgentBoot — test\n"));
@@ -1925,6 +1982,10 @@ program
   .description("Show deployment status across synced repositories")
   .option("--format <fmt>", "output format: text, json", "text")
   .action(async (opts, cmd) => {
+    // A4-residual: a status readout that describes a stale tree must not exit 0.
+    // `status` is a health surface; reporting the problem and then returning
+    // success is the same false-green as not reporting it at all.
+    let distStale = false;
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
     const configPath = globalOpts.config
@@ -2060,14 +2121,39 @@ program
       console.log("");
     }
 
-    // Check dist/ freshness
+    // A4-residual: report dist/ freshness from the STAMP, not from the
+    // directory's mtime.
+    //
+    // The old line was `fs.statSync(distPath).mtime` sitting directly beside a
+    // file that records the build OUTCOME. A failed build leaves the tree
+    // byte-identical, so the mtime is the timestamp of the last SUCCESSFUL
+    // build and status printed it unchanged seconds after a build failed —
+    // a successful-looking build time for a build that did not succeed, at
+    // exit 0. `status` takes the `reports` posture (dist-consumers.ts): it
+    // exists to describe the hub, so it says what is wrong rather than
+    // refusing to say anything.
     const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
     if (fs.existsSync(distPath)) {
-      const stat = fs.statSync(distPath);
-      console.log(chalk.gray(`  Last build: ${stat.mtime.toISOString()}\n`));
+      const stamp = readDistStamp(distPath);
+      if (!stamp) {
+        console.log(chalk.yellow(
+          `  Last build: unknown — dist/ carries no build stamp. Run \`agentboot build\`.\n`,
+        ));
+      } else if (stamp.status === "failed") {
+        console.log(chalk.red(`  Last build: ${stamp.builtAt} — FAILED`));
+        if (stamp.failureReason) console.log(chalk.red(`              ${stamp.failureReason}`));
+        console.log(chalk.gray(
+          "              The tree on disk is the output of an EARLIER build.\n",
+        ));
+      } else {
+        console.log(chalk.gray(`  Last build: ${stamp.builtAt}\n`));
+      }
+      // Separately from the stamp's own status: has the config moved since?
+      if (reportDistFreshness(configPath, config, "status")) distStale = true;
     } else {
       console.log(chalk.yellow("  dist/ not found — run `agentboot build`\n"));
     }
+    if (distStale) process.exitCode = 1;
   });
 
 // ---- lint (AB-38) ---------------------------------------------------------
@@ -2233,6 +2319,13 @@ program
     // Compiled output token check — CLAUDE.md content costs money on every turn
     // because it's injected as system-reminder, not in the cached system prompt.
     const distClaudeMd = path.join(cwd, "dist", "claude", "core", "CLAUDE.md");
+    // A-class: lint's dist/ read is one advisory token count. Refusing to lint
+    // the SOURCES because the compiled tree is stale would be an outage, so
+    // lint takes the `reports` posture — but a token count taken from a
+    // superseded tree must not be presented as the current one.
+    if (fs.existsSync(distClaudeMd)) {
+      reportDistFreshness(configPath, config, "lint (compiled-output token check)");
+    }
     if (fs.existsSync(distClaudeMd)) {
       const compiled = fs.readFileSync(distClaudeMd, "utf-8");
       // Expand @import directives to count total tokens
@@ -3341,6 +3434,11 @@ program
       process.exit(1);
     }
 
+    // A3-residual: export PACKAGES dist/ into a distributable — a plugin
+    // directory, an agentskills bundle told to submit itself to a public
+    // directory. That is a higher-consequence path than `audit`, which was
+    // gated first, and it was shipping superseded policy at exit 0.
+    assertDistFreshOrExit(configPath, config, "export");
     const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
     const format = opts.format;
 
@@ -3487,6 +3585,12 @@ program
   .action((opts) => {
     const cwd = process.cwd();
     const dryRun = opts.dryRun ?? false;
+    // A-class: `publish` is `export`'s consequence made public. If the hub it
+    // runs in has a config, the tree it is about to publish must be current.
+    const publishConfigPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    if (fs.existsSync(publishConfigPath)) {
+      assertDistFreshOrExit(publishConfigPath, loadConfig(publishConfigPath), "publish");
+    }
 
     console.log(chalk.bold("\nAgentBoot — publish\n"));
     if (dryRun) console.log(chalk.yellow("  DRY RUN — no files will be modified\n"));
@@ -3668,6 +3772,10 @@ program
       console.error(chalk.red(`Failed to parse config: ${e instanceof Error ? e.message : String(e)}`));
       process.exit(1);
     }
+
+    // A-class: cost-estimate states what the DEPLOYED prompt costs. Computed
+    // from a superseded tree that is a wrong number stated as a fact.
+    assertDistFreshOrExit(configPath, config, "cost-estimate");
 
     const { estimateCosts, MODEL_PRICING } = await import("./lib/cost-estimate.js");
 

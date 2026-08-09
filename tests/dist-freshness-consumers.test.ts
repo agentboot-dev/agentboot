@@ -135,3 +135,89 @@ describe("stale dist/ — the evidence-producing commands must refuse", () => {
     expect(ab(["evidence-pack", "--out", "ep2.json"], hub).status).toBe(0);
   }, 600_000);
 });
+
+/**
+ * A-class — and then there were nine more.
+ *
+ * R1-E fixed three consumers. It did not ask how many there were. The answer
+ * was that `install-user`, `export`, `publish`, `test` and `cost-estimate` were
+ * still acting on a stale tree at exit 0, and `doctor`, `status` and `lint`
+ * were still describing one as healthy — because the gated set and the
+ * consumer set were two hand-maintained lists.
+ *
+ * tests/dist-consumer-invariant.test.ts asserts that no command can read dist/
+ * without declaring a posture. This block asserts the postures are real: the
+ * gated ones refuse, and the reporting ones say what is wrong.
+ */
+describe("A-class — the remaining dist/ consumers", () => {
+  it("precondition: a failed rebuild stamps dist/ failed", () => {
+    makeDistStale();
+    expect(ab(["build"], hub).status).toBe(1);
+    expect(stampStatus()).toBe("failed");
+  }, 300_000);
+
+  it("A2-residual: install-user refuses — it delivers org policy to a developer's machine", () => {
+    // Measured pre-fix: EXIT 0, "✓ Would write 5 skill file(s) + 2 rule file(s)
+    // to ~/.claude/" and "✓ Would withdraw 1 revoked artifact(s)". Two green
+    // ticks installing a revoked control from a platform the org had retired.
+    // Its only precondition was fs.existsSync(distCore) — existence read as
+    // freshness, the pattern the sync gate was written to kill.
+    const r = ab(["install-user", "--dry-run"], hub);
+    expect(r.out).toMatch(/refusing to run `install-user` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("A3-residual: export refuses for BOTH formats — it packages a distributable", () => {
+    const plugin = ab(["export", "--format", "plugin", "--output", "zz-plugin"], hub);
+    expect(plugin.out).toMatch(/refusing to run `export` against a stale dist\//);
+    expect(plugin.status, plugin.out).toBe(1);
+    expect(fs.existsSync(path.join(hub, "zz-plugin"))).toBe(false);
+
+    // The agentskills path ended with "Submit this file to agentskills.io for
+    // directory listing." — publishing superseded policy to a public directory.
+    const skills = ab(["export", "--format", "agentskills"], hub);
+    expect(skills.out).toMatch(/refusing to run `export` against a stale dist\//);
+    expect(skills.status, skills.out).toBe(1);
+  }, 300_000);
+
+  it("A-class: test refuses — a green run against a superseded tree is a false pass", () => {
+    const r = ab(["test", "--snapshot"], hub);
+    expect(r.out).toMatch(/refusing to run `test` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("A-class: cost-estimate refuses — a stale tree gives a wrong number stated as fact", () => {
+    const r = ab(["cost-estimate"], hub);
+    expect(r.out).toMatch(/refusing to run `cost-estimate` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("A4-residual: status reads the STAMP, not dist/'s directory mtime", () => {
+    // Pre-fix, cli.ts was literally commented `// Check dist/ freshness` and
+    // then did fs.statSync(distPath).mtime — printing the timestamp of the
+    // EARLIER SUCCESSFUL build while the most recent attempt had failed
+    // seconds later, at exit 0.
+    const r = ab(["status"], hub);
+    expect(r.out).toMatch(/Last build: .* — FAILED/);
+    expect(r.out).not.toMatch(/reporting on a stale dist\/[\s\S]*refusing to run `status`/);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("V5: doctor calls a failed build a FAILED check, not `dist/ exists (built)`", () => {
+    const r = ab(["doctor"], hub);
+    expect(r.out).toMatch(/dist\/ exists but is NOT trustworthy/);
+    expect(r.out).not.toMatch(/✓ dist\/ exists \(built\)/);
+    expect(r.status, r.out).not.toBe(0);
+  }, 300_000);
+
+  it("POSITIVE: a successful rebuild clears every one of them — no gate is an outage", () => {
+    makeDistFresh();
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(ab(["install-user", "--dry-run"], hub).status).toBe(0);
+    expect(ab(["export", "--format", "plugin", "--output", "zz-ok"], hub).status).toBe(0);
+    expect(ab(["cost-estimate"], hub).status).toBe(0);
+    const st = ab(["status"], hub);
+    expect(st.status, st.out).toBe(0);
+    expect(st.out).not.toMatch(/FAILED/);
+  }, 900_000);
+});
