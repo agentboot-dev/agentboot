@@ -32,7 +32,7 @@ import {
   type ManifestVerification,
 } from "./provenance.js";
 import { checkDrift, findManifestPath, type DriftReport } from "./drift.js";
-import { PLATFORM_ENFORCEMENT } from "./conformance.js";
+import { PLATFORM_ENFORCEMENT, configuredPlatforms } from "./conformance.js";
 import { verifyBatchChain, type BatchChainVerification } from "./telemetry-sink.js";
 import { loadExceptionsFile, HUB_EXCEPTIONS_FILE } from "./exceptions.js";
 
@@ -62,8 +62,26 @@ export interface EvidencePack {
     declared: typeof PLATFORM_ENFORCEMENT;
     /** Per-platform enforcement manifests from the last conformance run, verbatim. */
     manifests: Record<string, unknown>;
-    /** Platforms with compiled output but no enforcement manifest — conformance not run. */
+    /**
+     * CONFIGURED platforms with no enforcement manifest — conformance has not
+     * been run for them, and running it WILL cover them.
+     *
+     * R1-G: this used to be derived from `fs.readdirSync(distPath)`, which
+     * includes `dist/plugin/` on any hub that builds `claude` even though
+     * `plugin` is not a configured format. `conformance` iterates the CONFIG,
+     * so the pack told the auditor to run a command that could never change
+     * what the pack reported.
+     */
     unprobed_platforms: string[];
+    /** The platform set this pack was computed over, and where it came from. */
+    platform_set: { platforms: string[]; source: "personas.outputFormats" };
+    /**
+     * Platform trees present in dist/ that are NOT configured formats — today
+     * `plugin`, which the claude emitter derives. Reported so an auditor is not
+     * left wondering why a directory exists with no manifest, and kept OUT of
+     * `unprobed_platforms` because `conformance` will never probe them.
+     */
+    derived_platforms: string[];
   };
   guardrails: {
     denyTools: string[];
@@ -117,22 +135,38 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
   const { hubPath, config, agentbootVersion, repos, distPath } = options;
 
   // Enforcement manifests from the last conformance run — never fabricated.
+  //
+  // R1-G: the platform set comes from the SAME resolver `conformance` uses, so
+  // "unprobed" names platforms that running `agentboot conformance` will
+  // actually cover.
+  const configured = configuredPlatforms(config);
   const manifests: Record<string, unknown> = {};
   const unprobed: string[] = [];
+  const derived: string[] = [];
+  const readManifest = (platform: string): boolean => {
+    const manifestPath = path.join(distPath, platform, "enforcement-manifest.json");
+    if (!fs.existsSync(manifestPath)) return false;
+    try {
+      manifests[platform] = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    } catch {
+      manifests[platform] = { error: "unreadable enforcement manifest" };
+    }
+    return true;
+  };
   if (fs.existsSync(distPath)) {
+    for (const platform of configured) {
+      if (!readManifest(platform)) unprobed.push(platform);
+    }
+    // Everything else on disk that IS a known platform is derived output, not a
+    // configured target. Its manifest is still carried if one exists — an
+    // observation is evidence wherever it came from — but its absence is not
+    // an action item, because no command will produce it.
     for (const platform of fs.readdirSync(distPath)) {
-      const platformDir = path.join(distPath, platform);
-      if (!fs.statSync(platformDir).isDirectory()) continue;
-      const manifestPath = path.join(platformDir, "enforcement-manifest.json");
-      if (fs.existsSync(manifestPath)) {
-        try {
-          manifests[platform] = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-        } catch {
-          manifests[platform] = { error: "unreadable enforcement manifest" };
-        }
-      } else if (platform in PLATFORM_ENFORCEMENT) {
-        unprobed.push(platform);
-      }
+      if (configured.includes(platform)) continue;
+      if (!(platform in PLATFORM_ENFORCEMENT)) continue;
+      if (!fs.statSync(path.join(distPath, platform)).isDirectory()) continue;
+      derived.push(platform);
+      readManifest(platform);
     }
   }
 
@@ -223,7 +257,13 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     version: 1,
     generated_at: new Date().toISOString(),
     hub: collectHubProvenance(hubPath, agentbootVersion),
-    enforcement: { declared: PLATFORM_ENFORCEMENT, manifests, unprobed_platforms: unprobed },
+    enforcement: {
+      declared: PLATFORM_ENFORCEMENT,
+      manifests,
+      unprobed_platforms: unprobed,
+      platform_set: { platforms: configured, source: "personas.outputFormats" },
+      derived_platforms: derived,
+    },
     guardrails: { denyTools, exceptions },
     mcp: mcpEvidence,
     repos: repoEvidence,

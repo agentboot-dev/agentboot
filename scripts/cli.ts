@@ -4036,8 +4036,17 @@ program
     fs.writeFileSync(out, JSON.stringify(pack, null, 2) + "\n", { mode: 0o600 });
 
     console.log(`  Hub:        ${pack.hub.hub_commit ?? "(not a git repo)"}${pack.hub.hub_dirty ? chalk.yellow(" DIRTY") : ""}`);
-    console.log(`  Platforms:  ${Object.keys(pack.enforcement.manifests).length} with enforcement manifests` +
+    // R1-G: name the platform SET the pack was computed over. "2 with
+    // enforcement manifests" is not a claim until the denominator is stated.
+    console.log(`  Platforms:  ${pack.enforcement.platform_set.platforms.join(", ")} ` +
+      `(from ${pack.enforcement.platform_set.source})`);
+    console.log(`              ${Object.keys(pack.enforcement.manifests).length} with enforcement manifests` +
       (pack.enforcement.unprobed_platforms.length ? chalk.yellow(` — UNPROBED: ${pack.enforcement.unprobed_platforms.join(", ")} (run \`agentboot conformance\`)`) : ""));
+    if (pack.enforcement.derived_platforms.length > 0) {
+      console.log(chalk.gray(
+        `              derived output present for: ${pack.enforcement.derived_platforms.join(", ")} ` +
+        `— not configured targets, so \`conformance\` does not probe them`));
+    }
     console.log(`  Repos:      ${pack.repos.length} (${pack.repos.filter((r) => r.drift.clean === true).length} drift-clean)`);
     console.log(`  Exceptions: ${pack.guardrails.exceptions.length} (${pack.guardrails.exceptions.filter((e) => e.expired).length} expired)`);
     if (pack.telemetry.chain) {

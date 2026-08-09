@@ -29,7 +29,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PLATFORM_REQUIRES, type AgentBootConfig } from "./config.js";
+import { PLATFORM_REQUIRES, DEFAULT_OUTPUT_FORMATS, type AgentBootConfig } from "./config.js";
 
 /** Same bound as every external-binary probe (v0.12.4 hang-class fix). */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -86,6 +86,27 @@ export interface EnforcementResolution {
  * platform whose prerequisites are unmet resolves to `advisory` rather than to
  * its declared level. "We could not verify it" must never resolve upward.
  */
+/**
+ * R1-G: THE platform set, for every consumer that needs one.
+ *
+ * `conformance` derived it from `personas.outputFormats`; `evidence-pack`
+ * derived it from `fs.readdirSync(distPath)`. Two lists that must agree, and
+ * they did not: `dist/plugin/` is emitted whenever `claude` is built
+ * (generatePluginOutput sits inside `if (outputFormats.includes("claude"))`)
+ * even though `plugin` is not a configured format. So on a claude-only hub the
+ * evidence pack printed `UNPROBED: plugin (run agentboot conformance)` and
+ * `agentboot conformance` would never probe plugin, because it iterates the
+ * config. The remedy the pack printed could not resolve the state the pack
+ * reported — permanently, on every pack.
+ *
+ * One resolver, and consumers that state which set they used.
+ */
+export function configuredPlatforms(config: {
+  personas?: { outputFormats?: string[] } | undefined;
+}): string[] {
+  return config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+}
+
 export function resolveEnforcement(
   format: string,
   outputFormats: readonly string[],
