@@ -64,6 +64,7 @@ import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
   APPLY_TO_PROJECTION, rewriteFrontmatterKeyBlock, type ScopedArtifact,
 } from "./lib/scope-projection.js";
+import { scopeBearingInstructionDirs } from "./lib/scope-layout.js";
 import { diffTrees, inventoryTree } from "./lib/prune.js";
 import { resolveWithin, PathEscapeError } from "./lib/path-containment.js";
 import {
@@ -4515,9 +4516,11 @@ function main(): void {
     // precisely the drift that produced this defect class.
     const capCtx: CapabilityContext = {
       config,
+      // R4-2: domains/*/instructions go through the SAME emitters, and this
+      // hand-built pair could not see them — so the domain tier was invisible
+      // to the gate. One derivation, shared with doctor.
       narrowlyScopedInstructions: countNarrowlyScopedInstructions(
-        [packageInstructionsDir, coreInstructionsDir],
-        config.instructions?.enabled,
+        scopeBearingInstructionDirs(packageInstructionsDir, coreInstructionsDir, config, configDir),
       ),
       scopedGotchas: countScopedGotchas(coreGotchasDir),
       // R2-9: package-then-hub, matching the merge order the compiler uses, so

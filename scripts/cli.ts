@@ -40,6 +40,7 @@ import {
   countNarrowlyScopedInstructions, countScopedGotchas, countPersonaScopeControls,
 } from "./lib/guardrail-scan.js";
 import { degradedFormats } from "./lib/scope-projection.js";
+import { scopeBearingInstructionDirs } from "./lib/scope-layout.js";
 import {
   loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE,
   type PolicyException,
@@ -1841,9 +1842,13 @@ program
           // A5: was `?? []` — Coverage iterated over zero platforms and printed
           // clean for every hub that omits personas.outputFormats.
           const covFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+          // R4-2: `domains/*/instructions` compile through the same emitters and
+          // were in neither hand-built pair, so a hub whose only narrow rules
+          // live in a domain got "nothing to check" here while `build` refused.
           const narrow = countNarrowlyScopedInstructions(
-            [path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions")],
-            config.instructions?.enabled,
+            scopeBearingInstructionDirs(
+              path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions"), config, cwd,
+            ),
           );
           const scopedG = countScopedGotchas(path.join(cwd, "core", "gotchas"));
           const capCtx: CapabilityContext = {
@@ -2021,9 +2026,13 @@ program
         if (!isJson) { console.log(""); console.log(chalk.cyan("Scoping")); }
         {
           const degraded = degradedFormats(enforcementFormats);
+          // R4-2: same omission, second surface — this one printed
+          // "Path scoping is expressible on every configured target" over a
+          // domain rule the build had just refused to ship.
           const scopedNarrow = countNarrowlyScopedInstructions(
-            [path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions")],
-            config.instructions?.enabled,
+            scopeBearingInstructionDirs(
+              path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions"), config, cwd,
+            ),
           );
           if (enforcementFormats.length === 0) {
             // NF-5: "expressible on every configured target" over ZERO targets is

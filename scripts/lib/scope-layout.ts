@@ -18,6 +18,7 @@ import {
   flattenNodes,
   groupsToNodes,
 } from "./config.js";
+import type { InstructionDirSpec } from "./guardrail-scan.js";
 
 /**
  * Resolve config-referenced domain layers to their `traits/` and `personas/`
@@ -58,6 +59,70 @@ export function resolveDomainDirs(
     });
   }
   return out;
+}
+
+/**
+ * R4-2: THE instruction directories whose `applyTo` any scope surface must see.
+ *
+ * `countNarrowlyScopedInstructions` was called at three sites — the build's
+ * capability gate and doctor's Coverage and Scoping blocks — each with a
+ * hand-built `[packageInstructionsDir, coreInstructionsDir]`. `domains/<d>/
+ * instructions` was in none of them, and `compileDomains()` pushes those files
+ * through the SAME emitters, so the whole domain tier was invisible to every
+ * surface that answers "did the target receive the scope you wrote".
+ *
+ * Measured on a scratch hub (one narrow instruction in `domains/fin/
+ * instructions`, `outputFormats: ["skill","claude"]` — neither can express a
+ * path scope), unpiped:
+ *
+ *     build   EXIT 1  "Path scoping cannot be expressed on: skill, claude"
+ *     doctor  Coverage  "OK Capability coverage - nothing to check: no capability
+ *                        in the support table is configured on this hub"
+ *             Scoping   "OK Path scoping is expressible on every configured target"
+ *
+ * The build refuses and doctor says everything is fine, about the same file. Move
+ * the same bytes to `core/instructions` and doctor says
+ * "instructions[].applyTo - configured, but needs one of: copilot, cursor,
+ * jetbrains, windsurf". Same file, opposite verdict, decided only by which
+ * directory it sits in — which is verbatim the sentence NEW-1 wrote about
+ * `assertScopeKeysParse`. NEW-1 fixed the enumeration for the malformed-scope
+ * gate and left the capability/doctor surfaces on the old two-element literal.
+ *
+ * So: one derivation, three consumers, and no call site permitted to build the
+ * list itself. Boundary-checked identically to `resolveDomainDirs` — a domain
+ * that escapes the project root is not compiled, so counting it would fire the
+ * gate on a file that ships nowhere.
+ */
+export function scopeBearingInstructionDirs(
+  packageInstructionsDir: string,
+  coreInstructionsDir: string,
+  config: AgentBootConfig,
+  configDir: string,
+): InstructionDirSpec[] {
+  const enabled = config.instructions?.enabled;
+  const dirs: InstructionDirSpec[] = [
+    { dir: packageInstructionsDir, enabled },
+    { dir: coreInstructionsDir, enabled },
+  ];
+  const boundary = path.resolve(configDir);
+  for (const domainRef of config.domains ?? []) {
+    const domainPath =
+      typeof domainRef === "string"
+        ? path.resolve(configDir, domainRef)
+        : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    if (!fs.existsSync(domainPath)) continue;
+    let realDomainPath: string;
+    try {
+      realDomainPath = fs.realpathSync(domainPath);
+    } catch {
+      continue;
+    }
+    if (!realDomainPath.startsWith(boundary + path.sep) && realDomainPath !== boundary) continue;
+    // `enabled: undefined` + `separate` mirror compileDomains(): every
+    // instruction in a configured domain is compiled, into its own scopePath.
+    dirs.push({ dir: path.join(realDomainPath, "instructions"), enabled: undefined, separate: true });
+  }
+  return dirs;
 }
 
 /** The effective nodes tree: `nodes` wins; legacy `groups`/`teams` converted. */

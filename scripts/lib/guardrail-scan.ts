@@ -260,18 +260,39 @@ const UNIVERSAL_GLOBS = new Set(["**", "**/*", "*"]);
  * that shape.
  *
  * Later dirs win on name, matching compile's package-then-hub merge.
+ *
+ * R4-2: a dir may carry its OWN `enabled` filter and its own merge identity.
+ * `compileDomains()` passes `enabled: undefined` — every instruction in a
+ * configured domain is compiled regardless of `instructions.enabled` — and
+ * writes to a separate scopePath, so a domain instruction neither answers to the
+ * core filter nor shadows a core file of the same name. Expressed per-dir rather
+ * than by calling this twice, because two counts summed would double-count
+ * nothing and lose the package-then-hub merge that the plain form needs.
  */
+export type InstructionDirSpec =
+  | string
+  | {
+      dir: string;
+      /** Name filter for THIS dir. `undefined` means "compile them all". */
+      enabled?: string[] | undefined;
+      /** True when this dir is its own compile scope and must not merge by name. */
+      separate?: boolean;
+    };
+
 export function countNarrowlyScopedInstructions(
-  instructionDirs: string[],
+  instructionDirs: InstructionDirSpec[],
   enabled?: string[],
 ): number {
   const seen = new Map<string, string>();
-  for (const dir of instructionDirs) {
+  for (const spec of instructionDirs) {
+    const dir = typeof spec === "string" ? spec : spec.dir;
+    const filter = typeof spec === "string" ? enabled : spec.enabled;
+    const separate = typeof spec === "string" ? false : spec.separate === true;
     if (!fs.existsSync(dir)) continue;
     for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md"))) {
       const name = f.replace(/\.md$/, "");
-      if (enabled && !enabled.includes(name)) continue;
-      seen.set(name, path.join(dir, f));
+      if (filter && !filter.includes(name)) continue;
+      seen.set(separate ? `${dir} ${name}` : name, path.join(dir, f));
     }
   }
   let n = 0;
