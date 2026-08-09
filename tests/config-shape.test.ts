@@ -320,3 +320,58 @@ describe("NEW-3 — CONFIG_SHAPE is complete against the capability table", () =
     }
   });
 });
+
+/**
+ * R4-1 — the completeness invariant is derived from CAPABILITY_SUPPORT, and one
+ * class of policy key is structurally invisible to it.
+ *
+ * CAPABILITY_SUPPORT answers "which PLATFORM emits this key". `output
+ * .tokenBudget` is platform-independent — it is a gate over the composed
+ * persona — so it can never have a row, so the derived check can never require
+ * it to be typed. It was not, and the consequence is the same one CONFIG_SHAPE
+ * exists to prevent, on the one key in the config that FAILS A BUILD:
+ *
+ *     failAt: 200            BUILD_EXIT=1, all four over-budget personas named
+ *     failAt: "200 tokens"   BUILD_EXIT=0, zero mentions of failAt
+ *     failAt: {"nope":1}     BUILD_EXIT=0, zero mentions of failAt
+ *     tokenBudget: 200       BUILD_EXIT=0, and warnAt silently reverts to 8000
+ *
+ * `estimatedTokens > tokenFailAt` against a non-number is NaN, and NaN
+ * comparisons are false — so an operator's opt-in CI gate is off and nothing
+ * says so. Fail-open on unknown data, in the shape the branch is named for.
+ *
+ * Enumerated by hand HERE and nowhere else, because the alternative is a second
+ * derived list that would have the same blind spot as the first.
+ */
+describe("R4-1 — the build-failing budget gate is type-checked", () => {
+  it("every output.tokenBudget leaf is typed", () => {
+    for (const leaf of ["output.tokenBudget", "output.tokenBudget.warnAt", "output.tokenBudget.failAt"]) {
+      expect(CONFIG_SHAPE.some((r) => r.path === leaf), `${leaf} is untyped`).toBe(true);
+    }
+  });
+
+  it("a non-numeric failAt is REFUSED by name, not silently coerced to no gate", () => {
+    for (const bad of ["200 tokens", { nope: 1 }, ["200"], true]) {
+      const errors = configShapeErrors({ org: "acme", output: { tokenBudget: { failAt: bad } } });
+      expect(
+        errors.some((e) => e.includes("output.tokenBudget.failAt")),
+        `failAt: ${JSON.stringify(bad)} produced no named error — the gate is off and silent`,
+      ).toBe(true);
+    }
+  });
+
+  it("a non-numeric warnAt is refused too — four over-budget personas warned zero times", () => {
+    const errors = configShapeErrors({ org: "acme", output: { tokenBudget: { warnAt: "tiny" } } });
+    expect(errors.some((e) => e.includes("output.tokenBudget.warnAt"))).toBe(true);
+  });
+
+  it("tokenBudget as a scalar is refused — it silently reverted warnAt to the default", () => {
+    const errors = configShapeErrors({ org: "acme", output: { tokenBudget: 200 } });
+    expect(errors.some((e) => e.includes("output.tokenBudget"))).toBe(true);
+  });
+
+  it("a well-formed budget still passes — the gate must not become noise", () => {
+    const errors = configShapeErrors({ org: "acme", output: { tokenBudget: { warnAt: 8000, failAt: 12000 } } });
+    expect(errors).toEqual([]);
+  });
+});

@@ -984,6 +984,30 @@ export const CONFIG_SHAPE: ConfigShapeRule[] = [
   { path: "domains", kind: "array" },
   { path: "output", kind: "object" },
   { path: "output.distPath", kind: "string" },
+  // R4-1: the OPT-IN BUILD GATE, and the only policy-bearing key in the table
+  // whose completeness the CAPABILITY_SUPPORT-derived invariant cannot see.
+  //
+  // `output.tokenBudget.failAt` is the CI gate an org sets to make a prompt-size
+  // regression fail the build. It was untyped, and the comparison that enforces
+  // it is `estimatedTokens > tokenFailAt` — so a value that is not a number
+  // yields NaN, the comparison is false for every persona, and the gate is
+  // silently OFF. Measured on a scratch hub whose four personas are 7.6k–11.2k
+  // tokens, unpiped:
+  //
+  //     failAt: 200            -> BUILD_EXIT=1, all four named
+  //     failAt: "200 tokens"   -> BUILD_EXIT=0, zero mentions of failAt
+  //     failAt: {"nope":1}     -> BUILD_EXIT=0, zero mentions of failAt
+  //     tokenBudget: 200       -> BUILD_EXIT=0, and warnAt silently reverts to
+  //                               the 8000 default
+  //     warnAt: "tiny"         -> not one warning, on four over-budget personas
+  //
+  // `validate --strict` and `doctor` say nothing either. The sibling
+  // `managed.guardrails.denyTools: "WebFetch"` — the key this table was written
+  // for — gives a named refusal. Same file, same table, opposite verdict,
+  // decided only by which key the operator got wrong.
+  { path: "output.tokenBudget", kind: "object" },
+  { path: "output.tokenBudget.warnAt", kind: "number" },
+  { path: "output.tokenBudget.failAt", kind: "number" },
   { path: "sync", kind: "object" },
   { path: "sync.retain", kind: "string[]" },
   { path: "claude", kind: "object" },
