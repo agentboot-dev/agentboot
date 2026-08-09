@@ -36,7 +36,10 @@ const CLI_SRC = path.join(ROOT, "scripts", "cli.ts");
 
 interface CommandBlock {
   name: string;
+  /** The command block PLUS the source of any script it dispatches to. */
   body: string;
+  /** The command block alone — used where the gate call must be in cli.ts itself. */
+  ownBody: string;
 }
 
 /**
@@ -46,6 +49,31 @@ interface CommandBlock {
  * for every command, including ones that need a hub, a network, or an LLM to
  * run, and a runtime enumeration would quietly test only the cheap ones.
  */
+/**
+ * R2-1: a command that DELEGATES its whole implementation to another script is
+ * that script, for the purposes of this invariant.
+ *
+ * The derivation used to read scripts/cli.ts and nothing else. `mcp-server`'s
+ * command block is nine lines that spawn `mcp-server.ts` as a subprocess and
+ * contain no dist/ token at all — so the second-largest consumer of dist/ in the
+ * repo (it serves compiled persona and skill CONTENT to an agent, tagged
+ * `source: "dist"`) was invisible to the check written because "two lists that
+ * must agree will drift". The invariant was itself derived from one file.
+ *
+ * Deliberately scoped to `runScript({ script: "X.ts" })` — a command whose body
+ * IS a dispatch — and not to every `await import("./lib/…")`. A library import
+ * is a command using a helper; a runScript dispatch is a command that has no
+ * body of its own, which is precisely the shape that hid here.
+ */
+function delegatedSources(body: string): string {
+  let extra = "";
+  for (const m of body.matchAll(/script:\s*"([A-Za-z0-9._-]+\.ts)"/g)) {
+    const target = path.join(ROOT, "scripts", m[1]!);
+    if (fs.existsSync(target)) extra += "\n" + fs.readFileSync(target, "utf-8");
+  }
+  return extra;
+}
+
 function commandBlocks(): CommandBlock[] {
   const lines = fs.readFileSync(CLI_SRC, "utf-8").split("\n");
   const starts: Array<{ name: string; line: number }> = [];
@@ -53,10 +81,12 @@ function commandBlocks(): CommandBlock[] {
     const m = /^\s*\.command\("([a-z0-9-]+)"/.exec(lines[i]!);
     if (m) starts.push({ name: m[1]!, line: i });
   }
-  return starts.map((s, k) => ({
-    name: s.name,
-    body: lines.slice(s.line, k + 1 < starts.length ? starts[k + 1]!.line : lines.length).join("\n"),
-  }));
+  return starts.map((s, k) => {
+    const own = lines
+      .slice(s.line, k + 1 < starts.length ? starts[k + 1]!.line : lines.length)
+      .join("\n");
+    return { name: s.name, body: own + delegatedSources(own), ownBody: own };
+  });
 }
 
 /**
@@ -105,12 +135,28 @@ describe("A-class — every dist/ consumer declares a freshness posture", () => 
   });
 
   it("A-2: every command declared `gated` actually calls the gate", () => {
-    const syncSrc = fs.readFileSync(path.join(ROOT, "scripts", "sync.ts"), "utf-8");
     const missing: string[] = [];
     for (const [name, decl] of Object.entries(DIST_CONSUMERS)) {
       if (decl.posture !== "gated") continue;
-      if (decl.gateIn === "scripts/sync.ts") {
-        if (!/assertDistFreshOrExit|checkDistFreshness/.test(syncSrc)) missing.push(name);
+      if (decl.gateIn) {
+        // A gate declared to live in another file must be IN that file, and the
+        // freshness call must be the thing that REFUSES — the exit is what makes
+        // it a gate rather than a comment. Scoped to the lines following the
+        // call, because a file-wide `process.exit(1)` search passes on any
+        // unrelated exit: dropping dev-sync's refusal left its "dist/ not found"
+        // exit behind and a file-wide check stayed green.
+        const src = fs.readFileSync(path.join(ROOT, decl.gateIn), "utf-8");
+        const lines = src.split("\n");
+        let gates = false;
+        for (let i = 0; i < lines.length; i++) {
+          if (!/assertDistFreshOrExit\(|checkDistFreshness\(/.test(lines[i]!)) continue;
+          const window = lines.slice(i, i + 15).join("\n");
+          if (/assertDistFreshOrExit\(/.test(lines[i]!) || /process\.exit\(1\)/.test(window)) {
+            gates = true;
+            break;
+          }
+        }
+        if (!gates) missing.push(name);
         continue;
       }
       const block = BLOCKS.find((b) => b.name === name);

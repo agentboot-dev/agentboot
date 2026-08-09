@@ -109,6 +109,15 @@ export const DIST_CONSUMERS: Record<string, DistConsumer> = {
     posture: "gated",
     reason: "states what the deployed prompt costs; from a stale tree that is a wrong number stated as fact",
   },
+  "dev-sync": {
+    posture: "gated",
+    gateIn: "scripts/dev-sync.ts",
+    reason:
+      "R2-1: copies dist/ into the repo's live agent-tool locations — install-user's " +
+      "consequence, aimed at the maintainers. It gated on fs.existsSync(dist/) alone. " +
+      "Being dev-only is not a reason: it decides which personas AgentBoot is developed " +
+      "against, so a stale copy means the tool is dogfooding policy it has replaced.",
+  },
 
   // --- reports: the answer IS the state, so say it, do not refuse ----------
   doctor: {
@@ -124,6 +133,20 @@ export const DIST_CONSUMERS: Record<string, DistConsumer> = {
       "A4-residual: status exists to describe the hub. It must read the STAMP rather than " +
       "dist/'s directory mtime — the mtime is the timestamp of the last SUCCESSFUL build " +
       "and is printed unchanged after a failed one.",
+  },
+  "mcp-server": {
+    posture: "reports",
+    gateIn: "scripts/mcp-server.ts",
+    reason:
+      "R2-1: the whole MCP surface was outside this invariant, because the derivation " +
+      "parses scripts/cli.ts and the `mcp-server` command block only spawns " +
+      "mcp-server.ts as a subprocess — the dist/ reads are in another file. It serves " +
+      "compiled persona and skill CONTENT to an agent tagged `source: \"dist\"`, and " +
+      "reported lastBuiltAt from dist/'s directory mtime, which is the timestamp of " +
+      "the last SUCCESSFUL build and survives a failed one unchanged. `reports` and " +
+      "not `gated` for the same reason as doctor/status: these tools exist to describe " +
+      "hub state, and a server that refuses to answer withholds the diagnosis. Every " +
+      "answer now carries the staleness with it.",
   },
   lint: {
     posture: "reports",

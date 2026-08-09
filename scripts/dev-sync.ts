@@ -14,6 +14,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
+import { loadConfig } from "./lib/config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -122,6 +124,24 @@ console.log(chalk.bold("\nAgentBoot — dev-sync"));
 if (!fs.existsSync(DIST)) {
   console.error(chalk.red("✗ dist/ not found. Run `npm run build` first."));
   process.exit(1);
+}
+
+// R2-1: dev-sync INSTALLS dist/ into live agent-tool locations, so it takes the
+// same `gated` posture as install-user (see scripts/lib/dist-consumers.ts). It
+// had `fs.existsSync(DIST)` only — existence read as freshness. That is the
+// pattern the N1 gate exists to kill, and "it's dev-only" is exactly the
+// hand-wave that left eight other consumers ungated: this is the copy that
+// decides which personas the maintainers themselves are dogfooding, so a stale
+// one means the tool is developed against policy it has already replaced.
+{
+  const cfgPath = path.join(ROOT, "agentboot.config.json");
+  if (fs.existsSync(cfgPath)) {
+    const check = checkDistFreshness(DIST, loadConfig(cfgPath), ROOT);
+    if (!check.fresh) {
+      console.error(chalk.red(staleDistMessage(check, "dev-sync")));
+      process.exit(1);
+    }
+  }
 }
 
 let totalFiles = 0;

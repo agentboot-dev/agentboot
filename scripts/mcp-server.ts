@@ -31,6 +31,7 @@ import { frontmatterBlock } from "./lib/frontmatter.js";
 import { scanParentForContent } from "./lib/import.js";
 import { getDefaultHub } from "./lib/registry.js";
 import { checkDrift, findManifestPath } from "./lib/drift.js";
+import { checkDistFreshness, readDistStamp } from "./lib/dist-stamp.js";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -122,12 +123,133 @@ const SERVER_VERSION = (() => {
 const PROTOCOL_VERSION = "2024-11-05";
 
 // ---------------------------------------------------------------------------
+// N1 on the MCP surface — dist/ freshness
+// ---------------------------------------------------------------------------
+
+/**
+ * R2-1: the MCP server is the SECOND-largest consumer of dist/, and it was
+ * outside the N1 freshness gate entirely.
+ *
+ * `scripts/lib/dist-consumers.ts` records a posture for every CLI command that
+ * reads dist/, and `tests/dist-consumer-invariant.test.ts` derives the consumer
+ * set by parsing scripts/cli.ts. The `mcp-server` command block spawns
+ * `mcp-server.ts` as a subprocess, so its dist/ reads are in another file and
+ * the derivation could not see them. The invariant that exists because "two
+ * lists that must agree will drift" was itself derived from one file.
+ *
+ * Measured on a scratch hub whose build had just FAILED (stamp
+ * `status: "failed"`), same hub, same moment:
+ *
+ *   agentboot status        EXIT 1  "Last build: … — FAILED"
+ *   agentboot audit         EXIT 1  refuses
+ *   MCP agentboot_status            {"lastBuiltAt":"<PREVIOUS SUCCESSFUL BUILD>"}
+ *   MCP agentboot_doctor            {"issues":[],"allClear":true}
+ *   MCP agentboot_list_personas     {"source":"dist"}
+ *
+ * `lastBuiltAt` came from `fs.statSync(dist/).mtime`, which is the timestamp of
+ * the last SUCCESSFUL build and is printed unchanged after a failed one — the
+ * exact thing DIST_CONSUMERS.status's `reports` posture forbids in words. And
+ * the consumer here is not a human squinting at a terminal: it is an agent,
+ * which is told `source: "dist"` and reasonably reads that as "the compiled,
+ * current policy."
+ *
+ * Posture is `reports`, matching CLI status/doctor: the MCP tools exist to
+ * describe hub state, so refusing to answer would withhold the diagnosis.
+ * Silence is what is forbidden, not continuing.
+ */
+const DIST_DIR = path.join(HUB_ROOT, "dist");
+
+export interface McpDistFreshness {
+  /** Does dist/ exist at all? Unbuilt is a legitimate state, distinct from stale. */
+  distExists: boolean;
+  /** True ONLY when a stamp exists and matches the current config and sources. */
+  fresh: boolean;
+  /** "missing" | "failed" | "config-stale" | "sources-stale", absent when fresh. */
+  reason?: string;
+  /** Operator/agent-facing explanation including the remedy. */
+  detail?: string;
+  /** Build outcome as stamped — NOT dist/'s directory mtime. */
+  lastBuiltAt: string | null;
+  lastBuildStatus: "success" | "failed" | "unstamped" | null;
+}
+
+/**
+ * The one place the MCP surface asks "can dist/ be trusted".
+ *
+ * FAILS CLOSED on every unknown, for the same reason the CLI gate does: an
+ * unreadable config or an absent stamp is "we could not verify", and "we could
+ * not verify" must never resolve upward to "current".
+ */
+function distFreshness(): McpDistFreshness {
+  const distExists = fs.existsSync(DIST_DIR);
+  if (!distExists) {
+    return {
+      distExists: false,
+      fresh: false,
+      reason: "unbuilt",
+      detail: "dist/ has never been built — run `agentboot build`.",
+      lastBuiltAt: null,
+      lastBuildStatus: null,
+    };
+  }
+  const stamp = readDistStamp(DIST_DIR);
+  const lastBuiltAt = stamp?.builtAt ?? null;
+  const lastBuildStatus = stamp ? stamp.status : "unstamped";
+  const config = loadHubConfig();
+  if (!config) {
+    return {
+      distExists: true,
+      fresh: false,
+      reason: "missing",
+      detail:
+        "the hub config could not be read, so dist/ cannot be checked against it — " +
+        "treat this tree as untrusted.",
+      lastBuiltAt,
+      lastBuildStatus,
+    };
+  }
+  const check = checkDistFreshness(DIST_DIR, config, HUB_ROOT);
+  return {
+    distExists: true,
+    fresh: check.fresh,
+    ...(check.reason ? { reason: check.reason } : {}),
+    ...(check.detail ? { detail: check.detail } : {}),
+    lastBuiltAt,
+    lastBuildStatus,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Data Access Layer
 // ---------------------------------------------------------------------------
 
 /** Check whether compiled dist exists. */
 function hasCompiledDist(): boolean {
   return fs.existsSync(DIST_SKILL_CORE);
+}
+
+/**
+ * The provenance block every content-serving tool attaches to its answer.
+ *
+ * `source: "dist"` on its own was a claim the server could not back: it means
+ * "these bytes came out of the compiled tree", and the consumer hears "this is
+ * the org's current policy". When the tree is superseded those are different
+ * statements, so the second one has to be said explicitly or not at all.
+ */
+export function sourceProvenance(): Record<string, unknown> {
+  if (!hasCompiledDist()) return { source: "core", dist_stale: false };
+  const f = distFreshness();
+  if (f.fresh) return { source: "dist", dist_stale: false };
+  return {
+    source: "dist",
+    dist_stale: true,
+    dist_stale_reason: f.reason ?? "missing",
+    warning:
+      "This content came out of dist/, and dist/ does NOT correspond to the hub's " +
+      "current config and artifacts — it is the policy that was in force before the " +
+      `latest edit (${f.reason ?? "missing"}). Do not treat it as the org's current ` +
+      "policy. Run `agentboot build` and let it succeed.",
+  };
 }
 
 /** List persona directories from dist or core. */
@@ -633,7 +755,11 @@ export function handleToolCall(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ personas, source: hasCompiledDist() ? "dist" : "core" }, null, 2),
+            text: JSON.stringify(
+              { personas, ...sourceProvenance() },
+              null,
+              2,
+            ),
           },
         ],
       };
@@ -665,7 +791,7 @@ export function handleToolCall(
                 description: config?.description ?? "",
                 invocation: config?.invocation ?? `/${name}`,
                 skill_content: skill,
-                source: hasCompiledDist() ? "dist" : "core",
+                ...sourceProvenance(),
               },
               null,
               2,
@@ -791,16 +917,13 @@ export function computeRepoDrift(repoPath: string): {
 function handleStatus(): ToolResult {
   const config = loadHubConfig();
 
-  // Build info
-  const distDir = path.join(HUB_ROOT, "dist");
-  const distExists = fs.existsSync(distDir);
-  let lastBuiltAt: string | null = null;
-  if (distExists) {
-    try {
-      const stat = fs.statSync(distDir);
-      lastBuiltAt = stat.mtime.toISOString();
-    } catch { /* ignore */ }
-  }
+  // Build info — from the STAMP, never dist/'s directory mtime. The mtime is
+  // the timestamp of the last SUCCESSFUL build and is printed unchanged after a
+  // failed one, so it reported a hub as freshly built at the exact moment its
+  // build had just failed.
+  const freshness = distFreshness();
+  const distExists = freshness.distExists;
+  const lastBuiltAt = freshness.lastBuiltAt;
 
   // Personas
   const dirs = listPersonaDirs();
@@ -902,6 +1025,10 @@ function handleStatus(): ToolResult {
     build: {
       lastBuiltAt,
       distExists,
+      lastBuildStatus: freshness.lastBuildStatus,
+      distFresh: freshness.fresh,
+      ...(freshness.fresh ? {} : { distStaleReason: freshness.reason ?? "missing" }),
+      ...(freshness.fresh || !freshness.detail ? {} : { distStaleDetail: freshness.detail }),
     },
     personas,
     repos,
@@ -1300,12 +1427,25 @@ function handleDoctor(): ToolResult {
     }
   }
 
-  // Check dist/ exists
-  const distDir = path.join(HUB_ROOT, "dist");
-  if (!fs.existsSync(distDir)) {
+  // Check dist/ — EXISTENCE IS NOT FRESHNESS. A failed build leaves the
+  // previous dist/ byte-identical, so `fs.existsSync` returning true was
+  // reporting `allClear: true` on a hub whose build had just failed and whose
+  // compiled tree carried the policy the operator had already revoked.
+  const dist = distFreshness();
+  if (!dist.distExists) {
     issues.push({
       severity: "warn",
       description: "dist/ not found — run agentboot build",
+      fixable: true,
+      fixCommand: "agentboot build",
+    });
+  } else if (!dist.fresh) {
+    issues.push({
+      severity: "error",
+      description:
+        `dist/ is STALE (${dist.reason}) — it does not correspond to the hub's current ` +
+        `config and artifacts, so every answer derived from it describes the policy it ` +
+        `REPLACED. ${dist.detail ?? ""}`.trim(),
       fixable: true,
       fixCommand: "agentboot build",
     });
