@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { stripJsoncComments } from "./config.js";
 import { parseFrontmatter, resolveCompositionType } from "./frontmatter.js";
+import { computeSourceDigest, readDistStamp, resolveDomainRoots } from "./dist-stamp.js";
 
 export interface AuditFinding {
   type: "orphaned-trait" | "unused-instruction" | "scope-shadow" | "manifest-drift" | "dead-gotcha";
@@ -131,6 +132,36 @@ function findUnusedInstructions(hubRoot: string, findings: AuditFinding[]): void
   }
 }
 
+/**
+ * R2-7 — "has anything changed since the build" is a DIGEST question.
+ *
+ * This compared source mtimes against the newest mtime under dist/, which
+ * answers a different and weaker question. Two ways it was wrong in the same
+ * direction — quiet:
+ *
+ *   * mtime is not evidence of content. Appending to
+ *     core/personas/locked-reviewer/SKILL.md and then
+ *     `touch -t 202001010000` on it rewinds the mtime below dist/ and the walk
+ *     reports nothing. (The audit still refused, because it is gated on
+ *     assertDistFreshOrExit — which is digest-based. That gate is the reason
+ *     this was LOW, not the reason it was fine.)
+ *   * walkSource covered only core/{traits,personas,instructions,gotchas}. A
+ *     scaffolded hub has all four EMPTY, so the comparison examined ZERO source
+ *     files and said nothing at all. NF4-2's `newestDistMtime === 0` guard
+ *     covered the dist side of that vacuity and not the source side.
+ *
+ * The digest is the same one dist-stamp records at build time and
+ * checkDistFreshness compares against, so the audit's second staleness signal
+ * now agrees with the authoritative one by construction instead of
+ * approximating it. It also covers nodes/, groups/, teams/ and configured
+ * domains, which the four hardcoded directories did not — the same
+ * enumerate-the-surface gap as elsewhere on this branch.
+ *
+ * The mtime walk is KEPT, demoted from verdict to localisation: when the digest
+ * says stale it names the files it can, which is genuinely useful and was the
+ * only thing the old check did well. It can no longer decide that nothing
+ * changed.
+ */
 function checkManifestDrift(hubRoot: string, findings: AuditFinding[]): void {
   const distDir = path.join(hubRoot, "dist");
   if (!fs.existsSync(distDir)) {
@@ -142,15 +173,61 @@ function checkManifestDrift(hubRoot: string, findings: AuditFinding[]): void {
     return;
   }
 
-  // Find newest file in dist/ (recursive) for accurate comparison
+  const stamp = readDistStamp(distDir);
+  if (!stamp || !stamp.sourceDigest) {
+    // Silence is not success: a check that could not run must say so. dist/
+    // exists and carries no source digest, so nothing here can speak to whether
+    // the sources have moved since it was produced.
+    findings.push({
+      type: "manifest-drift",
+      severity: "warn",
+      message:
+        "dist/ carries no artifact-source digest, so the source-vs-dist staleness comparison " +
+        "did NOT run. This is not evidence that dist/ is current — rebuild with `agentboot build`.",
+    });
+    return;
+  }
+
+  let config: unknown = null;
+  try {
+    const cfgPath = path.join(hubRoot, "agentboot.config.json");
+    if (fs.existsSync(cfgPath)) config = JSON.parse(stripJsoncComments(fs.readFileSync(cfgPath, "utf-8")));
+  } catch {
+    // An unreadable config means the DOMAIN roots cannot be resolved, so the
+    // digest would be computed over a smaller tree than the build used and would
+    // mismatch for the wrong reason. Say that, rather than reporting a drift the
+    // operator cannot act on.
+    findings.push({
+      type: "manifest-drift",
+      severity: "warn",
+      message:
+        "agentboot.config.json is unreadable, so configured domain roots could not be included " +
+        "in the source digest — the staleness comparison did NOT run.",
+    });
+    return;
+  }
+
+  const current = computeSourceDigest(hubRoot, resolveDomainRoots(hubRoot, config));
+  if (current === stamp.sourceDigest) return;
+
+  findings.push({
+    type: "manifest-drift",
+    severity: "warn",
+    message:
+      `Hub artifact sources have changed since dist/ was built (stamped ${stamp.builtAt}) — ` +
+      `rebuild needed. stamped ${stamp.sourceDigest.slice(0, 12)}… vs current ${current.slice(0, 12)}…`,
+  });
+
+  // Best-effort localisation only. mtime cannot be trusted for the VERDICT
+  // (see above), but when it does point at something it saves the operator a
+  // diff, and naming nothing here no longer means "nothing changed".
   let newestDistMtime = 0;
   const walkForMtime = (dir: string): void => {
     try {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walkForMtime(fullPath);
-        } else {
+        if (entry.isDirectory()) walkForMtime(fullPath);
+        else {
           try {
             const mt = fs.statSync(fullPath).mtime.getTime();
             if (mt > newestDistMtime) newestDistMtime = mt;
@@ -160,29 +237,8 @@ function checkManifestDrift(hubRoot: string, findings: AuditFinding[]): void {
     } catch { /* ignore */ }
   };
   walkForMtime(distDir);
+  if (newestDistMtime === 0) return;
 
-  // R2-7: `return;` here made "I could not compare" print identically to
-  // "nothing is stale". dist/ exists (checked above) and yet not one file under
-  // it could be stat'd — a permission problem, a racing rebuild, an empty tree —
-  // and the check pushed NO finding, so the audit reported clean.
-  //
-  // Silence is not success: a check that examined nothing must say so. This is
-  // redundant defence — `audit` is gated on `assertDistFreshOrExit`, which is
-  // digest-based and authoritative — but a second staleness signal that can go
-  // quiet is worse than no second signal.
-  if (newestDistMtime === 0) {
-    findings.push({
-      type: "manifest-drift",
-      severity: "warn",
-      message:
-        "dist/ exists but no file under it could be read — the source-vs-dist staleness " +
-        "comparison did NOT run. This is not evidence that dist/ is current.",
-    });
-    return;
-  }
-
-  // Check source files recursively (including persona subdirectories)
-  const sourceDirs = ["core/traits", "core/personas", "core/instructions", "core/gotchas"];
   const walkSource = (dir: string, relBase: string): void => {
     if (!fs.existsSync(dir)) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -192,8 +248,7 @@ function checkManifestDrift(hubRoot: string, findings: AuditFinding[]): void {
         walkSource(fullPath, relPath);
       } else {
         try {
-          const fileStat = fs.statSync(fullPath);
-          if (fileStat.mtime.getTime() > newestDistMtime) {
+          if (fs.statSync(fullPath).mtime.getTime() > newestDistMtime) {
             findings.push({
               type: "manifest-drift",
               severity: "warn",
@@ -205,8 +260,7 @@ function checkManifestDrift(hubRoot: string, findings: AuditFinding[]): void {
       }
     }
   };
-
-  for (const dir of sourceDirs) {
+  for (const dir of ["core", "nodes", "groups", "teams"]) {
     walkSource(path.join(hubRoot, dir), dir);
   }
 }
