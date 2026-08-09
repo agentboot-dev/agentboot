@@ -316,7 +316,7 @@ function readScopeGlobsFromBlock(fm: string, key: string): ScopeRead {
     // A block scalar header (`|`, `>`, with optional chomping/indent indicators
     // such as `>-`, `|+`, `|2`). Checked BEFORE the inline branch, because these
     // are non-empty inline text that means "the value is on the following lines".
-    if (false) {
+    if (/^[|>][+-]?\d*$|^[|>]\d*[+-]?$/.test(rawAfterColon)) {
       const items = collectIndentedLines(lines, i + 1, keyIndent);
       if (items.length === 0) return { globs: [], raw: null, malformed: null };
       return {
