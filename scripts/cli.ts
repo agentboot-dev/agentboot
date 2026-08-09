@@ -190,8 +190,27 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
  * turning "I can only check two of four" into "I will check none" is the
  * silent-skip this codebase keeps re-finding.
  */
-function assertDistStampOrExit(distPath: string, command: string): void {
+function assertDistStampOrExit(
+  distPath: string,
+  command: string,
+  /**
+   * What to do when dist/ does not exist at all.
+   *
+   * `refuse` — the command's whole job is to act on dist/ (install-user,
+   *            publish). Nothing to act on is a failure.
+   * `warn`   — the command has work that does not need dist/ (a behavioral
+   *            `test` run, an empty `baseline`). This mirrors what
+   *            assertDistFreshOrExit already does in the config-present case;
+   *            the two must not disagree about the same tree just because a
+   *            config happened to be next to it.
+   */
+  missingDist: "refuse" | "warn" = "refuse",
+): void {
   if (!fs.existsSync(distPath)) {
+    if (missingDist === "warn") {
+      console.log(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`));
+      return;
+    }
     console.error(chalk.red(`✗ dist/ not found — \`${command}\` has nothing to act on.`));
     process.exit(1);
   }
@@ -350,6 +369,13 @@ program
     // stale dist/ records the previous policy under today's date, which is worse
     // than a gap — a gap is visibly a gap.
     if (baselineConfig) assertDistFreshOrExit(baselineConfigPath, baselineConfig, "baseline");
+    // NF4-3 sibling: `baseline` carried the identical `if (config)`-with-no-else
+    // hatch. It exits 1 today only incidentally (a bare dist/ has no enforcement
+    // manifests to archive), which is luck, not a gate — an archive meant to be
+    // citable years later must not be able to record a failed tree under today's
+    // date. Fixed with the reported one, because fixing the named instance and
+    // leaving the sibling is how this class keeps returning.
+    else assertDistStampOrExit(distPath, "baseline", "warn");
 
     const manifests: Record<string, unknown> = {};
     // The point of the archive is OBSERVED platform behaviour. A manifest whose
@@ -2000,8 +2026,17 @@ program
     // A-class: snapshots and behavioral runs are claims ABOUT the compiled
     // tree. A green run against a superseded tree is a false pass, and
     // --snapshot banks it as the baseline every later run is compared to.
-    if (config) assertDistFreshOrExit(configPath, config, "test");
     const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
+    if (config) assertDistFreshOrExit(configPath, config, "test");
+    // NF4-3: and when there is no config, the dimensions that need none still
+    // apply. `if (config)` with no `else` left `test` the one gated consumer a
+    // failed build could still reach: on a dist/ stamped status:"failed" with no
+    // config beside it, install-user/publish/export/cost-estimate all exited 1
+    // while `agentboot test --snapshot` printed "Snapshot saved (100 files)" and
+    // exited 0 — banking a superseded tree as the baseline every later
+    // --regression is measured against. The registry declared `test` posture
+    // `gated` for exactly that reason; the code disagreed with the registry.
+    else assertDistStampOrExit(distPath, "test", "warn");
 
     console.log(chalk.bold("\nAgentBoot — test\n"));
 

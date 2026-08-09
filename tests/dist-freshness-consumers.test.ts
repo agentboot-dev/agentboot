@@ -423,4 +423,65 @@ describe("NF2-1 — a gated consumer with no hub config still checks the stamp",
     const r = abNoHub(["install-user", "--dry-run"], empty);
     expect(r.status).toBe(1);
   }, 300_000);
+
+  /**
+   * NF4-3 — the same hatch, still open on `test` (and, unreported, `baseline`).
+   *
+   * NF2-1 closed install-user and publish and stopped there. `test` kept
+   * `if (config) assertDistFreshOrExit(configPath, config, "test");` with no
+   * `else`, so on the SAME failed tree measured above:
+   *
+   *     install-user=1  publish=1  export=1  cost-estimate=1  test=0
+   *     agentboot test --snapshot  ->  "Snapshot saved (100 files)", exit 0
+   *
+   * — banking a superseded tree as the baseline every later `--regression` is
+   * measured against, which is the worst version of this failure because the
+   * false pass becomes the definition of correct. DIST_CONSUMERS declares
+   * `test` posture `gated` with the reason "a green run against a superseded
+   * tree is a false pass banked as a baseline", so the registry and the code
+   * disagreed, and the A-2 invariant could not see it (NF4-4).
+   */
+  it("NF4-3: `test` REFUSES a failed tree with no config in reach", () => {
+    const r = abNoHub(["test"], nohubFailed);
+    expect(r.status, `test ran against a failed build:\n${r.out}`).toBe(1);
+    expect(r.out).toContain("failed");
+  }, 300_000);
+
+  it("NF4-3: `test --snapshot` does not BANK a baseline from a failed tree", () => {
+    const r = abNoHub(["test", "--snapshot"], nohubFailed);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out, "a superseded tree became the baseline").not.toMatch(/Snapshot saved/);
+    expect(
+      fs.existsSync(path.join(nohubFailed, ".agentboot-snapshot.json")),
+      "the snapshot file was written anyway",
+    ).toBe(false);
+  }, 300_000);
+
+  it("NF4-3 sibling: `baseline` REFUSES too — an archive must not date a failed tree", () => {
+    // Not in the report. Found by grepping the pattern rather than the symptom:
+    // `baseline` carried the identical `if (config)`-with-no-else. It exited 1
+    // on this fixture already, but only because a bare dist/ has no enforcement
+    // manifests to archive — luck, not a gate. Assert the REASON, not the code.
+    const r = abNoHub(["baseline"], nohubFailed);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out, "baseline exited 1 for an unrelated reason, so the gate is still untested")
+      .toContain("failed");
+  }, 300_000);
+
+  it("POSITIVE: a SUCCESSFUL tree with no config still tests and snapshots", () => {
+    const r = abNoHub(["test", "--snapshot"], nohubFresh);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/Snapshot saved/);
+  }, 300_000);
+
+  it("POSITIVE: an UNBUILT dir is a warning for `test`, not a refusal", () => {
+    // `test` has work that does not need dist/ (behavioral runs), so "never
+    // built" must degrade the way its config-present sibling already does —
+    // loudly, but not fatally. The two must not disagree about the same tree
+    // just because a config happened to be beside it.
+    const empty = path.join(base, "nf43-empty");
+    fs.mkdirSync(empty, { recursive: true });
+    const r = abNoHub(["test"], empty);
+    expect(r.out).toMatch(/has never been built/);
+  }, 300_000);
 });
