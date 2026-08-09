@@ -311,6 +311,10 @@ describe("CAPABILITY_SUPPORT — anti-drift", () => {
       "managed.guardrails.disableBypassPermissions": ctx({ managed: { guardrails: { disableBypassPermissions: true } } }),
       "compliance.inputScan.scannerCommand": ctx({ compliance: { inputScan: { scannerCommand: "/x" } } }),
       "compliance.outputScan.blocking": ctx({ compliance: { outputScan: { blocking: true } } }),
+      // NF3-9 — the compliance keys that had no row.
+      "compliance.outputScan.scannerCommand": ctx({ compliance: { outputScan: { scannerCommand: "/x" } } }),
+      "compliance.inputScan.failMode": ctx({ compliance: { inputScan: { failMode: "closed" } } }),
+      "compliance.outputScan.failMode": ctx({ compliance: { outputScan: { failMode: "closed" } } }),
       "managed.guardrails.denyTools": ctx({ managed: { guardrails: { denyTools: ["Bash"] } } }),
       "managed.guardrails.requireAuditLog": ctx({ managed: { guardrails: { requireAuditLog: true } } }),
       "managed.guardrails.forcePlugins": ctx({ managed: { guardrails: { forcePlugins: ["p"] } } }),

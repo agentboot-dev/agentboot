@@ -415,6 +415,58 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     consequence: "Nothing scans or blocks model output.",
     warrant: "scripts/compile.ts:2410",
   },
+  /**
+   * NF3-9 — the two compliance keys that had no row.
+   *
+   * The table covered `compliance.inputScan.scannerCommand` and
+   * `compliance.outputScan.blocking` and stopped there, so an org configuring an
+   * OUTPUT scanner without `blocking: true` — a perfectly ordinary
+   * warn-only DLP posture — got no Coverage finding at all on a hub with no
+   * hook-capable platform. Same for `inputScan.failMode: "closed"`, which is the
+   * key that turns a scanner failure into a refusal: on a cursor-only hub it
+   * means nothing, and nothing said so.
+   *
+   * This is the enumerate-the-config-surface gap that left the group tier
+   * invisible (R2-3) and the persona scope invisible (R2-9), one key over each
+   * time. The completeness invariant added with CONFIG_SHAPE catches the
+   * converse direction (a typed key with no row is now visible); these two are
+   * the rows themselves.
+   *
+   * Severity mirrors the sibling each key modifies: a scanner that never runs is
+   * an `error`, a failMode that cannot be honoured is a `warn` because the scan
+   * itself is the control and the mode is how strictly it is applied.
+   */
+  {
+    id: "compliance.outputScan.scannerCommand",
+    detect: (c) => Boolean(c.config.compliance?.outputScan?.scannerCommand),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "error",
+    consequence:
+      "The org's output scanner is never invoked. Model output is unscanned — with or " +
+      "without outputScan.blocking, which was the only outputScan key with a row.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "compliance.inputScan.failMode",
+    detect: (c) => Boolean(c.config.compliance?.inputScan?.failMode),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "warn",
+    consequence:
+      "No hook exists to apply the fail mode to, so `closed` does not make anything fail closed.",
+    warrant: "scripts/compile.ts:2424",
+  },
+  {
+    id: "compliance.outputScan.failMode",
+    detect: (c) => Boolean(c.config.compliance?.outputScan?.failMode),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "warn",
+    consequence:
+      "No hook exists to apply the fail mode to, so `closed` does not make anything fail closed.",
+    warrant: "scripts/compile.ts:2410",
+  },
   {
     id: "managed.guardrails.denyTools",
     detect: (c) => (c.config.managed?.guardrails?.denyTools?.length ?? 0) > 0,
