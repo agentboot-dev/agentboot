@@ -44,7 +44,7 @@ import {
 } from "./lib/frontmatter.js";
 import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
 import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
-import { dangerousHookFindings } from "./lib/hook-safety.js";
+import { dangerousHookFindings, unscannableHookEvents } from "./lib/hook-safety.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -866,15 +866,87 @@ function checkClaudeSettingsPassthrough(config: AgentBootConfig): CheckResult {
  * non-overridable managed-settings channel with both commands exiting 0. The
  * compiler enforces the same list at the same severity; this is the report.
  */
-function checkDangerousHooks(config: AgentBootConfig): CheckResult {
-  const result = check("claude.hooks — no dangerous shell patterns in org-authored hook commands");
-  for (const { event, command, why } of dangerousHookFindings(config.claude?.hooks)) {
-    // fail(), not warn(). This command runs on every developer machine in
-    // the org, non-overridably, and the operator can always rephrase it or
-    // move the logic into a reviewed script the hook invokes by path.
-    fail(result, `claude.hooks.${event}: dangerous command — ${why}\n      ${command}`);
+function checkDangerousHooks(config: AgentBootConfig, configDir: string): CheckResult {
+  // NF3-2: the check NAME used to be "claude.hooks — …", and so did its input.
+  // Persona-level `hooks` in persona.config.json are the second author-controlled
+  // hook surface: compile.ts merges them into dist/claude/core/settings.json and
+  // sync ships that to every spoke. The green tick therefore asserted a clean
+  // sheet over a surface it had never read. Both surfaces, one check, one name
+  // that says what was actually scanned.
+  const result = check("hook commands — no dangerous shell patterns in org- or persona-authored hooks");
+
+  const sources: Array<{ label: string; hooks: unknown }> = [
+    { label: "claude.hooks", hooks: config.claude?.hooks },
+  ];
+  for (const { name, personaConfig } of enumeratePersonaConfigs(config, configDir)) {
+    if (personaConfig.hooks) {
+      sources.push({ label: `personas/${name} hooks`, hooks: personaConfig.hooks });
+    }
+  }
+
+  for (const source of sources) {
+    // A value the scanner cannot read must not be reported as scanned clean.
+    for (const { event, found } of unscannableHookEvents(source.hooks)) {
+      fail(
+        result,
+        `${source.label}.${event} is ${found}, expected a hook group object or an array of them — ` +
+        `it cannot be scanned and cannot be compiled into a hook that runs`,
+      );
+    }
+    for (const { event, command, why } of dangerousHookFindings(source.hooks)) {
+      // fail(), not warn(). This command runs on every developer machine in
+      // the org, and the operator can always rephrase it or move the logic
+      // into a reviewed script the hook invokes by path.
+      fail(result, `${source.label}.${event}: dangerous command — ${why}\n      ${command}`);
+    }
   }
   return result;
+}
+
+/**
+ * Every persona.config.json reachable from this hub, across the same four roots
+ * `checkTraitReferences` walks (package defaults, hub core/, customDir, domain
+ * layers). Shared so a new hook/permission surface cannot be scanned over three
+ * of the four roots by accident.
+ */
+function enumeratePersonaConfigs(
+  config: AgentBootConfig,
+  configDir: string,
+): Array<{ name: string; personaConfig: PersonaConfig }> {
+  const roots: string[] = [
+    path.join(ROOT, "core", "personas"),
+    path.join(configDir, "core", "personas"),
+  ];
+  if (config.personas?.customDir) {
+    const ext = path.resolve(configDir, config.personas.customDir);
+    if (fs.existsSync(ext)) roots.push(ext);
+  }
+  for (const d of resolveDomainDirs(config, configDir)) {
+    if (d.personasDir) roots.push(d.personasDir);
+  }
+
+  // Later roots override earlier ones by name, matching compile.ts's
+  // package → hub → customDir precedence.
+  const byName = new Map<string, PersonaConfig>();
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const personaName of fs.readdirSync(root)) {
+      const personaDir = path.join(root, personaName);
+      if (!fs.statSync(personaDir).isDirectory()) continue;
+      const configPath = path.join(personaDir, "persona.config.json");
+      if (!fs.existsSync(configPath)) continue;
+      try {
+        byName.set(
+          personaName,
+          JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8"))) as PersonaConfig,
+        );
+      } catch {
+        // Malformed JSON is already reported by checkTraitReferences; not
+        // swallowed here, just not double-reported.
+      }
+    }
+  }
+  return [...byName].map(([name, personaConfig]) => ({ name, personaConfig }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,7 +1141,7 @@ async function main(): Promise<void> {
     checkMcpGovernance(config),
     checkMcpPinning(config),
     checkClaudeSettingsPassthrough(config),
-    checkDangerousHooks(config),
+    checkDangerousHooks(config, configDir),
     checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
   ];
