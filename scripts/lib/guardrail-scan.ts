@@ -19,6 +19,7 @@
 import fs from "fs";
 import path from "path";
 import { frontmatterBlock } from "./frontmatter.js";
+import { readScopeGlobs } from "./scope-projection.js";
 import {
   CAPABILITY_SUPPORT,
   effectiveEmitters,
@@ -190,6 +191,58 @@ export function capabilityViolations(
   return out;
 }
 
+/**
+ * H5: a configured capability that reaches SOME of the org's platforms but not all.
+ *
+ * `capabilityViolations` is deliberately the "reaches nothing" gate — one
+ * honouring target is enough for it, and tests/capability-support.test.ts U3
+ * pins that. But the other axis was not merely unimplemented, it was pinned as
+ * out of scope by that test's own name, and nothing else covered it. Reproduced
+ * on a hub with outputFormats [claude, cursor, gemini] and
+ * managed.guardrails.denyTools + requireAuditLog: BUILD_EXIT 0, no
+ * per-capability warning; the only signal was doctor's pre-existing
+ * platform-level Enforcement advisory, which does not say WHICH configured
+ * control fails to reach cursor and gemini.
+ *
+ * That is the difference between "your hub has advisory platforms" — which an
+ * operator reads once and stops seeing — and "your denyTools list does not
+ * reach cursor or gemini", which is actionable.
+ *
+ * ADVISORY, not an error, and deliberately so: partial coverage is the NORMAL
+ * state of any multi-platform org, and a gate that fires on the normal state is
+ * how a check becomes noise inside a week. The value is naming the shortfall,
+ * not refusing the build.
+ */
+export interface CapabilityShortfall {
+  row: CapabilityRow;
+  /** Configured formats that DO honour the key. Never empty (that is a violation). */
+  honoured: string[];
+  /** Configured formats that do not. Never empty (that would be full coverage). */
+  missing: string[];
+}
+
+export function capabilityShortfalls(
+  ctx: CapabilityContext,
+  outputFormats: string[],
+): CapabilityShortfall[] {
+  const out: CapabilityShortfall[] = [];
+  for (const row of CAPABILITY_SUPPORT) {
+    if (!row.detect(ctx)) continue;
+    // Same emitter resolution as the violations gate — B1's conditionalOn
+    // included, so a platform whose emitter is gated on an unbuilt format is
+    // correctly counted as NOT honouring the key.
+    const emitters = effectiveEmitters(row, outputFormats);
+    const honoured = outputFormats.filter((f) => emitters.includes(f));
+    const missing = outputFormats.filter((f) => !emitters.includes(f));
+    // honoured.length === 0 is capabilityViolations' case, not this one — the
+    // two must never both fire for the same row, or the operator gets one
+    // problem reported twice with different verdicts.
+    if (honoured.length === 0 || missing.length === 0) continue;
+    out.push({ row, honoured, missing });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Scope-narrowing counters — the ARTIFACT plane of CapabilityContext
 // ---------------------------------------------------------------------------
@@ -223,12 +276,12 @@ export function countNarrowlyScopedInstructions(
   }
   let n = 0;
   for (const file of seen.values()) {
-    const fm = frontmatter(fs.readFileSync(file, "utf-8"));
-    if (!fm) continue;
-    const m = fm.match(/^\s*applyTo:\s*(.+)$/im);
-    if (!m) continue;
-    const globs = m[1]!.trim().replace(/^["']|["']$/g, "")
-      .split(",").map((g) => g.trim()).filter(Boolean);
+    // V1, eighth site: this re-rolled the applyTo parser too — so a brace group
+    // counted as two globs, a trailing YAML comment became part of one, and a
+    // block sequence was read as the literal text `- "src/db/**"`. Every one of
+    // those still counts as "narrowing", so the COUNT happened to survive; the
+    // parse did not, and a shared parser costs nothing here.
+    const globs = readScopeGlobs(fs.readFileSync(file, "utf-8"), "applyTo").globs;
     if (globs.length > 0 && !globs.every((g) => UNIVERSAL_GLOBS.has(g))) n++;
   }
   return n;

@@ -35,7 +35,7 @@ import {
   type CapabilityContext,
 } from "../scripts/lib/conformance.js";
 import {
-  capabilityViolations, countNarrowlyScopedInstructions, countScopedGotchas,
+  capabilityViolations, capabilityShortfalls, countNarrowlyScopedInstructions, countScopedGotchas,
 } from "../scripts/lib/guardrail-scan.js";
 import { capabilityExceptionFor, validateExceptions, type PolicyException } from "../scripts/lib/exceptions.js";
 import { PLATFORM_REQUIRES, type AgentBootConfig } from "../scripts/lib/config.js";
@@ -83,7 +83,11 @@ describe("capabilityViolations — the gate", () => {
     expect(capabilityViolations(ctx({ claude: { hooks: HOOKS } }), ["claude"])).toEqual([]);
   });
 
-  it("U3 (NEGATIVE): one honouring target is enough — partial coverage is the other axis", () => {
+  it("U3 (NEGATIVE): one honouring target is enough — partial coverage is capabilityShortfalls'", () => {
+    // H5: this gate's silence here is correct and deliberate. What was wrong is
+    // that NOTHING covered the other axis — see the capabilityShortfalls block
+    // below. The two must never both fire for one row, or the operator gets one
+    // problem reported twice with different verdicts.
     expect(capabilityViolations(ctx({ claude: { hooks: HOOKS } }), ["cursor", "claude"])).toEqual([]);
   });
 
@@ -716,4 +720,63 @@ describe("B4/H4 — the managed-settings MDM channel", () => {
     editConfig(hub, (c) => { c.personas.outputFormats = ["codex"]; delete c.managed; });
     expect(ab(["build"], hub).status).toBe(0);
   }, 300_000);
+});
+
+/**
+ * H5 — a configured capability that reaches SOME configured platforms.
+ *
+ * Reproduced on a hub with outputFormats [claude, cursor, gemini] and
+ * managed.guardrails.denyTools + requireAuditLog: BUILD_EXIT 0, no
+ * per-capability warning anywhere. The only signal was doctor's pre-existing
+ * platform-level Enforcement advisory, which says the hub has advisory targets
+ * but not WHICH configured control fails to reach them. The gap was not merely
+ * unimplemented — U3 above pinned it as out of scope by name, and nothing else
+ * covered it.
+ */
+describe("H5 — capabilityShortfalls: the partial-coverage axis", () => {
+  it("H5-1: a control reaching claude but not cursor/gemini is named, with both lists", () => {
+    const sf = capabilityShortfalls(ctx({ claude: { hooks: HOOKS } }), ["claude", "cursor", "gemini"]);
+    expect(sf).toHaveLength(1);
+    expect(sf[0]!.row.id).toBe("claude.hooks");
+    expect(sf[0]!.honoured).toEqual(["claude"]);
+    expect(sf[0]!.missing).toEqual(["cursor", "gemini"]);
+  });
+
+  it("H5-2 (NEGATIVE): full coverage produces nothing", () => {
+    expect(capabilityShortfalls(ctx({ claude: { hooks: HOOKS } }), ["claude"])).toEqual([]);
+  });
+
+  it("H5-3 (NEGATIVE): ZERO coverage is capabilityViolations' case, not this one", () => {
+    // If both fired, the operator would see one problem twice with two verdicts.
+    const formats = ["cursor", "gemini"];
+    const c = ctx({ claude: { hooks: HOOKS } });
+    expect(capabilityViolations(c, formats)).toHaveLength(1);
+    expect(capabilityShortfalls(c, formats)).toEqual([]);
+  });
+
+  it("H5-4 (NEGATIVE): an unconfigured capability is silent — detect() still gates it", () => {
+    expect(capabilityShortfalls(ctx({}), ["claude", "cursor"])).toEqual([]);
+  });
+
+  it("H5-5: a multi-emitter capability counts every honouring platform", () => {
+    const sf = capabilityShortfalls(
+      ctx({ compliance: { inputScan: { scannerCommand: "/opt/dlp" } } }),
+      ["claude", "copilot", "cursor"],
+    );
+    expect(sf).toHaveLength(1);
+    expect(sf[0]!.honoured.sort()).toEqual(["claude", "copilot"]);
+    expect(sf[0]!.missing).toEqual(["cursor"]);
+  });
+
+  it("H5-6: B1's conditionalOn is honoured — a gated emitter does not count as coverage", () => {
+    // `plugin` emits inputScan only when `claude` is built. With cursor+plugin
+    // configured and no claude, plugin must NOT be counted as honouring, or the
+    // shortfall would understate the gap.
+    const sf = capabilityShortfalls(
+      ctx({ compliance: { inputScan: { scannerCommand: "/opt/dlp" } } }),
+      ["claude", "cursor", "plugin"],
+    );
+    expect(sf[0]!.missing).toContain("cursor");
+    expect(sf[0]!.honoured).toContain("plugin"); // claude IS built here
+  });
 });

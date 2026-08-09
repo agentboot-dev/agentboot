@@ -36,7 +36,7 @@ import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT, effectiveEmitters, resolveEnforcement, type CapabilityContext } from "./lib/conformance.js";
 import {
-  findHardArtifacts, capabilityViolations,
+  findHardArtifacts, capabilityViolations, capabilityShortfalls,
   countNarrowlyScopedInstructions, countScopedGotchas,
 } from "./lib/guardrail-scan.js";
 import { degradedFormats } from "./lib/scope-projection.js";
@@ -1727,6 +1727,29 @@ program
                 warn(`${v.row.id} — configured, but ${needs}`);
               }
             }
+          }
+
+          // H5: the OTHER axis — a capability that reaches some configured
+          // platforms and not others. `capabilityViolations` is the
+          // reaches-nothing gate by design; partial coverage went unreported by
+          // ANY per-capability surface, so the only signal was the platform-level
+          // Enforcement advisory below, which does not say WHICH control fails to
+          // reach WHICH target. "Your hub has advisory platforms" is read once
+          // and stopped being seen; "denyTools does not reach cursor, gemini" is
+          // actionable.
+          //
+          // Advisory, never fail(): partial coverage is the normal state of a
+          // multi-platform org, and a gate that fires on the normal state is how
+          // a check becomes noise inside a week.
+          const shortfalls = capabilityShortfalls(capCtx, covFormats);
+          for (const sf of shortfalls) {
+            warn(
+              `${sf.row.id} — reaches ${sf.honoured.join(", ")} but NOT ${sf.missing.join(", ")}; ` +
+              `on those targets this control is absent, not weaker`,
+            );
+          }
+          if (shortfalls.length === 0 && capViolations.length === 0 && covFormats.length > 1) {
+            ok("Capability coverage — every configured capability reaches every configured platform");
           }
         }
 
