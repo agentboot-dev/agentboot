@@ -2207,17 +2207,39 @@ function generateMcpJson(
   const mcpPath = path.join(distPath, "claude", scopePath, ".mcp.json");
   fs.writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
 
-  // AB-143: Generate MCP governance manifest
+  // AB-143: Generate MCP governance manifest.
+  //
+  // R2-10: this file is an AUDITOR ARTIFACT, not a consumed one.
+  // `grep -rn mcp-governance` over the whole repo returns exactly this write —
+  // no reader, in AgentBoot or on any platform. That is a legitimate product
+  // shape (an evidence record for a reviewer to read, alongside the enforcement
+  // that actually happens in .mcp.json filtering next to it), and it is the same
+  // shape `managed.guardrails.forcePlugins` carries as `emittedBy: []`.
+  //
+  // What was NOT legitimate is announcing it as though something consumed it.
+  // "→ MCP governance manifest written" reads, in a log full of emitted
+  // artifacts, as a control that landed. The enforcement it documents is the
+  // filtering above; this is the record OF that decision. The line now says so,
+  // so nobody has to grep to find out — which is exactly what a reviewer would
+  // otherwise have to do to know whether their approved-list is enforced.
   if (config.mcp?.approved) {
     const mcpManifest = {
       approved: config.mcp.approved,
       enforceApproved: config.mcp.enforceApproved ?? false,
       required: config.mcp.required ?? [],
       generatedAt: new Date().toISOString(),
+      // In the file too, not only in the build log: the artifact outlives the
+      // log, and it is the artifact an auditor opens.
+      note:
+        "Evidence record only. AgentBoot reads no field of this file; the enforcement it " +
+        "describes is the approved-list filtering applied to .mcp.json in the same directory.",
     };
     const manifestPath = path.join(distPath, "claude", scopePath, "mcp-governance.json");
     fs.writeFileSync(manifestPath, JSON.stringify(mcpManifest, null, 2) + "\n", "utf-8");
-    log(chalk.gray(`  → MCP governance manifest written`));
+    log(chalk.gray(
+      `  → MCP governance manifest written (evidence record — read by no command; ` +
+      `the enforcement is the .mcp.json filtering above)`,
+    ));
   }
 
 }
