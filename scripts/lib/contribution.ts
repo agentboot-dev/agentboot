@@ -89,24 +89,36 @@ export function validateContribution(
     : [];
   checks.push({ name: "content-exists", passed: contentFiles.length > 0, message: contentFiles.length > 0 ? `${contentFiles.length} content file(s)` : "No content files" });
 
-  let manifest: Record<string, unknown> = {};
-  if (hasManifest) { try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {} }
+  const read = readComponentManifest(manifestPath);
+  const manifest: Record<string, unknown> = read.manifest;
+  if (read.error) {
+    // "Could not read it" must not be reported as "the field is missing".
+    checks.push({ name: "manifest-readable", passed: false, message: read.error });
+  }
   const hasLicense = !!manifest["license"];
   const licenseRejected = hasLicense && /GPL|AGPL/i.test(manifest["license"] as string);
   checks.push({ name: "license-valid", passed: hasLicense && !licenseRejected, message: licenseRejected ? `License ${manifest["license"]} rejected` : hasLicense ? `License: ${manifest["license"]}` : "No license" });
 
-  let secretsFound = false;
-  const secretPatterns = [/AKIA[A-Z0-9]{16}/, /sk-[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/, /xox[bp]-[a-zA-Z0-9-]+/];
   let orgPassed = true;
   const fileContents = new Map<string, string>();
   for (const file of contentFiles) {
     const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
     fileContents.set(file, content);
   }
-  for (const [, content] of fileContents) {
-    for (const p of secretPatterns) { if (p.test(content)) { secretsFound = true; break; } }
-  }
-  checks.push({ name: "no-secrets", passed: !secretsFound, message: secretsFound ? "Secrets detected" : "No secrets" });
+  // R2-6 sibling: the shared, recursive, all-files scanner. This used to be its
+  // own `.md`-only copy with four of the seven patterns.
+  const scan = scanComponentForSecrets(componentDir);
+  checks.push({
+    name: "no-secrets",
+    // Zero files scanned is not "no secrets" — it is "nothing was checked".
+    passed: scan.hits.length === 0 && scan.scanned.length > 0,
+    message:
+      scan.hits.length > 0
+        ? `Secrets detected in: ${scan.hits.join(", ")}`
+        : scan.scanned.length === 0
+          ? "No files could be scanned — not evidence the component is clean"
+          : `No secrets (${scan.scanned.length} file(s) scanned, recursively)`,
+  });
 
   for (const [, content] of fileContents) {
     if (!checkOrgSpecificity(content).passed) orgPassed = false;
@@ -137,4 +149,93 @@ export interface ContributorAttribution {
 
 export function generateAttribution(handle: string, org?: string): ContributorAttribution {
   return { handle, org, profileUrl: `https://agentboot.dev/u/${handle}`, contributedAt: new Date().toISOString() };
+}
+
+/**
+ * R2-6 (sibling): ONE pre-publish secret scanner, for both submission paths.
+ *
+ * `marketplace publish` (cli.ts) and `checkContribution` (here) each carried
+ * their own copy, and the two had already drifted: different pattern sets — this
+ * one had no PEM-private-key or Stripe-key pattern — and different scopes. Both
+ * read `readdirSync(dir)` filtered to `.md`, NON-RECURSIVE, while submission
+ * ships the whole component directory. So the two files most likely to carry a
+ * credential, a config and anything one directory down, were invisible to both.
+ *
+ * Two lists that must agree will drift, and these did. One scanner.
+ *
+ * The `password[:=]` family from the generated hooks' set is deliberately
+ * absent: a persona ABOUT credential handling legitimately contains the word,
+ * and a scan that cries wolf on documentation gets bypassed, after which it
+ * finds nothing at all.
+ */
+export const SECRET_PATTERNS: RegExp[] = [
+  /AKIA[A-Z0-9]{16}/,
+  /sk-[a-zA-Z0-9]{20,}/,
+  /ghp_[a-zA-Z0-9]{36}/,
+  /xox[bp]-[a-zA-Z0-9-]+/,
+  /sk_live_[a-zA-Z0-9]+/,
+  /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
+  /eyJ[a-zA-Z0-9_-]{10,}\.eyJ/,
+];
+
+export interface SecretScanResult {
+  /** Absolute paths actually read. Zero is a FAILURE, not a pass. */
+  scanned: string[];
+  /** Component-relative paths that matched, or that could not be read. */
+  hits: string[];
+}
+
+/** Scan every file under `componentDir`, recursively. */
+export function scanComponentForSecrets(componentDir: string): SecretScanResult {
+  const scanned: string[] = [];
+  const hits: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(abs); continue; }
+      if (!e.isFile()) continue;
+      let content: string;
+      try {
+        content = fs.readFileSync(abs, "utf-8");
+      } catch {
+        // Unreadable is not clean. A file that ships and could not be scanned is
+        // exactly the state this check exists to refuse.
+        hits.push(`${path.relative(componentDir, abs)} (UNREADABLE — not scanned)`);
+        continue;
+      }
+      scanned.push(abs);
+      for (const p of SECRET_PATTERNS) {
+        if (p.test(content)) { hits.push(path.relative(componentDir, abs)); break; }
+      }
+    }
+  };
+  if (fs.existsSync(componentDir)) walk(componentDir);
+  return { scanned, hits };
+}
+
+/**
+ * Read a component manifest, distinguishing ABSENT from UNREADABLE.
+ *
+ * Both submission paths did `try { JSON.parse(...) } catch {}` and then reported
+ * "No license in manifest" — which sends the contributor to add a field that is
+ * already there, instead of to the syntax error one line above it. Same
+ * could-not-read-reported-as-not-present class as the persona config and the
+ * MDM fragment.
+ */
+export function readComponentManifest(
+  manifestPath: string,
+): { manifest: Record<string, unknown>; error: string | null } {
+  if (!fs.existsSync(manifestPath)) return { manifest: {}, error: null };
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { manifest: {}, error: "manifest.json is not a JSON object" };
+    }
+    return { manifest: parsed as Record<string, unknown>, error: null };
+  } catch (err: unknown) {
+    return {
+      manifest: {},
+      error: `manifest.json is present but unreadable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }

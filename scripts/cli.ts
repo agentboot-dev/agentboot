@@ -4566,6 +4566,7 @@ marketplaceCmd
   .option("--dry-run", "Show what would be submitted without submitting")
   .action(async (component: string | undefined, opts) => {
     const { validateLicense } = await import("./lib/marketplace.js");
+    const { scanComponentForSecrets, readComponentManifest } = await import("./lib/contribution.js");
     if (!component) { console.error(chalk.red("Usage: agentboot marketplace publish <type>/<name>")); process.exit(1); }
     const parts = component.split("/");
     if (parts.length !== 2) { console.error(chalk.red("Format: <type>/<name>")); process.exit(1); }
@@ -4578,65 +4579,24 @@ marketplaceCmd
     if (contentFiles.length === 0 && type !== "domain") { console.error(chalk.red("  ✗ No content files")); process.exit(1); }
     console.log(chalk.green("  ✓ Content file found"));
     const manifestPath = path.join(componentDir, "manifest.json");
-    let manifest: any = {};
-    if (fs.existsSync(manifestPath)) { try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {} }
-    const license = manifest.license;
+    // "Could not read it" must not be reported as "the field is missing" — that
+    // sends the contributor to add a field that is already there, instead of to
+    // the syntax error one line above it.
+    const { manifest, error: manifestError } = readComponentManifest(manifestPath);
+    if (manifestError) { console.error(chalk.red(`  ✗ ${manifestError}`)); process.exit(1); }
+    const license = manifest["license"] as string | undefined;
     if (!license) { console.error(chalk.red("  ✗ No license in manifest")); process.exit(1); }
     const licenseCheck = validateLicense(license);
     if (!licenseCheck.valid) { console.error(chalk.red(`  ✗ ${licenseCheck.reason}`)); process.exit(1); }
     console.log(chalk.green(`  ✓ License: ${license}`));
-    // R2-6: scan what SHIPS, not the .md files in one directory.
-    //
-    // The scan read `contentFiles` — `readdirSync(componentDir)` filtered to
-    // `.md`, non-recursive — while publish ships the whole component directory.
-    // Repro: put `sk-abcdefghijklmnopqrstuvwxyz012345` in the SHIPPED
-    // persona.config.json and `AKIAIOSFODNN7EXAMPLE` in nested/leak.md, then
-    // `marketplace publish persona/code-reviewer --dry-run` -> "✓ No secrets
-    // detected", exit 0. The two files most likely to carry a credential — a
-    // config and anything one directory down — were the two it could not see.
-    //
-    // Severity is LOW because `publish` is `{hidden:true}` and submits nothing
-    // today. That is a reason it has not bitten, not a reason to ship a scan
-    // whose green tick means "the top-level markdown is clean".
-    //
-    // Patterns match the generated hooks' bundled set, minus the `password[:=]`
-    // family: a persona ABOUT credential handling legitimately contains the word,
-    // and a scan that cries wolf on documentation gets bypassed.
-    const secretPatterns = [
-      /AKIA[A-Z0-9]{16}/,
-      /sk-[a-zA-Z0-9]{20,}/,
-      /ghp_[a-zA-Z0-9]{36}/,
-      /xox[bp]-[a-zA-Z0-9-]+/,
-      /sk_live_[a-zA-Z0-9]+/,
-      /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
-      /eyJ[a-zA-Z0-9_-]{10,}\.eyJ/,
-    ];
-    const scanned: string[] = [];
-    const secretHits: string[] = [];
-    const scanTree = (dir: string): void => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const abs = path.join(dir, e.name);
-        if (e.isDirectory()) { scanTree(abs); continue; }
-        if (!e.isFile()) continue;
-        let content: string;
-        try {
-          content = fs.readFileSync(abs, "utf-8");
-        } catch {
-          // Unreadable is not clean. A file that ships and could not be scanned
-          // is exactly the state this check exists to refuse.
-          secretHits.push(`${path.relative(componentDir, abs)} (UNREADABLE — not scanned)`);
-          continue;
-        }
-        scanned.push(abs);
-        for (const p of secretPatterns) {
-          if (p.test(content)) { secretHits.push(path.relative(componentDir, abs)); break; }
-        }
-      }
-    };
-    scanTree(componentDir);
-    if (secretHits.length > 0) {
-      console.error(chalk.red(`  ✗ Secrets detected in ${secretHits.length} file(s):`));
-      for (const f of secretHits) console.error(chalk.red(`      ${f}`));
+    // R2-6: the SHARED scanner (scripts/lib/contribution.ts). `marketplace
+    // publish` and `checkContribution` each had their own copy and the two had
+    // already drifted — different pattern sets, and both `.md`-only and
+    // non-recursive while submission ships the whole directory. One scanner.
+    const { scanned, hits } = scanComponentForSecrets(componentDir);
+    if (hits.length > 0) {
+      console.error(chalk.red(`  ✗ Secrets detected in ${hits.length} file(s):`));
+      for (const f of hits) console.error(chalk.red(`      ${f}`));
       process.exit(1);
     }
     // Silence is not success: say what was covered. "No secrets detected" over

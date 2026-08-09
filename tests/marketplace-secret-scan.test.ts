@@ -122,3 +122,71 @@ describe("R2-6 — the pre-publish scan covers what publish SHIPS", () => {
     expect(publish().status).toBe(0);
   }, 120_000);
 });
+
+/**
+ * R2-6 (sibling) — the SECOND copy of the same scanner, found by grepping the
+ * pattern rather than the symptom.
+ *
+ * `validateContribution` (scripts/lib/contribution.ts) carried its own copy of the
+ * pre-publish secret scan, and the two had already drifted: it had four of the
+ * seven patterns (no PEM private key, no Stripe live key, no JWT) and the same
+ * `.md`-only, non-recursive scope. Fixing the reported instance and leaving this
+ * one is how this class keeps returning — so there is one scanner now, and these
+ * assert that BOTH entry points get it.
+ *
+ * Both paths also did `try { JSON.parse(manifest) } catch {}` and then reported
+ * "No license in manifest", which sends a contributor to add a field that is
+ * already there instead of to the syntax error one line above it.
+ */
+describe("R2-6 sibling — validateContribution shares the one scanner", () => {
+  let dir = "";
+  beforeEach(() => {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-r26b-"));
+    fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: x\n---\n# x\nbody\n");
+    fs.writeFileSync(
+      path.join(dir, "manifest.json"),
+      JSON.stringify({ name: "x", license: "Apache-2.0" }, null, 2),
+    );
+  });
+
+  const findings = async () => {
+    const { validateContribution } = await import("../scripts/lib/contribution.js");
+    return validateContribution(dir, { layer: "community" });
+  };
+  const check = async (name: string) =>
+    (await findings()).checks.find((c: { name: string }) => c.name === name);
+
+  it("PRECONDITION: a clean component passes and states its coverage", async () => {
+    const c = await check("no-secrets");
+    expect(c?.passed).toBe(true);
+    expect(c?.message).toMatch(/file\(s\) scanned, recursively/);
+  });
+
+  it("R2-6 sibling: a secret one directory DOWN is found here too", async () => {
+    fs.mkdirSync(path.join(dir, "nested"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "nested", "leak.md"), "AKIAIOSFODNN7EXAMPLE\n");
+    const c = await check("no-secrets");
+    expect(c?.passed, "the second copy of the scanner was still .md-only/non-recursive").toBe(false);
+    expect(c?.message).toContain("nested/leak.md");
+  });
+
+  it("R2-6 sibling: a secret in a NON-.md file is found here too", async () => {
+    fs.writeFileSync(path.join(dir, "persona.config.json"), '{"note":"sk-abcdefghijklmnopqrstuvwxyz012345"}');
+    expect((await check("no-secrets"))?.passed).toBe(false);
+  });
+
+  it("R2-6 sibling: the patterns the two copies disagreed about are covered", async () => {
+    // This copy had four of seven. A PEM private key was invisible to it.
+    fs.writeFileSync(path.join(dir, "key.txt"), "-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    expect((await check("no-secrets"))?.passed).toBe(false);
+  });
+
+  it("an UNREADABLE manifest is its own finding, not 'No license'", async () => {
+    fs.writeFileSync(path.join(dir, "manifest.json"), "{ not json");
+    const all = await findings();
+    const readable = all.checks.find((c: { name: string }) => c.name === "manifest-readable");
+    expect(readable?.passed, "a corrupt manifest reported as a missing field").toBe(false);
+    expect(readable?.message).toMatch(/unreadable/i);
+  });
+});
