@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { ensureRootDist } from "./setup.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
@@ -24,9 +25,7 @@ function run(script: string, cwd = ROOT): string {
 
 beforeAll(() => {
   const distPath = path.join(ROOT, "dist");
-  if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, "agents", "AGENTS.md"))) {
-    run("scripts/compile.ts");
-  }
+  ensureRootDist();
 });
 
 // ---------------------------------------------------------------------------

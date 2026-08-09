@@ -1788,6 +1788,18 @@ program
               (acked > 0 ? ` (${acked} acknowledged as advisory-only on unenforceable targets)` : "")
             );
           }
+          // NF-5: zero configured platforms is not "everything is fine", it is
+          // "there was nothing to check". The loop below emitted NO rows at all
+          // for `outputFormats: []`, leaving the Enforcement header with an
+          // empty body — the same "a gate that evaluates zero platforms is not a
+          // passing gate, it is an absent one" shape A5 was written to remove,
+          // surviving in the two blocks A5's own commit message names.
+          if (enforcementFormats.length === 0) {
+            fail(
+              "Enforcement — personas.outputFormats is EMPTY, so org policy reaches no platform. " +
+              "This section checked nothing.",
+            );
+          }
           for (const fmt of enforcementFormats) {
             if (!PLATFORM_ENFORCEMENT[fmt]) {
               // Previously `continue` — a platform dropped from the Enforcement
@@ -1829,7 +1841,15 @@ program
             [path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions")],
             config.instructions?.enabled,
           );
-          if (degraded.length === 0 || scopedNarrow === 0) {
+          if (enforcementFormats.length === 0) {
+            // NF-5: "expressible on every configured target" over ZERO targets is
+            // a vacuous truth printed as a green tick. Say what is actually the
+            // case.
+            fail(
+              "Scoping — personas.outputFormats is EMPTY, so there is no target to express " +
+              "path scope on. This section checked nothing.",
+            );
+          } else if (degraded.length === 0 || scopedNarrow === 0) {
             ok("Path scoping is expressible on every configured target");
           } else {
             // warn(), not fail(): a correctly-authored hub's doctor exit code

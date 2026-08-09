@@ -7,19 +7,15 @@ import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { ensureRootDist } from "./setup.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
 
 beforeAll(() => {
-  const distPath = path.join(ROOT, "dist");
-  if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, "cursor"))) {
-    execSync(`${TSX} scripts/compile.ts`, {
-      cwd: ROOT,
-      env: { ...process.env, NODE_NO_WARNINGS: "1" },
-      timeout: 30_000,
-    });
-  }
+  // NF-1: ask the build stamp, not fs.existsSync — a dist/ another test file
+  // pruned still EXISTS, which is how this suite became order-dependent.
+  ensureRootDist();
 });
 
 // ---------------------------------------------------------------------------

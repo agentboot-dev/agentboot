@@ -732,3 +732,53 @@ describe("C4 — a domain instruction reaches the scope gate", () => {
     expect(emitted).toContain("**Scope — `src/ledger/**`");
   }, 300_000);
 });
+
+/**
+ * C5 / NF-5 — doctor's Scoping and Enforcement blocks.
+ *
+ * C5: `grep -rln Scoping tests/` matched this file only via an import; there was
+ * no assertion anywhere on doctor's Scoping OUTPUT. The block that tells an
+ * operator "your narrow rules are being delivered always-on" was unpinned.
+ *
+ * NF-5: with `personas.outputFormats: []` the Enforcement block emitted no rows
+ * at all and Scoping printed "✓ Path scoping is expressible on every configured
+ * target" — over ZERO targets. Doctor still exited 1 because Coverage fired, so
+ * it was not reachable as a false green today; it is the same "a gate that
+ * evaluates zero platforms is not a passing gate, it is an absent one" shape A5
+ * was written to remove, surviving in the two blocks A5's own commit message
+ * names.
+ */
+describe("C5/NF-5 — doctor says what it checked", () => {
+  it("C5-1: an acknowledged narrow instruction on an unscopable target is REPORTED by doctor", () => {
+    const hub = hubWithScopedInstruction(["claude"], true);
+    expect(ab(["build"], hub).status).toBe(0);
+    const d = ab(["doctor"], hub);
+    expect(d.out).toContain("Scoping");
+    expect(d.out).toMatch(/scoped instruction\(s\) delivered always-on on claude/);
+  }, 300_000);
+
+  it("C5-2 (NEGATIVE): on a target that CAN express scope, Scoping is green and silent", () => {
+    // A guard that also fires on the fixed path is how a channel gets tuned out.
+    const hub = hubWithScopedInstruction(["cursor"], false);
+    expect(ab(["build"], hub).status).toBe(0);
+    const d = ab(["doctor"], hub);
+    expect(d.out).toContain("Path scoping is expressible on every configured target");
+    expect(d.out).not.toMatch(/delivered always-on/);
+  }, 300_000);
+
+  it("NF-5-1: with ZERO configured platforms, both blocks say they checked nothing", () => {
+    const hub = scaffoldHub();
+    const p = path.join(hub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    c.personas.outputFormats = [];
+    c.managed = { enabled: true, guardrails: { denyTools: ["Bash"] } };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+
+    const d = ab(["doctor"], hub);
+    expect(d.out).toMatch(/Enforcement — personas\.outputFormats is EMPTY/);
+    expect(d.out).toMatch(/Scoping — personas\.outputFormats is EMPTY/);
+    // And specifically NOT the vacuous green tick it used to print.
+    expect(d.out).not.toContain("✓ Path scoping is expressible on every configured target");
+    expect(d.status).not.toBe(0);
+  }, 300_000);
+});

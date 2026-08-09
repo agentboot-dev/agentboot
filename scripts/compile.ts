@@ -1459,7 +1459,10 @@ function compileGotchas(
       // the same class as delivering it unscoped: the operator is not told.
       // Copilot's universal scope is `**`.
       {
-        const copilotApplyTo = copilotGlobs.length > 0 ? copilotGlobs.join(",") : "**";
+        // ", " not "," — the emitted spacing is unchanged from the hand-rolled
+        // version, so re-serializing from the parsed globs is not a gratuitous
+        // diff in every consumer's .instructions.md.
+        const copilotApplyTo = copilotGlobs.length > 0 ? copilotGlobs.join(", ") : "**";
         const name = path.basename(file, ".md");
         const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
         const copilotInstrDir = path.join(distPath, "copilot", scopePath, "instructions");
