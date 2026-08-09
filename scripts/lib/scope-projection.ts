@@ -306,7 +306,15 @@ function readScopeGlobsFromBlock(fm: string, key: string): ScopeRead {
   const lines = fm.split("\n");
   // Anchored to the line, and `[ \t]*` never crosses a newline — that crossing
   // is the whole of NF-4.
-  const keyRe = new RegExp(`^([ \\t]*)${key}:[ \\t]*(.*)$`, "i");
+  //
+  // NEW-2 (read side): anchored at COLUMN 0 as well. Matching `applyTo:` at any
+  // indent means the first hit can be the CONTENT of another key's block scalar
+  // — e.g. a `description: |` whose prose explains what applyTo does. The reader
+  // then returns that prose as the glob, and the real top-level `applyTo:` two
+  // lines down is never reached. Indentation is exactly what distinguishes a key
+  // from text, so the reader and the rewriter must anchor the same way; they
+  // disagreeing is how one artifact came to mean two scopes.
+  const keyRe = new RegExp(`^()${key}:[ \\t]*(.*)$`, "i");
   for (let i = 0; i < lines.length; i++) {
     const m = keyRe.exec(lines[i]!);
     if (!m) continue;
@@ -478,6 +486,29 @@ export function scopePreamble(globs: string[]): string {
  * Operates only inside the first frontmatter block, and only on a key at the
  * TOP level of it: a nested `applyTo:` under some other mapping is not this key.
  *
+ * NEW-2: that last sentence was the doc comment's claim and not the code's
+ * behaviour. The matcher was `^([ \t]*)<key>:`, which matches at ANY indent, so
+ * it fired on every such line inside the block — including one that is CONTENT,
+ * not structure. The same commit switched Copilot from source-line passthrough
+ * to re-serialization through this helper, so Copilot went from "valid YAML,
+ * correct glob" to "unparseable YAML, wrong glob" for a whole input class:
+ *
+ *     description: |                     ->    description: |
+ *       applyTo: narrows a rule ...            applyTo: "narrows a rule ..."
+ *       Keep it as tight as you can.             Keep it as tight as you can.
+ *     applyTo: "src/pay/**"                    applyTo: "narrows a rule ..."
+ *
+ * — an uninserted replacement at the nested position, the following indented
+ * lines consumed as if they were the key's continuation, the replacement
+ * emitted TWICE, and the surviving glob taken from prose. js-yaml: "bad
+ * indentation of a mapping entry (3:3)". Copilot is one of the three officially
+ * supported v1.0 platforms, and this is precisely the defect class ("emitted
+ * frontmatter no YAML parser accepts") the helper exists to close.
+ *
+ * Indentation is what distinguishes a key from the text of a block scalar, so
+ * anchoring at column 0 is the whole fix. It also means the deletion case can
+ * no longer silently drop someone else's nested key.
+ *
  * @param replacement full replacement line (no trailing newline), or null to delete.
  */
 export function rewriteFrontmatterKeyBlock(
@@ -491,7 +522,10 @@ export function rewriteFrontmatterKeyBlock(
   const block = m[1] ?? "";
   const blockStart = 4; // "---\n"
   const lines = block.split("\n");
-  const keyRe = new RegExp(`^([ \\t]*)${key}:`, "i");
+  // Column 0 only. See NEW-2 above: a `key:` at any other indent is either
+  // nested under another mapping or is the CONTENT of a block scalar, and in
+  // both cases it belongs to someone else.
+  const keyRe = new RegExp(`^()${key}:`, "i");
 
   const out: string[] = [];
   let i = 0;

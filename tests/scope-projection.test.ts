@@ -26,6 +26,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import yaml from "js-yaml";
 
 import {
   inspectScope, degradedFormats, scopeViolations, APPLY_TO_PROJECTION,
@@ -921,5 +922,102 @@ describe("NF2-3 — the frontmatter rewriter handles a MULTI-LINE value", () => 
     const src = `---\napplyTo: "a/**"\ndescription: d\n---\napplyTo: not frontmatter\n`;
     const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["a/**"]');
     expect(out).toBe(`---\nglobs: ["a/**"]\ndescription: d\n---\napplyTo: not frontmatter\n`);
+  });
+});
+
+/**
+ * NEW-2 — the reader and the rewriter both matched the key at ANY indent.
+ *
+ * `rewriteFrontmatterKeyBlock`'s own doc comment claimed it acts "only on a key
+ * at the TOP level"; the matcher was `^([ \t]*)<key>:`. `readScopeGlobsFromBlock`
+ * had the same shape. Indentation is precisely what distinguishes a key from the
+ * CONTENT of a block scalar, so a `description: |` whose prose happens to
+ * mention `applyTo:` was read as the scope, and rewritten as if it were.
+ *
+ * 296b21e switched Copilot from source-line passthrough to re-serialization
+ * through this helper, so Copilot went from "valid YAML, correct glob" to
+ * "unparseable YAML, wrong glob" for a whole input class. Copilot is one of the
+ * three officially supported v1.0 platforms, and this is exactly the defect
+ * class ("emitted frontmatter no YAML parser accepts") the helper exists to
+ * close.
+ *
+ * Measured on a scratch hub, before: dist/copilot emitted
+ *
+ *     description: |
+ *     applyTo: "narrows a rule to a path glob."
+ *       Keep it as tight as you can.
+ *     applyTo: "narrows a rule to a path glob."
+ *
+ * — js-yaml "bad indentation of a mapping entry (3:3)", a duplicate key, and a
+ * glob taken from prose. After: valid YAML, block scalar intact, and cursor,
+ * jetbrains and copilot all carrying src/pay/**.
+ */
+describe("NEW-2 — a key inside a block scalar is text, not structure", () => {
+  const PROSE =
+    "---\n" +
+    "description: |\n" +
+    "  applyTo: narrows a rule to a path glob.\n" +
+    "  Keep it as tight as you can.\n" +
+    'applyTo: "src/pay/**"\n' +
+    "---\n" +
+    "# prose\nbody\n";
+
+  it("the READER takes the top-level key, not the prose that mentions it", () => {
+    expect(readScopeGlobs(PROSE, "applyTo").globs).toEqual(["src/pay/**"]);
+  });
+
+  it("the REWRITER leaves the block scalar untouched and replaces once", () => {
+    const out = rewriteFrontmatterKeyBlock(PROSE, "applyTo", 'globs: ["src/pay/**"]');
+    expect(out).toContain("  applyTo: narrows a rule to a path glob.");
+    expect(out).toContain("  Keep it as tight as you can.");
+    expect(out.match(/globs: \["src\/pay\/\*\*"\]/g)?.length, "replacement emitted twice").toBe(1);
+    // The old glob line is gone; the prose line survives at its own indent.
+    expect(out).not.toMatch(/^applyTo: "src\/pay/m);
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+
+  it("DELETION does not reach into someone else's nested mapping", () => {
+    const nested =
+      "---\ndescription: nested\nmeta:\n" +
+      '  applyTo: "internal-note"\n  owner: platform\n' +
+      'applyTo: "src/a/**"\n---\nbody\n';
+    const out = rewriteFrontmatterKeyBlock(nested, "applyTo", null);
+    expect(out, "the nested meta.applyTo was silently deleted").toContain('  applyTo: "internal-note"');
+    expect(out, "an orphaned sibling was consumed as a continuation").toContain("  owner: platform");
+    expect(out).not.toMatch(/^applyTo: "src\/a/m);
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+
+  it("REPLACEMENT into a nested-key document emits the replacement exactly once", () => {
+    const nested =
+      "---\ndescription: nested\nmeta:\n" +
+      '  applyTo: "internal-note"\n  owner: platform\n' +
+      'applyTo: "src/a/**"\n---\nbody\n';
+    const out = rewriteFrontmatterKeyBlock(nested, "applyTo", 'globs: ["src/a/**"]');
+    expect(out.match(/globs: \["src\/a\/\*\*"\]/g)?.length).toBe(1);
+    expect(out).toContain("  owner: platform");
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+
+  it("NEGATIVE: an ordinary top-level key is still read and still rewritten", () => {
+    // Anchoring at column 0 must not turn the helper into a no-op.
+    const plain = '---\ndescription: plain\napplyTo: "src/db/**"\n---\nbody\n';
+    expect(readScopeGlobs(plain, "applyTo").globs).toEqual(["src/db/**"]);
+    expect(rewriteFrontmatterKeyBlock(plain, "applyTo", 'globs: ["src/db/**"]')).toContain(
+      'globs: ["src/db/**"]',
+    );
+    expect(rewriteFrontmatterKeyBlock(plain, "applyTo", null)).not.toContain("applyTo");
+  });
+
+  it("NEGATIVE: a top-level BLOCK-SCALAR scope still round-trips — the F-6 case", () => {
+    const blockScalar = "---\ndescription: bs\napplyTo: |\n  src/one/**\n  src/two/**\n---\nbody\n";
+    expect(readScopeGlobs(blockScalar, "applyTo").globs).toEqual(["src/one/**", "src/two/**"]);
+    const out = rewriteFrontmatterKeyBlock(blockScalar, "applyTo", 'globs: ["src/one/**"]');
+    expect(out, "continuation lines were left orphaned").not.toContain("  src/two/**");
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
   });
 });
