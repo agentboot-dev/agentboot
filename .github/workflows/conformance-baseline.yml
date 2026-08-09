@@ -62,17 +62,18 @@ jobs:
       # which, for a baseline, means losing exactly the history it exists to
       # accumulate. The artifact IS the durable trace: if it is absent, the run
       # did not do its work, and that is visible without reading a log.
-      # PIN REQUIRED BEFORE MERGE — the one unpinned action in this repo, and
-      # deliberately visible. Every other `uses:` here carries a verified commit
-      # SHA; this one does not, because it was written offline and a SHA
-      # recalled from memory is exactly the "inferred, not empirical" claim this
-      # codebase refuses elsewhere. Shipping a plausible-looking wrong SHA in a
-      # supply-chain position is worse than shipping an obvious tag.
-      #
-      # To pin: `gh api repos/actions/upload-artifact/git/ref/tags/v4.6.2`
-      # and replace `@v4` with the resolved SHA plus a `# v4.6.2` comment.
+      # SHA resolved empirically, not recalled:
+      #   gh api repos/actions/upload-artifact/git/ref/tags/v4.6.2 --jq .object.sha
+      #   → ea165f8d65b6e75b540449e92b4886f43607fa02
+      # (cross-checked against the full tag listing; v4 and v4.6.2 point at the
+      # same object). The previous author left this on `@v4` rather than ship a
+      # SHA recalled from memory, which was the right call — a plausible-looking
+      # wrong SHA in a supply-chain position is worse than an obvious tag. It is
+      # now resolved from the API, and tests/workflow-pinning.test.ts asserts the
+      # invariant so the next unpinned action goes red instead of shipping behind
+      # a comment.
       - name: Upload snapshot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: conformance-baseline-${{ github.run_id }}
           path: .agentboot/baseline/
