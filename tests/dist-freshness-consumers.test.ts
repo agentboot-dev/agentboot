@@ -309,3 +309,106 @@ describe("A1/A2-residual — an ARTIFACT edit that never rebuilt", () => {
     expect(landed).not.toContain("where practical");
   }, 900_000);
 });
+
+/**
+ * NF2-1 — the gate was skipped entirely when no hub config resolved.
+ *
+ * `install-user` gated behind `if (config)` (cli.ts) and `publish` behind
+ * `if (fs.existsSync(publishConfigPath))`. Point either at a `dist/` with no
+ * agentboot.config.json beside it and the whole gate vanishes:
+ *
+ *     cd /tmp/hub    && agentboot install-user --dry-run  → 1   (gate fires)
+ *     cp -R dist /tmp/nohub && cd /tmp/nohub
+ *     agentboot install-user --dry-run                    → 0
+ *       "Would write 5 skill file(s) + 6 rule file(s) to ~/.claude/"
+ *       "Would withdraw 1 revoked artifact(s) from ~/.claude/"   ← PRUNES too
+ *     agentboot publish --dry-run                         → 0
+ *
+ * Same bytes, same `status: "failed"` stamp: exit 1 in the hub, exit 0 one
+ * directory over. `install-user` writes ORG POLICY into ~/.claude — the
+ * A2-residual commit named it "a SECOND delivery channel" — and it also acted
+ * on the stale tree's idea of what had been revoked.
+ *
+ * "No stamp" and "status: failed" require no config to read. This is existence
+ * read as freshness, relocated behind a config-presence check. Every test in
+ * this file above runs with cwd = the hub, so the branch was untested by
+ * construction.
+ */
+describe("NF2-1 — a gated consumer with no hub config still checks the stamp", () => {
+  let nohubFailed = "";
+  let nohubFresh = "";
+
+  beforeAll(() => {
+    // A hub whose build FAILS, and a copy of its dist/ with no config beside it.
+    const fhub = path.join(base, "nf21-hub");
+    const inst = spawnSync(
+      process.execPath,
+      [CLI, "install", "--hub", "--org", "acme", "--path", fhub, "--non-interactive", "--skip-sync"],
+      { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (inst.status !== 0) throw new Error(`scaffold failed: ${inst.stdout}${inst.stderr}`);
+
+    // A successful build first, so dist/ has real content...
+    expect(ab(["build"], fhub).status).toBe(0);
+    nohubFresh = path.join(base, "nf21-nohub-fresh");
+    fs.mkdirSync(nohubFresh, { recursive: true });
+    fs.cpSync(path.join(fhub, "dist"), path.join(nohubFresh, "dist"), { recursive: true });
+
+    // ...then a build that FAILS, which leaves that same tree in place and
+    // stamps it `failed`.
+    const cfgPath = path.join(fhub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+    c.claude = { permissions: "deny-everything" };
+    fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2));
+    expect(ab(["build"], fhub).status).toBe(1);
+    expect(JSON.parse(fs.readFileSync(path.join(fhub, "dist", ".agentboot-build.json"), "utf-8")).status)
+      .toBe("failed");
+
+    nohubFailed = path.join(base, "nf21-nohub-failed");
+    fs.mkdirSync(nohubFailed, { recursive: true });
+    fs.cpSync(path.join(fhub, "dist"), path.join(nohubFailed, "dist"), { recursive: true });
+  }, 900_000);
+
+  function abNoHub(args: string[], cwd: string): { status: number; out: string } {
+    const env = { ...process.env, NODE_NO_WARNINGS: "1" };
+    delete (env as Record<string, string | undefined>)["AGENTBOOT_CONFIG"];
+    const r = spawnSync(process.execPath, [CLI, ...args], {
+      cwd, env, encoding: "utf-8", timeout: 300_000,
+    });
+    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  it("install-user REFUSES a failed tree with no config in reach", () => {
+    const r = abNoHub(["install-user", "--dry-run"], nohubFailed);
+    expect(r.status, `install-user shipped org policy from a failed build:\n${r.out}`).toBe(1);
+    expect(r.out).toContain("failed");
+    // It must not have reached the write/prune report at all.
+    expect(r.out).not.toContain("Would write");
+    expect(r.out).not.toContain("Would withdraw");
+  }, 300_000);
+
+  it("publish REFUSES a failed tree with no config in reach", () => {
+    const r = abNoHub(["publish", "--dry-run"], nohubFailed);
+    expect(r.status, `publish shipped from a failed build:\n${r.out}`).toBe(1);
+  }, 300_000);
+
+  it("the refusal SAYS which dimensions it could not check — not a silent partial pass", () => {
+    const r = abNoHub(["install-user", "--dry-run"], nohubFailed);
+    expect(r.out).toMatch(/config and artifact-source\s+dimensions were not checked/);
+  }, 300_000);
+
+  it("POSITIVE: a SUCCESSFUL tree with no config still installs — this is a gate, not a ban", () => {
+    const r = abNoHub(["install-user", "--dry-run"], nohubFresh);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("Would write");
+    // And it is honest about the reduced check rather than printing a full pass.
+    expect(r.out).toMatch(/verified the build stamp only/);
+  }, 300_000);
+
+  it("POSITIVE: dist/ absent with no config is refused, not treated as nothing to do", () => {
+    const empty = path.join(base, "nf21-empty");
+    fs.mkdirSync(empty, { recursive: true });
+    const r = abNoHub(["install-user", "--dry-run"], empty);
+    expect(r.status).toBe(1);
+  }, 300_000);
+});

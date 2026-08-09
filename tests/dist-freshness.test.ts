@@ -27,6 +27,8 @@ import {
   writeDistStamp,
   readDistStamp,
   checkDistFreshness,
+  checkDistStamp,
+  computeSourceDigest,
 } from "../scripts/lib/dist-stamp.js";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -96,9 +98,18 @@ describe("checkDistFreshness — fails closed on every unknown", () => {
     return d;
   }
 
+  // A hub with no artifact sources — its source digest is stable and empty, so
+  // these cases isolate the CONFIG dimension from the SOURCE dimension.
+  function tmpHub(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-hubroot-"));
+  }
+
   it("U4: NO stamp is untrusted — a tree of files is not evidence that it is current", () => {
     const d = tmpDist();
-    const r = checkDistFreshness(d, cfg);
+    // Stamp-only dimension: NF2-1 split these out precisely because they need
+    // no config, and hiding them behind a config-presence check is what let
+    // install-user and publish ship a failed tree at exit 0.
+    const r = checkDistStamp(d);
     expect(r.fresh).toBe(false);
     expect(r.reason).toBe("missing");
   });
@@ -113,7 +124,7 @@ describe("checkDistFreshness — fails closed on every unknown", () => {
       agentbootVersion: "0.0.0",
       failureReason: "boom",
     });
-    const r = checkDistFreshness(d, cfg);
+    const r = checkDistStamp(d);
     expect(r.fresh).toBe(false);
     expect(r.reason).toBe("failed");
     expect(r.detail).toContain("boom");
@@ -121,14 +132,16 @@ describe("checkDistFreshness — fails closed on every unknown", () => {
 
   it("U6: a stamp from a DIFFERENT config is untrusted — this is the revocation case", () => {
     const d = tmpDist();
+    const hub = tmpHub();
     writeDistStamp(d, {
       status: "success",
       configDigest: computeConfigDigest({ ...cfg, personas: { outputFormats: ["claude", "copilot"] } }),
+      sourceDigest: computeSourceDigest(hub),
       outputFormats: ["claude", "copilot"],
       builtAt: "2026-08-08T00:00:00.000Z",
       agentbootVersion: "0.0.0",
     });
-    const r = checkDistFreshness(d, cfg);
+    const r = checkDistFreshness(d, cfg, hub);
     expect(r.fresh).toBe(false);
     expect(r.reason).toBe("config-stale");
   });
@@ -137,7 +150,7 @@ describe("checkDistFreshness — fails closed on every unknown", () => {
     const d = tmpDist();
     fs.writeFileSync(path.join(d, DIST_STAMP_FILE), "{not json");
     expect(readDistStamp(d)).toBeNull();
-    expect(checkDistFreshness(d, cfg).reason).toBe("missing");
+    expect(checkDistStamp(d).reason).toBe("missing");
   });
 
   it("U8: a stamp with an unrecognised status reads as NO stamp", () => {
@@ -146,19 +159,22 @@ describe("checkDistFreshness — fails closed on every unknown", () => {
       path.join(d, DIST_STAMP_FILE),
       JSON.stringify({ status: "probably-fine", configDigest: computeConfigDigest(cfg) }),
     );
-    expect(checkDistFreshness(d, cfg).reason).toBe("missing");
+    expect(checkDistStamp(d).reason).toBe("missing");
   });
 
   it("U9 (NEGATIVE): a matching success stamp IS fresh — the gate is not a blanket refusal", () => {
     const d = tmpDist();
+    const hub = tmpHub();
     writeDistStamp(d, {
       status: "success",
       configDigest: computeConfigDigest(cfg),
+      sourceDigest: computeSourceDigest(hub),
       outputFormats: ["claude"],
       builtAt: "2026-08-08T00:00:00.000Z",
       agentbootVersion: "0.0.0",
     });
-    expect(checkDistFreshness(d, cfg).fresh).toBe(true);
+    expect(checkDistFreshness(d, cfg, hub).fresh).toBe(true);
+    expect(checkDistStamp(d).fresh).toBe(true);
   });
 });
 
@@ -176,7 +192,7 @@ describe("N1 integration: the build stamps its own outcome", () => {
     expect(stamp).not.toBeNull();
     expect(stamp!.status).toBe("success");
     expect(stamp!.configDigest).toBe(computeConfigDigest(readConfig(hub)));
-    expect(checkDistFreshness(dist, readConfig(hub)).fresh).toBe(true);
+    expect(checkDistFreshness(dist, readConfig(hub), hub).fresh).toBe(true);
 
     // The stamp must live at the root, NOT inside a platform tree: sync copies
     // dist/<platform>/ wholesale, so a stamp one level deeper would be delivered
@@ -212,7 +228,7 @@ describe("N1 integration: the build stamps its own outcome", () => {
     // ...but it is no longer claiming to be current. That is the whole fix.
     const after = readDistStamp(dist);
     expect(after!.status).toBe("failed");
-    const check = checkDistFreshness(dist, readConfig(hub));
+    const check = checkDistFreshness(dist, readConfig(hub), hub);
     expect(check.fresh).toBe(false);
     expect(check.reason).toBe("failed");
   }, 300_000);
@@ -221,17 +237,17 @@ describe("N1 integration: the build stamps its own outcome", () => {
     const { hub } = scaffoldHub("n1-stale");
     expect(ab(["build"], hub).status).toBe(0);
     const dist = path.join(hub, "dist");
-    expect(checkDistFreshness(dist, readConfig(hub)).fresh).toBe(true);
+    expect(checkDistFreshness(dist, readConfig(hub), hub).fresh).toBe(true);
 
     // A revocation the operator forgot to rebuild after.
     editConfig(hub, (c) => { c.instructions.enabled = ["baseline.instructions"]; });
-    const check = checkDistFreshness(dist, readConfig(hub));
+    const check = checkDistFreshness(dist, readConfig(hub), hub);
     expect(check.fresh).toBe(false);
     expect(check.reason).toBe("config-stale");
 
     // ...and a successful rebuild clears it. Otherwise the gate is a one-way trap.
     expect(ab(["build"], hub).status).toBe(0);
-    expect(checkDistFreshness(dist, readConfig(hub)).fresh).toBe(true);
+    expect(checkDistFreshness(dist, readConfig(hub), hub).fresh).toBe(true);
   }, 300_000);
 });
 

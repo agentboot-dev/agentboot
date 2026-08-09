@@ -45,7 +45,7 @@ import {
   type PolicyException,
 } from "./lib/exceptions.js";
 import { stampIdentity, mintId } from "./lib/artifact-identity.js";
-import { checkDistFreshness, staleDistMessage, readDistStamp, type DistFreshness } from "./lib/dist-stamp.js";
+import { checkDistFreshness, checkDistStamp, staleDistMessage, readDistStamp, type DistFreshness } from "./lib/dist-stamp.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -172,6 +172,46 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
     console.error(chalk.red(staleDistMessage(freshness, command)));
     process.exit(1);
   }
+}
+
+/**
+ * NF2-1: the gate for a `gated` consumer that has NO hub config in reach.
+ *
+ * `install-user` and `publish` guarded their gate on `if (config)` /
+ * `if (fs.existsSync(publishConfigPath))`. Pointed at a `dist/` with no
+ * agentboot.config.json beside it they installed org policy into ~/.claude and
+ * published a plugin from a tree whose own stamp said `status: "failed"`, at
+ * exit 0 — and install-user also PRUNED from that tree, acting on the stale
+ * tree's idea of what had been revoked. Same bytes, same failed stamp: exit 1
+ * inside the hub, exit 0 one directory over.
+ *
+ * "No stamp" and "status: failed" require no config to read. A missing config
+ * means SOME dimensions cannot be checked; it never means none of them can, and
+ * turning "I can only check two of four" into "I will check none" is the
+ * silent-skip this codebase keeps re-finding.
+ */
+function assertDistStampOrExit(distPath: string, command: string): void {
+  if (!fs.existsSync(distPath)) {
+    console.error(chalk.red(`✗ dist/ not found — \`${command}\` has nothing to act on.`));
+    process.exit(1);
+  }
+  const check = checkDistStamp(distPath);
+  if (!check.fresh) {
+    console.error(chalk.red(staleDistMessage(check, command)));
+    console.error(
+      chalk.gray(
+        "    (no agentboot.config.json in reach, so the config and artifact-source\n" +
+          "     dimensions were not checked — this refusal is on the build stamp alone.)",
+      ),
+    );
+    process.exit(1);
+  }
+  console.log(
+    chalk.gray(
+      `  ~ no hub config in reach — \`${command}\` verified the build stamp only,\n` +
+        `    not that dist/ matches a current config or current artifact sources.`,
+    ),
+  );
 }
 
 /**
@@ -649,8 +689,13 @@ program
     // fs.existsSync(distCore). That is existence read as freshness, the exact
     // pattern the sync gate was written to kill: a failed build leaves dist/
     // byte-identical, so a revoked control installs with two green ticks.
+    const installUserDist = path.join(cwd, config?.output?.distPath ?? "./dist");
     if (config) assertDistFreshOrExit(configPath, config, "install-user");
-    const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
+    // NF2-1: and when there is no config, the dimensions that need none still
+    // apply. `if (config)` alone made this the one delivery channel a failed
+    // build could still reach.
+    else assertDistStampOrExit(installUserDist, "install-user");
+    const distCore = path.join(installUserDist, "claude", "core");
     if (!fs.existsSync(distCore)) {
       console.error(chalk.red("dist/claude/core not found — run `agentboot build` first."));
       process.exit(1);
@@ -3723,6 +3768,10 @@ program
     const publishConfigPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     if (fs.existsSync(publishConfigPath)) {
       assertDistFreshOrExit(publishConfigPath, loadConfig(publishConfigPath), "publish");
+    } else {
+      // NF2-1: publishing from a tree whose stamp says `failed` is publishing
+      // the previous policy under the new version number.
+      assertDistStampOrExit(path.join(cwd, "dist"), "publish");
     }
 
     console.log(chalk.bold("\nAgentBoot — publish\n"));

@@ -283,16 +283,26 @@ export interface DistFreshness {
  * The gate. FAILS CLOSED on every unknown: no stamp, unreadable stamp, failed
  * build, or a config that has moved since the last successful build.
  */
-export function checkDistFreshness(
-  distDir: string,
-  config: unknown,
-  /**
-   * Hub root, for the artifact-source dimension. Omitted only by callers that
-   * genuinely have no hub (there are none in the CLI); when omitted the source
-   * check is skipped, which is why every CLI call site passes it.
-   */
-  hubRoot?: string,
-): DistFreshness {
+/**
+ * The CONFIG-INDEPENDENT half of the gate: is this tree the output of a build
+ * that SUCCEEDED?
+ *
+ * NF2-1: `install-user` and `publish` gated on `if (config)` /
+ * `if (fs.existsSync(publishConfigPath))`, so pointed at a `dist/` with no hub
+ * config beside it they installed org policy into ~/.claude and published a
+ * plugin from a tree whose own stamp said `status: "failed"` — at exit 0.
+ * Measured: same bytes, same stamp, exit 1 inside the hub and exit 0 one
+ * directory over. install-user even PRUNED from that tree ("Would withdraw 1
+ * revoked artifact(s)"), i.e. it acted on the stale tree's idea of what is
+ * revoked.
+ *
+ * "Missing stamp" and "status: failed" need NO config to read. Putting them
+ * behind a config-presence check is "existence read as freshness" relocated one
+ * level up — in the very command the A2-residual commit named as "a SECOND
+ * delivery channel". They are separated here so a caller without a hub still
+ * gets the dimensions that do not require one, instead of getting nothing.
+ */
+export function checkDistStamp(distDir: string): DistFreshness {
   const stamp = readDistStamp(distDir);
   if (!stamp) {
     return {
@@ -318,7 +328,33 @@ export function checkDistFreshness(
         `      Fix: run \`agentboot build\` and let it succeed.`,
     };
   }
-  if (hubRoot) {
+  return { fresh: true, stamp };
+}
+
+export function checkDistFreshness(
+  distDir: string,
+  config: unknown,
+  /**
+   * Hub root, for the artifact-source dimension.
+   *
+   * REQUIRED, not optional. It used to be optional with a comment saying
+   * "omitted only by callers that genuinely have no hub (there are none in the
+   * CLI)" — a comment is not a guard. Dropping the argument at sync.ts kept tsc
+   * clean and restored the defect verbatim; dropping it at the doctor call site
+   * kept tsc clean AND the whole dist-freshness suite green while doctor
+   * reported a tightened-but-unrebuilt hub as healthy. C4 made exactly this
+   * argument required for the scope gate and this one was left optional.
+   *
+   * A caller with no hub config wants `checkDistStamp` — which gives it the
+   * dimensions that do not need one, rather than a silent skip of the ones that
+   * do.
+   */
+  hubRoot: string,
+): DistFreshness {
+  const base = checkDistStamp(distDir);
+  if (!base.fresh) return base;
+  const stamp = base.stamp!;
+  {
     const currentSources = computeSourceDigest(hubRoot, resolveDomainRoots(hubRoot, config));
     if (!stamp.sourceDigest) {
       return {
