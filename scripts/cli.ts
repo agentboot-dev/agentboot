@@ -1482,13 +1482,46 @@ program
         }
 
         // Check personas
+        //
+        // NF4-6: resolve the way the COMPILER resolves — package bundle first,
+        // hub second, hub wins on name. compile.ts merges ROOT/core/* with
+        // HUB_ROOT/core/* precisely so a hub can enable a shipped default
+        // WITHOUT copying it locally; doctor looked only in the hub, so a hub
+        // scaffolded by `agentboot install --hub` failed its own health check
+        // immediately:
+        //
+        //     agentboot build   -> exit 0, "✓ Compiled 4 persona(s)"
+        //     agentboot doctor  -> exit 1, "✗ Persona not found: code-reviewer" ×4
+        //                                  "✗ Trait not found: …" ×6
+        //
+        // Identical on a real `npm pack` + install, so it was not a dev-checkout
+        // artifact. Build and doctor disagreed about the same fact, and the first
+        // thing a new adopter saw was a red health check on a hub the tool had
+        // just created. `doctor --fix` "fixed" it by materialising copies into
+        // the hub — which changes real behaviour (a local copy stops tracking
+        // package updates) to satisfy a check that was wrong.
         const enabledPersonas = config.personas?.enabled ?? [];
         const personasDir = path.join(cwd, "core", "personas");
+        const packagePersonasDir = path.join(ROOT, "core", "personas");
+        /** Where this persona resolves from, hub first, or null if nowhere. */
+        const resolvePersonaDir = (name: string): string | null => {
+          for (const d of [path.join(personasDir, name), path.join(packagePersonasDir, name)]) {
+            if (fs.existsSync(d)) return d;
+          }
+          return null;
+        };
         let personaIssues = 0;
         let personasScaffolded = 0;
         for (const p of enabledPersonas) {
+          const resolved = resolvePersonaDir(p);
           const pDir = path.join(personasDir, p);
-          if (!fs.existsSync(pDir)) {
+          if (resolved && resolved !== pDir) {
+            // Found in the package bundle. Not an issue — but not silent either:
+            // an operator reading this list should be able to tell which
+            // artifacts they own and which they are inheriting.
+            continue;
+          }
+          if (!resolved) {
             if (fixMode) {
               if (!dryRun) {
                 fs.mkdirSync(pDir, { recursive: true });
@@ -1519,12 +1552,17 @@ program
           ok(`All ${enabledPersonas.length} enabled personas found (${personasScaffolded} scaffolded)`);
         }
 
-        // Check traits
+        // Check traits — same package-then-hub resolution as personas above.
         const enabledTraits = config.traits?.enabled ?? [];
         const traitsDir = path.join(cwd, "core", "traits");
+        const packageTraitsDir = path.join(ROOT, "core", "traits");
         let traitIssues = 0;
         let traitsScaffolded = 0;
         for (const t of enabledTraits) {
+          if (fs.existsSync(path.join(packageTraitsDir, `${t}.md`)) &&
+              !fs.existsSync(path.join(traitsDir, `${t}.md`))) {
+            continue; // inherited from the package bundle, exactly as compile reads it
+          }
           if (!fs.existsSync(path.join(traitsDir, `${t}.md`))) {
             if (fixMode) {
               if (!dryRun) {
