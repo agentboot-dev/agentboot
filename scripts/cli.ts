@@ -2035,7 +2035,7 @@ program
   .option("--allow-unevaluated", "proceed when scenario expectations have no mechanical evaluator (the count is still reported)")
   .action(async (opts, cmd) => {
     const {
-      runBehavioralTestsDetailed, createSnapshot, compareSnapshots,
+      runBehavioralTestsDetailed, behavioralFindings, createSnapshot, compareSnapshots,
       saveSnapshot, loadSnapshot, printSnapshotDiff,
     } = await import("./lib/test-runner.js");
 
@@ -2113,65 +2113,28 @@ program
       const run = runBehavioralTestsDetailed(testDir, distPath);
       const results = run.results;
 
-      // J1: SILENCE IS NOT SUCCESS. A scenario file that produced no runnable
-      // case, and an `expect:` key with no evaluator, are both "we did not
-      // check this" — and both used to be invisible. `agentboot test
-      // --behavioral` returned [] for every file in this repo and said nothing,
-      // under a CI step that treats exit 0 as a pass.
-      if (run.filesSeen.length === 0) {
-        console.error(chalk.red(
-          `  ✗ No scenario files in ${path.relative(cwd, testDir) || testDir}/ — nothing was checked.\n`));
-        exitCode = 1;
-      }
-      for (const f of run.filesWithNoCases) {
-        console.error(chalk.red(
-          `  ✗ ${f} produced NO runnable test case — every expectation in it is unevaluable.`));
-        exitCode = 1;
-      }
-      // NF2-6: name the SCENARIOS that did not run. A file with no cases was
-      // already reported loudly; a CASE with no runnable check was reported only
-      // as an anonymous by-key count below, so nothing told the operator WHICH
-      // scenario was skipped. Same class, finer granularity — it gets the same
-      // treatment. (Today: author-import-duplicate-detection and
-      // routing-ambiguous-clarify; 28 `tests:` entries in the YAML, 26 cases.)
-      const skippedInRunFiles = run.droppedCases.filter(
-        (d) => !run.filesWithNoCases.includes(d.file),
-      );
-      for (const d of skippedInRunFiles) {
-        console.error(chalk.red(
-          `  ✗ ${d.file}: scenario ${d.caseId ?? "(no id)"} did NOT run — ${d.reason}.`));
-        exitCode = 1;
-      }
-      if (run.unevaluated.length > 0) {
-        const byKey = new Map<string, number>();
-        for (const u of run.unevaluated) byKey.set(u.key, (byKey.get(u.key) ?? 0) + 1);
-        const top = [...byKey.entries()].sort((a, b) => b[1] - a[1]);
-        console.error(chalk.yellow(
-          `\n  ⚠ ${run.unevaluated.length} expectation(s) across ${run.filesSeen.length} file(s) have NO evaluator:`));
-        for (const [key, n] of top) console.error(chalk.gray(`      ${key} ×${n}`));
-        console.error(chalk.gray(
-          "    These are judgements about a conversation, not string matches. They are NOT\n" +
-          "    checked. A run that ignored them and reported green would be checking a\n" +
-          "    fraction of what the scenario files assert.\n" +
-          "    Pass --allow-unevaluated to proceed anyway (the count is still printed).\n"));
-        if (!opts["allowUnevaluated"]) exitCode = 1;
-      }
-
-      if (results.length === 0) {
-        console.error(chalk.red("  ✗ No behavioral test cases ran.\n"));
-        exitCode = 1;
-      } else {
-        const passed = results.filter(r => r.passed).length;
-        const failed = results.length - passed;
-        console.log("");
-        if (failed > 0) {
-          console.log(chalk.red(`  ✗ ${failed}/${results.length} behavioral test(s) failed.\n`));
-          exitCode = 1;
-        } else {
-          console.log(chalk.green(
-            `  ✓ All ${passed} behavioral test(s) passed ` +
-            `(${run.unevaluated.length} expectation(s) unevaluated).\n`));
+      // J1 / NEW-4: the verdict lives in behavioralFindings() so it can be
+      // tested. Reaching it here requires runBehavioralTestsDetailed(), which
+      // spawns an LLM per case — which is exactly why the one thing that had to
+      // be right (which conditions are fatal, and which the operator can waive)
+      // was the one thing no test could see, and why 06c9683 could move a fatal
+      // condition outside the waiver guard unnoticed. The message and the
+      // verdict now come from one place, so a "⚠" can never accompany an exit 1.
+      const findings = behavioralFindings(run, {
+        allowUnevaluated: Boolean(opts["allowUnevaluated"]),
+        testDirLabel: path.relative(cwd, testDir) || testDir,
+      });
+      for (const f of findings) {
+        if (f.message) {
+          console.error(f.level === "error" ? chalk.red(`  ${f.message}`) : chalk.yellow(`  ${f.message}`));
         }
+        if (f.detail) console.error(chalk.gray(f.detail));
+        if (f.level === "error") exitCode = 1;
+      }
+      if (!findings.some((f) => f.level === "error") && results.length > 0) {
+        console.log(chalk.green(
+          `\n  ✓ All ${results.filter((r) => r.passed).length} behavioral test(s) passed ` +
+          `(${run.unevaluated.length} expectation(s) unevaluated).\n`));
       }
     }
 

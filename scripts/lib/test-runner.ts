@@ -58,6 +58,23 @@ export interface DroppedCase {
   /** The scenario id, or null when the entry was too malformed to have one. */
   caseId: string | null;
   reason: string;
+  /**
+   * NEW-4: WHY it dropped, in a form the caller can branch on.
+   *
+   * `unevaluable` — the scenario is well formed and its expectations are real;
+   *     none of them maps onto a mechanical check. This is the same state
+   *     `--allow-unevaluated` exists to waive, one granularity finer, so it must
+   *     answer to the same flag. Reporting it as unwaivable made
+   *     `--allow-unevaluated` unable to waive the thing it is named after — and
+   *     AgentBoot's own published reusable workflow passes that flag.
+   * `malformed` — the entry is structurally broken (not a mapping, no `id:`, no
+   *     `prompt:`, no `expect:` block). No flag should wave that through: it is
+   *     a scenario file that does not say what it is testing.
+   *
+   * A string `reason` alone is not branchable without matching on prose, which
+   * is how a classifier and its consumer drift.
+   */
+  kind: "unevaluable" | "malformed";
 }
 
 export interface UnevaluatedExpectation {
@@ -221,7 +238,7 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
 
   for (const entry of tests) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      droppedCases.push({ file, caseId: null, reason: "entry is not a mapping" });
+      droppedCases.push({ file, caseId: null, reason: "entry is not a mapping", kind: "malformed" });
       continue;
     }
     const tc = entry as Record<string, unknown>;
@@ -232,6 +249,7 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
         file,
         caseId: id ?? null,
         reason: !id ? "no `id:`" : "no `prompt:`",
+        kind: "malformed",
       });
       continue;
     }
@@ -271,6 +289,10 @@ function parseScenarioSchema(content: string, file: string): BehavioralParse | n
         reason: expects.length === 0
           ? "no `expect:` block"
           : "every expectation is unevaluable — no mechanical evaluator matched",
+        // A scenario with no `expect:` block asserts nothing at all — that is
+        // structurally broken, not "we have judgement expectations we cannot
+        // check mechanically". Only the latter answers to --allow-unevaluated.
+        kind: expects.length === 0 ? "malformed" : "unevaluable",
       });
       continue;
     }
@@ -687,4 +709,112 @@ export function printSnapshotDiff(diff: SnapshotDiff): void {
     }
     if (diff.changed.length > 10) console.log(chalk.gray(`      ... and ${diff.changed.length - 10} more`));
   }
+}
+
+
+/**
+ * NEW-4 — the verdict on a behavioral run, as data.
+ *
+ * This logic used to live inline in the `test` command action, which is why it
+ * could not be tested: reaching it requires runBehavioralTestsDetailed(), and
+ * that spawns an LLM per case. So the ONE thing about this feature that must be
+ * right — which conditions are fatal, and which the operator can waive — was the
+ * one thing no test could see. 06c9683 then moved a fatal condition outside the
+ * waiver guard and nothing noticed, breaking the flag for exactly the state the
+ * flag names, in the invocation AgentBoot's own published reusable workflow uses
+ * (`npx agentboot test --behavioral --allow-unevaluated`).
+ *
+ * Returning findings rather than printing them means the MESSAGE and the VERDICT
+ * come from one place and cannot disagree — a report that says "⚠" while exiting
+ * 1 is its own kind of lie.
+ *
+ * `error` findings fail the run. `warn` findings are printed and do not.
+ * Nothing is silent either way: silence is not success.
+ */
+export interface BehavioralFinding {
+  level: "error" | "warn";
+  /** Lines to print, already worded. No color — the caller owns presentation. */
+  message: string;
+  /** Extra indented detail printed under the message. */
+  detail?: string;
+}
+
+export function behavioralFindings(
+  run: BehavioralRun,
+  opts: { allowUnevaluated: boolean; testDirLabel: string },
+): BehavioralFinding[] {
+  const findings: BehavioralFinding[] = [];
+  const allow = opts.allowUnevaluated;
+
+  // J1: a directory with no scenario files checked nothing. Not waivable —
+  // there is no judgement gap here, there is no corpus.
+  if (run.filesSeen.length === 0) {
+    findings.push({
+      level: "error",
+      message: `✗ No scenario files in ${opts.testDirLabel}/ — nothing was checked.`,
+    });
+  }
+
+  // A whole FILE that produced no runnable case. Waivable on the same terms as
+  // a single unevaluable case: it is the same condition at file granularity,
+  // and treating the coarser report as stricter than the finer one is backwards.
+  for (const f of run.filesWithNoCases) {
+    findings.push({
+      level: allow ? "warn" : "error",
+      message: `${allow ? "⚠" : "✗"} ${f} produced NO runnable test case — every expectation in it is unevaluable.`,
+    });
+  }
+
+  // NF2-6: name the SCENARIOS that did not run, not just an anonymous count.
+  const skipped = run.droppedCases.filter((d) => !run.filesWithNoCases.includes(d.file));
+  for (const d of skipped) {
+    // NEW-4: `unevaluable` is precisely what --allow-unevaluated waives.
+    // `malformed` — not a mapping, no `id:`, no `prompt:`, no `expect:` block —
+    // is a scenario that does not say what it tests, and no flag waives that.
+    const waivable = d.kind === "unevaluable" && allow;
+    findings.push({
+      level: waivable ? "warn" : "error",
+      message: `${waivable ? "⚠" : "✗"} ${d.file}: scenario ${d.caseId ?? "(no id)"} did NOT run — ${d.reason}.`,
+    });
+  }
+  if (!allow && skipped.some((d) => d.kind === "unevaluable")) {
+    findings.push({
+      level: "warn",
+      message: "",
+      detail: "Pass --allow-unevaluated to proceed anyway (the scenarios are still named).",
+    });
+  }
+
+  if (run.unevaluated.length > 0) {
+    const byKey = new Map<string, number>();
+    for (const u of run.unevaluated) byKey.set(u.key, (byKey.get(u.key) ?? 0) + 1);
+    const top = [...byKey.entries()].sort((a, b) => b[1] - a[1]);
+    findings.push({
+      level: allow ? "warn" : "error",
+      message:
+        `⚠ ${run.unevaluated.length} expectation(s) across ${run.filesSeen.length} file(s) have NO evaluator:`,
+      detail:
+        top.map(([key, n]) => `    ${key} ×${n}`).join("\n") +
+        "\n  These are judgements about a conversation, not string matches. They are NOT\n" +
+        "  checked. A run that ignored them and reported green would be checking a\n" +
+        "  fraction of what the scenario files assert." +
+        (allow ? "" : "\n  Pass --allow-unevaluated to proceed anyway (the count is still printed)."),
+    });
+  }
+
+  // Nothing ran at all. NOT waivable, and deliberately distinct from the
+  // conditions above: a flag that says "I accept some checks are judgement-only"
+  // cannot also mean "I accept that zero checks ran".
+  if (run.results.length === 0) {
+    findings.push({ level: "error", message: "✗ No behavioral test cases ran." });
+  } else {
+    const failed = run.results.filter((r) => !r.passed).length;
+    if (failed > 0) {
+      findings.push({
+        level: "error",
+        message: `✗ ${failed}/${run.results.length} behavioral test(s) failed.`,
+      });
+    }
+  }
+  return findings;
 }
