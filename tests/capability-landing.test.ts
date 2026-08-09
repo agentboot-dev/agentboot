@@ -87,6 +87,25 @@ const FIXTURES: Record<string, RowFixture> = {
     config: { claude: { settings: { zzsettingzz: "1" } } },
     marker: { kind: "content", text: "zzsettingzz" },
   },
+  // R2-3: group-scope twins. The fragment emitter runs per flattened NODE, and
+  // `groups` is converted to nodes, so each fixture declares a group with a team
+  // — the same shape docs/configuration.md documents.
+  "groups[].permissions.deny": {
+    config: { groups: { zzgroupzz: { teams: ["api"], permissions: { deny: ["Bash(zzgdenyzz:*)"] } } } },
+    marker: { kind: "content", text: "zzgdenyzz" },
+  },
+  "groups[].permissions.allow": {
+    config: { groups: { zzgroupzz: { teams: ["api"], permissions: { allow: ["Read(zzgallowzz)"] } } } },
+    marker: { kind: "content", text: "zzgallowzz" },
+  },
+  "groups[].mcpServers": {
+    config: { groups: { zzgroupzz: { teams: ["api"], mcpServers: { zzgmcpzz: { command: "/bin/true" } } } } },
+    marker: { kind: "content", text: "zzgmcpzz" },
+  },
+  "groups[].enabledPlugins": {
+    config: { groups: { zzgroupzz: { teams: ["api"], enabledPlugins: [{ url: "https://zzgpluginzz.invalid" }] } } },
+    marker: { kind: "content", text: "zzgpluginzz" },
+  },
   "mcp.enforceApproved": {
     config: { mcp: { enforceApproved: true, approved: [{ name: "zzapprovedzz", command: "/bin/true" }] } },
     marker: { kind: "content", text: "zzapprovedzz" },

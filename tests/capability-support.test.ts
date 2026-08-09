@@ -294,6 +294,11 @@ describe("CAPABILITY_SUPPORT — anti-drift", () => {
       "managed.guardrails.denyTools": { managed: { guardrails: { denyTools: ["Bash"] } } },
       "managed.guardrails.requireAuditLog": { managed: { guardrails: { requireAuditLog: true } } },
       "managed.guardrails.forcePlugins": { managed: { guardrails: { forcePlugins: ["p"] } } },
+      // R2-3: group-scope twins of the four claude.* rows.
+      "groups[].permissions.deny": { groups: { g: { permissions: { deny: ["x"] } } } },
+      "groups[].permissions.allow": { groups: { g: { permissions: { allow: ["x"] } } } },
+      "groups[].mcpServers": { groups: { g: { mcpServers: { a: {} } } } },
+      "groups[].enabledPlugins": { groups: { g: { enabledPlugins: [{ url: "https://x.invalid" }] } } },
     };
     for (const row of CAPABILITY_SUPPORT) {
       if (row.id.startsWith("instructions[") || row.id.startsWith("gotchas[")) continue;

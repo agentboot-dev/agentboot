@@ -249,6 +249,72 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
     consequence: "Pass-through settings are written to no managed fragment.",
     warrant: "scripts/compile.ts:3421",
   },
+  /**
+   * R2-3: the GROUP-scope twins of the four `claude.*` rows above.
+   *
+   * `groups[name].permissions`, `.mcpServers` and `.enabledPlugins` are the
+   * documented way an org expresses per-group managed settings
+   * (docs/configuration.md:81). They are emitted by ONE block —
+   * `if (outputFormats.includes("claude"))` at compile.ts:4327 — and had no row
+   * here at all, so the whole group tier was invisible to the gate whose entire
+   * job is "configured, but no configured platform can honour it".
+   *
+   * Observed on a scratch hub (`groups.platform.permissions.deny`,
+   * `.mcpServers`, `.enabledPlugins`, outputFormats `["cursor","copilot"]`):
+   *
+   *     BUILD_EXIT=0
+   *     grep -rl 'rm -rf' dist   → (nothing)
+   *     doctor Coverage          → silent on all three
+   *
+   * Two org-wide deny rules gone, green build, nothing said — while the
+   * org-level `claude.permissions.deny` row would have failed the build for the
+   * identical control written one scope up.
+   *
+   * SEVERITY RULE, so it is not a judgement call per row: a group-scope key
+   * takes the SAME severity as its org-level twin. `deny` is the control (its
+   * absence permits a forbidden action) so it is `error`; `allow`, `mcpServers`
+   * and `enabledPlugins` follow their twins at `warn`. Inventing a different
+   * ladder for the same key at a different scope is how two tables that must
+   * agree start to drift.
+   */
+  {
+    id: "groups[].permissions.deny",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some((g) => (g?.permissions?.deny?.length ?? 0) > 0),
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Group-scope deny lists are applied on no target; the group's forbidden tools run.",
+    warrant: "scripts/compile.ts:4346",
+  },
+  {
+    id: "groups[].permissions.allow",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some((g) => (g?.permissions?.allow?.length ?? 0) > 0),
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Group-scope pre-approvals are not applied; the group's developers get prompted.",
+    warrant: "scripts/compile.ts:4346",
+  },
+  {
+    id: "groups[].mcpServers",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some(
+        (g) => Object.keys(g?.mcpServers ?? {}).length > 0,
+      ),
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "The group's MCP servers reach no runtime.",
+    warrant: "scripts/compile.ts:4347",
+  },
+  {
+    id: "groups[].enabledPlugins",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some((g) => (g?.enabledPlugins?.length ?? 0) > 0),
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Plugins the org force-enables for the group are enabled nowhere.",
+    warrant: "scripts/compile.ts:4348",
+  },
   {
     id: "mcp.enforceApproved",
     detect: (c) => c.config.mcp?.enforceApproved === true && (c.config.mcp?.approved?.length ?? 0) > 0,
