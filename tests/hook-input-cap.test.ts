@@ -10,7 +10,7 @@
  * ordinary prompts is an outage, not a control.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -218,7 +218,7 @@ describe("R1-2 — an unusable limit must not disable the gate", () => {
       AGENTBOOT_MAX_HOOK_INPUT_BYTES: "abc",
     });
     expect(r.stderr).toContain("AGENTBOOT_MAX_HOOK_INPUT_BYTES");
-    expect(r.stdout).toContain("not a positive byte count");
+    expect(r.stdout).toContain("not a usable byte count");
   });
 
   it("R1-2-3: the deny-tools gate refuses too — same class, same posture", () => {
@@ -249,6 +249,130 @@ describe("R1-2 — an unusable limit must not disable the gate", () => {
         AGENTBOOT_MAX_HOOK_INPUT_BYTES: "2097152",
       }).status
     ).toBe(0);
+  });
+});
+
+/**
+ * R3 — R1-2's guard was LEXICAL (`case ''|*[!0-9]*|0*`) while the failure axis
+ * it had to cover is ARITHMETIC RANGE.
+ *
+ * `AGENTBOOT_MAX_HOOK_INPUT_BYTES=9223372036854775807` is all digits with no
+ * leading zero, so it PASSED the R1-2 guard, then overflowed `$((MAX + 1))` to a
+ * negative number. `head -c -9223372036854775808` errors, INPUT is empty,
+ * INPUT_BYTES=0, INPUT_TRUNCATED=0, the node one-liner's catch prints '', and the
+ * gate exits 0 — R1-2's own stated failure mode ("one environment variable
+ * disabled the scan and the deny gate the product sells as non-overridable org
+ * policy") restored verbatim through the code written to close it.
+ *
+ * Measured unpiped on a scratch hub, before the fix:
+ *   input-scan  2 → 0   (allowed `password: hunter2`)
+ *   pretooluse  2 → 0   (allowed the denied WebFetch)
+ *   output-scan 0        with NO "output scan SKIPPED" line
+ *
+ * The R1-2 test list was [abc, 0, -1, 1e6, "1048576 ", 0100] — six LEXICAL cases
+ * and zero RANGE cases: test data drawn from the one axis where the units
+ * coincide, which is the same mistake the R1-1 commit message diagnoses. These
+ * cases exist so that axis can never go unexercised again.
+ */
+describe("R3 — the limit is validated on RANGE, not just on FORM", () => {
+  const SECRET = JSON.stringify({ prompt: "api_key = AKIAABCDEFGHIJKLMNOP" });
+
+  // All-digits, no leading zero — every one of these passes the R1-2 guard.
+  const OVERFLOWING = [
+    "9223372036854775807", // INT64_MAX: $((MAX+1)) wraps negative
+    "9223372036854775808", // INT64_MAX+1
+    "18446744073709551615", // UINT64_MAX: head reports "illegal byte count -- 0"
+    "999999999999999999999999", // past 19 digits: [ -gt ] itself errors
+    "2147483648", // just past the declared ceiling — the boundary, not a monster
+    "10000000000", // 11 digits, the digit-count rejection path
+  ];
+
+  for (const bad of OVERFLOWING) {
+    it(`R3-1[${bad}]: the input scan refuses rather than failing open`, () => {
+      const r = runHook("agentboot-input-scan.sh", SECRET, {
+        AGENTBOOT_MAX_HOOK_INPUT_BYTES: bad,
+      });
+      expect(
+        r.status,
+        `AGENTBOOT_MAX_HOOK_INPUT_BYTES=${bad} allowed a secret through`
+      ).toBe(2);
+    });
+
+    it(`R3-2[${bad}]: the deny-tools gate refuses too`, () => {
+      const r = runHook("agentboot-pretooluse.sh", JSON.stringify({ tool_name: "WebFetch" }), {
+        AGENTBOOT_MAX_HOOK_INPUT_BYTES: bad,
+      });
+      expect(r.status, `AGENTBOOT_MAX_HOOK_INPUT_BYTES=${bad} allowed a denied tool`).toBe(2);
+    });
+
+    it(`R3-3[${bad}]: the output scan falls back LOUDLY — a skip is never silent`, () => {
+      const r = runHook("agentboot-output-scan.sh", JSON.stringify({ last_assistant_message: "fine" }), {
+        AGENTBOOT_MAX_HOOK_INPUT_BYTES: bad,
+      });
+      expect(r.status).toBe(0);
+      expect(
+        r.stderr,
+        `AGENTBOOT_MAX_HOOK_INPUT_BYTES=${bad} skipped the output scan silently`
+      ).toContain("AGENTBOOT_MAX_HOOK_INPUT_BYTES");
+    });
+  }
+
+  it("R3-4 (NEGATIVE): the ceiling itself is ACCEPTED — the bound is a bound, not a ban", () => {
+    // 2147483647 is legal; a guard that rejected it would be over-tight and the
+    // "refuses" assertions above would pass for the wrong reason.
+    const r = runHook("agentboot-input-scan.sh", SECRET, {
+      AGENTBOOT_MAX_HOOK_INPUT_BYTES: "2147483647",
+    });
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain("Potential credential detected");
+    expect(r.stderr).not.toContain("not a usable byte count");
+  });
+});
+
+/**
+ * R3 / NF2-6 — head's exit status was structurally discarded.
+ *
+ * `INPUT=$(head -c "$N"; printf X)` takes the command substitution's status from
+ * printf — always 0 — and `set -o pipefail` does not apply because this is a
+ * command LIST, not a pipeline. So ANY head failure (not only the overflow
+ * above: head unavailable, EINTR, a read error on the fd) left INPUT empty,
+ * INPUT_TRUNCATED=0, and a blocking gate at exit 0, with nothing on stderr.
+ *
+ * A component that failed must exit non-zero AND say so. Simulated here with a
+ * `head` stub earlier on PATH that exits 1, which is the only way to exercise
+ * the branch without an unreliable fd trick.
+ */
+describe("R3/NF2-6 — a failed read is not an empty payload", () => {
+  let stubDir = "";
+  beforeAll(() => {
+    stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-headstub-"));
+    const stub = path.join(stubDir, "head");
+    fs.writeFileSync(stub, "#!/bin/sh\nexit 1\n", "utf-8");
+    fs.chmodSync(stub, 0o755);
+  });
+  afterAll(() => {
+    if (stubDir) fs.rmSync(stubDir, { recursive: true, force: true });
+  });
+
+  const withStub = () => ({ PATH: `${stubDir}${path.delimiter}${process.env["PATH"] ?? ""}` });
+
+  it("R3-5: a blocking gate REFUSES when head fails, and names why", () => {
+    const r = runHook("agentboot-input-scan.sh", JSON.stringify({ prompt: "x" }), withStub());
+    expect(r.status, "the input scan ran on an unread payload").toBe(2);
+    expect(r.stderr).toContain("could not read the hook payload");
+  });
+
+  it("R3-6: the deny-tools gate refuses too — same class, same posture", () => {
+    const r = runHook("agentboot-pretooluse.sh", JSON.stringify({ tool_name: "WebFetch" }), withStub());
+    expect(r.status).toBe(2);
+  });
+
+  it("R3-7: the output scan exits 0 but SAYS the response was not scanned", () => {
+    const r = runHook("agentboot-output-scan.sh", JSON.stringify({ last_assistant_message: "x" }), withStub());
+    expect(r.status).toBe(0);
+    expect(r.stderr, "a skipped output scan was indistinguishable from a clean one").toContain(
+      "NOT scanned"
+    );
   });
 });
 
