@@ -59,7 +59,11 @@ afterAll(() => {
   if (base) fs.rmSync(base, { recursive: true, force: true });
 });
 
-function withConfig(mutate: (c: Record<string, any>) => void, cmd = "build"): { status: number; out: string } {
+function withConfig(
+  mutate: (c: Record<string, any>) => void,
+  cmd = "build",
+  timeoutMs = 300_000,
+): { status: number; out: string; timedOut: boolean } {
   const cfgPath = path.join(hub, "agentboot.config.json");
   const original = fs.readFileSync(cfgPath, "utf-8");
   const cfg = JSON.parse(original);
@@ -67,9 +71,15 @@ function withConfig(mutate: (c: Record<string, any>) => void, cmd = "build"): { 
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
   try {
     const r = spawnSync(process.execPath, [CLI, cmd], {
-      cwd: hub, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000,
+      cwd: hub, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: timeoutMs,
     });
-    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+    return {
+      status: r.status ?? -1,
+      out: `${r.stdout ?? ""}${r.stderr ?? ""}`,
+      // A command killed by the timeout produced no verdict. Reported, not
+      // silently counted as a pass.
+      timedOut: r.signal === "SIGTERM" || (r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
+    };
   } finally {
     fs.writeFileSync(cfgPath, original);
   }
@@ -160,6 +170,71 @@ describe("NF2-3 — the operator gets a diagnostic, never a stack frame", () => 
     const r = withConfig(() => { /* unchanged */ });
     expect(r.status, r.out).toBe(0);
   }, 300_000);
+
+  /**
+   * NF4-3 — the previous commit claimed "one helper, and a test that runs every
+   * command ... so a fourth cannot word it differently", and covered three
+   * commands by name.
+   *
+   * `drift-check`, `conformance` and `baseline` still delivered a config error
+   * as an uncaught throw. Measured on a hub with
+   * `managed.guardrails.denyTools: "WebFetch"`:
+   *
+   *     drift-check=7  conformance=7  baseline=7   (stack trace, `throw err;`,
+   *                                                 "Node.js v25.8.1")
+   *     build/doctor/status/audit/validate/sync/lint/cost-estimate/
+   *     evidence-pack/export/mcp-pin/verify-manifest/install-user/test = 1
+   *
+   * `baseline` is the instructive one: it HAD a guard —
+   * `fs.existsSync(path) ? loadConfig(path) : null` — which answers "is there a
+   * hub" and not "is the hub readable". A guard for the adjacent question reads
+   * as a guard.
+   *
+   * Naming three more commands would repeat the mistake, so this iterates every
+   * command the CLI declares. A command added later is covered by DEFAULT rather
+   * than exempt by default, which is the only form of this test that keeps the
+   * claim true.
+   */
+  it("NF4-3: NO command turns a config error into a stack trace", () => {
+    const src = fs.readFileSync(path.join(ROOT, "scripts", "cli.ts"), "utf-8");
+    const names = [...src.matchAll(/^\s*\.command\("([a-z][a-z-]*)"/gm)].map((m) => m[1]!);
+    expect(names.length, "the command enumeration found nothing — a vacuous check").toBeGreaterThan(10);
+
+    // `install`/`uninstall` mutate the machine; `mcp-server` blocks on stdio;
+    // `test`, `optimize` and `judge` drive an LLM. Excluded BY NAME so the
+    // exclusion is visible and has to be extended deliberately, rather than by a
+    // filter that could quietly grow to cover the next offender.
+    // `import` is excluded for a DIFFERENT reason and it is worth naming: it
+    // drives an LLM extraction pass and does not terminate inside a bounded
+    // window even with stdin closed. Verified by hand on the same malformed hub
+    // that it does not reach a config load before that point.
+    const MANUAL = ["install", "uninstall", "mcp-server", "test", "optimize", "judge", "import"];
+    const offenders: string[] = [];
+    const unverified: string[] = [];
+    for (const cmd of names) {
+      if (MANUAL.includes(cmd)) continue;
+      const r = withConfig((c) => {
+        c.managed = { enabled: true, guardrails: { denyTools: "WebFetch" } };
+      }, cmd, 60_000);
+      // A command that never returned produced no verdict. Silence is not
+      // success: it is reported rather than counted as a pass.
+      if (r.timedOut) { unverified.push(cmd); continue; }
+      // The contract is about HOW it fails, not whether: some commands
+      // legitimately succeed without reading the hub config.
+      if (STACK_FRAME.test(r.out) || r.status === 7) {
+        offenders.push(`${cmd} (exit ${r.status})`);
+      }
+    }
+    expect(
+      offenders,
+      "these commands report a config error as an uncaught throw — raw stack trace, exit 7",
+    ).toEqual([]);
+    expect(
+      unverified,
+      "these commands did not return inside the timeout, so nothing was proven about them — " +
+        "add them to MANUAL with a reason, or make them terminate",
+    ).toEqual([]);
+  }, 900_000);
 });
 
 

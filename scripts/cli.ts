@@ -287,6 +287,23 @@ function loadHubConfigOrExit(configPath: string, command: string): AgentBootConf
 }
 
 /**
+ * NF4-3: load a hub config that MAY legitimately be absent.
+ *
+ * `install-user`, `publish` and `baseline` all wrote
+ * `fs.existsSync(p) ? loadConfig(p) : null` — a guard that answers "is there a
+ * hub" and not "is the hub READABLE", so a config TYPE error still threw out of
+ * an async action with no handler: raw stack trace, exit 7. A guard for the
+ * adjacent question reads, at a glance, as a guard.
+ *
+ * Absent → null, and the caller's own else-branch runs. Present but unreadable
+ * → the same named refusal every other command gives.
+ */
+function readHubConfigIfPresent(configPath: string, command: string): AgentBootConfig | null {
+  if (!fs.existsSync(configPath)) return null;
+  return loadHubConfigOrExit(configPath, command);
+}
+
+/**
  * The `reports` posture (see scripts/lib/dist-consumers.ts).
  *
  * `doctor`, `status` and `lint` exist to TELL the operator what state the hub is
@@ -384,7 +401,9 @@ program
     const baselineConfigPath = opts.config
       ? path.resolve(opts.config)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
-    const baselineConfig = fs.existsSync(baselineConfigPath) ? loadConfig(baselineConfigPath) : null;
+    // NF4-3: the existsSync guard covered "no hub" and not "unreadable hub",
+    // so a config TYPE error still threw. The helper answers both.
+    const baselineConfig = readHubConfigIfPresent(baselineConfigPath, "baseline");
     const distPath = baselineConfig
       ? path.resolve(path.dirname(baselineConfigPath), baselineConfig.output?.distPath ?? "./dist")
       : path.join(cwd, "dist");
@@ -733,7 +752,7 @@ program
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config as string)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
-    const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
+    const config = readHubConfigIfPresent(configPath, "install-user") ?? undefined;
     // A2-residual: install-user is a SECOND delivery channel — it writes org
     // policy onto a developer's machine — and its only precondition was
     // fs.existsSync(distCore). That is existence read as freshness, the exact
@@ -2876,8 +2895,9 @@ program
       console.error(chalk.red("No agentboot.config.json found — run conformance from the hub (or set AGENTBOOT_HUB)."));
       process.exit(1);
     }
-    const { loadConfig } = await import("./lib/config.js");
-    const config = loadConfig(configPath);
+    await import("./lib/config.js");
+    // NF4-3: `conformance` reported a config error as an uncaught throw.
+    const config = loadHubConfigOrExit(configPath, "conformance");
     const hubDir = path.dirname(configPath);
     const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
     if (!fs.existsSync(distPath)) {
@@ -3322,7 +3342,9 @@ program
         ? path.resolve(globalOpts.config)
         : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
       if (fs.existsSync(hubConfigPath)) {
-        assertDistFreshOrExit(hubConfigPath, loadConfig(hubConfigPath), "drift-check");
+        // NF4-3: through the helper. A raw loadConfig() here reported a config
+        // TYPE error as an uncaught throw — stack trace, exit 7.
+        assertDistFreshOrExit(hubConfigPath, loadHubConfigOrExit(hubConfigPath, "drift-check"), "drift-check");
       } else {
         // NF4-4: this branch is legitimate — with no hub in reach the command is
         // answering a spoke-local question and any dist/ here belongs to the
@@ -3540,7 +3562,7 @@ program
       console.error(chalk.red(`  No agentboot.config.json found at ${absPath}`));
       process.exit(1);
     }
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "connect");
     registerHub(absPath, config.org);
     console.log(chalk.green(`  ✓ Hub registered: ${config.org ?? absPath}`));
     console.log(chalk.gray(`    Path: ${absPath}`));
@@ -3851,7 +3873,7 @@ program
     if (publishesFromDist) {
       const publishConfigPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
       if (fs.existsSync(publishConfigPath)) {
-        assertDistFreshOrExit(publishConfigPath, loadConfig(publishConfigPath), "publish");
+        assertDistFreshOrExit(publishConfigPath, loadHubConfigOrExit(publishConfigPath, "publish"), "publish");
       } else {
         // NF2-1: `if (config)` was the whole gate, so with no config beside the
         // tree publish shipped a failed build at exit 0. "No stamp" and
