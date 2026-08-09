@@ -36,6 +36,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { configShapeErrors, CONFIG_SHAPE } from "../scripts/lib/config.js";
+import { CAPABILITY_SUPPORT } from "../scripts/lib/conformance.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const CLI = path.join(ROOT, "bin", "agentboot.js");
@@ -159,4 +160,88 @@ describe("NF2-3 — the operator gets a diagnostic, never a stack frame", () => 
     const r = withConfig(() => { /* unchanged */ });
     expect(r.status, r.out).toBe(0);
   }, 300_000);
+});
+
+
+/**
+ * NEW-3 — the table was the second hand-maintained list it says it is avoiding.
+ *
+ * CONFIG_SHAPE listed policy-bearing LEAVES for managed.guardrails.* and
+ * claude.permissions.* and only the CONTAINERS for compliance.*, so the exact
+ * defect it was written to close was live one key over, inside the table
+ * itself: `compliance.inputScan.scannerCommand: ["/bin/scan"]` reached the
+ * operator as a raw Node stack trace —
+ *
+ *     TypeError: cmd.trim is not a function
+ *         at sanitizeScanner (scripts/compile.ts:2676:16)
+ *         at buildComplianceHookScripts (scripts/compile.ts:2678:24)
+ *
+ * — while the sibling `managed.guardrails.denyTools: "WebFetch"` in the same hub
+ * gave a named refusal. And the only structural assertion here was
+ * `CONFIG_SHAPE.length > 20` plus the presence of denyTools, so nothing could
+ * notice.
+ *
+ * The commit that added the table argued for "a table, not a check per key, for
+ * the standing reason: per-key checks are how permissions got one and denyTools
+ * did not". That argument holds only if the table is COMPLETE. Completeness is
+ * now derived from CAPABILITY_SUPPORT — the other list that enumerates
+ * policy-bearing config — rather than maintained by hand, because two lists that
+ * must agree will drift.
+ */
+describe("NEW-3 — CONFIG_SHAPE is complete against the capability table", () => {
+  /** `groups[].permissions.deny` is written `groups.*.permissions.deny` here. */
+  const toShapePath = (row: { id: string; configPath?: string | null }): string | null =>
+    row.configPath === undefined ? row.id.replace(/\[\]/g, ".*").replace(/\.\.+/g, ".") : row.configPath;
+
+  it("every capability row that names a config key has a CONFIG_SHAPE rule", () => {
+    const missing = CAPABILITY_SUPPORT
+      .map((r) => ({ id: r.id, p: toShapePath(r) }))
+      .filter((x) => x.p !== null && !CONFIG_SHAPE.some((s) => s.path === x.p))
+      .map((x) => `${x.id} (expected CONFIG_SHAPE path "${x.p}")`);
+    expect(
+      missing,
+      "these keys are policy-bearing enough to have a capability row and are NOT type-checked, " +
+        "so the wrong type reaches the operator as a stack trace out of the emitter",
+    ).toEqual([]);
+  });
+
+  it("every declared configPath resolves — a typo would exempt the row silently", () => {
+    // The failure one level up: `configPath: "complaince.inputScan"` would make
+    // the check above vacuous for that row rather than failing.
+    for (const row of CAPABILITY_SUPPORT) {
+      if (row.configPath === undefined || row.configPath === null) continue;
+      expect(
+        CONFIG_SHAPE.some((s) => s.path === row.configPath),
+        `${row.id} declares configPath "${row.configPath}", which is not in CONFIG_SHAPE`,
+      ).toBe(true);
+    }
+  });
+
+  it("the exclusions are exactly the non-hub-config scopes, named", () => {
+    // `configPath: null` is an escape hatch, so it is enumerated rather than
+    // trusted: anything new that opts out has to be added here deliberately.
+    const excluded = CAPABILITY_SUPPORT.filter((r) => r.configPath === null).map((r) => r.id).sort();
+    expect(excluded).toEqual([
+      "gotchas[].paths",              // artifact frontmatter
+      "instructions[].applyTo",       // artifact frontmatter
+      "personas[*].disallowedTools",  // persona.config.json
+      "personas[*].hooks",            // persona.config.json
+      "personas[*].mcpServers",       // persona.config.json
+      "personas[*].tools",            // persona.config.json
+    ]);
+  });
+
+  it("every compliance LEAF is typed, not just its container", () => {
+    // The specific gap, named, so a future prune of the completeness check
+    // cannot quietly take these with it.
+    for (const leaf of [
+      "compliance.inputScan.scannerCommand",
+      "compliance.inputScan.failMode",
+      "compliance.outputScan.scannerCommand",
+      "compliance.outputScan.failMode",
+      "compliance.outputScan.blocking",
+    ]) {
+      expect(CONFIG_SHAPE.some((r) => r.path === leaf), `${leaf} is untyped`).toBe(true);
+    }
+  });
 });

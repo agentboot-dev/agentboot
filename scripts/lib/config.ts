@@ -1006,8 +1006,31 @@ export const CONFIG_SHAPE: ConfigShapeRule[] = [
   { path: "mcp.required", kind: "string[]" },
   { path: "mcp.enforceApproved", kind: "boolean" },
   { path: "compliance", kind: "object" },
+  // NEW-3: the LEAVES, not just the containers.
+  //
+  // This table listed policy-bearing leaves for managed.guardrails.* and
+  // claude.permissions.* and only the CONTAINERS for compliance.*, so the exact
+  // defect the table was written to close was still live one key over, inside
+  // the table itself. `compliance.inputScan.scannerCommand: ["/bin/scan"]`
+  // reached the operator as a raw Node stack trace out of
+  // buildComplianceHookScripts — `TypeError: cmd.trim is not a function` at
+  // sanitizeScanner — while the sibling `managed.guardrails.denyTools: "WebFetch"`
+  // gave a named refusal naming the key and the expected type.
+  //
+  // The commit that added this table argued "a table, not a check per key, for
+  // the standing reason: per-key checks are how permissions got one and
+  // denyTools did not". That argument only holds if the table is COMPLETE, which
+  // is now asserted (tests/config-shape.test.ts, against CAPABILITY_SUPPORT)
+  // rather than maintained by hand.
   { path: "compliance.inputScan", kind: "object" },
+  { path: "compliance.inputScan.scannerCommand", kind: "string" },
+  { path: "compliance.inputScan.failMode", kind: "string" },
   { path: "compliance.outputScan", kind: "object" },
+  { path: "compliance.outputScan.scannerCommand", kind: "string" },
+  { path: "compliance.outputScan.failMode", kind: "string" },
+  { path: "compliance.outputScan.blocking", kind: "boolean" },
+  { path: "ab", kind: "object" },
+  { path: "ab.modelOverrides", kind: "object" },
   { path: "groups", kind: "object" },
   { path: "groups.*", kind: "object" },
   { path: "groups.*.teams", kind: "string[]" },

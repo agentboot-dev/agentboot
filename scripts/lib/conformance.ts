@@ -202,6 +202,21 @@ export interface CapabilityRow {
   severity: "error" | "warn";
   /** What the operator actually loses. Printed under the finding. */
   consequence: string;
+  /**
+   * NEW-3: which `agentboot.config.json` path this row governs, for the
+   * CONFIG_SHAPE completeness invariant.
+   *
+   * `undefined` — derive it from `id` (the common case; `groups[].x` maps to
+   *     `groups.*.x`).
+   * `null`      — this row is NOT an agentboot.config.json key. Artifact
+   *     frontmatter (`instructions[].applyTo`, `gotchas[].paths`) and
+   *     persona.config.json (`personas[*].*`) live in other files and have no
+   *     business in a table that types the hub config.
+   *
+   * Explicit rather than pattern-matched on the id, because "which of these ids
+   * is a config key" is exactly the judgement that a regex gets wrong silently.
+   */
+  configPath?: string | null;
   /** file:line of the emitter, so a reviewer can check the row against the code.
    *  An unverified row here is the same class of error as an unsourced claim. */
   warrant: string;
@@ -453,6 +468,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
    */
   {
     id: "personas[*].disallowedTools",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
     detect: (c) => c.personaControls.disallowedTools > 0,
     emittedBy: ["claude"],
     severity: "error",
@@ -464,6 +480,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   },
   {
     id: "personas[*].hooks",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
     detect: (c) => c.personaControls.hooks > 0,
     emittedBy: ["claude"],
     severity: "error",
@@ -474,6 +491,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   },
   {
     id: "personas[*].tools",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
     detect: (c) => c.personaControls.tools > 0,
     emittedBy: ["claude"],
     severity: "error",
@@ -484,6 +502,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   },
   {
     id: "personas[*].mcpServers",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
     /**
      * NF3-4: the `managed.guardrails.forcePlugins` shape, in persona scope.
      *
@@ -508,6 +527,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   },
   {
     id: "instructions[].applyTo",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
     // Fires only on a NARROWING glob. The shipped baseline.instructions.md
     // carries applyTo: "**", which is universal — losing that scope is a no-op,
     // and firing on it would make every default install warn, which is how a
@@ -520,6 +540,7 @@ export const CAPABILITY_SUPPORT: CapabilityRow[] = [
   },
   {
     id: "gotchas[].paths",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
     detect: (c) => c.scopedGotchas > 0,
     emittedBy: SCOPE_EMITTERS,
     severity: "warn",
