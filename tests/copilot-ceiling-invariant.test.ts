@@ -83,13 +83,41 @@ function paragraphs(body: string): { text: string; line: number }[] {
   return out;
 }
 
+/** Every file under `dir` matching `re`, RECURSIVELY. */
+function walk(dir: string, re: RegExp): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...walk(abs, re));
+    else if (re.test(e.name)) out.push(abs);
+  }
+  return out;
+}
+
 function findClaims(): Claim[] {
   const out: Claim[] = [];
   const files = fs
     .readdirSync(DOCS)
     .filter((f) => f.endsWith(".md") && f !== SOURCE_OF_TRUTH);
-  // The homepage makes the same claims and is the most-read page on the site.
-  const extra = [path.join("website", "src", "pages", "index.tsx")];
+  /**
+   * NF4-6: the WEBSITE, all of it — not one hand-listed file.
+   *
+   * This was `[website/src/pages/index.tsx]`, a single extra path, so
+   * website/src/pages/trust.md and for-organizations.md were outside the
+   * invariant — two of the four pages the audit itself identified as the
+   * correct hand-maintained copies. Regex-stripping "fail open" -> "enforce"
+   * and "not yet verified" -> "verified" in both left all three tests green,
+   * with for-organizations.md:37 then reading "blocking on exit code 2 —
+   * empirically verified on Claude Code and Codex; verified on Copilot".
+   *
+   * A hand-listed extra is a second list beside `docs/`, and two lists that must
+   * agree drift — which is the same finding as NF4-5 one file over. Enumerate
+   * the directory instead, so a page added later is covered by default rather
+   * than exempt by default.
+   */
+  const extra = walk(path.join(ROOT, "website", "src", "pages"), /\.(md|mdx|tsx)$/)
+    .map((abs) => path.relative(ROOT, abs));
 
   for (const rel of [...files.map((f) => path.join("docs", f)), ...extra]) {
     const abs = path.join(ROOT, rel);
@@ -125,6 +153,14 @@ describe("the Copilot enforcement ceiling is restated wherever enforcement is cl
         `${anchor} dropped out of the scan`,
       ).toBe(true);
     }
+    // NF4-6: the website pages are named, not merely counted. A count-only
+    // guard goes green again the moment the directory walk stops matching them,
+    // which is the failure this fixes.
+    const site = CLAIMS.filter((c) => c.file.startsWith(path.join("website", "src", "pages")));
+    expect(
+      site.length,
+      "no website page is in the scan — the site is the surface an evaluator reads first",
+    ).toBeGreaterThan(0);
   });
 
   it("the source of truth exists and states the ceiling", () => {
