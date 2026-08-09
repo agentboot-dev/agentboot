@@ -311,3 +311,64 @@ describe("D3 — only the UNIONED permissions sub-keys are exempt from conflicts
     expect(r.conflicts.map((c) => c.key)).toEqual(["cleanupPeriodDays"]);
   });
 });
+
+/**
+ * V4 — D3 hardened `permissions` CONFLICT detection and left its SHAPE unchecked.
+ *
+ * `"claude": {"permissions": "deny-everything"}` reached `{...lower, ...higher}`
+ * and was spread CHARACTER BY CHARACTER into
+ * dist/managed/scopes/core/managed-settings.json as `{"0":"d","1":"e",…}`, at
+ * BUILD_EXIT 0, with conflicts=[] and malformedHooks=[], and `validate --strict`
+ * silent. `valueAt()` returned `has:false` for a non-object, so the key never
+ * entered conflict detection either.
+ *
+ * That is D1's failure class — a malformed value silently coerced — in the
+ * sibling key D3 was written to harden, and worse than D1 because the output is
+ * CORRUPT rather than merely empty, in the file a developer cannot override.
+ */
+describe("V4 — a malformed permissions value is refused, not spread", () => {
+  it("V4-1: a string permissions is reported malformed and never reaches the merged object", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments(
+      [{ permissions: "deny-everything" }, { permissions: { deny: ["Bash(rm:*)"] } }],
+      ["00-org", "guardrails"],
+    );
+    expect(r.malformedValues).toHaveLength(1);
+    expect(r.malformedValues[0]!.key).toBe("permissions");
+    expect(r.malformedValues[0]!.found).toBe("string");
+    expect(r.malformedValues[0]!.source).toBe("00-org");
+    // The character spread, gone. The well-formed fragment still merges.
+    expect(JSON.stringify(r.merged)).not.toContain('"0":"d"');
+    expect((r.merged["permissions"] as { deny: string[] }).deny).toEqual(["Bash(rm:*)"]);
+  });
+
+  it("V4-2: an ARRAY permissions is malformed too — it spreads by index", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments([{ permissions: ["Bash(rm:*)"] }], ["00-org"]);
+    expect(r.malformedValues.map((m) => m.found)).toEqual(["array"]);
+    expect(r.merged["permissions"]).toBeUndefined();
+  });
+
+  it("V4-3: null is malformed, not 'absent'", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments([{ permissions: null }], ["00-org"]);
+    expect(r.malformedValues.map((m) => m.found)).toEqual(["null"]);
+  });
+
+  it("V4-4 (NEGATIVE): well-formed permissions merge exactly as before", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments(
+      [{ permissions: { deny: ["A"], defaultMode: "ask" } }, { permissions: { deny: ["B"] } }],
+      ["high", "low"],
+    );
+    expect(r.malformedValues).toEqual([]);
+    expect((r.merged["permissions"] as { deny: string[] }).deny.sort()).toEqual(["A", "B"]);
+    expect(r.permissionCounts.deny).toBe(2);
+  });
+
+  it("V4-5 (NEGATIVE): absent permissions is not malformed", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments([{ env: { X: "1" } }], ["00-org"]);
+    expect(r.malformedValues).toEqual([]);
+  });
+});

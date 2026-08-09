@@ -59,7 +59,7 @@ import {
 import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
 import { dangerousHookFindings } from "./lib/hook-safety.js";
 import { hookInputCapPrelude } from "./lib/hook-prelude.js";
-import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook } from "./lib/managed-merge.js";
+import { mergeManagedFragments, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
 import {
   inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
   APPLY_TO_PROJECTION, type ScopedArtifact,
@@ -3145,10 +3145,12 @@ function generateMergedManagedArtifacts(
 
   const allConflicts: Array<{ scope: string; conflict: MergeConflict }> = [];
   const allMalformedHooks: Array<{ scope: string; hook: MalformedHook }> = [];
+  const allMalformedValues: Array<{ scope: string; value: MalformedValue }> = [];
 
   const writeMerged = (scope: string, result: MergeResult, sources: string[]): void => {
     for (const c of result.conflicts) allConflicts.push({ scope: `scopes/${scope}`, conflict: c });
     for (const h of result.malformedHooks) allMalformedHooks.push({ scope: `scopes/${scope}`, hook: h });
+    for (const v of result.malformedValues) allMalformedValues.push({ scope: `scopes/${scope}`, value: v });
     if (Object.keys(result.merged).length === 0) return;
     const outDir = path.join(distPath, "managed", "scopes", scope);
     ensureDir(outDir);
@@ -3206,6 +3208,20 @@ function generateMergedManagedArtifacts(
     log(chalk.gray(`    deploys and a developer CANNOT override. Silently dropping the event would`));
     log(chalk.gray(`    write the ABSENCE of a control into that file, while the build log named the`));
     log(chalk.gray(`    event as unioned. Fix the fragment; there is no safe default here.`));
+    process.exit(1);
+  }
+
+  // V4: same posture, sibling key. A `permissions` that is not an object cannot
+  // be merged, and the old code spread it into the artifact character by
+  // character. Refuse; there is no safe coercion of a policy value.
+  if (allMalformedValues.length > 0) {
+    log(chalk.red(`\n  ✗ Malformed value(s) in managed-settings fragments — cannot be merged:`));
+    for (const { scope, value } of allMalformedValues) {
+      log(chalk.red(`      ${scope}: ${value.key} is ${value.found}, expected an object — from ${value.source}`));
+    }
+    log(chalk.gray(`    A string here is spread CHARACTER BY CHARACTER into`));
+    log(chalk.gray(`    dist/managed/scopes/<scope>/managed-settings.json — the file an MDM operator`));
+    log(chalk.gray(`    deploys and a developer cannot override. Fix the fragment.`));
     process.exit(1);
   }
 

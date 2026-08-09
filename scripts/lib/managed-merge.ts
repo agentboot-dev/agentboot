@@ -61,6 +61,32 @@ export interface MergeResult {
    * unioned. NON-EMPTY IS A BUILD ERROR — see the rationale on `mergeHooks`.
    */
   malformedHooks: MalformedHook[];
+  /**
+   * V4: fragment keys whose SHAPE could not be merged — today `permissions`
+   * that is not an object. NON-EMPTY IS A BUILD ERROR, for the same reason
+   * malformedHooks is.
+   *
+   * D3 hardened `permissions` conflict detection and left the shape unchecked:
+   * `"claude": {"permissions": "deny-everything"}` reached the object spread at
+   * `{...lower, ...higher}` and was spread CHARACTER BY CHARACTER into
+   * dist/managed/scopes/core/managed-settings.json as
+   * `{"0":"d","1":"e","2":"n",…}` — at exit 0, with conflicts=[] and
+   * malformedHooks=[], and `validate --strict` silent. That is D1's failure
+   * class (a malformed value silently coerced) in the sibling key D3 was
+   * written to harden, and worse than D1 because the output is CORRUPT rather
+   * than merely empty, in the file a developer cannot override.
+   */
+  malformedValues: MalformedValue[];
+}
+
+/** V4: a fragment key whose value had the wrong shape to merge. */
+export interface MalformedValue {
+  /** The key, e.g. "permissions". */
+  key: string;
+  /** Which fragment carried it. */
+  source: string;
+  /** What was there instead — `typeof`, "null", or "array". */
+  found: string;
 }
 
 export interface MalformedHook {
@@ -162,6 +188,12 @@ function mergePermissions(
   lower: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!higher && !lower) return undefined;
+  // V4: only plain objects reach the spread. A string here is spread character
+  // by character; an array is spread by index. Callers filter malformed
+  // fragments out before this, so reaching it with one is a bug — but the guard
+  // costs nothing and the failure it prevents is a corrupt MDM artifact.
+  if (higher !== undefined && !isPlainObject(higher)) return isPlainObject(lower) ? lower : undefined;
+  if (lower !== undefined && !isPlainObject(lower)) return isPlainObject(higher) ? higher : undefined;
   const merged: Record<string, unknown> = { ...(lower ?? {}), ...(higher ?? {}) };
   for (const key of UNIONED_PERMISSION_KEYS) {
     const h = (higher?.[key] as string[] | undefined) ?? [];
@@ -195,9 +227,26 @@ export function mergeManagedFragments(
     }
   }
 
-  const permissions = ordered
-    .map((f) => f["permissions"] as Record<string, unknown> | undefined)
-    .filter((p): p is Record<string, unknown> => p !== undefined)
+  // V4: check the SHAPE before merging, and report what was rejected. Silently
+  // skipping a malformed `permissions` would write the ABSENCE of the org's
+  // deny-list into a file a developer cannot override, while the build reported
+  // the permission counts as if it had been merged.
+  const malformedValues: MalformedValue[] = [];
+  const permissionFragments: Record<string, unknown>[] = [];
+  ordered.forEach((f, i) => {
+    const p = f["permissions"];
+    if (p === undefined) return;
+    if (!isPlainObject(p)) {
+      malformedValues.push({
+        key: "permissions",
+        source: sourceLabels[i] ?? `fragment[${i}]`,
+        found: p === null ? "null" : Array.isArray(p) ? "array" : typeof p,
+      });
+      return;
+    }
+    permissionFragments.push(p);
+  });
+  const permissions = permissionFragments
     .reduce<Record<string, unknown> | undefined>((acc, p) => mergePermissions(acc, p), undefined);
   if (permissions) merged["permissions"] = permissions;
 
@@ -264,6 +313,7 @@ export function mergeManagedFragments(
     conflicts,
     unionedHookEvents,
     malformedHooks,
+    malformedValues,
     permissionCounts: {
       deny: ((permissions?.["deny"] as string[] | undefined) ?? []).length,
       allow: ((permissions?.["allow"] as string[] | undefined) ?? []).length,
