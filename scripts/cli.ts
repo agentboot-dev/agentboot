@@ -4167,9 +4167,13 @@ program
       teamSize,
     });
 
+    // R4-3: silence is not success. An unmeasured persona costs $0.00 in the
+    // arithmetic and "we could not look" in fact, and the two were
+    // indistinguishable — on `--json` there was not even a marker. A hub that
+    // does not build `skill` reported Total $0.00, exit 0.
     if (opts.json) {
       console.log(JSON.stringify(result, null, 2));
-      process.exit(0);
+      process.exit(result.unmeasured.length > 0 ? 1 : 0);
     }
 
     console.log(chalk.bold("\nAgentBoot — cost-estimate\n"));
@@ -4191,11 +4195,11 @@ program
     console.log("  " + "-".repeat(colPersona + colTokens + colInvocations + colCost));
 
     for (const p of result.personas) {
-      const tokens = p.inputTokens > 0 ? p.inputTokens.toLocaleString() : chalk.yellow("n/a");
+      const tokens = p.measured ? p.inputTokens.toLocaleString() : chalk.yellow("not measured");
       const inv = p.monthlyInvocations.toLocaleString();
-      const cost = p.inputTokens > 0
+      const cost = p.measured
         ? `$${p.monthlyCostUsd.toFixed(2)}`
-        : chalk.yellow("$0.00");
+        : chalk.yellow("unknown");
 
       console.log(
         "  " +
@@ -4212,11 +4216,32 @@ program
       chalk.bold("Total".padEnd(colPersona)) +
       "".padEnd(colTokens) +
       "".padEnd(colInvocations) +
-      chalk.bold(`$${result.totalMonthlyCostUsd.toFixed(2)}`)
+      (result.unmeasured.length > 0
+        // A total over a partly-unmeasured set is a LOWER BOUND, and printing it
+        // bare is what turned "we could not look" into "$0.00" on every hub that
+        // does not build `skill`.
+        ? chalk.yellow(`>= $${result.totalMonthlyCostUsd.toFixed(2)} (incomplete)`)
+        : chalk.bold(`$${result.totalMonthlyCostUsd.toFixed(2)}`))
     );
     console.log("");
     console.log(chalk.gray("  Note: Estimates assume ~4 chars/token and output tokens = 2x input tokens."));
-    console.log(chalk.gray("  Actual costs depend on conversation length, caching, and usage patterns.\n"));
+    console.log(chalk.gray("  Actual costs depend on conversation length, caching, and usage patterns."));
+    if (result.unmeasured.length > 0) {
+      console.error("");
+      console.error(chalk.red(
+        `  ✗ ${result.unmeasured.length} of ${result.personas.length} persona(s) could not be sized from dist/: ` +
+        result.unmeasured.join(", "),
+      ));
+      console.error(chalk.gray(
+        "    The size comes from dist/persona-sizes.json, which every successful build writes.\n" +
+        "    A missing entry means the persona was not compiled by this build — it is not\n" +
+        "    evidence that the persona is free. Re-run `agentboot build`, or drop the persona\n" +
+        "    from personas.enabled.",
+      ));
+      console.error("");
+      process.exit(1);
+    }
+    console.log("");
   });
 
 // ---- mcp-server (AB-140) ---------------------------------------------------
