@@ -1273,9 +1273,15 @@ Add to \`agentboot.config.json\`:
 #     }
 #   }
 
+# Fail-closed: if node is missing, block (compliance requires enforcement).
+# Same guard every compiled AgentBoot hook carries. Without it, the node parse
+# below silently yields "", every event comparison misses, and this hook exits 0
+# having enforced nothing.
+command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node required for compliance hooks"}'; exit 2; }
+
 INPUT=$(cat)
-# Parse JSON with node (guaranteed present wherever the harness runs) rather than
-# jq, which is not installed on Windows/git-bash — keeps this hook portable.
+# Parse JSON with node (guarded above) rather than jq, which is not installed on
+# Windows/git-bash — keeps this hook portable.
 EVENT_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(d).hook_event_name||''))}catch{process.stdout.write('')}})")
 
 # TODO: Add your compliance logic here
