@@ -100,26 +100,82 @@ esbuild advisory GHSA-g7r4-m6w7-qqqr was resolved in v0.12.3 by the tsx 4.23.1 u
 > open against it. The claim was written once and never re-measured. It is now backed by
 > `npm run audit`, so a future regression makes the claim fail rather than merely age.
 
-### Documentation site tree — dispositioned
+### Documentation site tree — fixed where fixable, dispositioned where not
 
-Every advisory below is transitive under `@docusaurus/*`, which is version-pinned by the
-preset. `@docusaurus/core` is already on the latest published release (3.10.2), so there is
-no upstream upgrade that clears these.
+Reproduce the numbers below with:
+
+```bash
+cd website && npm audit          # 20 entries — 3 advisories in 2 packages, plus wrappers
+```
+
+`npm audit` counts every `@docusaurus/*` package that merely *depends on* a vulnerable one,
+so the headline number (20 at the time of writing, down from 29) is much larger than the
+number of actual advisories. Three advisories remain, in two packages; both packages are
+dispositioned below.
+
+**Fixed on 2026-08-11 (no declared version range changed).** A lockfile-only refresh
+(`npm audit fix --package-lock-only`) resolved six advisories against this tree by
+patch-level bumps: brace-expansion 1.1.16 → 1.1.18 (GHSA-rgw5-rvv9-x895,
+GHSA-mh99-v99m-4gvg), fast-uri 3.1.4 → 3.1.5 (GHSA-7p8r-x3mc-p8w7), js-yaml 4.3.0 → 4.3.1
+(GHSA-5p4m-2wfm-xmqj), nanoid 3.3.16 → 3.3.18 (GHSA-2v37-7h3g-55p8), postcss 8.5.20 →
+8.5.26 (GHSA-fxqj-rqcc-2cmp). No package was added or removed and `website/package.json`
+gained no new dependency. The register previously listed four of these as "pending fix";
+`npm audit` found two more (js-yaml, nanoid) that had no open alert against this manifest —
+which is why the fix was driven from `npm audit`, not from the alert list.
+
+**Also fixed:** the two `serialize-javascript` advisories, via the single targeted override
+below. It was previously recorded here as "accepted — unreachable without a forced
+override"; the override was then tried, and it works, so the acceptance no longer holds.
+
+```jsonc
+// website/package.json
+"overrides": { "serialize-javascript": "^7.1.0" }
+```
+
+`copy-webpack-plugin@11` and `css-minimizer-webpack-plugin@5` — the versions Docusaurus
+3.10.2 pins — declare `serialize-javascript: ^6.0.x`, so npm will not reach the patched
+7.0.5+ line on its own, and their own fixed lines (14.x / 8.x) are majors the preset does
+not accept. The override forces 7.1.0 across both. It is validated by a real build, not by
+assumption: `npm ci && npm run build` succeeds and emits a minified stylesheet, and
+`.github/workflows/deploy-docs.yml` runs that same build on every PR touching `website/**`,
+so a future override that breaks the site fails CI before merge rather than after deploy.
+Checked under npm 10 as well as npm 11, because CI installs on Node 22.
+
+> **Caveat, recorded rather than glossed.** npm does not write the `overrides` field into
+> `website/package-lock.json`: regenerating the lockfile from a `package.json` that declares
+> the override yields a file containing no `overrides` key (npm 11.11.0). The pin therefore
+> lives in the lockfile's resolved tree alone, and regenerating it with the `overrides` block
+> deleted from `package.json` would silently drop back to the vulnerable 6.0.2. Nothing in
+> CI currently re-measures `npm audit` for this tree, so that regression would show up here
+> as a stale claim rather than as a failing job. Re-run `cd website && npm audit` when
+> touching either file.
+
+The three advisories that remain are transitive under `@docusaurus/*`, which is
+version-pinned by the preset. `@docusaurus/core` is already on the latest published release
+(3.10.2), so there is no upstream upgrade that clears them.
 
 | GHSA | Package | Severity | Disposition |
 |---|---|---|---|
-| GHSA-5p2g-fcmc-qvqq | image-size | high | **Accepted — no upstream patch exists.** Both advisories are DoS-by-infinite-loop in the ICNS/JXL/HEIF parsers; `image-size` has no fixed release (latest 2.0.2 is itself in range). Reached only when Docusaurus measures images at build time, and the only images it measures are this repository's own static assets. No untrusted input, no runtime exposure. |
+| GHSA-5p2g-fcmc-qvqq | image-size | high | **Accepted — no upstream patch exists.** Both advisories are DoS-by-infinite-loop in the ICNS/JXL/HEIF parsers; `image-size` has no fixed release (latest 2.0.2 is itself in range, confirmed against the registry on 2026-08-11). Reached only when Docusaurus measures images at build time, and the only images it measures are this repository's own static assets. No untrusted input, no runtime exposure. |
 | GHSA-w3rx-r6r6-pgpr | image-size | high | as above |
-| GHSA-5c6j-r48x-rmvq | serialize-javascript | high | **Accepted — unreachable without a forced override.** Patched in 7.0.5, but the only paths to it are `copy-webpack-plugin` and `css-minimizer-webpack-plugin`, whose fixed lines (14.x / 8.x) are majors that Docusaurus 3.10.2 does not accept. The sink serializes this repository's own build assets during a static-site build; there is no attacker-supplied value in the path. |
-| GHSA-qj8w-gfj5-8c6v | serialize-javascript | moderate | as above |
-| GHSA-w5hq-g745-h8pq | uuid | moderate | **Accepted — dev-server only.** Reached via `webpack-dev-server` → `sockjs`. The fixed `webpack-dev-server` line is a major outside the Docusaurus pin. `webpack-dev-server` runs only under `npm start` on a maintainer's machine; it is not part of `npm run build` output and is never deployed. |
+| GHSA-w5hq-g745-h8pq | uuid | moderate | **Accepted — dev-server only, and not actually fixable here.** Reached via `webpack-dev-server@5.2.6` → `sockjs@0.3.24` → `uuid@^8.3.2`; the advisory is fixed in uuid 11.1.1, which `sockjs` does not accept, and 5.2.6 is the newest release of the line `@docusaurus/core` allows (`^5.2.2`). The fix landed in `webpack-dev-server@6`, which drops `sockjs` entirely and requires Node ≥ 22.15.0 — a major outside the pin. `webpack-dev-server` runs only under `npm start` on a maintainer's machine; it is not part of `npm run build` output and is never deployed. |
 
-Four further alerts against this tree (brace-expansion GHSA-rgw5-rvv9-x895 and
-GHSA-mh99-v99m-4gvg, fast-uri GHSA-7p8r-x3mc-p8w7, postcss GHSA-fxqj-rqcc-2cmp) are **not
-dispositioned — they are simply fixable**, by a lockfile-only refresh of
-`website/package-lock.json` that changes no declared version range. They are listed here so
-the register is complete rather than flattering; they are tracked as a pending fix, not as
-an accepted risk.
+> **`npm audit` claims this one is fixable, and it is wrong.** It prints *"fix available via
+> `npm audit fix`"* for the `uuid` advisory. It is not: `npm audit fix --package-lock-only`
+> leaves it in place, and so does `--force`, because every path to it is pinned. Verified
+> 2026-08-11. The disposition above is the measured behaviour of this tree, not the tool's
+> summary of it — the same reason this register exists at all.
+
+**Cross-check against GitHub's alert list.** `gh api repos/:owner/:repo/dependabot/alerts`
+on 2026-08-11 returned ten open alerts: nine against `website/package-lock.json` and one
+against the root `package-lock.json` (postcss GHSA-fxqj-rqcc-2cmp). The root alert is
+already resolved in this branch's lockfile (postcss 8.5.26) — Dependabot measures the
+default branch, so alerts for both trees close on merge, not on commit. Of the nine website
+alerts, six are cleared by the changes above (brace-expansion ×2, fast-uri, postcss,
+serialize-javascript ×2); three remain and are dispositioned here — `image-size` ×2 and
+`uuid`. Alert counts and `npm audit` counts do not have to match (Dependabot dedupes and
+lags); when they disagree, `npm audit` against the committed lockfile is the number to
+trust, because it is the tree that actually builds.
 
 ## What AgentBoot's own security model covers
 
