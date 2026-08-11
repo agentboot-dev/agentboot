@@ -729,8 +729,8 @@ dist/
 ├── cursor/                # .cursor/rules/*.mdc flat rules
 ├── skill/                 # agentskills.io SKILL.md (cross-platform)
 ├── agents/                # AGENTS.md universal standard
-├── gemini/                # GEMINI.md + skills (planned)
-└── jetbrains/             # JetBrains AI config (planned)
+├── gemini/                # GEMINI.md + .gemini/rules/ + per-persona persona.md
+└── jetbrains/             # .junie/AGENTS.md + .aiassistant/rules/
 ```
 
 The sync script reads each repo's `platform` field from `repos.json` and writes

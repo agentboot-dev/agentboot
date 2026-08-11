@@ -213,8 +213,12 @@ agentboot build                   # Rebuild with org customizations
 
 ### Model B: Two-Layer Plugin (Core + Org Extension)
 
-Developer installs the generic AgentBoot plugin from a public marketplace, then
-installs the org plugin on top. The org plugin extends core, doesn't replace it.
+A developer *would* install the generic AgentBoot plugin from a public
+marketplace, then install the org plugin on top, with the org plugin extending
+core rather than replacing it. **AgentBoot does not publish such a plugin, and
+v1.0 ships no command that would install one** — the first half of this workflow
+has nothing behind it, so the model below is a comparison sketch, not a
+procedure.
 
 > **Not available today:** the canonical public repo is
 > [`agentboot-dev/agentboot`](https://github.com/agentboot-dev/agentboot), but a
@@ -365,8 +369,9 @@ repo to the org's hub. No CLI commands required.
 
 **How it works under the hood:**
 1. Skill asks for org name (or reads from git remote, or env var)
-2. Looks up org's marketplace (registry of known org marketplaces, or convention-based URL)
-3. Adds marketplace and installs org plugin
+2. Derives the org's marketplace repo URL by convention from the org name
+   (AgentBoot hosts no registry of org marketplaces, and v1.0 ships none)
+3. Adds that marketplace and installs the org plugin
 4. Optionally configures local settings
 
 **Pros:**

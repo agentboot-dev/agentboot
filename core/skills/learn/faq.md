@@ -147,8 +147,9 @@ invocation needed.
 
 Gotchas encode hard-won operational knowledge: "this API has a quirk," "never
 do X in this directory because of Y incident," "files here must pass compliance
-review." They are technology-specific rather than org-specific, making them
-shareable across organizations via the marketplace.
+review." They are technology-specific rather than org-specific, so a gotcha
+written in one hub is usually portable to another: copy the file into the other
+hub's `core/gotchas/` and rebuild.
 
 ---
 
