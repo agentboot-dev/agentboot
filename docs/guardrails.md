@@ -116,14 +116,21 @@ This is the part to read before promising anything to a security reviewer.
 
 | Surface | What a guardrail does |
 |---|---|
-| Claude Code, Codex CLI | Compiled to **blocking hooks** — the action is denied (exit code 2); empirically verified by `agentboot conformance` |
+| Claude Code | Compiled to **blocking hooks** — the action is denied (exit code 2). The only surface that also has a non-overridable managed-settings layer, so it is the only one the matrix classes **hard-enforced** |
+| OpenAI Codex CLI | Compiled to **blocking hooks** (exit code 2), with two documented gaps that make it **enforced-with-known-bypasses** rather than hard-enforced: hooks require a trust review unless deployed as managed, and tool coverage is partial — shell/patch/MCP, **not** WebSearch, and `SessionEnd` is unsupported |
 | GitHub Copilot CLI | Compiled to **blocking hooks** in Copilot's native mechanism, but two ceilings: command-hooks **fail open on timeout**, and exit-2 blocking is **documented platform behaviour we have not yet verified end to end** |
-| `AGENTS.md` | **Advisory.** No hook mechanism exists in the standard |
-| Cursor, Gemini, Windsurf, JetBrains | **Advisory.** Community tier; content is delivered, nothing blocks |
+| `AGENTS.md` | **Advisory.** No hook mechanism exists in the standard — support tier is not enforcement tier |
+| Cursor, Gemini, Windsurf, JetBrains, `SKILL.md` | **Advisory.** Community tier; content is delivered, nothing blocks |
 
 So a HARD guardrail is a hard *policy* everywhere and a hard *control* only on the three
-officially supported CLI surfaces. Everywhere else it is instruction text the agent is
-asked to follow.
+officially supported CLI surfaces — and only Claude Code's is unqualified. Everywhere else
+it is instruction text the agent is asked to follow.
+
+`agentboot conformance` is what backs the first three rows, and it probes the **compiled
+hook scripts**: platform-side event delivery is asserted from each platform's documentation,
+not observed in a live session. That distinction is the difference between the three
+enforcement classes above and is stated the same way on
+[the platform capability matrix](/docs/platform-capability-matrix).
 
 Verify rather than assume — the conformance harness executes the compiled hooks with
 crafted inputs and reports what actually happened:
@@ -162,9 +169,11 @@ A control it cannot probe is reported `untested`, never as passing.
 ## Targets that cannot enforce
 
 `guardrail: hard` is a claim that a control is **mechanically enforced**. Not every platform can make
-that true — see [the platform capability matrix](platform-capability-matrix.md). Cursor, Windsurf,
-JetBrains, `AGENTS.md` and skill output are **instructions only**: nothing binds a hook, so nothing
-blocks.
+that true — see [the platform capability matrix](platform-capability-matrix.md). Cursor, **Gemini**,
+Windsurf, JetBrains, `AGENTS.md` and `SKILL.md` output are **instructions only**: nothing binds a
+hook, so nothing blocks. That list is not maintained here — the build reads it from
+`PLATFORM_ENFORCEMENT` in `scripts/lib/conformance.ts`, the same table the conformance harness and
+`doctor` report from, so a target added to the product cannot be missing from the gate.
 
 **Building a HARD artifact for one of those targets fails the build.** A directive the target cannot
 enforce, silently emitted as ordinary prose, is a compliance hole with a green build and a signed
