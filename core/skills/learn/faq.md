@@ -1,7 +1,7 @@
 ---
 id: 01KZRG8RTFE4J96C7C75CG33PQ
 slug: faq
-hash: sha256:ee290ad7066a8989
+hash: sha256:5f2b8093781dd081
 ---
 
 # AgentBoot FAQ

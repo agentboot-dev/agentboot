@@ -1,7 +1,7 @@
 ---
 id: 01KZH2S4N8TTX5RYJSVZB3SDTX
 slug: confidence-signaling
-hash: sha256:94126dc94a45f4db
+hash: sha256:dfe23b3a67d492a8
 ---
 
 # Trait: Confidence Signaling

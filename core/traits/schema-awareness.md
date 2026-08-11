@@ -1,7 +1,7 @@
 ---
 id: 01KZH2S4N88N7H54WFVFB24FMH
 slug: schema-awareness
-hash: sha256:4f549e5cff61fbde
+hash: sha256:753ce926b148b0ab
 ---
 
 # Trait: Schema Awareness

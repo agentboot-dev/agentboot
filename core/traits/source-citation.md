@@ -1,7 +1,7 @@
 ---
 id: 01KZH2S4N8KA99CXR08KHQRD0N
 slug: source-citation
-hash: sha256:438a197b98b649b2
+hash: sha256:d4b86159f2e8ae8e
 ---
 
 # Trait: Source Citation

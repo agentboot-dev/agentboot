@@ -4,7 +4,7 @@ applyTo: "core/**"
 scope-unsupported: acknowledged
 id: 01KZH2QM0CCJRF0EMPBHPBH8DA
 slug: agentboot-authoring
-hash: sha256:55f92dee8643a113
+hash: sha256:bc7915123fc102e4
 ---
 
 # AgentBoot Hub Authoring Instructions

@@ -1,7 +1,7 @@
 ---
 id: 01KZH2S4N7TSM4J71FVQMKMD2K
 slug: audit-trail
-hash: sha256:2a6b091ba26ea53e
+hash: sha256:e3ff0b617f53f80e
 ---
 
 # Trait: Audit Trail

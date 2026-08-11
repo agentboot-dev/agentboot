@@ -195,13 +195,33 @@ export function stampIdentity(
   if (fm === null) {
     if (!opts.createFrontmatter) return { content, changed: false, minted: false };
     const id = mintId(opts.now);
-    const header = `---\nid: ${id}\nslug: ${opts.slug}\nhash: ${contentHash(content)}\n---\n\n`;
-    return { content: header + content.replace(/^\n+/, ""), changed: true, minted: true };
+    const body = content.replace(/^\n+/, "");
+    // Hash the STAMPED document, never the pre-stamp one.
+    //
+    // The reader/writer split this closes: `contentHash` on a file with no
+    // frontmatter has nothing to strip, so it hashed the bare body — but the
+    // document this function returns puts that body AFTER a `---\n…\n---\n\n`
+    // header, and the reader's strip leaves the blank separator line attached.
+    // Writer hashed "# Trait…", reader hashed "\n# Trait…", and the two never
+    // agreed. Seven of the eight wrong hashes in the shipped corpus were minted
+    // by exactly this, at stamp time, on artifacts nobody had edited since.
+    //
+    // Hashing the final document instead of reasoning about the difference is
+    // deliberate: it keeps ONE hashing path, and the value it computes is by
+    // construction the value the reader will recompute. The placeholder header
+    // is byte-identical to the real one apart from the hash value itself, which
+    // lives inside the frontmatter `contentHash` excludes.
+    const header = (h: string): string => `---\nid: ${id}\nslug: ${opts.slug}\nhash: ${h}\n---\n\n`;
+    return { content: header(contentHash(header("") + body)) + body, changed: true, minted: true };
   }
 
   const existing = readIdentity(content);
   const id = existing.id && isValidId(existing.id) ? existing.id : mintId(opts.now);
   const minted = id !== existing.id;
+  // Safe on this branch — `set` only ever rewrites frontmatter, and
+  // `contentHash` excludes frontmatter, so the pre-stamp and post-stamp
+  // documents have byte-identical bodies. That is NOT true of the branch above,
+  // which prepends a header and changes what the body starts with.
   const hash = contentHash(content);
 
   let next = fm;
