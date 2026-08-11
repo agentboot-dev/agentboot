@@ -25,7 +25,27 @@ on:
 
 jobs:
   compliance:
-    runs-on: ubuntu-latest
+    # L39: this template hardcoded `runs-on: ubuntu-latest` with no way to ask
+    # for anything else, so a team whose developers work on Windows could not
+    # get a Windows leg out of AgentBoot's own shipped CI — they would be
+    # checking their governance artifacts on a platform none of them run.
+    #
+    # Add the runners you actually develop on. `fail-fast: false` so one
+    # platform's result never hides another's, which is the entire point of
+    # having more than one leg.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        # os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # The drift-check step below is a bash script (`set`, `case`, `$?`). On
+        # a Windows runner GitHub defaults `run:` to PowerShell, where that is a
+        # syntax error — so a Windows leg would fail for reasons unrelated to
+        # drift. bash ships on every GitHub-hosted runner, Windows included.
+        shell: bash
     steps:
       # Pinned to commit SHAs — update the SHA and its version comment together.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

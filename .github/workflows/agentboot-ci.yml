@@ -12,6 +12,9 @@
 #       uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@v0.20.2
 #       with:
 #         snapshot: true
+#         # Runners to validate on. Defaults to Linux only; pass a JSON array to
+#         # add legs. A team on Windows workstations should validate on Windows:
+#         #   os: '["ubuntu-latest", "windows-latest"]'
 #
 # AB-125: CI Integration
 
@@ -20,6 +23,19 @@ name: AgentBoot CI (reusable)
 on:
   workflow_call:
     inputs:
+      # L39: this workflow is what AgentBoot SHIPS to adopters, and it hardcoded
+      # `runs-on: ubuntu-latest` with no way to ask for anything else — so an
+      # adopter whose developers are on Windows could not get a Windows leg out
+      # of AgentBoot's own CI, and would validate governance artifacts on a
+      # platform nobody there runs. `workflow_call` inputs cannot be arrays, so
+      # this is a JSON array string expanded through fromJSON into the matrix.
+      os:
+        description: >-
+          JSON array of runner labels to validate on, e.g.
+          '["ubuntu-latest", "windows-latest"]'. Defaults to Linux only.
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
       node-version:
         description: "Node.js version to use"
         required: false
@@ -64,8 +80,22 @@ on:
 
 jobs:
   validate-and-build:
-    name: Validate, Build & Test
-    runs-on: ubuntu-latest
+    name: Validate, Build & Test (${{ matrix.os }})
+    strategy:
+      # One platform failing must not cancel the others — the whole reason to
+      # add a leg is to see how that platform behaves.
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os) }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Several steps below use `$( )`, `||` and `2>/dev/null`. On a Windows
+        # runner GitHub defaults `run:` to PowerShell, where those are syntax
+        # errors — so adding a Windows leg without pinning the shell would fail
+        # for reasons that have nothing to do with the repo under test. bash
+        # ships on every GitHub-hosted runner, Windows included.
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
