@@ -427,6 +427,32 @@ function readScopeGlobsFromBlock(fm: string, key: string): ScopeRead {
     if (items.length === 0) return { globs: [], raw: null, malformed: null };
     return { globs: items.flatMap((v) => parseGlobList(v)), raw: items.join(", "), malformed: null };
   }
+
+  // The key was not found at column 0. Before returning "no scope declared" —
+  // which every caller reads as ALWAYS-ON — check whether the operator wrote one
+  // at an indent this reader declines to honour.
+  //
+  // INSTANCE SEVEN, found by the L1 invariant on the day it shipped. R4N-1 put
+  // this check in `inspectScope`, one level up. But `inspectScope` is only ever
+  // called for `applyTo`; every `paths` read goes through `readScopeGlobs`
+  // directly — seven call sites in compile.ts (cursor, windsurf, gemini, copilot
+  // and jetbrains emission, plus the sensitive-globs collector) and the
+  // `malformed` checks in validate.ts and compile.ts. So an indented `paths:`
+  // returned `{globs: [], malformed: null}` and a narrow rule was delivered
+  // always-on to five platforms at exit 0 with no diagnostic — F-6 verbatim, on
+  // the sibling key, because ONE HALF OF THE PAIR WAS TAUGHT AND THE OTHER WAS
+  // NOT. That is the class, so the check belongs in the shared reader where both
+  // keys and all callers pass through it, not in one caller of one key.
+  const indented = findIndentedScopeKey(fm, key);
+  if (indented !== null) {
+    return {
+      globs: [],
+      raw: indented,
+      malformed:
+        `\`${key}:\` must start at column 0 of the frontmatter; found indented (\`${indented}\`). ` +
+        `An indented key is not read as the artifact's scope, and an unscoped artifact is delivered always-on.`,
+    };
+  }
   return { globs: [], raw: null, malformed: null };
 }
 
