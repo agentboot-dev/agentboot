@@ -44,48 +44,139 @@ const CLI = path.join(ROOT, "bin", "agentboot.js");
 // ---------------------------------------------------------------------------
 
 /**
- * Every `args.push("--flag" …)` in cli.ts, paired with the `runScript({script})`
- * it is forwarded to.
+ * Every flag cli.ts forwards, paired with the script it is forwarded to.
  *
  * Deliberately derived from the source rather than hand-listed: a hand-listed
  * pair of tables (flags cli.ts forwards, flags this test knows about) drifts, and
  * the flag added next quarter would be exempt by default — which is the same
  * "one half was taught" shape the defect came from.
+ *
+ * THE FIRST VERSION OF THIS EXTRACTOR HAD THE DEFECT IT WAS WRITTEN TO CATCH.
+ * It saw only literal `args.push("--flag")` and attributed each push to the next
+ * `runScript` in file order. A flag routed through a HELPER — `collectGlobalArgs`,
+ * which contributes `--config` to six commands — was therefore invisible, except
+ * by accident: the helper is declared above the first `runScript`, so its push
+ * landed on `compile.ts` and no other target was ever checked for `--config`.
+ * Two targets that ignore the flag sat behind that accident. An invariant with a
+ * hole is more dangerous than no invariant, because the hole is where people stop
+ * looking.
+ *
+ * So this version resolves three things:
+ *   1. HELPERS — a top-level function that pushes flags contributes them to every
+ *      command that calls it.
+ *   2. NON-runScript targets — `dev-build` spawns three scripts directly via
+ *      `path.join(SCRIPTS_DIR, "x.ts")`, none of them through `runScript`.
+ *   3. ACTION SCOPE — flags are attributed to the targets of the SAME command
+ *      action, not to whatever `runScript` happens to come next in the file.
  */
 function forwardedFlags(): Array<{ script: string; flag: string }> {
   const src = fs.readFileSync(path.join(ROOT, "scripts", "cli.ts"), "utf-8");
-  const out: Array<{ script: string; flag: string }> = [];
 
-  // Each command action ends in a runScript({ script: "x.ts", ... }) call.
-  // Split on those boundaries and attribute the pushes that precede each one.
-  const scriptRe = /runScript\(\{\s*script:\s*"([^"]+)"/g;
-  let prev = 0;
-  let m: RegExpExecArray | null;
-  while ((m = scriptRe.exec(src)) !== null) {
-    const segment = src.slice(prev, m.index);
-    prev = scriptRe.lastIndex;
-    const script = m[1]!;
-    const pushRe = /args\.push\(\s*"(--[a-zA-Z0-9-]+)"/g;
-    let p: RegExpExecArray | null;
-    while ((p = pushRe.exec(segment)) !== null) {
-      out.push({ script, flag: p[1]! });
-    }
+  // -- 1 · helper functions that build argv ---------------------------------
+  // Helpers live in the preamble, above the first command action. A top-level
+  // function body ends at the first `}` in column 0.
+  const firstAction = src.indexOf(".action(");
+  const preamble = src.slice(0, firstAction === -1 ? src.length : firstAction);
+  const helperFlags = new Map<string, Set<string>>();
+  for (const h of preamble.matchAll(/^(?:export\s+)?function\s+([A-Za-z0-9_]+)\s*\(/gm)) {
+    const start = h.index!;
+    const rest = preamble.slice(start);
+    const end = rest.search(/^\}/m);
+    const body = end === -1 ? rest : rest.slice(0, end);
+    const flags = new Set<string>();
+    for (const p of body.matchAll(/\.push\(\s*"(--[a-zA-Z0-9-]+)"/g)) flags.add(p[1]!);
+    if (flags.size) helperFlags.set(h[1]!, flags);
+  }
+
+  // -- 2/3 · per-action attribution -----------------------------------------
+  const out: Array<{ script: string; flag: string }> = [];
+  for (const { targets, flags } of scanActions(src, helperFlags)) {
+    for (const script of targets) for (const flag of flags) out.push({ script, flag });
   }
   return out;
+}
+
+/** One entry per command action that spawns a script: what it spawns, what it forwards. */
+function scanActions(
+  src: string,
+  helperFlags: Map<string, Set<string>>,
+): Array<{ targets: Set<string>; flags: Set<string> }> {
+  const actions: Array<{ targets: Set<string>; flags: Set<string> }> = [];
+  for (const chunk of src.split(/\.action\(/).slice(1)) {
+    const body = chunk.split(/\n\s*\.action\(/)[0]!;
+
+    const targets = new Set<string>();
+    for (const m of body.matchAll(/runScript\(\{\s*script:\s*"([^"]+)"/g)) targets.add(m[1]!);
+    for (const m of body.matchAll(/SCRIPTS_DIR,\s*"([^"]+\.ts)"/g)) targets.add(m[1]!);
+    if (targets.size === 0) continue;
+
+    const flags = new Set<string>();
+    for (const m of body.matchAll(/\.push\(\s*"(--[a-zA-Z0-9-]+)"/g)) flags.add(m[1]!);
+    for (const [name, contributed] of helperFlags) {
+      if (new RegExp(`\\b${name}\\s*\\(`).test(body)) for (const fl of contributed) flags.add(fl);
+    }
+    actions.push({ targets, flags });
+  }
+  return actions;
+}
+
+/** Every script cli.ts spawns from a command action, however it spawns it. */
+function spawnedTargets(): Set<string> {
+  const src = fs.readFileSync(path.join(ROOT, "scripts", "cli.ts"), "utf-8");
+  const all = new Set<string>();
+  for (const { targets } of scanActions(src, new Map())) for (const t of targets) all.add(t);
+  return all;
 }
 
 describe("flag-consumption invariant — a forwarded flag must be parsed", () => {
   const pairs = forwardedFlags();
 
+  const has = (script: string, flag: string) =>
+    pairs.some((p) => p.script === script && p.flag === flag);
+
   it("the extractor finds real forwarding pairs (a vacuous invariant is not one)", () => {
-    // Guards the guard. If cli.ts is restructured and the regex stops matching,
+    // Guards the guard. If cli.ts is restructured and the regexes stop matching,
     // this file would pass by finding nothing — the exact failure mode that let
     // a tamper test on this branch pass without tampering with anything. The
     // anchor is the specific pair this file exists for: lose it and the whole
     // invariant has gone quiet.
-    expect(pairs.some((p) => p.script === "sync.ts" && p.flag === "--repos")).toBe(true);
+    expect(has("sync.ts", "--repos")).toBe(true);
+    expect(has("validate.ts", "--strict")).toBe(true);
+    expect(has("mcp-server.ts", "--profile")).toBe(true);
     expect(pairs.length).toBeGreaterThanOrEqual(5);
     expect(new Set(pairs.map((p) => p.script)).size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("resolves flags forwarded through a HELPER, not only literal pushes", () => {
+    // The hole this extractor was rewritten to close. `--config` reaches
+    // compile.ts only via `collectGlobalArgs`; there is no `args.push("--config")`
+    // anywhere in a command action. If this goes red, helper resolution has
+    // broken and every helper-routed flag is silently exempt again.
+    const src = fs.readFileSync(path.join(ROOT, "scripts", "cli.ts"), "utf-8");
+    expect(/\.action\([\s\S]*?\.push\(\s*"--config"/.test(src)).toBe(false);
+    expect(has("compile.ts", "--config")).toBe(true);
+  });
+
+  it("sees targets spawned WITHOUT runScript", () => {
+    // `dev-build` spawns validate.ts / compile.ts / dev-sync.ts directly through
+    // `path.join(SCRIPTS_DIR, …)`. A runScript-only extractor is blind to all
+    // three, so any flag those legs gain in future would be exempt by default.
+    // Asserted on the TARGET scan, not on the pairs: those actions forward
+    // nothing today, and an anchor that evaporates when a defect is fixed is not
+    // an anchor.
+    expect(spawnedTargets().has("dev-sync.ts")).toBe(true);
+    expect(spawnedTargets().size).toBeGreaterThanOrEqual(4);
+  });
+
+  it("a lib only counts as a consumer when it is handed argv", () => {
+    // The surface-widening half of the same hole. `lib/config.ts` contains the
+    // literal "--config"; importing it is not consumption, calling it with argv
+    // is. Proven both ways so neither direction can rot into a constant.
+    expect(consumptionSurface("compile.ts")).toContain('"--config"'); // argv IS handed over
+    const devSync = consumptionSurface("dev-sync.ts");
+    expect(devSync).not.toBeNull();
+    expect(devSync).toContain("dist"); // the body really was read
+    expect(devSync).not.toContain('"--config"'); // …but lib/config was not admitted
   });
 
   const byScript = new Map<string, Set<string>>();
@@ -99,22 +190,47 @@ describe("flag-consumption invariant — a forwarded flag must be parsed", () =>
     s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
   /**
-   * A script's own body PLUS the local `./lib/*.js` modules it imports.
+   * A script's own body PLUS the local `./lib/*.js` modules it ACTUALLY HANDS
+   * ITS ARGV TO.
    *
    * Scripts legitimately delegate argv parsing: `--config` is consumed by
-   * `lib/config.ts` via `resolveHubConfigOrExit(argv)`, and a body-only search
-   * would call that inert. Widening to the imported libs keeps the check honest
-   * without making it vacuous — AB-DEF-9 still fails here, because no lib parsed
-   * `--repos` either. Searching all of `scripts/` would be the vacuous version.
+   * `lib/config.ts` via `resolveHubConfigOrExit(argv, …)`, and a body-only search
+   * would call that inert. But importing a lib that happens to contain the string
+   * `"--config"` proves nothing — a lib cannot parse argv it was never given.
+   * That looser reading is what made two ignored `--config` targets look consumed:
+   * both import `loadConfig` from `lib/config.ts` and call it with a path they
+   * built themselves, never with argv.
+   *
+   * So a lib only joins the surface when some symbol imported from it is called
+   * with an argv-derived argument. Searching all of `scripts/` would be the
+   * vacuous version; searching every import is the almost-vacuous version.
    */
   function consumptionSurface(script: string): string | null {
     const file = path.join(ROOT, "scripts", script);
     if (!fs.existsSync(file)) return null;
     const body = fs.readFileSync(file, "utf-8");
+    const code = decomment(body);
     let surface = body;
-    for (const m of body.matchAll(/from\s+"\.\/lib\/([a-zA-Z0-9._-]+)\.js"/g)) {
-      const lib = path.join(ROOT, "scripts", "lib", `${m[1]!}.ts`);
-      if (fs.existsSync(lib)) surface += "\n" + fs.readFileSync(lib, "utf-8");
+
+    for (const m of body.matchAll(
+      /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s+"\.\/lib\/([a-zA-Z0-9._-]+)\.js"/g,
+    )) {
+      const libName = m[2]!;
+      const lib = path.join(ROOT, "scripts", "lib", `${libName}.ts`);
+      if (!fs.existsSync(lib)) continue;
+
+      const symbols = m[1]!
+        .split(",")
+        .map((s) => s.replace(/\btype\b/, "").split(/\s+as\s+/).pop()!.trim())
+        .filter((s) => /^[A-Za-z0-9_$]+$/.test(s));
+
+      // Is any of them invoked with argv? `f(argv, …)`, `f(process.argv.slice(2))`.
+      const handedArgv = symbols.some((sym) => {
+        const call = new RegExp(`\\b${sym}\\s*\\(([^)]*)\\)`, "g");
+        for (const c of code.matchAll(call)) if (/\bargv\b/.test(c[1]!)) return true;
+        return false;
+      });
+      if (handedArgv) surface += "\n" + fs.readFileSync(lib, "utf-8");
     }
     return decomment(surface);
   }
@@ -124,15 +240,43 @@ describe("flag-consumption invariant — a forwarded flag must be parsed", () =>
     if (surface === null) continue;
 
     for (const flag of flags) {
-      it(`${script} (or a lib it imports) consumes ${flag}`, () => {
+      it(`${script} (or a lib it hands argv to) consumes ${flag}`, () => {
         expect(
           surface.includes(`"${flag}"`),
           `cli.ts forwards ${flag} to ${script}, but neither ${script} nor any lib ` +
-            `it imports ever reads it. A flag the CLI accepts and the parser ignores ` +
-            `is silently inert — parse it, or stop forwarding it. This is AB-DEF-9.`,
+            `it hands its argv to ever reads it. A flag the CLI accepts and the parser ` +
+            `ignores is silently inert — the operator gets a success report about work ` +
+            `done somewhere other than where they asked. Parse it, or stop forwarding ` +
+            `it and refuse the flag out loud. This is AB-DEF-9.`,
         ).toBe(true);
       });
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 1b · The refusal is real, not just a source-level property
+// ---------------------------------------------------------------------------
+
+describe("commands that cannot honor --config refuse it out loud", () => {
+  // The invariant above is satisfied by "cli.ts no longer forwards the flag",
+  // which on its own would be a REGRESSION: the operator's --config would then
+  // be dropped by commander instead of by the parser, and the command would run
+  // against the wrong hub exactly as before, just one layer up. These cases pin
+  // the half that protects the operator.
+  for (const command of ["mcp-server", "dev-sync", "dev-build"]) {
+    it(`${command} exits non-zero and names the alternative`, () => {
+      const r = spawnSync(
+        process.execPath,
+        [CLI, command, "--config", path.join(os.tmpdir(), "nowhere", "agentboot.config.json")],
+        { env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 120_000 },
+      );
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+      expect(r.status, `\`agentboot ${command} --config …\` exited 0. Silently ignoring it is ` +
+        `how this defect looked before: the operator names a hub and the command runs ` +
+        `against a different one.`).not.toBe(0);
+      expect(out).toContain("does not honor --config");
+    });
   }
 });
 

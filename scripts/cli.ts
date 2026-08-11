@@ -148,6 +148,32 @@ function collectGlobalArgs(opts: { config?: string }): string[] {
 }
 
 /**
+ * AB-DEF-9, the `--config` face: refuse a global flag the target cannot honor.
+ *
+ * `-c/--config` is declared on the program, so commander accepts it everywhere.
+ * Three commands forwarded it to scripts that never read argv for it —
+ * `mcp-server`, `dev-sync`, and the `dev-sync` leg of `dev-build`. Each of those
+ * resolves its hub some other way (AGENTBOOT_HUB / the registry / the checkout
+ * root), so the flag was dropped in silence and the command ran happily against
+ * a DIFFERENT hub than the operator named, then reported success. That is worse
+ * than an unsupported flag: the operator has explicit written evidence, in their
+ * own shell history, that they scoped the command.
+ *
+ * Refusing is the honest option and the one that matches the compiled hooks:
+ * a control that cannot do what it was asked must say so, not proceed. The
+ * alternative — translating `--config` into AGENTBOOT_HUB behind the operator's
+ * back — would make the flag "work" while making every diagnostic that names its
+ * hub resolution a lie.
+ */
+function refuseUnhonoredConfig(config: string | undefined, command: string, advice: string): void {
+  if (!config) return;
+  console.error(chalk.red(`✗ \`agentboot ${command}\` does not honor --config.`));
+  console.error(`    ${advice}`);
+  console.error(`    Refusing rather than running against a hub you did not name.`);
+  process.exit(1);
+}
+
+/**
  * A3 / N1: refuse to REPORT GREEN against a dist/ that does not correspond to
  * the hub config.
  *
@@ -620,11 +646,19 @@ program
   .description("Copy dist/ to local repo for dogfooding (internal)")
   .action((_opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
-    const args = collectGlobalArgs({ config: globalOpts.config });
+    // dev-sync.ts installs dist/ from THIS checkout into the local agent-tool
+    // locations; it reads the checkout's own config for its freshness gate and
+    // has no argv config path to give it.
+    refuseUnhonoredConfig(
+      globalOpts.config as string | undefined,
+      "dev-sync",
+      "dev-sync always installs from this checkout. To build another hub, run " +
+        "`agentboot build --config <path>` there.",
+    );
 
     runScript({
       script: "dev-sync.ts",
-      args,
+      args: [],
       verbose: globalOpts.verbose,
       quiet: globalOpts.quiet,
     });
@@ -637,7 +671,18 @@ program
   .description("Run clean → validate → build → dev-sync pipeline")
   .action((_opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
-    const baseArgs = collectGlobalArgs({ config: globalOpts.config });
+    // validate and build would honor --config; the dev-sync leg cannot. Honoring
+    // it for two of three stages is the worst outcome available — it would
+    // validate and compile a named hub and then install the result over the
+    // checkout's own dogfooding config, with a green report on all three.
+    refuseUnhonoredConfig(
+      globalOpts.config as string | undefined,
+      "dev-build",
+      "dev-build's dev-sync stage always installs from this checkout, so the flag " +
+        "could only apply to two of its three stages. Run `agentboot validate` and " +
+        "`agentboot build --config <path>` directly for another hub.",
+    );
+    const baseArgs: string[] = [];
     const quiet = globalOpts.quiet;
 
     // Clean
@@ -4466,7 +4511,16 @@ program
   )
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
-    const args = collectGlobalArgs(globalOpts);
+    // mcp-server.ts resolves its hub from AGENTBOOT_HUB, the cwd, or the registry
+    // default — never from argv. Forwarding --config served whichever hub that
+    // ladder picked while the operator believed they had pinned one.
+    refuseUnhonoredConfig(
+      globalOpts.config as string | undefined,
+      "mcp-server",
+      "The MCP server resolves its hub from AGENTBOOT_HUB, the current directory, " +
+        "or the registry default. Set AGENTBOOT_HUB=<hub dir> instead.",
+    );
+    const args: string[] = [];
     if (opts["profile"]) args.push("--profile", opts["profile"] as string);
     runScript({
       script: "mcp-server.ts",
