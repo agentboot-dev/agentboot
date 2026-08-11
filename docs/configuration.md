@@ -310,10 +310,58 @@ Controls `agentboot install-user` (writing compiled skills/rules to `~/.claude`)
 | `agents.llmModel` | string \| null | Model override for API providers. |
 | `agents.billingAcknowledged` | boolean | Whether the user acknowledged that LLM-powered commands cost money. |
 
-### `ab.modelOverrides`
+### `ab.modelOverrides` — per-agent model assignment for `/ab`
 
-`ab.modelOverrides` (`Record<string,string>`) overrides the model used by individual `/ab` skill
-agents.
+The `/ab` skill compiles to five agent files, and each is stamped with a **default model chosen
+for cost**: the read-only query agent runs on Haiku, everything else on Sonnet.
+`ab.modelOverrides` (`Record<string, string>`) replaces the default for one agent. The key is the
+agent name; an unknown key matches no agent and is silently inert.
+
+| Key | Default | Agent |
+|---|---|---|
+| `ab.modelOverrides.ab` | `sonnet` | The `/ab` entry point; routes to the four below. |
+| `ab.modelOverrides["ab-query"]` | `haiku` | Read-only status and lookup. **This is the cost story the feature exists for** — the highest-volume agent runs on the cheapest model. |
+| `ab.modelOverrides["ab-author"]` | `sonnet` | Authors personas, traits and instructions. |
+| `ab.modelOverrides["ab-diagnose"]` | `sonnet` | Diagnoses build / sync / drift failures. |
+| `ab.modelOverrides["ab-manage"]` | `sonnet` | Hub and spoke management operations. |
+
+**Legal values** — anything else is not a model this build understands:
+
+| Value | Meaning |
+|---|---|
+| `opus` \| `sonnet` \| `haiku` | Agent SDK model aliases. |
+| `inherit` | Run on whatever model the parent session is using. |
+| `claude-<id>` | An explicit model id matching `^claude-[a-z0-9.-]+$` — e.g. `claude-sonnet-4-5`. |
+
+Values are trimmed and lower-cased before matching, so `" Haiku "` is accepted.
+
+```jsonc
+{
+  "ab": {
+    "modelOverrides": {
+      "ab-query": "claude-haiku-4-5",   // pin the cheap agent to an exact id
+      "ab-author": "opus"               // author with the strongest model
+    }
+  }
+}
+```
+
+**An invalid value does not fail the build. It is ignored, with a warning, and the default is
+used:**
+
+```
+⚠ Ignoring invalid ab.modelOverrides["ab-query"] = "sonet" — expected opus | sonnet |
+  haiku | inherit or a claude-* model id; using default "haiku".
+```
+
+That is deliberate — a typo in a cost knob should not stop a governance build — but it means a
+**mistyped override silently loses the saving it was meant to make**. The warning is the only
+signal; read the build log.
+
+**`ab-query` is compiled read-only and that is not configurable.** Its agent frontmatter is
+stamped with `disallowedTools: ["Bash", "Write", "Edit", "NotebookEdit"]`, so the query agent
+cannot run commands or write files whatever model it is pointed at. Read-only is the agent's
+contract, not a preference, and there is no config key that relaxes it.
 
 ---
 
