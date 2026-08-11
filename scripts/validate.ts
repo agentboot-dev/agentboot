@@ -13,7 +13,8 @@
  *   5. Composition type consistency across scopes (AB-118)
  *   6. Rule override detection — lower scopes shadowing core rules (AB-119)
  *   7. MCP governance — approved/required server validation (AB-143)
- *   8. Artifact identity — every governed core/ artifact carries an id (decision-0005)
+ *   8. Artifact identity — every governed core/ artifact carries an id, and a
+ *      hash that still matches its body (decision-0005)
  *
  * Usage:
  *   npm run validate
@@ -48,7 +49,7 @@ import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
 import { dangerousHookFindings, unscannableHookEvents } from "./lib/hook-safety.js";
 import { readScopeGlobs } from "./lib/scope-projection.js";
 import { isSafeRelativeSegment } from "./lib/path-containment.js";
-import { readIdentity, isValidId, isGovernedArtifact } from "./lib/artifact-identity.js";
+import { readIdentity, isValidId, isGovernedArtifact, contentHash } from "./lib/artifact-identity.js";
 import { inertPermissionRules, permissionRuleLists } from "./lib/permission-rules.js";
 
 // ---------------------------------------------------------------------------
@@ -693,6 +694,26 @@ function walkDir(dir: string, extensions: string[]): string[] {
  * Malformed and duplicate ids are errors EVERYWHERE — those are corruption
  * rather than absence, and a duplicate merges two histories no matter whose
  * hub it happens in.
+ *
+ * AND THE HASH IS RECOMPUTED, not merely counted. This gate checked that an
+ * artifact HAD an id and never that its `hash:` described the bytes underneath
+ * it, so at the point the check was declared green 8 of 17 stamped artifacts
+ * carried a wrong content hash — seven minted wrong at stamp time by a
+ * reader/writer split, one gone stale under an ordinary body edit with nothing
+ * asking. A field that is present and WRONG is worse than one that is absent:
+ * absence is visible to every consumer, whereas a wrong hash is read as
+ * authoritative, and the argument for stamping identity before 1.0 is precisely
+ * that the tag freezes what the field means. So the hash is verified with the
+ * same `contentHash` the stamp writes — one hashing path, not a second
+ * implementation, because a reader that hashes differently from the writer is
+ * the defect this check exists to catch rather than a way to catch it.
+ *
+ * A MISMATCH IS AN ERROR EVERYWHERE — corruption, like a malformed or duplicate
+ * id, and it can only occur on an artifact somebody deliberately stamped. A
+ * MISSING hash follows the absence rule above (error on the packaged corpus,
+ * warning elsewhere): an artifact stamped by an older AgentBoot predates the
+ * field, and breaking an adopter's build over that would violate the same
+ * NF4-8 invariant the missing-id split protects.
  */
 export function checkArtifactIdentity(
   configDir: string,
@@ -702,7 +723,9 @@ export function checkArtifactIdentity(
   // execute is indistinguishable from no switch at all.
   isPackagedCorpus: boolean = path.resolve(configDir) === path.resolve(ROOT)
 ): CheckResult {
-  const result = check("Artifact identity — every governed artifact under core/ carries an id");
+  const result = check(
+    "Artifact identity — every governed artifact under core/ carries an id and a matching hash"
+  );
   const coreDir = path.join(configDir, "core");
 
   if (!fs.existsSync(coreDir)) {
@@ -722,10 +745,12 @@ export function checkArtifactIdentity(
 
   const byId = new Map<string, string>();
   const unstamped: string[] = [];
+  const unhashed: string[] = [];
 
   for (const file of artifacts.sort()) {
     const rel = path.relative(configDir, file);
-    const identity = readIdentity(fs.readFileSync(file, "utf-8"));
+    const content = fs.readFileSync(file, "utf-8");
+    const identity = readIdentity(content);
 
     if (!identity.id) {
       unstamped.push(rel);
@@ -746,12 +771,37 @@ export function checkArtifactIdentity(
       continue;
     }
     byId.set(identity.id, rel);
+
+    // The integrity half. Counting the field is not checking it.
+    if (!identity.hash) {
+      unhashed.push(rel);
+      continue;
+    }
+    const actual = contentHash(content);
+    if (identity.hash !== actual) {
+      fail(
+        result,
+        `${rel} declares \`hash: ${identity.hash}\` but its body hashes to ${actual} — the ` +
+          `recorded content hash does not describe the bytes it is attached to. Downstream ` +
+          `consumers read that field as authoritative, so a wrong hash is worse than none. ` +
+          `Run \`agentboot identity\` to re-stamp it (the id is preserved).`
+      );
+    }
   }
 
   for (const rel of unstamped) {
     const msg =
       `${rel} has no \`id:\` — decision-0005 requires a permanent identifier on every ` +
       `governed artifact, and an id cannot be minted into the past. Run \`agentboot identity\`.`;
+    if (isPackagedCorpus) fail(result, msg);
+    else warn(result, msg);
+  }
+
+  for (const rel of unhashed) {
+    const msg =
+      `${rel} carries an \`id:\` but no \`hash:\` — decision-0005's shape is id + slug + hash, ` +
+      `and without the hash nothing can tell whether this revision is the one that was ` +
+      `stamped. Run \`agentboot identity\`.`;
     if (isPackagedCorpus) fail(result, msg);
     else warn(result, msg);
   }

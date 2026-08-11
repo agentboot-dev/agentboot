@@ -35,6 +35,7 @@ import {
   stampIdentity,
   isGovernedArtifact,
   defaultSlug,
+  contentHash,
   RESERVED_SLOTS,
   TIERS,
 } from "../scripts/lib/artifact-identity.js";
@@ -65,7 +66,22 @@ function writeArtifact(hub: string, rel: string, content: string): void {
   fs.writeFileSync(full, content, "utf-8");
 }
 
-const STAMPED = (id: string) => `---\nid: ${id}\nslug: x\nhash: sha256:0000000000000000\n---\n\n# x\n`;
+const BODY = "\n# x\n";
+
+/**
+ * A correctly stamped artifact — hash included, and RIGHT.
+ *
+ * This fixture used to hard-code `hash: sha256:0000000000000000`, and every
+ * "properly stamped corpus passes" assertion in this file was green over it,
+ * because the gate only ever checked that an id was present. That is the same
+ * shape as the corpus defect: a fixture asserting correctness while carrying a
+ * value that is not correct. Computed with the product's own `contentHash` so
+ * the fixture cannot drift from the checker.
+ */
+const STAMPED = (id: string): string => {
+  const head = (h: string): string => `---\nid: ${id}\nslug: x\nhash: ${h}\n---\n`;
+  return head(contentHash(head("") + BODY)) + BODY;
+};
 const ID_A = "01KZRG8RTET6CTDQEEFX8M9ZQX";
 const ID_B = "01KZRG8RTFE4J96C7C75CG33PQ";
 
@@ -104,6 +120,29 @@ describe("the shipped corpus is fully stamped", () => {
       else byId.set(id, rel);
     }
     expect(dupes).toEqual([]);
+  });
+
+  it("every stamped artifact's hash actually describes its body", () => {
+    // Presence was checked; correctness was not. At the point this suite was
+    // first declared green, 8 of 17 stamped artifacts carried a hash that did
+    // not match their bytes — 7 minted wrong by the stamp itself (it hashed the
+    // document BEFORE prepending the frontmatter header, so the writer's body
+    // and the reader's body differed by the blank separator line), 1 gone stale
+    // under an ordinary edit because nothing recomputed it.
+    const wrong: string[] = [];
+    let checked = 0;
+    for (const file of walkMd(CORE).filter((f) => isGovernedArtifact(f))) {
+      const content = fs.readFileSync(file, "utf-8");
+      const { id, hash } = readIdentity(content);
+      if (!id) continue;
+      const actual = contentHash(content);
+      checked++;
+      if (hash !== actual) wrong.push(`${path.relative(ROOT, file)}: ${hash} != ${actual}`);
+    }
+    // Guard against the vacuous pass: a walker that finds nothing reports zero
+    // mismatches, which is indistinguishable from a corpus that is correct.
+    expect(checked).toBeGreaterThanOrEqual(15);
+    expect(wrong, `wrong content hash:\n${wrong.join("\n")}`).toEqual([]);
   });
 
   it("a README is not a governed artifact — navigational files stay unstamped", () => {
@@ -185,6 +224,63 @@ describe("the validate gate actually fails on what it claims to catch", () => {
     }
   });
 
+  it("fails on a hash that does not match the body — in EITHER corpus", () => {
+    // Corruption, not absence. A hash that is present and wrong is read as
+    // authoritative by every consumer, so it is strictly worse than a missing
+    // one — and it can only exist on an artifact somebody deliberately stamped,
+    // so erroring here cannot break a hand-authoring path.
+    for (const packaged of [true, false]) {
+      const hub = scratchHub();
+      writeArtifact(hub, "core/instructions/one.instructions.md", STAMPED(ID_A));
+      // Edit the BODY and leave the hash — the exact shape of a stale stamp.
+      const tampered = STAMPED(ID_B).replace("# x", "# x — edited after stamping");
+      writeArtifact(hub, "core/instructions/two.instructions.md", tampered);
+      const r = checkArtifactIdentity(hub, packaged);
+      expect(r.passed, `packaged=${packaged}`).toBe(false);
+      expect(r.errors.join("\n")).toMatch(/two\.instructions\.md/);
+      expect(r.errors.join("\n")).toMatch(/body hashes to/);
+      // …and it does not smear the failure onto the artifact that was fine.
+      expect(r.errors.join("\n")).not.toMatch(/one\.instructions\.md/);
+    }
+  });
+
+  it("verifies the hash with the SAME function the stamp writes", () => {
+    // A second hashing implementation in the reader is the defect this check
+    // exists to catch, not a way to catch it: the corpus's 7 bad hashes came
+    // from a writer and a reader disagreeing about where the body starts. So
+    // an artifact produced by `stampIdentity` must pass the gate untouched.
+    const hub = scratchHub();
+    const stamped = stampIdentity("# freshly authored\n\nrule text\n", {
+      slug: "fresh",
+      createFrontmatter: true,
+    });
+    expect(stamped.minted).toBe(true);
+    writeArtifact(hub, "core/gotchas/fresh.md", stamped.content);
+    const r = checkArtifactIdentity(hub, PACKAGED);
+    expect(r.errors, r.errors.join("\n")).toEqual([]);
+    expect(r.passed).toBe(true);
+  });
+
+  it("treats a stamped-but-hashless artifact as absence, not corruption", () => {
+    // An artifact stamped by an older AgentBoot predates the field. Absence
+    // follows the missing-id severity split (error where the tag is at stake,
+    // warning in an adopter's hub) — breaking someone else's build over a field
+    // their tooling never wrote would violate the same NF4-8 invariant.
+    const hashless = `---\nid: ${ID_A}\nslug: x\n---\n\n# x\n`;
+
+    const packagedHub = scratchHub();
+    writeArtifact(packagedHub, "core/instructions/old.instructions.md", hashless);
+    const strict = checkArtifactIdentity(packagedHub, PACKAGED);
+    expect(strict.passed).toBe(false);
+    expect(strict.errors.join("\n")).toMatch(/no `hash:`/);
+
+    const adopterHub = scratchHub();
+    writeArtifact(adopterHub, "core/instructions/old.instructions.md", hashless);
+    const lenient = checkArtifactIdentity(adopterHub, false);
+    expect(lenient.passed).toBe(true);
+    expect(lenient.warnings.join("\n")).toMatch(/no `hash:`/);
+  });
+
   it("passes on a properly stamped corpus", () => {
     const hub = scratchHub();
     writeArtifact(hub, "core/instructions/one.instructions.md", STAMPED(ID_A));
@@ -237,6 +333,50 @@ describe("the validate gate actually fails on what it claims to catch", () => {
 
     const noCore = fs.mkdtempSync(path.join(os.tmpdir(), "ab-identity-nocore-"));
     expect(checkArtifactIdentity(noCore, PACKAGED).warnings.join("\n")).toMatch(/0 artifacts/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("the stamp writes a hash the reader recomputes", () => {
+  // The root cause of 7 of the corpus's 8 wrong hashes, and a pure
+  // reader/writer split: on an artifact with NO frontmatter, `contentHash` had
+  // nothing to strip and hashed the bare body, but the document the stamp
+  // returns puts that body after a `---\n…\n---\n\n` header, so the reader's
+  // strip leaves the blank separator attached. Writer hashed "# Trait…", reader
+  // hashed "\n# Trait…". Nothing ever compared the two, so every trait was
+  // stamped wrong on the first run and stayed wrong.
+  const cases: Array<[string, string]> = [
+    ["no frontmatter", "# Trait: X\n\n**ID:** `x`\n"],
+    ["leading blank lines", "\n\n# Trait: X\n\nbody\n"],
+    ["a single line, no trailing newline", "just a rule"],
+    ["a body that itself contains a --- rule", "# X\n\n---\n\nafter the rule\n"],
+    ["existing frontmatter", "---\ndescription: d\n---\n\n# X\n\nbody\n"],
+  ];
+
+  for (const [label, raw] of cases) {
+    it(`agrees on ${label}`, () => {
+      const stamped = stampIdentity(raw, { slug: "x", createFrontmatter: true }).content;
+      const stored = readIdentity(stamped).hash;
+      expect(stored).toBeTruthy();
+      expect(stored).toBe(contentHash(stamped));
+    });
+
+    it(`re-stamping ${label} is a no-op — the hash has converged`, () => {
+      // If the writer and reader disagreed, `identity` would rewrite the hash
+      // on every run and never settle. Convergence is the observable proof.
+      const once = stampIdentity(raw, { slug: "x", createFrontmatter: true }).content;
+      const twice = stampIdentity(once, { slug: "x", createFrontmatter: true });
+      expect(twice.content).toBe(once);
+      expect(twice.changed).toBe(false);
+    });
+  }
+
+  it("still changes the hash when the body actually changes", () => {
+    // The trivially-wrong fix for a hash mismatch is a hash that never varies.
+    const a = stampIdentity("# X\n\nbefore\n", { slug: "x", createFrontmatter: true }).content;
+    const b = stampIdentity("# X\n\nafter\n", { slug: "x", createFrontmatter: true }).content;
+    expect(readIdentity(a).hash).not.toBe(readIdentity(b).hash);
   });
 });
 
