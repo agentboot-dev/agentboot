@@ -493,9 +493,40 @@ The build writes managed artifacts to **two places with two different jobs**:
 Deployment flow:
 
 1. **Single org-wide policy:** deploy `dist/managed/managed-settings.json` to the managed
-   path for your MDM (the build prints the target path — e.g.
-   `/Library/Application Support/Claude/` for Jamf/Kandji, `/etc/claude-code/` for Linux
-   MDM, `C:\ProgramData\Claude\` for Intune).
+   path for your MDM. The build prints the target path for the configured
+   `managed.platform`; the full table is:
+
+   | `managed.platform` | OS | Managed-settings root Claude Code reads |
+   |---|---|---|
+   | `jamf`, `kandji` | macOS | `/Library/Application Support/ClaudeCode/` |
+   | `intune` | Windows | `C:\Program Files\ClaudeCode\` |
+   | `jumpcloud` | Linux | `/etc/claude-code/` |
+   | `other` | — | The build prints `./managed-output/`, which is a **placeholder, not a destination.** Target the row above matching the OS your fleet runs, using your MDM's managed-config mechanism. |
+
+   **These strings are a control surface, not a hint, and two of them were wrong before
+   v1.0.** On macOS the leaf directory is `ClaudeCode`, **not** `Claude` — the shorter name
+   is the Claude *Desktop* support directory, a different product. On Windows the root is
+   under `Program Files`, **not** the machine-wide program-data directory, and the leaf is
+   again `ClaudeCode`, not `Claude`. Both errors are silent and total: a profile delivered
+   to a directory Claude Code does not read installs cleanly, reports success, drift-checks
+   clean and enforces **nothing** — every HARD guardrail absent on every machine, behind a
+   green build. If your fleet was targeted at either of the old locations, treat it as
+   unguarded until you re-target and re-run step 3.
+
+   The canonical values live in one place in the code — `MANAGED_SETTINGS_ROOTS` in
+   `scripts/compile.ts` — and the suite pins them as literals. If a future Claude Code
+   moves them, re-derive from the shipping binary rather than from any doc page (this one
+   included) that may have copied the table.
+
+   **Drop-in directory.** Claude Code also reads a `managed-settings.d/` directory *inside*
+   that same root — `<root>/managed-settings.d/`, e.g.
+   `/Library/Application Support/ClaudeCode/managed-settings.d/`. AgentBoot does **not**
+   target it: step 2's merged file is the recommended deployable, because a merge performed
+   at build time resolves collisions where they can be *reported and reviewed* in the hub PR,
+   rather than on each machine where a dropped key is invisible. If you deploy fragments
+   there anyway, verify the resulting precedence on a real managed machine (step 3) before
+   relying on it — AgentBoot has confirmed the directory Claude Code reads, not the order in
+   which it applies what it finds there.
 2. **Per-team policy:** the build performs the merge for you — every scope with policy
    gets a single deployable file at `dist/managed/scopes/<scope>/managed-settings.json`
    (e.g. `scopes/core/` for the org-wide fleet, `scopes/nodes/platform/api/` for a team
