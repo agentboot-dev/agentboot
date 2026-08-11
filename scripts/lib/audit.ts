@@ -12,11 +12,45 @@ import { parseFrontmatter, resolveCompositionType } from "./frontmatter.js";
 import { computeSourceDigest, readDistStamp, resolveDomainRoots } from "./dist-stamp.js";
 
 export interface AuditFinding {
-  type: "orphaned-trait" | "unused-instruction" | "scope-shadow" | "manifest-drift" | "dead-gotcha";
+  type:
+    | "orphaned-trait"
+    | "unused-instruction"
+    | "scope-shadow"
+    | "manifest-drift"
+    | "dead-gotcha"
+    /**
+     * An input this audit depends on exists but cannot be read as what it
+     * claims to be. Distinct from the input being ABSENT, which is a legitimate
+     * hub state and is reported as `info`. See `resolveRegisteredRepos`.
+     */
+    | "unparseable-input";
   severity: "error" | "warn" | "info";
   message: string;
   file?: string | undefined;
 }
+
+/**
+ * ACCEPTED, NOT MISSING — stale-ADR detection (2026-08-11).
+ *
+ * `audit` has no `stale-adr` finding type and will not grow one before v1.0.
+ * This is an acceptance in writing rather than an omission in silence: the
+ * check is not deferred for cost, it is **dependency-blocked**. ADRs are not a
+ * shipped concept in AgentBoot — `docs/glossary.md` and `docs/concepts.md` both
+ * say so explicitly, and `docs/roadmap.md`'s "ADR governance" bullet (an
+ * exception lifecycle with expiry validation) is the unbuilt feature the check
+ * would audit. There is nothing on disk for a detector to find stale, so a
+ * `stale-adr` check today would be a control that reports success over an empty
+ * deliverable — the exact failure class this codebase keeps finding in itself.
+ *
+ * REVISIT TRIGGER: when ADR governance ships — concretely, when an ADR store
+ * exists that the build reads (the roadmap describes an `adrs/index.json`) —
+ * this acceptance expires and expiry-aware stale-ADR detection becomes part of
+ * that feature's own definition of done, not a separate audit backlog item.
+ *
+ * Recorded here, beside the union a reader consults to answer "what does audit
+ * check?", because that is where the absence is noticed. Nothing in the docs
+ * claims the check exists; this note keeps it that way deliberately.
+ */
 
 export interface AuditReport {
   findings: AuditFinding[];
@@ -395,6 +429,82 @@ function listRepoFiles(repoPath: string, cap = 20_000): string[] {
   return files;
 }
 
+/**
+ * Read the registered-repo list, telling ABSENT and BROKEN apart.
+ *
+ * The version this replaces wrapped the config read, the config parse, the
+ * repos read and the repos parse in one `try` with an empty `catch` commented
+ * "no repos.json — handled below". Everything therefore landed on the same
+ * `repos = []`, and "handled below" produced the *info* line
+ * "no locally-available registered repos … dead-gotcha detection skipped" —
+ * byte-identical whether the operator had no repos.json, a repos.json with a
+ * trailing comma, or an `agentboot.config.json` that would not parse. A hub
+ * whose registry is corrupt read exactly like a hub that had never registered
+ * one, at severity `info`, exit 0. That is the standing "silence is not
+ * success" class: the audit could not do its job and said nothing had to be
+ * done.
+ *
+ * Absence stays a legitimate, quiet state. Anything unreadable is an `error`,
+ * names the file and the parser's own message, and makes `audit` exit non-zero.
+ *
+ * The `.map` that consumes this used to sit OUTSIDE the try, so a repos file
+ * that parsed to a non-array (e.g. `{"repos": []}`) escaped as an uncaught
+ * `repos.map is not a function` — the same statement failing loudly and
+ * silently depending only on which way it was malformed. Shape is checked here.
+ */
+function resolveRegisteredRepos(
+  hubRoot: string,
+  findings: AuditFinding[]
+): { repos: Array<{ path?: string }>; unreadable: boolean } {
+  const unreadable = (message: string, file: string): { repos: []; unreadable: true } => {
+    findings.push({ type: "unparseable-input", severity: "error", message, file });
+    return { repos: [], unreadable: true };
+  };
+
+  // The hub config only supplies the repos-file location. Absent → the default
+  // location still gets read; only a config that EXISTS and will not parse is
+  // an error. (Previously a missing config also suppressed the default read.)
+  let reposRel = "./repos.json";
+  const configPath = path.join(hubRoot, "agentboot.config.json");
+  if (fs.existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8")));
+      reposRel = (parsed?.sync?.repos as string | undefined) ?? reposRel;
+    } catch (e) {
+      return unreadable(
+        `agentboot.config.json is present but could not be parsed (${e instanceof Error ? e.message : String(e)}) — ` +
+          `this is NOT the same as an unconfigured hub: repo-dependent audit checks could not run at all`,
+        "agentboot.config.json"
+      );
+    }
+  }
+
+  const reposPath = path.resolve(hubRoot, reposRel);
+  // Genuinely absent: a hub that has registered no repos is a normal state.
+  if (!fs.existsSync(reposPath)) return { repos: [], unreadable: false };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+  } catch (e) {
+    return unreadable(
+      `${reposRel} exists but could not be parsed (${e instanceof Error ? e.message : String(e)}) — ` +
+        `this is NOT the same as having no registered repos: the repo registry is corrupt`,
+      reposRel
+    );
+  }
+
+  if (!Array.isArray(parsed)) {
+    return unreadable(
+      `${reposRel} parsed but is ${parsed === null ? "null" : typeof parsed}, not an array of repo entries — ` +
+        `this is NOT the same as having no registered repos: the repo registry has the wrong shape`,
+      reposRel
+    );
+  }
+
+  return { repos: parsed as Array<{ path?: string }>, unreadable: false };
+}
+
 function findDeadGotchas(hubRoot: string, findings: AuditFinding[]): void {
   const gotchasDir = path.join(hubRoot, "core", "gotchas");
   if (!fs.existsSync(gotchasDir)) return;
@@ -403,12 +513,8 @@ function findDeadGotchas(hubRoot: string, findings: AuditFinding[]): void {
 
   // Registered repos that exist locally are the ground truth for "does this
   // gotcha ever activate". No local repos → not checkable, say so once.
-  let repos: Array<{ path?: string }> = [];
-  try {
-    const configRaw = stripJsoncComments(fs.readFileSync(path.join(hubRoot, "agentboot.config.json"), "utf-8"));
-    const reposRel = (JSON.parse(configRaw).sync?.repos as string | undefined) ?? "./repos.json";
-    repos = JSON.parse(fs.readFileSync(path.resolve(hubRoot, reposRel), "utf-8"));
-  } catch { /* no repos.json — handled below */ }
+  const { repos, unreadable } = resolveRegisteredRepos(hubRoot, findings);
+  if (unreadable) return; // already reported as an error — do not also claim "skipped"
   const localRepos = repos
     .map((r) => (r.path ? path.resolve(hubRoot, r.path) : null))
     .filter((p): p is string => p !== null && fs.existsSync(p));
