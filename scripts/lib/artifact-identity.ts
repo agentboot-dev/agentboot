@@ -66,6 +66,43 @@ export function isValidId(id: string): boolean {
 }
 
 /**
+ * Navigational files are not governed artifacts. A README describes a directory;
+ * it carries no control text, so it has no lineage worth identifying.
+ */
+const NAVIGATIONAL = /^(README|index)\.md$/i;
+
+/**
+ * Is this file a governed artifact — one that MUST carry identity?
+ *
+ * This predicate is the single definition, exported so the gate that ENFORCES
+ * the stamp and the backfill that WRITES it cannot drift apart. The two
+ * disagreeing is how nine of eighteen artifacts ended up unstamped while the
+ * backfill reported success over the ten it happened to walk: the writer's
+ * notion of "artifact" was a hard-coded list of three flat directories, and
+ * there was no reader to contradict it.
+ */
+export function isGovernedArtifact(filePath: string): boolean {
+  const base = filePath.replace(/\\/g, "/").split("/").pop() ?? "";
+  if (!base.toLowerCase().endsWith(".md")) return false;
+  return !NAVIGATIONAL.test(base);
+}
+
+/**
+ * The slug an artifact gets when it has none — derived from the filename, with
+ * the compound extensions (`.instructions.md`, `.gotcha.md`) folded away.
+ *
+ * A bare `SKILL.md` would slug to "skill" for every persona, so a SKILL.md
+ * takes its PARENT DIRECTORY's name instead — `code-reviewer`, not `skill`.
+ * The slug is a human label and may change freely; only `id` is identity.
+ */
+export function defaultSlug(filePath: string): string {
+  const parts = filePath.replace(/\\/g, "/").split("/");
+  const base = parts.pop() ?? "";
+  if (/^SKILL\.md$/i.test(base)) return parts.pop() ?? "skill";
+  return base.replace(/\.(instructions|gotchas?)?\.?md$/, "").replace(/\.md$/, "");
+}
+
+/**
  * Content hash of the artifact BODY, excluding frontmatter.
  *
  * V3: normalize first. Against CRLF content the strip matched nothing, so the
@@ -81,11 +118,35 @@ export function contentHash(content: string): string {
 export const TIERS = ["constitutional", "statutory", "ephemeral"] as const;
 export type Tier = (typeof TIERS)[number];
 
+/**
+ * The reserved frontmatter slots — declared now, consumed by nothing.
+ *
+ * Ratified 2026-08-11 alongside the ID shape. The reason both ride ONE
+ * migration rather than two: after the 1.0 tag the emitted frontmatter is a
+ * compatibility contract, so adding a field means a breaking change for every
+ * consumer plus a re-sync of every synced spoke. The realistic post-tag outcome
+ * is that the field is never added at all. Reserving an option is not
+ * exercising it, and it costs nothing to carry an unread key.
+ *
+ *   tier   — closed vocabulary (TIERS). Governance weight of the artifact.
+ *   source — OPEN-VALUED, deliberately. It declares the upstream authority an
+ *            artifact is derived from, for orgs whose governance SSOT lives
+ *            outside the hub. An authority is a reference (a URL, a repo path,
+ *            an internal SSOT id) — enumerating those centrally is not
+ *            possible, so there is no vocabulary to close. The detect half
+ *            (reporting divergence from the declared authority) is post-1.0
+ *            and reuses the drift machinery; nothing reads this field today.
+ */
+export const RESERVED_SLOTS = ["tier", "source"] as const;
+export type ReservedSlot = (typeof RESERVED_SLOTS)[number];
+
 export interface Identity {
   id: string | null;
   slug: string | null;
   hash: string | null;
   tier: Tier | null;
+  /** RESERVED (X18 upstream authority). Read, never acted on. */
+  source: string | null;
 }
 
 // C1: the tolerant extractor. A BOM/CRLF artifact previously reported "no
@@ -100,13 +161,16 @@ function scalar(fm: string, key: string): string | null {
 
 export function readIdentity(content: string): Identity {
   const fm = fmBlock(content);
-  if (!fm) return { id: null, slug: null, hash: null, tier: null };
+  if (!fm) return { id: null, slug: null, hash: null, tier: null, source: null };
   const tier = scalar(fm, "tier");
   return {
     id: scalar(fm, "id"),
     slug: scalar(fm, "slug"),
     hash: scalar(fm, "hash"),
     tier: (TIERS as readonly string[]).includes(tier ?? "") ? (tier as Tier) : null,
+    // No vocabulary check: `source` is an open-valued authority reference. A
+    // closed check here would reject every real value the field exists to hold.
+    source: scalar(fm, "source"),
   };
 }
 

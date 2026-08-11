@@ -1,3 +1,9 @@
+---
+id: 01KZRGW0EVGMKPWGZ8TYFDAVT5
+slug: quick-ref
+hash: sha256:abf2327bba6495b1
+---
+
 # AgentBoot Quick Reference
 
 ## CLI Commands

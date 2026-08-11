@@ -13,6 +13,7 @@
  *   5. Composition type consistency across scopes (AB-118)
  *   6. Rule override detection — lower scopes shadowing core rules (AB-119)
  *   7. MCP governance — approved/required server validation (AB-143)
+ *   8. Artifact identity — every governed core/ artifact carries an id (decision-0005)
  *
  * Usage:
  *   npm run validate
@@ -47,6 +48,7 @@ import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
 import { dangerousHookFindings, unscannableHookEvents } from "./lib/hook-safety.js";
 import { readScopeGlobs } from "./lib/scope-projection.js";
 import { isSafeRelativeSegment } from "./lib/path-containment.js";
+import { readIdentity, isValidId, isGovernedArtifact } from "./lib/artifact-identity.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -653,6 +655,110 @@ function walkDir(dir: string, extensions: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Check: artifact identity (decision-0005)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every governed artifact under core/ carries a permanent id.
+ *
+ * WHY THIS IS A HARD ERROR AND NOT A WARNING. An identifier's entire value is
+ * that it predates the question being asked of it, and identity cannot be
+ * minted into the past: an artifact stamped today can only ever claim to date
+ * from today, and everything before is forensic reconstruction from git history
+ * and fuzzy content matching. So an artifact that reaches a release unstamped
+ * is not "missing a field" — it is permanently unattributable. A warning gets
+ * scrolled past; that is how nine of eighteen artifacts came to be unstamped
+ * with the module, the ratified shape and the backfill command all in place and
+ * nothing in the build ever asking.
+ *
+ * Duplicates are the same class from the other side: two artifacts sharing an
+ * id silently merge their histories forever, and the merge is undetectable
+ * afterwards because both files look correctly stamped. `identity` already
+ * refuses to MINT a duplicate; nothing checked the corpus at rest, so a
+ * copy-paste of a stamped file defeated that guard entirely.
+ *
+ * WHY A MISSING ID IS AN ERROR HERE AND A WARNING IN AN ADOPTER'S HUB. The
+ * one-way door is *this package's* 1.0 tag: it freezes the lineage of the
+ * artifacts AgentBoot itself ships, and those are the ones that can never be
+ * stamped afterwards. An adopting hub has its own corpus on its own timeline,
+ * and a gate that refuses to validate a gotcha someone wrote sixty seconds ago
+ * is not governance — it is a build break on the authoring path, arriving
+ * before the author has any reason to care about lineage. NF4-8 already pinned
+ * the invariant that `validate` and `build` reach the same verdict on a
+ * hand-authored artifact; erroring here would break it for every adopter, to
+ * enforce a decision this project made about its own release. So: ERROR on the
+ * corpus whose tag is at stake, WARN (which `--strict` escalates) elsewhere.
+ *
+ * Malformed and duplicate ids are errors EVERYWHERE — those are corruption
+ * rather than absence, and a duplicate merges two histories no matter whose
+ * hub it happens in.
+ */
+export function checkArtifactIdentity(
+  configDir: string,
+  // Is this the packaged corpus — the one whose lineage the release tag
+  // freezes? Defaulted rather than derived inside so both branches are
+  // reachable from a test; a severity switch only one side of which can ever
+  // execute is indistinguishable from no switch at all.
+  isPackagedCorpus: boolean = path.resolve(configDir) === path.resolve(ROOT)
+): CheckResult {
+  const result = check("Artifact identity — every governed artifact under core/ carries an id");
+  const coreDir = path.join(configDir, "core");
+
+  if (!fs.existsSync(coreDir)) {
+    // Not a failure — a hub may legitimately carry no core/ of its own. But it
+    // is not a pass either: say so, rather than printing a green tick over a
+    // check that inspected nothing.
+    warn(result, `No core/ directory at ${coreDir} — identity gate inspected 0 artifacts.`);
+    return result;
+  }
+
+  const artifacts = walkDir(coreDir, [".md"]).filter((f) => isGovernedArtifact(f));
+
+  if (artifacts.length === 0) {
+    warn(result, "core/ contains no governed artifacts — identity gate inspected 0 artifacts.");
+    return result;
+  }
+
+  const byId = new Map<string, string>();
+  const unstamped: string[] = [];
+
+  for (const file of artifacts.sort()) {
+    const rel = path.relative(configDir, file);
+    const identity = readIdentity(fs.readFileSync(file, "utf-8"));
+
+    if (!identity.id) {
+      unstamped.push(rel);
+      continue;
+    }
+    if (!isValidId(identity.id)) {
+      fail(result, `${rel} has a malformed \`id: ${identity.id}\` — expected a 26-char ULID.`);
+      continue;
+    }
+
+    const prior = byId.get(identity.id);
+    if (prior) {
+      fail(
+        result,
+        `${rel} shares \`id: ${identity.id}\` with ${prior} — a duplicate id merges two ` +
+          `artifacts' histories permanently. One of them needs a fresh id.`
+      );
+      continue;
+    }
+    byId.set(identity.id, rel);
+  }
+
+  for (const rel of unstamped) {
+    const msg =
+      `${rel} has no \`id:\` — decision-0005 requires a permanent identifier on every ` +
+      `governed artifact, and an id cannot be minted into the past. Run \`agentboot identity\`.`;
+    if (isPackagedCorpus) fail(result, msg);
+    else warn(result, msg);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // AB-143: Check 7: MCP connection governance
 // ---------------------------------------------------------------------------
 
@@ -1224,6 +1330,7 @@ async function main(): Promise<void> {
     checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
     checkScopeKeys(config, configDir),
+    checkArtifactIdentity(configDir),
   ];
 
   // Print results.

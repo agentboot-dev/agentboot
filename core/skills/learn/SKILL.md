@@ -2,6 +2,9 @@
 name: learn
 description: Contextual help and onboarding for AgentBoot users
 version: 1.0.0
+id: 01KZRG8RTFV0R1Q7KB63NVMRJQ
+slug: learn
+hash: sha256:3555b5d7afa2f8d5
 ---
 
 # AgentBoot Learn

@@ -1,6 +1,9 @@
 ---
 name: ai-security-reviewer
 description: Reviews code, configuration, and agent/CI setup for AI-workflow security threats — prompt injection, tool/MCP permission escalation, excessive agency, sensitive context disclosure, and insecure handling of model output; invoke before merging any change that touches agent configuration, LLM integrations, MCP servers, or AI-driven automation.
+id: 01KZRG8RTDREYV554HJHFJ70S7
+slug: ai-security-reviewer
+hash: sha256:41200f27b165f90e
 ---
 
 # AI Security Reviewer

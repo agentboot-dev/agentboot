@@ -1,3 +1,9 @@
+---
+id: 01KZRG8RTFE4J96C7C75CG33PQ
+slug: faq
+hash: sha256:ee290ad7066a8989
+---
+
 # AgentBoot FAQ
 
 ## What is the difference between a trait and a persona?
