@@ -4,10 +4,12 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { execSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { ensureRootDist } from "./setup.js";
+import { CONFIG_SHAPE, configShapeErrors } from "../scripts/lib/config.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
@@ -58,8 +60,21 @@ describe("MCP config expansion: gemini", () => {
 
 import {
   writeDirectly, detectExistingContent, removeUserContent, findTemplateVars,
-  isExternallyManaged, resolveUserLevelMode, stageForHandoff, installUserLevel,
+  isExternallyManaged, resolveUserLevelMode, resolveUserLevelModeDetailed,
+  stageForHandoff, installUserLevel, USER_LEVEL_MODE_ENV,
 } from "../scripts/lib/user-scope.js";
+
+/** Set the mode env override for one assertion and restore it, pass or throw. */
+function withEnvMode(value: string, fn: () => void): void {
+  const prior = process.env[USER_LEVEL_MODE_ENV];
+  process.env[USER_LEVEL_MODE_ENV] = value;
+  try {
+    fn();
+  } finally {
+    if (prior === undefined) delete process.env[USER_LEVEL_MODE_ENV];
+    else process.env[USER_LEVEL_MODE_ENV] = prior;
+  }
+}
 
 describe("user-level writeDirectly", () => {
   let tempHome: string;
@@ -236,11 +251,92 @@ describe("user-level write SPI (§I)", () => {
     expect(fs.existsSync(path.join(claudeDir, "skills", "demo", "SKILL.md"))).toBe(false);
   });
 
-  it("explicit mode overrides the sentinel (direct even when managed; manifest even when not)", () => {
+  /**
+   * L47e — this case previously asserted the OPPOSITE: that `mode: "direct"` beat
+   * a present sentinel, so AgentBoot wrote into a directory another tool had
+   * claimed, silently and with exit 0. The ratified design says the sentinel
+   * "auto-flips to manifest-only and hard-refuses direct writes", and the design
+   * wins: the sentinel is the only signal that comes from the side that owns the
+   * directory, and a local config key that can override it makes the promise to
+   * an external provider unenforceable. The assertion is what changed.
+   */
+  it("L47e: the sentinel REFUSES an explicit \"direct\" — it does not lose to it", () => {
     fs.writeFileSync(path.join(claudeDir, ".managed"), "");
-    expect(resolveUserLevelMode({ userLevel: { mode: "direct" } } as never, claudeDir)).toBe("direct");
-    fs.rmSync(path.join(claudeDir, ".managed"));
-    expect(resolveUserLevelMode({ userLevel: { mode: "manifest" } } as never, claudeDir)).toBe("manifest");
+    const r = resolveUserLevelModeDetailed({ userLevel: { mode: "direct" } } as never, claudeDir);
+    expect(r.mode).toBe("manifest");
+    expect(r.refusal).toMatch(/Refusing a direct write/);
+    expect(resolveUserLevelMode({ userLevel: { mode: "direct" } } as never, claudeDir)).toBe("manifest");
+  });
+
+  it("L47e: an explicit \"manifest\" still holds when nothing claims the slot", () => {
+    expect(isExternallyManaged(claudeDir)).toBe(false);
+    const r = resolveUserLevelModeDetailed({ userLevel: { mode: "manifest" } } as never, claudeDir);
+    expect(r.mode).toBe("manifest");
+    expect(r.refusal).toBeNull();
+  });
+
+  it("L47e: a refused direct install stages, reports, and leaves ~/.claude untouched", () => {
+    fs.writeFileSync(path.join(claudeDir, ".managed"), "");
+    const stagingDir = path.join(tmp, "stage");
+    const res = installUserLevel(distCore, { userLevel: { mode: "direct" } } as never, {
+      claudeDir,
+      stagingDir,
+    });
+    expect(res.mode).toBe("manifest");
+    // The refusal reaches the CHANNEL the CLI prints and exits on, not just a
+    // field a programmatic caller would have to know to look at.
+    expect(res.staged!.errors[0]).toMatch(/Refusing a direct write/);
+    expect(fs.existsSync(path.join(stagingDir, "skills", "demo", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(claudeDir, "skills"))).toBe(false);
+    expect(fs.existsSync(path.join(claudeDir, ".agentboot-user-manifest.json"))).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // L47b — the env override the design called for ("config + env override").
+  // A `--mode` flag shipped instead, which does not serve a CI job that can set
+  // an environment variable but cannot edit a hub config it does not own.
+  // -------------------------------------------------------------------------
+
+  it("L47b: AGENTBOOT_USER_LEVEL_MODE selects the mode when the config is silent", () => {
+    withEnvMode("manifest", () => {
+      expect(isExternallyManaged(claudeDir)).toBe(false); // would otherwise be direct
+      const r = resolveUserLevelModeDetailed(undefined, claudeDir);
+      expect(r.mode).toBe("manifest");
+      expect(r.source).toBe("env");
+      expect(r.refusal).toBeNull();
+    });
+  });
+
+  it("L47b: config beats env — an inherited variable must not silently beat --mode", () => {
+    withEnvMode("manifest", () => {
+      const r = resolveUserLevelModeDetailed({ userLevel: { mode: "auto" } } as never, claudeDir);
+      expect(r.mode).toBe("direct"); // auto + no sentinel
+      expect(r.source).toBe("config");
+    });
+  });
+
+  it("L47b: the env override is subject to the same sentinel refusal", () => {
+    fs.writeFileSync(path.join(claudeDir, ".managed"), "");
+    withEnvMode("direct", () => {
+      const r = resolveUserLevelModeDetailed(undefined, claudeDir);
+      expect(r.mode).toBe("manifest");
+      expect(r.refusal).toMatch(/Refusing a direct write/);
+      expect(r.refusal).toContain("AGENTBOOT_USER_LEVEL_MODE");
+    });
+  });
+
+  it("L47b: an unrecognized mode is REFUSED, not silently read as auto", () => {
+    // "manifest-only" is the word the design itself uses, so it is the typo an
+    // operator actually makes. Read as auto, an instruction never to touch
+    // ~/.claude becomes a direct write with nothing printed.
+    withEnvMode("manifest-only", () => {
+      const r = resolveUserLevelModeDetailed(undefined, claudeDir);
+      expect(r.mode).toBe("manifest"); // fails toward not writing
+      expect(r.refusal).toMatch(/not one of auto, direct, manifest/);
+    });
+    const fromConfig = resolveUserLevelModeDetailed({ userLevel: { mode: "Direct" } } as never, claudeDir);
+    expect(fromConfig.mode).toBe("manifest");
+    expect(fromConfig.refusal).toMatch(/not one of auto, direct, manifest/);
   });
 
   it("stageForHandoff enforces the template-var guard", () => {
@@ -526,5 +622,225 @@ describe("R1-3 — the manifest and the keep-set must spell a path the same way"
     for (const m of src.matchAll(/const (rel|relPath) = (.+);/g)) {
       expect(m[2], `${m[1]} bypasses toManifestPath`).toContain("toManifestPath(");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L47c — the sentinel refusal, proven against the REAL CLI
+// ---------------------------------------------------------------------------
+
+/**
+ * The refusal was proven only at the function boundary, with a `claudeDir`
+ * injected by the test. That proves the wrong thing: the promise made to an
+ * external provider is about the directory the SHIPPED COMMAND resolves from the
+ * environment, and nothing exercised that path. `writeDirectly()` reaches for
+ * `getClaudeDir()` on its own — an injected `claudeDir` never reaches it — so a
+ * function-boundary assertion can pass while the command writes somewhere else
+ * entirely.
+ *
+ * These cases spawn `bin/agentboot.js` against a HOME carrying
+ * `~/.claude/.managed` and assert on the directory itself, hashed before and
+ * after. The first case is the CONTROL: it proves the comparison can see a write
+ * at all, because "~/.claude is unchanged" asserted by an instrument that cannot
+ * detect change is the vacuous-pass shape this branch has already shipped twice.
+ */
+describe("L47c — install-user honours the sentinel when spawned as the real CLI", () => {
+  const CLI_L47 = path.join(path.resolve(__dirname, ".."), "bin", "agentboot.js");
+  let base = "";
+  let hub = "";
+
+  /** Every file under `dir`, path → content hash. Sees creation, deletion AND edit. */
+  function snapshot(dir: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!fs.existsSync(dir)) return out;
+    const walk = (d: string, rel: string): void => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(path.join(d, e.name), r);
+        else out[r] = createHash("sha256").update(fs.readFileSync(path.join(d, e.name))).digest("hex");
+      }
+    };
+    walk(dir, "");
+    return out;
+  }
+
+  function runInstallUser(
+    home: string,
+    extraArgs: string[] = [],
+    extraEnv: Record<string, string> = {},
+  ): { status: number; out: string } {
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      HOME: home,
+      USERPROFILE: home,
+      NODE_NO_WARNINGS: "1",
+    };
+    // Never inherit the override from a sibling case — it is the variable under test.
+    delete env[USER_LEVEL_MODE_ENV];
+    Object.assign(env, extraEnv);
+    const r = spawnSync("node", [CLI_L47, "install-user", ...extraArgs], {
+      cwd: hub,
+      env,
+      encoding: "utf-8",
+      timeout: 180_000,
+    });
+    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  /** A fresh HOME, optionally with the sentinel an external provider drops. */
+  function freshHome(withSentinel: boolean): string {
+    const home = fs.mkdtempSync(path.join(base, "home-"));
+    if (withSentinel) {
+      fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".claude", ".managed"), "");
+    }
+    return home;
+  }
+
+  beforeAll(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-l47c-"));
+    hub = path.join(base, "hub");
+    const scaffoldHome = path.join(base, "scaffold-home");
+    fs.mkdirSync(scaffoldHome, { recursive: true });
+    const env = {
+      ...process.env,
+      HOME: scaffoldHome,
+      USERPROFILE: scaffoldHome,
+      NODE_NO_WARNINGS: "1",
+    };
+    const scaffold = spawnSync(
+      "node",
+      [CLI_L47, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+      { cwd: base, env, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (scaffold.status !== 0) throw new Error(`scaffold failed: ${scaffold.stdout}${scaffold.stderr}`);
+    const build = spawnSync("node", [CLI_L47, "build"], {
+      cwd: hub, env, encoding: "utf-8", timeout: 300_000,
+    });
+    if (build.status !== 0) throw new Error(`build failed: ${build.stdout}${build.stderr}`);
+  }, 600_000);
+
+  afterAll(() => {
+    if (base) fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("L47c-0 (CONTROL): with no sentinel the CLI DOES write ~/.claude — the comparison can see a write", () => {
+    const home = freshHome(false);
+    const before = snapshot(path.join(home, ".claude"));
+    const r = runInstallUser(home);
+    expect(r.status, r.out).toBe(0);
+    const after = snapshot(path.join(home, ".claude"));
+    expect(Object.keys(before)).toHaveLength(0);
+    expect(Object.keys(after).length).toBeGreaterThan(0);
+    expect(after[".agentboot-user-manifest.json"]).toBeDefined();
+  }, 300_000);
+
+  it("L47c-1: with the sentinel present, install-user stages and leaves ~/.claude byte-identical", () => {
+    const home = freshHome(true);
+    const claudeDir = path.join(home, ".claude");
+    const before = snapshot(claudeDir);
+    const r = runInstallUser(home);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("externally managed");
+    expect(snapshot(claudeDir)).toEqual(before);
+    expect(Object.keys(before)).toEqual([".managed"]);
+    // …and the handoff artifacts an external provider was promised do exist.
+    expect(fs.existsSync(path.join(hub, "dist", "claude-user", ".agentboot-handoff.json"))).toBe(true);
+  }, 300_000);
+
+  it("L47c-2: `--mode direct` against the sentinel is REFUSED, non-zero, and writes nothing", () => {
+    const home = freshHome(true);
+    const claudeDir = path.join(home, ".claude");
+    const before = snapshot(claudeDir);
+    const r = runInstallUser(home, ["--mode", "direct"]);
+    expect(r.status, r.out).not.toBe(0);
+    expect(r.out).toContain("Refusing a direct write");
+    expect(snapshot(claudeDir)).toEqual(before);
+  }, 300_000);
+
+  it("L47c-3: the env override is refused by the sentinel too, and names itself", () => {
+    const home = freshHome(true);
+    const claudeDir = path.join(home, ".claude");
+    const before = snapshot(claudeDir);
+    const r = runInstallUser(home, [], { [USER_LEVEL_MODE_ENV]: "direct" });
+    expect(r.status, r.out).not.toBe(0);
+    expect(r.out).toContain(USER_LEVEL_MODE_ENV);
+    expect(snapshot(claudeDir)).toEqual(before);
+  }, 300_000);
+
+  it("L47c-4: AGENTBOOT_USER_LEVEL_MODE=manifest keeps ~/.claude untouched with NO sentinel", () => {
+    // The env override end-to-end: the control case above proves this same
+    // invocation writes when the override is absent.
+    const home = freshHome(false);
+    const r = runInstallUser(home, [], { [USER_LEVEL_MODE_ENV]: "manifest" });
+    expect(r.status, r.out).toBe(0);
+    expect(snapshot(path.join(home, ".claude"))).toEqual({});
+  }, 300_000);
+
+  it("L47c-5: an unrecognized env mode is refused, not read as auto", () => {
+    const home = freshHome(false);
+    const r = runInstallUser(home, [], { [USER_LEVEL_MODE_ENV]: "manifest-only" });
+    expect(r.status, r.out).not.toBe(0);
+    expect(r.out).toContain("not one of auto, direct, manifest");
+    expect(snapshot(path.join(home, ".claude"))).toEqual({});
+  }, 300_000);
+
+  it("L47d-3: a mistyped `userLevel` is NAMED by the CLI, and nothing is written", () => {
+    // The flattening an operator actually writes: `"userLevel": "manifest"`
+    // instead of `{"mode": "manifest"}`. Untyped, `config.userLevel?.mode` is
+    // undefined, the mode resolves to auto, and an instruction never to touch
+    // ~/.claude performs a DIRECT WRITE with nothing printed.
+    //
+    // Asserting the exact wording matters: install-user has a dist-freshness gate
+    // that also exits non-zero, and editing the config makes dist stale. A bare
+    // `status !== 0` would pass for the wrong reason.
+    const cfgPath = path.join(hub, "agentboot.config.json");
+    const original = fs.readFileSync(cfgPath, "utf-8");
+    const home = freshHome(false);
+    try {
+      const cfg = JSON.parse(original);
+      cfg.userLevel = "manifest";
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+      const r = runInstallUser(home);
+      expect(r.status, r.out).not.toBe(0);
+      expect(r.out).toContain('"userLevel" is a string, expected an object');
+      expect(snapshot(path.join(home, ".claude"))).toEqual({});
+    } finally {
+      fs.writeFileSync(cfgPath, original);
+    }
+  }, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// L47d — `userLevel` belongs in the config shape table
+// ---------------------------------------------------------------------------
+
+/**
+ * CONFIG_SHAPE types every policy-bearing key so a wrong type is a named refusal
+ * rather than a stack frame. `userLevel` was missing from it, and it is the one
+ * key in the config whose wrong value writes OUTSIDE the repo — into a directory
+ * another tool may own.
+ *
+ * The completeness invariant in tests/config-shape.test.ts is derived from
+ * CAPABILITY_SUPPORT, which answers "which platform emits this key". `userLevel`
+ * is not platform-emitted, so that invariant can never require it — the same
+ * structural blind spot R4-1 documents for `output.tokenBudget`. Hence an
+ * explicit case here.
+ */
+describe("L47d — userLevel is type-checked like every other policy key", () => {
+  it("L47d-1: CONFIG_SHAPE carries the container AND the leaf", () => {
+    expect(CONFIG_SHAPE.some((r) => r.path === "userLevel" && r.kind === "object")).toBe(true);
+    expect(CONFIG_SHAPE.some((r) => r.path === "userLevel.mode" && r.kind === "string")).toBe(true);
+  });
+
+  it("L47d-2: both wrong shapes are named with the key and the expected type", () => {
+    expect(configShapeErrors({ userLevel: "manifest" })).toEqual([
+      '"userLevel" is a string, expected an object',
+    ]);
+    expect(configShapeErrors({ userLevel: { mode: ["manifest"] } })).toEqual([
+      '"userLevel.mode" is an array, expected a string',
+    ]);
+    // A correct config produces nothing — otherwise the two above prove nothing.
+    expect(configShapeErrors({ userLevel: { mode: "manifest" } })).toEqual([]);
   });
 });

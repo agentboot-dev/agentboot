@@ -1053,6 +1053,17 @@ export const CONFIG_SHAPE: ConfigShapeRule[] = [
   { path: "compliance.outputScan.scannerCommand", kind: "string" },
   { path: "compliance.outputScan.failMode", kind: "string" },
   { path: "compliance.outputScan.blocking", kind: "boolean" },
+  // L47d: the user-level slot. `userLevel.mode` decides whether AgentBoot writes
+  // ~/.claude on a developer's machine or stands off and stages for the tool that
+  // owns it — the one key in this table whose wrong value writes OUTSIDE the repo.
+  // It was untyped, so `userLevel: "manifest"` (the object flattened to the string
+  // the operator meant) read as `config.userLevel?.mode === undefined` and resolved
+  // to auto: an instruction to never touch ~/.claude became a direct write, with
+  // nothing printed. CAPABILITY_SUPPORT-derived completeness cannot see this key —
+  // it is not platform-emitted — which is the same blind spot R4-1 documents for
+  // output.tokenBudget one entry up.
+  { path: "userLevel", kind: "object" },
+  { path: "userLevel.mode", kind: "string" },
   { path: "ab", kind: "object" },
   { path: "ab.modelOverrides", kind: "object" },
   { path: "groups", kind: "object" },

@@ -14,6 +14,49 @@
  * - MUST NOT touch CLAUDE.md (safe append needs the external provider's markers).
  * - MUST NOT touch settings.json (safe merge needs the external provider's deep merge).
  * - Direct writes are additive only (no hooks, no permissions.deny) into slot dirs.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SENTINEL WINS OVER AN EXPLICIT "direct" (L47e ruling)
+ * ---------------------------------------------------------------------------
+ * The ratified design is that the sentinel "auto-flips to manifest-only and HARD
+ * REFUSES direct writes". The shipped code did the opposite: an explicit
+ * `mode: "direct"` beat a PRESENT sentinel and AgentBoot wrote into a directory
+ * another tool had claimed — silently, exit 0, with a green "Wrote N skill
+ * file(s)". A test pinned that precedence, so the contradiction was load-bearing
+ * rather than accidental.
+ *
+ * The design wins, and the test is what changed. The sentinel is the only signal
+ * that comes from the OTHER side of the boundary: it is how a provider we cannot
+ * see says "this slot is mine". A local config key overriding it makes the whole
+ * promise unenforceable — the provider's claim would hold exactly until someone
+ * set a key in a hub config it does not control and cannot read.
+ *
+ * "Hard refuse" here means: ~/.claude is not written, the content is still staged
+ * for handoff (that is what "flips to manifest-only" buys), the refusal is
+ * reported on the error channel, and the command exits NON-ZERO — because the
+ * operator's explicit instruction was not carried out and a silent downgrade to
+ * manifest mode would be the same green-over-a-refusal this codebase keeps
+ * closing. The escape hatch is the honest one: remove `~/.claude/.managed` if
+ * AgentBoot owns the slot after all.
+ *
+ * ---------------------------------------------------------------------------
+ * `userLevel.applyCommand` — STRUCK, not deferred (L47a ruling)
+ * ---------------------------------------------------------------------------
+ * The 2026-07-11 design listed an optional generic `userLevel.applyCommand`: a
+ * command AgentBoot would run to hand the staged tree to the external provider.
+ * It is struck before 1.0, for the reason the same design gives one line earlier:
+ * the AB↔provider contract is DATA (a staging dir + a manifest + a sentinel), not
+ * a code interface. `applyCommand` is the one piece that would have made it a code
+ * interface, and it would do so by turning a hub-synced config key into a command
+ * AgentBoot executes on every developer machine that runs `install-user` — a
+ * remote-code-execution surface handed to whoever can land a commit in the hub,
+ * paid for a handoff the provider can already perform by reading the manifest it
+ * asked for.
+ *
+ * Adding a config key later is additive and non-breaking; shipping an execution
+ * surface at 1.0 is not removable. Struck, with the door open: the manifest
+ * contract is public, so a provider that wants a push instead of a poll can ask
+ * for it against a real use, which no adopter has yet.
  */
 
 import fs from "node:fs";
@@ -41,19 +84,119 @@ export function isExternallyManaged(claudeDir: string = getClaudeDir()): boolean
 }
 
 /**
- * Resolve the effective write mode from config + the sentinel.
- * - "direct"  → always write ~/.claude directly.
- * - "manifest"→ always stage for handoff, never write ~/.claude.
- * - "auto" (default) → manifest if the slot is externally managed, else direct.
+ * Env override for the user-level write mode.
+ *
+ * The design called for "config + env override"; a `--mode` flag shipped instead,
+ * which does not serve the callers the override exists for — CI jobs and
+ * non-interactive installers that can set an environment variable but cannot edit
+ * a hub config they do not own, and cannot always reach the flag (an
+ * `install-user` invoked from a script they wrap).
+ */
+export const USER_LEVEL_MODE_ENV = "AGENTBOOT_USER_LEVEL_MODE";
+
+const VALID_USER_LEVEL_MODES = ["auto", "direct", "manifest"] as const;
+type ConfiguredUserLevelMode = (typeof VALID_USER_LEVEL_MODES)[number];
+
+export interface UserLevelResolution {
+  /** The mode that will actually be used. */
+  mode: UserLevelMode;
+  /** Where the request came from — for diagnostics, and to name the right key in a refusal. */
+  source: "config" | "env" | "default";
+  /**
+   * Non-null when the resolution is a REFUSAL the caller must surface and fail on.
+   * Not a warning: a refusal means the operator's explicit instruction was NOT
+   * carried out, and printing that as a note next to a success line is the
+   * green-over-a-failure class this product exists to refuse.
+   */
+  refusal: string | null;
+}
+
+/**
+ * Resolve the effective write mode from config, the env override, and the sentinel.
+ *
+ * Precedence, highest first:
+ *  1. the SENTINEL, for "direct" only — a present `~/.claude/.managed` refuses a
+ *     direct write no matter who asked for it (see the header ruling).
+ *  2. `userLevel.mode` in the config. The CLI's `--mode` flag arrives here too
+ *     (cli.ts injects it as config), which is why config beats env rather than
+ *     the other way around: env-over-config would let an inherited environment
+ *     variable silently beat the most explicit signal a caller has, which is the
+ *     flag-parsed-by-nobody class in a new place.
+ *  3. `AGENTBOOT_USER_LEVEL_MODE`.
+ *  4. "auto" → manifest if the slot is externally managed, else direct.
+ *
+ * An UNRECOGNIZED value from either source is a refusal, not a fallback to auto:
+ * quietly reinterpreting "manifest-only" or "Direct" as "auto" is how a request
+ * not to touch ~/.claude becomes a write. It fails toward the safe side
+ * (manifest) AND reports, so the caller exits non-zero.
+ */
+export function resolveUserLevelModeDetailed(
+  config?: AgentBootConfig,
+  claudeDir: string = getClaudeDir(),
+): UserLevelResolution {
+  const managed = isExternallyManaged(claudeDir);
+  const fromConfig = config?.userLevel?.mode;
+  const fromEnv = process.env[USER_LEVEL_MODE_ENV];
+
+  let requested: string;
+  let source: UserLevelResolution["source"];
+  if (fromConfig !== undefined && fromConfig !== null) {
+    requested = String(fromConfig);
+    source = "config";
+  } else if (fromEnv !== undefined && fromEnv.trim() !== "") {
+    requested = fromEnv.trim();
+    source = "env";
+  } else {
+    requested = "auto";
+    source = "default";
+  }
+
+  const origin = source === "env" ? USER_LEVEL_MODE_ENV : "userLevel.mode (config or --mode)";
+
+  if (!(VALID_USER_LEVEL_MODES as readonly string[]).includes(requested)) {
+    return {
+      mode: "manifest",
+      source,
+      refusal:
+        `user-level write mode "${requested}" from ${origin} is not one of ` +
+        `${VALID_USER_LEVEL_MODES.join(", ")}. Refusing to guess what was meant: ` +
+        "staged for handoff and left ~/.claude untouched.",
+    };
+  }
+
+  const mode = requested as ConfiguredUserLevelMode;
+
+  if (mode === "direct") {
+    if (managed) {
+      return {
+        mode: "manifest",
+        source,
+        refusal:
+          "Refusing a direct write to ~/.claude: a .managed sentinel says another tool owns " +
+          `that slot, while ${origin} asks for "direct". The sentinel wins — it is the only ` +
+          "signal from the side that owns the directory. The content was staged for handoff " +
+          "instead and ~/.claude was not touched. Remove ~/.claude/.managed if AgentBoot owns " +
+          'this slot, or drop the explicit "direct" mode.',
+      };
+    }
+    return { mode: "direct", source, refusal: null };
+  }
+
+  if (mode === "manifest") return { mode: "manifest", source, refusal: null };
+
+  return { mode: managed ? "manifest" : "direct", source, refusal: null };
+}
+
+/**
+ * The effective write mode. Thin shim over {@link resolveUserLevelModeDetailed}
+ * for callers that only need the verdict; anything that WRITES must use the
+ * detailed form, because a refusal is invisible here.
  */
 export function resolveUserLevelMode(
   config?: AgentBootConfig,
   claudeDir: string = getClaudeDir(),
 ): UserLevelMode {
-  const configured = config?.userLevel?.mode ?? "auto";
-  if (configured === "direct") return "direct";
-  if (configured === "manifest") return "manifest";
-  return isExternallyManaged(claudeDir) ? "manifest" : "direct";
+  return resolveUserLevelModeDetailed(config, claudeDir).mode;
 }
 
 /**
@@ -452,6 +595,13 @@ export interface InstallUserLevelResult {
   direct?: WriteDirectlyResult;
   /** Present when mode === "manifest". */
   staged?: StageResult;
+  /**
+   * Set when the requested mode was refused (sentinel vs an explicit "direct", or
+   * an unrecognized mode). Also pushed onto `staged.errors` so the CLI prints it
+   * and exits non-zero without needing to know this field exists — a refusal that
+   * only a programmatic caller can see is a refusal the operator never gets.
+   */
+  refusal?: string | null;
 }
 
 /**
@@ -466,13 +616,17 @@ export function installUserLevel(
   options?: { dryRun?: boolean; stagingDir?: string; claudeDir?: string },
 ): InstallUserLevelResult {
   const claudeDir = options?.claudeDir ?? getClaudeDir();
-  const mode = resolveUserLevelMode(config, claudeDir);
+  const resolved = resolveUserLevelModeDetailed(config, claudeDir);
 
-  if (mode === "direct") {
-    return { mode, direct: writeDirectly(distClaudeCorePath, options) };
+  if (resolved.mode === "direct") {
+    return { mode: resolved.mode, direct: writeDirectly(distClaudeCorePath, options), refusal: null };
   }
 
   const stagingDir = options?.stagingDir
     ?? path.join(path.resolve(distClaudeCorePath, "..", ".."), "claude-user");
-  return { mode, staged: stageForHandoff(distClaudeCorePath, stagingDir, options) };
+  const staged = stageForHandoff(distClaudeCorePath, stagingDir, options);
+  // The refusal leads: it is the reason this run is staging rather than writing,
+  // and it must be the first thing printed and the reason for the non-zero exit.
+  if (resolved.refusal) staged.errors.unshift(resolved.refusal);
+  return { mode: resolved.mode, staged, refusal: resolved.refusal };
 }
