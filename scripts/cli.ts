@@ -162,6 +162,28 @@ function collectGlobalArgs(opts: { config?: string }): string[] {
  * says so out loud rather than passing quietly, because "I checked nothing" and
  * "I checked everything and it was fine" must not print the same.
  */
+/**
+ * L46: `--config <path>` names the HUB. Every hub-relative path a command
+ * touches — the compiled tree, the source `core/` tree, the snapshot baseline,
+ * the hub's package.json — must be resolved against the directory that OWNS
+ * that config, never against `process.cwd()`.
+ *
+ * Honouring the flag for the config file and ignoring it for the artifact tree
+ * is worse than not honouring it at all. A plain "no dist/ here" error is at
+ * least visible; a foreign cwd that happens to contain its own `./dist` made
+ * `install-user` write THAT tree into ~/.claude while reading the named hub's
+ * `userLevel` config. Reproduced live: 6 skill files from a foreign cwd
+ * against the same hub that yields 5 from its own directory — a
+ * silently-wrong-hub install, at exit 0, with two green ticks.
+ *
+ * The default path is unchanged by construction: when no `--config` and no
+ * AGENTBOOT_HUB are given, `configPath` is `<cwd>/agentboot.config.json`, whose
+ * dirname is `cwd`.
+ */
+function hubDirOf(configPath: string): string {
+  return path.dirname(path.resolve(configPath));
+}
+
 function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, command: string): void {
   const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
   if (!fs.existsSync(distPath)) {
@@ -759,7 +781,9 @@ program
     // fs.existsSync(distCore). That is existence read as freshness, the exact
     // pattern the sync gate was written to kill: a failed build leaves dist/
     // byte-identical, so a revoked control installs with two green ticks.
-    const installUserDist = path.join(cwd, config?.output?.distPath ?? "./dist");
+    // L46: the tree we install FROM must be the hub named by --config, not
+    // whatever ./dist the operator happens to be standing next to.
+    const installUserDist = path.join(hubDirOf(configPath), config?.output?.distPath ?? "./dist");
     if (config) assertDistFreshOrExit(configPath, config, "install-user");
     // NF2-1: and when there is no config, the dimensions that need none still
     // apply. `if (config)` alone made this the one delivery channel a failed
@@ -1450,6 +1474,12 @@ program
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    // L46: every check below asks a question ABOUT the hub — does it have
+    // core/personas, is its dist/ fresh, do its composition overrides resolve.
+    // Anchoring them to cwd made `doctor --config <hub>` diagnose whatever
+    // directory the operator was standing in and attribute the verdict to the
+    // hub it had just named.
+    const hubDir = hubDirOf(configPath);
 
     if (fs.existsSync(configPath)) {
       ok(`agentboot.config.json found`);
@@ -1502,7 +1532,7 @@ program
         // the hub — which changes real behaviour (a local copy stops tracking
         // package updates) to satisfy a check that was wrong.
         const enabledPersonas = config.personas?.enabled ?? [];
-        const personasDir = path.join(cwd, "core", "personas");
+        const personasDir = path.join(hubDir, "core", "personas");
         const packagePersonasDir = path.join(ROOT, "core", "personas");
         /** Where this persona resolves from, hub first, or null if nowhere. */
         const resolvePersonaDir = (name: string): string | null => {
@@ -1555,7 +1585,7 @@ program
 
         // Check traits — same package-then-hub resolution as personas above.
         const enabledTraits = config.traits?.enabled ?? [];
-        const traitsDir = path.join(cwd, "core", "traits");
+        const traitsDir = path.join(hubDir, "core", "traits");
         const packageTraitsDir = path.join(ROOT, "core", "traits");
         let traitIssues = 0;
         let traitsScaffolded = 0;
@@ -1587,7 +1617,7 @@ program
         // Check core directories
         const coreDirs = ["core/personas", "core/traits", "core/instructions", "core/gotchas"];
         for (const dir of coreDirs) {
-          const fullDir = path.join(cwd, dir);
+          const fullDir = path.join(hubDir, dir);
           if (!fs.existsSync(fullDir)) {
             if (fixMode) {
               if (!dryRun) fs.mkdirSync(fullDir, { recursive: true });
@@ -1684,7 +1714,7 @@ program
         // `reports` posture (dist-consumers.ts): it says what is wrong instead
         // of refusing to run its other checks, and the finding counts as a
         // FAILED check, so `doctor` still exits non-zero.
-        const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+        const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath)) {
           const distFreshness = checkDistFreshness(distPath, config, path.dirname(configPath));
           if (distFreshness.fresh) {
@@ -1703,7 +1733,7 @@ program
             const compileScript = path.join(SCRIPTS_DIR, "compile.ts");
             const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
             const buildResult = spawnSync(tsx, [compileScript], {
-              cwd,
+              cwd: hubDir,
               encoding: "utf-8",
               stdio: ["pipe", "pipe", "pipe"],
               // Windows: the .bin/tsx shim is tsx.cmd — resolve it via the shell
@@ -1726,7 +1756,7 @@ program
         if (!isJson) { console.log(""); console.log(chalk.cyan("Composition")); }
 
         // 120a: Missing composition manifests
-        const distPath2 = path.resolve(cwd, config.output?.distPath ?? "./dist");
+        const distPath2 = path.resolve(hubDir, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath2)) {
           const manifestPath = path.join(distPath2, "claude", "core", "composition-manifest.json");
           if (fs.existsSync(manifestPath)) {
@@ -1740,23 +1770,23 @@ program
         const overrides = (config.composition as Record<string, unknown> | undefined)?.["overrides"] as Record<string, string> | undefined;
         if (overrides && typeof overrides === "object") {
           for (const [filePath] of Object.entries(overrides)) {
-            const fullOverridePath = path.join(cwd, filePath);
+            const fullOverridePath = path.join(hubDir, filePath);
             if (!fs.existsSync(fullOverridePath)) {
               warn(`Orphaned composition override: "${filePath}" does not exist`);
             }
           }
           if (Object.keys(overrides).length > 0) {
             const orphanCount = Object.keys(overrides).filter(
-              fp => !fs.existsSync(path.join(cwd, fp))
+              fp => !fs.existsSync(path.join(hubDir, fp))
             ).length;
             if (orphanCount === 0) ok(`All ${Object.keys(overrides).length} composition overrides reference existing files`);
           }
         }
 
         // 120c: Shadow detection (filename collisions across scopes)
-        const coreDir = path.join(cwd, "core");
-        const groupsDir = path.join(cwd, "groups");
-        const teamsDir = path.join(cwd, "teams");
+        const coreDir = path.join(hubDir, "core");
+        const groupsDir = path.join(hubDir, "groups");
+        const teamsDir = path.join(hubDir, "teams");
         const coreFiles = new Set<string>();
         if (fs.existsSync(coreDir)) {
           function walkCore(dir: string): void {
@@ -2123,7 +2153,11 @@ program
     // A-class: snapshots and behavioral runs are claims ABOUT the compiled
     // tree. A green run against a superseded tree is a false pass, and
     // --snapshot banks it as the baseline every later run is compared to.
-    const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
+    // L46: dist/, the snapshot baseline and the behavioral test dir are all
+    // hub-relative. Resolving them from cwd made `test --config <hub>` snapshot
+    // and regress a tree that has nothing to do with the hub it named.
+    const hubDir = hubDirOf(configPath);
+    const distPath = path.resolve(hubDir, config?.output?.distPath ?? "./dist");
     if (config) assertDistFreshOrExit(configPath, config, "test");
     // NF4-3: and when there is no config, the dimensions that need none still
     // apply. `if (config)` with no `else` left `test` the one gated consumer a
@@ -2147,7 +2181,7 @@ program
         process.exit(1);
       }
       const baseline = createSnapshot(distPath);
-      const snapshotPath = path.resolve(cwd, opts["snapshotFile"] as string);
+      const snapshotPath = path.resolve(hubDir, opts["snapshotFile"] as string);
       saveSnapshot(baseline, snapshotPath);
       console.log(chalk.green(`  ✓ Snapshot saved (${baseline.entries.length} files) → ${path.relative(cwd, snapshotPath)}\n`));
     }
@@ -2155,7 +2189,7 @@ program
     // Regression test
     if (opts["regression"]) {
       console.log(chalk.cyan("  Running regression test..."));
-      const snapshotPath = path.resolve(cwd, opts["snapshotFile"] as string);
+      const snapshotPath = path.resolve(hubDir, opts["snapshotFile"] as string);
       const baseline = loadSnapshot(snapshotPath);
       if (!baseline) {
         console.log(chalk.red(`  Snapshot not found: ${snapshotPath}`));
@@ -2182,7 +2216,7 @@ program
     // Behavioral tests
     if (opts["behavioral"]) {
       console.log(chalk.cyan("  Running behavioral tests...\n"));
-      const testDir = path.resolve(cwd, opts["testDir"] as string);
+      const testDir = path.resolve(hubDir, opts["testDir"] as string);
       const run = runBehavioralTestsDetailed(testDir, distPath);
       const results = run.results;
 
@@ -2404,7 +2438,8 @@ program
     // exit 0. `status` takes the `reports` posture (dist-consumers.ts): it
     // exists to describe the hub, so it says what is wrong rather than
     // refusing to say anything.
-    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+    // L46: hub-relative, so it follows --config.
+    const distPath = path.resolve(hubDirOf(configPath), config.output?.distPath ?? "./dist");
     if (fs.existsSync(distPath)) {
       const stamp = readDistStamp(distPath);
       if (!stamp) {
@@ -2470,10 +2505,16 @@ program
     const severityOrder = { info: 0, warn: 1, error: 2 };
     const minSeverity = severityOrder[opts.severity as keyof typeof severityOrder] ?? 1;
 
-    const personasDir = path.join(cwd, "core", "personas");
+    // L46: lint's subject is the hub named by --config, sources and compiled
+    // tree alike.
+    const hubDir = hubDirOf(configPath);
+    const personasDir = path.join(hubDir, "core", "personas");
     const enabledPersonas = config.personas?.enabled ?? [];
     const enabledTraits = config.traits?.enabled ?? [];
     const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
+
+    // L46: lint's compiled-output reads are hub-relative too.
+    const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
 
     // Vague language patterns
     const vaguePatterns = [
@@ -2523,6 +2564,7 @@ program
         });
       }
 
+
       // Line count check
       if (lines.length > 1000) {
         findings.push({ rule: "prompt-too-long", severity: "error", file: `core/personas/${personaName}/SKILL.md`, message: `${lines.length} lines — max recommended is 1000` });
@@ -2570,7 +2612,7 @@ program
     }
 
     // Also lint traits
-    const traitsDir = path.join(cwd, "core", "traits");
+    const traitsDir = path.join(hubDir, "core", "traits");
     if (fs.existsSync(traitsDir)) {
       for (const file of fs.readdirSync(traitsDir).filter((f) => f.endsWith(".md"))) {
         const content = fs.readFileSync(path.join(traitsDir, file), "utf-8");
@@ -2590,7 +2632,9 @@ program
 
     // Compiled output token check — CLAUDE.md content costs money on every turn
     // because it's injected as system-reminder, not in the cached system prompt.
-    const distClaudeMd = path.join(cwd, "dist", "claude", "core", "CLAUDE.md");
+    // L46: hub-relative, and it honours output.distPath rather than assuming
+    // the literal "dist" a hub may well have renamed.
+    const distClaudeMd = path.join(distPath, "claude", "core", "CLAUDE.md");
     // A-class: lint's dist/ read is one advisory token count. Refusing to lint
     // the SOURCES because the compiled tree is stale would be an outage, so
     // lint takes the `reports` posture — but a token count taken from a
@@ -2605,7 +2649,7 @@ program
       const importPattern = /^@(.+)$/gm;
       let importMatch;
       while ((importMatch = importPattern.exec(compiled)) !== null) {
-        const importPath = path.join(cwd, importMatch[1]!);
+        const importPath = path.join(hubDir, importMatch[1]!);
         if (fs.existsSync(importPath)) {
           totalContent += "\n" + fs.readFileSync(importPath, "utf-8");
         }
@@ -3779,7 +3823,10 @@ program
     // directory. That is a higher-consequence path than `audit`, which was
     // gated first, and it was shipping superseded policy at exit 0.
     assertDistFreshOrExit(configPath, config, "export");
-    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+    // L46: what export READS is hub-relative and follows --config. Where it
+    // WRITES stays cwd-relative — that is the operator saying "put it here",
+    // and the delete-guard below is phrased against cwd on purpose.
+    const distPath = path.resolve(hubDirOf(configPath), config.output?.distPath ?? "./dist");
     const format = opts.format;
 
     console.log(chalk.bold(`\nAgentBoot — export (${format})\n`));
@@ -3894,7 +3941,9 @@ program
     } else if (format === "agentskills") {
       // AB-162: agentskills.io listing export
       const { generateSkillsIndex } = await import("./lib/export.js");
-      const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf-8"));
+      // L46: the hub's package.json, not the foreign cwd's (which may not exist
+      // at all — this line threw ENOENT rather than exporting the named hub).
+      const pkg = JSON.parse(fs.readFileSync(path.join(hubDirOf(configPath), "package.json"), "utf-8"));
       const index = generateSkillsIndex(distPath, {
         org: config.org,
         orgDisplayName: config.orgDisplayName as string | undefined,
@@ -4173,7 +4222,10 @@ program
     }
 
     const enabledPersonas = config.personas?.enabled ?? [];
-    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+    // L46: hub-relative, so it follows --config. A cost estimate is a claim
+    // about the named hub's compiled personas; taking the sizes from a foreign
+    // ./dist priced somebody else's tree under this hub's name.
+    const distPath = path.resolve(hubDirOf(configPath), config.output?.distPath ?? "./dist");
 
     if (!fs.existsSync(distPath)) {
       console.error(chalk.red("dist/ not found. Run `agentboot build` first."));
