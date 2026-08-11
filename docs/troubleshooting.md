@@ -107,7 +107,21 @@ After building and syncing, verify the output exists at `.claude/agents/` and `.
 
 ### Hooks not executing
 
-Verify the hook scripts are executable (`chmod +x .claude/hooks/*.sh`) and that `jq` is installed on the developer's machine. Run `agentboot doctor` to check environment dependencies.
+Verify the hook scripts are executable (`chmod +x .claude/hooks/*.sh`).
+
+**`jq` is not a requirement.** Compiled hooks parse their JSON input with `node -e`,
+never `jq`, precisely so they run on Windows/git-bash where `jq` is usually absent.
+Installing `jq` will not make a hook start working, and its absence is not the cause.
+
+What hooks do require is **`node` on `PATH`** — every compiled hook guards on it with
+`command -v node` and, depending on the hook, either blocks or exits quietly when it is
+missing. If `node` is missing you may see hooks that appear to run and enforce nothing.
+Check with `command -v node` in the same shell the agent launches hooks from; on
+Windows/git-bash that shell often has a different `PATH` than your terminal.
+
+`agentboot doctor`'s Environment section reports Node.js (the `>=22` floor), `git`, and
+Claude Code. It inspects the hub, not the developer machine's shell utilities — it will
+not tell you that a spoke's hook is missing an interpreter.
 
 ## Still stuck?
 

@@ -1,7 +1,7 @@
 /**
  * Documentation claims, measured against the code that has to honour them.
  *
- * These cases exist because a doc said something the product does not do, and
+ * Both cases here exist because a doc said something the product does not do, and
  * nothing in the suite could tell. A prose claim with no test behind it is the same
  * defect class as a control that validates and enforces nothing: it reads green.
  *
@@ -11,6 +11,14 @@
  *       and the result label and NOTHING else; content is resolved from the repo
  *       entry's `group`/`team`. Every package under one entry therefore gets the same
  *       content. The doc now says "write target, not scope" — this pins that.
+ *
+ * L41 — `docs/troubleshooting.md` told the reader to install `jq` and to run
+ *       `agentboot doctor` to check for it. Hooks have not used `jq` since the
+ *       Windows/git-bash portability pass, and doctor never checked for it. The
+ *       scaffold emitted by `agentboot add hook` must stay jq-free, and must guard its
+ *       `node` invocation the way every compiled hook does — an unguarded `node -e` on
+ *       a machine without node yields an empty parse and a hook that exits 0 having
+ *       enforced nothing.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -22,6 +30,7 @@ import os from "node:os";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+const CLI = path.join(ROOT, "scripts", "cli.ts");
 
 function run(script: string, cwd = ROOT): string {
   return execSync(`${TSX} ${script}`, {
@@ -207,5 +216,53 @@ describe("L34: separate repo entries give a monorepo per-package divergence", ()
     expect(api.files.length).toBeGreaterThan(0);
     expect(web.files.length).toBeGreaterThan(0);
     expect(fs.existsSync(path.join(syncTarget, ".claude")), "no entry targets the repo root").toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L41: the `agentboot add hook` scaffold is jq-free and guards node
+// ---------------------------------------------------------------------------
+
+/** Executable lines only — a `#` comment naming jq is documentation, not a dependency. */
+function executableLines(script: string): string[] {
+  return script
+    .split("\n")
+    .filter((l) => l.trim() !== "" && !l.trim().startsWith("#"));
+}
+
+describe("L41: troubleshooting.md — hooks need node, never jq", () => {
+  let tmpDir: string;
+  let scaffold: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-doc-hook-"));
+    run(`${CLI} add hook doc-claim-hook`, tmpDir);
+    scaffold = fs.readFileSync(path.join(tmpDir, "hooks", "doc-claim-hook.sh"), "utf-8");
+  }, 60_000);
+
+  afterAll(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("scaffolds a hook that invokes jq nowhere", () => {
+    const offending = executableLines(scaffold).filter((l) => /\bjq\b/.test(l));
+    expect(
+      offending,
+      "troubleshooting.md tells adopters jq is NOT required. A scaffold that shells " +
+      "out to jq breaks that promise on Windows/git-bash, where jq is absent.",
+    ).toEqual([]);
+  });
+
+  it("troubleshooting.md does not name jq as a requirement", () => {
+    const doc = fs.readFileSync(path.join(ROOT, "docs", "troubleshooting.md"), "utf-8");
+    for (const line of doc.split("\n")) {
+      if (!/\bjq\b/.test(line)) continue;
+      expect(
+        line,
+        "troubleshooting.md may explain that jq is NOT needed, but must never " +
+        "instruct the reader to install it — no hook has used jq since the " +
+        "Windows/git-bash portability pass.",
+      ).toMatch(/not a requirement|never `jq`|will not make/i);
+    }
   });
 });
