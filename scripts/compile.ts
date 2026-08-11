@@ -2426,16 +2426,27 @@ function generateCopilotHooks(
  * Generate .agents/skills/<persona>/SKILL.md for Codex + cross-tool consumption.
  * Copies from dist/skill/ output (already compiled).
  */
+/**
+ * Mirror `dist/skill/<scopePath>/` into `<platform>/<scopePath>/.agents/skills/`.
+ *
+ * Returns the number of SKILL.md files written, so the caller can report what
+ * actually happened. It previously returned void and every call site printed an
+ * unconditional green tick — including on the early return below, where the
+ * function writes nothing at all. That is the same "Exported 0 skill(s)" shape
+ * already fixed once on this branch: a success line is a claim about the
+ * filesystem, and a claim nothing checks is how an empty deliverable ships.
+ */
 function generateCrossToolSkills(
   distPath: string,
   scopePath: string,
   targetPlatformDir: string,
-): void {
+): number {
   const skillSrcDir = path.join(distPath, "skill", scopePath);
-  if (!fs.existsSync(skillSrcDir)) return;
+  if (!fs.existsSync(skillSrcDir)) return 0;
 
   const agentsSkillsDir = path.join(distPath, targetPlatformDir, scopePath, ".agents", "skills");
 
+  let written = 0;
   for (const entry of fs.readdirSync(skillSrcDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (entry.name === "instructions" || entry.name === "gotchas") continue; // skip non-persona dirs
@@ -2444,8 +2455,33 @@ function generateCrossToolSkills(
       const destDir = path.join(agentsSkillsDir, entry.name);
       ensureDir(destDir);
       fs.copyFileSync(skillMd, path.join(destDir, "SKILL.md"));
+      written++;
     }
   }
+  return written;
+}
+
+/**
+ * Report a `.agents/skills/` emission truthfully.
+ *
+ * Silence is not success and neither is a green tick: when nothing was written
+ * the operator is told so, and told WHY, because the only cause is a config
+ * one line away — `.agents/skills/` is mirrored from `dist/skill/`, so without
+ * "skill" in personas.outputFormats there is nothing to mirror.
+ */
+function logCrossToolSkills(scopePath: string, count: number, outputFormats: readonly string[]): void {
+  const where = scopePath === "core" ? "" : ` [${scopePath}]`;
+  if (count > 0) {
+    log(chalk.green(`  .agents/skills/ generated (cross-tool)${where} — ${count} skill(s)`));
+    return;
+  }
+  if (!outputFormats.includes("skill")) {
+    log(chalk.yellow(
+      `  ⚠ .agents/skills/${where}: nothing emitted — add "skill" to personas.outputFormats`
+    ));
+    return;
+  }
+  log(chalk.yellow(`  ⚠ .agents/skills/${where}: nothing emitted — no persona SKILL.md at this scope`));
 }
 
 // ---------------------------------------------------------------------------
@@ -4357,8 +4393,8 @@ function main(): void {
     log(chalk.green("  AGENTS.md generated"));
 
     // Phase 11 A1.7-3: Broaden agents platform — emit .agents/skills/ alongside AGENTS.md
-    generateCrossToolSkills(distPath, "core", "agents");
-    log(chalk.green("  .agents/skills/ generated (cross-tool)"));
+    const coreSkillCount = generateCrossToolSkills(distPath, "core", "agents");
+    logCrossToolSkills("core", coreSkillCount, outputFormats);
   }
 
   // A1.5: build the portable compliance hook scripts ONCE. Every platform emitter
@@ -4390,7 +4426,8 @@ function main(): void {
     // .codex/hooks.json — compliance hooks in Codex format
     generateCodexHooks(config, distPath, "core", complianceHookScripts);
     // .agents/skills/ — cross-tool skills
-    generateCrossToolSkills(distPath, "core", "codex");
+    const codexSkillCount = generateCrossToolSkills(distPath, "core", "codex");
+    logCrossToolSkills("core", codexSkillCount, outputFormats);
     log(chalk.green("  → dist/codex/"));
   }
 
@@ -4774,6 +4811,16 @@ function main(): void {
         }
         generateAgentsMd(config, distPath, nodePersonaConfigs, instrFileNames, lexiconEntries,
           coreInstructionsDir, packageInstructionsDir, traits, coreGotchasDir, `nodes/${nodePath}`);
+
+        // L45: this was missing, and the omission was invisible. Both
+        // generateCrossToolSkills call sites passed the literal "core", so a
+        // group or team scope got a per-scope AGENTS.md and a populated
+        // dist/skill/nodes/<path>/ — but no .agents/skills/ beside them. The
+        // scoped personas an org configured were simply absent from the
+        // cross-tool surface at every scope below the root, with a green tick
+        // printed for core standing in for the whole build.
+        const nodeSkillCount = generateCrossToolSkills(distPath, `nodes/${nodePath}`, "agents");
+        logCrossToolSkills(`nodes/${nodePath}`, nodeSkillCount, outputFormats);
       }
     }
 
