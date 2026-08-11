@@ -122,6 +122,13 @@ describe("B2/B3: pluggable scanners + output blocking", () => {
     // Invoke via "bash <posix-path>" so the embedded command works in git-bash
     // on Windows too (a backslashed C:\ path would be mangled by bash).
     const posix = (p: string) => p.replace(/\\/g, "/");
+    // L40 — DELIBERATELY NOT GUARDED. `mode: 0o755` looks POSIX-only but is
+    // inert here: every scanner is invoked as `bash <path>`, never executed
+    // directly, so the execute bit is never consulted and Windows ignoring it
+    // changes nothing. bash ships on GitHub's Windows runners, which is what
+    // the posix() path rewriting above already exists to accommodate. Left
+    // running on Windows on purpose — this is scanner-blocking behaviour that
+    // should be verified on every platform, not skipped to keep a leg green.
     const blockScannerFile = path.join(hub, "block-scanner.sh");
     fs.writeFileSync(blockScannerFile, "#!/bin/bash\ncat >/dev/null\necho policy-phi-042\nexit 2\n", { mode: 0o755 });
     const blockScanner = `bash ${posix(blockScannerFile)}`;

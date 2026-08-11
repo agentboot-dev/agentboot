@@ -342,7 +342,17 @@ describe("R3 — the limit is validated on RANGE, not just on FORM", () => {
  * `head` stub earlier on PATH that exits 1, which is the only way to exercise
  * the branch without an unreliable fd trick.
  */
-describe("R3/NF2-6 — a failed read is not an empty payload", () => {
+/*
+ * L40 — PLATFORM GUARD. The mechanism here is a POSIX one end to end: an
+ * extensionless `head` script made executable with `chmod 0o755` and placed
+ * earlier on PATH so the hook's own `head` resolves to it. Windows has no
+ * execute bit for Node's chmod to set (it maps only the read-only attribute)
+ * and resolves commands through PATHEXT, so the stub would not reliably shadow
+ * anything — the test would not fail honestly, it would stop exercising the
+ * branch while still reporting green. A check that cannot fail is not a check,
+ * so it is skipped rather than left to pass vacuously.
+ */
+describe.skipIf(process.platform === "win32")("R3/NF2-6 — a failed read is not an empty payload", () => {
   let stubDir = "";
   beforeAll(() => {
     stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-headstub-"));
@@ -421,7 +431,13 @@ describe("R1-1/R1-2 — one prelude, not four copies", () => {
  * Exercised with both pipeline stages, because fixing only the one that was
  * reported is how this class keeps coming back.
  */
-describe("NF4-1 — a payload of unknown size is not a payload of size zero", () => {
+/*
+ * L40 — PLATFORM GUARD, same PATH-shadowing mechanism and same reasoning as
+ * R3/NF2-6 above: `chmod 0o755` on an extensionless `wc`/`tr` stub is a no-op
+ * on Windows, so the stub would not shadow the real tool and these tests would
+ * pass without ever exercising the failure branch they exist to pin.
+ */
+describe.skipIf(process.platform === "win32")("NF4-1 — a payload of unknown size is not a payload of size zero", () => {
   let stubDir = "";
   afterAll(() => {
     if (stubDir) fs.rmSync(stubDir, { recursive: true, force: true });

@@ -718,7 +718,12 @@ describe("scaffoldHub: non-destructive safety guarantees", () => {
     fs.rmSync(parent, { recursive: true, force: true });
   });
 
-  it("preserves file permissions of pre-existing repos.json", () => {
+  // L40 — PLATFORM GUARD. This asserts POSIX mode preservation. Windows has no
+  // POSIX mode: Node's chmod maps only the read-only attribute, so 0o644 is not
+  // what gets stored and `beforeMode === afterMode` would hold no matter what
+  // scaffoldHub did to the file. That is worse than a skip — it is a green
+  // assertion that stopped testing anything.
+  it.skipIf(process.platform === "win32")("preserves file permissions of pre-existing repos.json", () => {
     const reposPath = path.join(tempDir, "repos.json");
     fs.writeFileSync(reposPath, "[]\n");
     fs.chmodSync(reposPath, 0o644);

@@ -231,8 +231,22 @@ describe("A1/A2-residual — HUB_SOURCE_ROOTS covers what the compiler reads", (
  * is a plausible org setup, and this is precisely the FAIL-CLOSED-on-unknown
  * case: an unreadable file already folds `<unreadable>` into the hash, but a
  * symlink was silently invisible.
+ *
+ * L40 — PLATFORM GUARD. Every case here creates a FILE symlink (and one
+ * directory symlink, and one symlink cycle) purely to assert what the digest
+ * does with them. On Windows, creating a file symlink requires
+ * SeCreateSymbolicLinkPrivilege — absent on a default GitHub-hosted runner and
+ * on a normal developer account — so `fs.symlinkSync` throws EPERM before any
+ * assertion is reached, and every test in the block fails for a reason that has
+ * nothing to do with the digest.
+ *
+ * Unlike the node_modules link in marketplace-secret-scan.test.ts, there is no
+ * portable substitute here: a junction is a directory-only construct, and the
+ * behaviour under test IS symlink traversal. So this is skipped on Windows
+ * rather than faked. What that costs is stated plainly: on Windows the digest's
+ * symlink-following is UNVERIFIED, not verified-and-passing.
  */
-describe("NF2-2 — the source digest follows symlinks, because the compiler does", () => {
+describe.skipIf(process.platform === "win32")("NF2-2 — the source digest follows symlinks, because the compiler does", () => {
   function hubWithLinkedInstruction(body: string): { hub: string; target: string } {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-symlink-"));
     const hub = path.join(base, "hub");

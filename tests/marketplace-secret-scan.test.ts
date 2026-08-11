@@ -51,7 +51,22 @@ beforeEach(() => {
   for (const d of ["bin", "scripts", "core", "package.json", "node_modules"]) {
     const src = path.join(ROOT, d);
     if (!fs.existsSync(src)) continue;
-    if (d === "node_modules") fs.symlinkSync(src, path.join(snap, d));
+    // L40: a plain directory symlink needs SeCreateSymbolicLinkPrivilege on
+    // Windows and throws EPERM without it. This is a module-level beforeEach,
+    // so that EPERM failed EVERY test in the file — including the second
+    // describe, which touches nothing platform-specific.
+    //
+    // Guarding the tests would have been the cheap fix and the wrong one: this
+    // file is the pre-publish SECRET SCAN's only end-to-end coverage, and
+    // skipping it on Windows to keep the Windows leg green is the same
+    // green-over-nothing trade the product exists to refuse. A junction is the
+    // portable equivalent for a directory link, needs no privilege, and keeps
+    // the scan under test on every platform. The link is pure scaffolding —
+    // it exists so the fixture does not copy node_modules — so nothing about
+    // what is asserted depends on which link type carries it.
+    if (d === "node_modules") {
+      fs.symlinkSync(src, path.join(snap, d), process.platform === "win32" ? "junction" : "dir");
+    }
     else fs.cpSync(src, path.join(snap, d), { recursive: true });
   }
   personaDir = path.join(snap, "core", "personas", "code-reviewer");
