@@ -836,7 +836,8 @@ program
       console.error(chalk.red("--mode must be one of: auto, direct, manifest"));
       process.exit(1);
     }
-    const { installUserLevel } = await import("./lib/user-scope.js");
+    const { installUserLevel, resolveUserLevelModeDetailed, isExternallyManaged, USER_LEVEL_MODE_ENV } =
+      await import("./lib/user-scope.js");
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
     const configPath = globalOpts.config
@@ -896,7 +897,31 @@ program
     } else {
       const s = res.staged!;
       for (const e of s.errors) console.log(chalk.red(`  ✗ ${e}`));
-      console.log(chalk.yellow(`  ~/.claude is externally managed — ${opts.dryRun ? "would stage" : "staged"} ${s.staged.length} file(s) for handoff.`));
+      // The reason this run staged instead of writing was a FIXED string:
+      // "~/.claude is externally managed". Manifest mode has four causes and
+      // only one of them is that. `--mode manifest`, `userLevel.mode` in the
+      // hub config, and the env override all reach here on a machine with no
+      // sentinel anywhere — and the line asserted, in the present tense, that
+      // some other tool owns the operator's ~/.claude. An operator debugging
+      // "why did AgentBoot not write my home directory" was sent to look for a
+      // sentinel that does not exist, and a support transcript containing that
+      // line is evidence for a fact that was never checked.
+      //
+      // Re-resolving is pure — same config, same env, same directory the
+      // install just used — so it reports the cause that actually fired rather
+      // than a second, drifting guess at it.
+      const resolution = resolveUserLevelModeDetailed(effectiveConfig as AgentBootConfig);
+      const why = res.refusal
+        // The refusal text is already printed above, in red, as an error.
+        ? "the requested write mode was refused"
+        : isExternallyManaged()
+        ? "~/.claude is externally managed (a .managed sentinel claims that slot)"
+        : resolution.source === "env"
+        ? `manifest mode was requested via ${USER_LEVEL_MODE_ENV}`
+        : resolution.source === "config"
+        ? `manifest mode was requested explicitly (${opts.mode ? "--mode manifest" : "userLevel.mode in the hub config"})`
+        : "manifest mode was selected";
+      console.log(chalk.yellow(`  ${opts.dryRun ? "Would stage" : "Staged"} ${s.staged.length} file(s) for handoff — ${why}.`));
       console.log(chalk.gray(`  Staging dir: ${s.stagingDir}`));
       console.log(chalk.gray(`  Manifest:    ${s.manifestPath}`));
       if (s.errors.length) process.exit(1);
