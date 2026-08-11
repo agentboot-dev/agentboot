@@ -2502,6 +2502,8 @@ program
     }
 
     const findings: Finding[] = [];
+    /** Source-file estimates, kept only to contrast with the composed number. */
+    const sourceTokens = new Map<string, number>();
     const severityOrder = { info: 0, warn: 1, error: 2 };
     const minSeverity = severityOrder[opts.severity as keyof typeof severityOrder] ?? 1;
 
@@ -2512,9 +2514,47 @@ program
     const enabledPersonas = config.personas?.enabled ?? [];
     const enabledTraits = config.traits?.enabled ?? [];
     const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
+    const tokenFailAt = config.output?.tokenBudget?.failAt;
 
-    // L46: lint's compiled-output reads are hub-relative too.
+    // ---- L33: lint was measuring the PRE-COMPOSITION source ---------------
+    //
+    // The persona a model actually loads is the COMPOSED artifact: SKILL.md
+    // plus its traits, gotchas and group/team overlays. lint read
+    // core/personas/<n>/SKILL.md and divided by four, so its error-severity
+    // `prompt-too-long` rule was scored against a number that is a fraction of
+    // the real one. On this repo the largest SOURCE is ~3,331 estimated tokens
+    // against the 8,000 default — the error branch could not fire at all —
+    // while three personas are 27–49% OVER budget once composed (10,131 /
+    // 11,244 / 7,828 in dist/persona-sizes.json). A budget check that cannot
+    // reach its own threshold is a green surface over an unmeasured control,
+    // and `compile.ts` had already fixed this identical defect on the build
+    // side (B11: "prompt size is a property of the composed persona").
+    //
+    // The composed sizes come from dist/persona-sizes.json, which every
+    // successful build writes. When that file is absent lint SAYS SO
+    // (`compiled-size-unknown`) rather than quietly measuring nothing, because
+    // a silent skip would reproduce the same defect one file over.
     const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
+    const personaSizesPath = path.join(distPath, "persona-sizes.json");
+    const personaSizesLabel = path.relative(hubDir, personaSizesPath).split(path.sep).join("/")
+      || personaSizesPath;
+    let composedSizes: Record<string, number> | null = null;
+    let composedSizesProblem: string | null = null;
+    if (!fs.existsSync(personaSizesPath)) {
+      composedSizesProblem = "no such file — run `agentboot build` (every successful build writes it)";
+    } else {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(personaSizesPath, "utf-8")) as { personas?: unknown };
+        const personas = parsed.personas;
+        if (personas && typeof personas === "object" && !Array.isArray(personas)) {
+          composedSizes = personas as Record<string, number>;
+        } else {
+          composedSizesProblem = "the file carries no `personas` object — rebuild with `agentboot build`";
+        }
+      } catch (e: unknown) {
+        composedSizesProblem = `unreadable (${e instanceof Error ? e.message : String(e)}) — rebuild with \`agentboot build\``;
+      }
+    }
 
     // Vague language patterns
     const vaguePatterns = [
@@ -2546,24 +2586,28 @@ program
       const content = fs.readFileSync(skillPath, "utf-8");
       const lines = content.split("\n");
 
-      // Token budget check
+      // Token budget check — SOURCE only. This is a source-hygiene signal, not
+      // the persona's real cost; the composed number is checked below and is
+      // the one the budget is about. The message says which it is so a green
+      // line here can never be read as "this persona fits".
       const estimatedTokens = Math.ceil(content.length / 4);
       if (estimatedTokens > tokenBudget) {
         findings.push({
           rule: "prompt-too-long",
           severity: "error",
           file: `core/personas/${personaName}/SKILL.md`,
-          message: `Estimated ${estimatedTokens} tokens exceeds budget of ${tokenBudget}`,
+          message: `Source SKILL.md alone is ~${estimatedTokens} tokens, over the ${tokenBudget} budget before any trait or overlay is composed in`,
         });
       } else if (estimatedTokens > tokenBudget * 0.8) {
         findings.push({
           rule: "prompt-too-long",
           severity: "warn",
           file: `core/personas/${personaName}/SKILL.md`,
-          message: `Estimated ${estimatedTokens} tokens — approaching budget of ${tokenBudget}`,
+          message: `Source SKILL.md alone is ~${estimatedTokens} tokens — approaching the ${tokenBudget} budget before composition`,
         });
       }
 
+      sourceTokens.set(personaName, estimatedTokens);
 
       // Line count check
       if (lines.length > 1000) {
@@ -2609,6 +2653,87 @@ program
           message: "No '## Output Format' section found",
         });
       }
+    }
+
+    // ---- L33: the composed budget, checked over the ENABLED personas --------
+    //
+    // Deliberately NOT inside the source loop above. That loop `continue`s on a
+    // persona with no local core/personas/<n>/SKILL.md, and a hub scaffolded by
+    // `agentboot install --hub` has NO local persona sources at all — its
+    // personas come from the package. Hanging the composed check off the source
+    // loop therefore skipped it entirely on the default shape a new adopter
+    // gets: reproduced on a fresh hub whose four composed personas are
+    // 7,640–11,244 tokens against the 8,000 default, where `lint` printed
+    // "✓ No issues found". The composed budget is a property of the ENABLED
+    // set, so it is iterated over the enabled set.
+    //
+    // Severity split, and the reason for it:
+    //   failAt exceeded  -> ERROR (exit 1). `failAt` is a gate the operator
+    //     opted into, and `compile.ts` already FAILS THE BUILD on it. lint
+    //     reporting a warning for a condition that breaks the build would make
+    //     lint the greener of two surfaces measuring the same number — the
+    //     false-green class this project keeps finding.
+    //   warnAt exceeded  -> WARN. `warnAt` is advisory by design (config.ts:
+    //     "warnAt (default 8000) warns; failAt (opt-in) FAILS the build").
+    //     Promoting it to an error in lint would make lint stricter than the
+    //     build on every hub that never asked for a gate, and a linter that
+    //     fails a hub the build accepts is one people stop running.
+    // The two surfaces therefore agree, and `failAt` stays the single place an
+    // operator decides how hard the budget bites.
+    if (composedSizes) {
+      for (const personaName of enabledPersonas) {
+        if (opts.persona && personaName !== opts.persona) continue;
+        const composed = composedSizes[personaName];
+        if (typeof composed !== "number") {
+          findings.push({
+            rule: "compiled-size-unknown",
+            severity: "warn",
+            file: personaSizesLabel,
+            message: `No composed size recorded for '${personaName}' — its budget went UNCHECKED. Rebuild with \`agentboot build\`.`,
+          });
+          continue;
+        }
+        const src = sourceTokens.get(personaName);
+        const contrast = src === undefined ? "" : ` (source SKILL.md alone is ~${src})`;
+        if (tokenFailAt !== undefined && composed > tokenFailAt) {
+          findings.push({
+            rule: "compiled-too-large",
+            severity: "error",
+            file: personaSizesLabel,
+            message: `Composed '${personaName}' is ~${composed} tokens, over output.tokenBudget.failAt (${tokenFailAt})${contrast}`,
+          });
+        } else if (composed > tokenBudget) {
+          findings.push({
+            rule: "compiled-too-large",
+            severity: "warn",
+            file: personaSizesLabel,
+            message: `Composed '${personaName}' is ~${composed} tokens, over the ${tokenBudget} budget${contrast}`,
+          });
+        } else if (composed > tokenBudget * 0.8) {
+          findings.push({
+            rule: "compiled-too-large",
+            severity: "warn",
+            file: personaSizesLabel,
+            message: `Composed '${personaName}' is ~${composed} tokens — approaching the ${tokenBudget} budget${contrast}`,
+          });
+        }
+      }
+    }
+
+    // L33: the composed budget went UNMEASURED. Say it once, loudly, instead of
+    // printing the source-only numbers as though they were the whole check —
+    // "I checked nothing" and "I checked everything and it was fine" must not
+    // print the same.
+    if (composedSizesProblem) {
+      findings.push({
+        rule: "compiled-size-unknown",
+        severity: "warn",
+        file: personaSizesLabel,
+        message:
+          `Composed persona sizes NOT checked: ${composedSizesProblem}. ` +
+          `The numbers above are source SKILL.md files only — a composed persona is ` +
+          `typically several times larger, so they cannot stand in for the budget check.`,
+      });
     }
 
     // Also lint traits
