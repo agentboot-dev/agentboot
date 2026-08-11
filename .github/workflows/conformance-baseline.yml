@@ -10,6 +10,29 @@
 # Archive only. No analysis, no comparison, no alerting on drift — that is the
 # Continental Drift epic and it is post-GA. The point here is that the clock is
 # running before the 1.0 tag.
+#
+# L43 — WHERE THE SNAPSHOT LIVES. This job's only sink used to be an
+# Actions artifact with `retention-days: 90` (the free-tier cap). A baseline
+# whose whole rationale is "a clock you cannot restart" would therefore have
+# DELETED the v1.0 snapshot roughly three months after the tag, and the first
+# question it exists to answer — "how did the platforms behave at 1.0?" —
+# becomes unanswerable at exactly the moment anyone thinks to ask it. Retention
+# is not storage policy here, it is the erasure of the evidence.
+#
+# So every snapshot is now committed to the `conformance-baseline` data branch,
+# which has no expiry. The artifact upload is kept for convenient short-term
+# access, but it is no longer the record.
+#
+# A data branch rather than the default branch on purpose: these are machine
+# writes on a schedule, and they must not touch the source history, race a
+# release, or need an exception to whatever branch protection main carries.
+#
+# STILL OUTSTANDING, AND NOT FIXABLE HERE: GitHub fires `schedule` only from a
+# workflow present on the DEFAULT branch. This file is not on main yet — `gh run
+# list --workflow=conformance-baseline.yml` returns 404 — so no scheduled run
+# has EVER happened and none will until this lands there. That is a push, which
+# arrives with the cut PR. Until then the clock is still not running, and the
+# `workflow_dispatch` trigger below is the only way to bank a snapshot.
 
 name: Conformance baseline
 
@@ -21,7 +44,9 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  # `write` so the snapshot can be committed to the data branch. Scoped to
+  # contents and nothing else.
+  contents: write
 
 jobs:
   baseline:
@@ -119,3 +144,61 @@ jobs:
           echo "## Conformance baseline" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Captured $count snapshot file(s), $probes observed probe(s)." >> "$GITHUB_STEP_SUMMARY"
+
+      # L43 — the durable sink. Everything above this step expires in 90 days.
+      #
+      # Committed to a data branch rather than uploaded, because the baseline's
+      # value is monotonic: its worth is the LENGTH of the series, and a store
+      # that silently drops the oldest entries inverts that exactly.
+      - name: Commit snapshot to the conformance-baseline data branch
+        env:
+          BASELINE_BRANCH: conformance-baseline
+        run: |
+          set -euo pipefail
+
+          # Copy out first: the checkout dance below rewrites the working tree,
+          # and .agentboot/ is untracked on every branch involved.
+          staged="$(mktemp -d)"
+          cp -R .agentboot/baseline/. "$staged/"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin "$BASELINE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$BASELINE_BRANCH"
+            git checkout -B "$BASELINE_BRANCH" "origin/$BASELINE_BRANCH"
+          else
+            # First run: an ORPHAN branch, so the archive carries no source
+            # history and cannot be mistaken for a fork of the code.
+            echo "::notice::creating the $BASELINE_BRANCH data branch"
+            git checkout --orphan "$BASELINE_BRANCH"
+            git rm -rf --cached . >/dev/null 2>&1 || true
+            find . -maxdepth 1 -mindepth 1 ! -name '.git' ! -name '.agentboot' -exec rm -rf {} +
+            printf '%s\n' \
+              '# Conformance baseline archive' \
+              '' \
+              'Machine-written by .github/workflows/conformance-baseline.yml.' \
+              'Point-in-time records of how each platform actually enforced, one' \
+              'file per run. Append-only: never rewrite or prune these — the' \
+              'value of the series is its length, and it cannot be backfilled.' \
+              > README.md
+            git add README.md
+          fi
+
+          mkdir -p snapshots
+          cp -R "$staged/." snapshots/
+          git add snapshots README.md
+
+          # Snapshot filenames are timestamped, so a successful run ALWAYS adds a
+          # file. Nothing staged means this run banked nothing while reporting
+          # success — the precise failure this workflow exists to make visible.
+          if git diff --cached --quiet; then
+            echo "::error::nothing to commit — the run produced no new snapshot, so the clock did not advance"
+            exit 1
+          fi
+
+          git commit -m "conformance baseline: run ${GITHUB_RUN_ID} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git push origin "$BASELINE_BRANCH"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Committed to \`$BASELINE_BRANCH\` — durable, no retention window." >> "$GITHUB_STEP_SUMMARY"
