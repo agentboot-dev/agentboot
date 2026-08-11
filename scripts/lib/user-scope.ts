@@ -257,12 +257,17 @@ export function detectExistingContent(): {
  * Write compiled skills and rules directly to ~/.claude/.
  * Only writes directory-slot files (skills/, rules/).
  * Skips CLAUDE.md and settings.json (safe composition needs the external provider).
+ *
+ * `options.claudeDir` overrides the target. It is not a convenience: without it,
+ * `installUserLevel({ claudeDir })` accepted a target directory, resolved the MODE
+ * against it, and then wrote to `getClaudeDir()` anyway — the injection decided
+ * whether to write and had no say in WHERE. See the note on {@link installUserLevel}.
  */
 export function writeDirectly(
   distClaudeCorePath: string,
-  options?: { dryRun?: boolean },
+  options?: { dryRun?: boolean; claudeDir?: string },
 ): WriteDirectlyResult {
-  const claudeDir = getClaudeDir();
+  const claudeDir = options?.claudeDir ?? getClaudeDir();
   const result: WriteDirectlyResult = {
     skillsWritten: [],
     rulesWritten: [],
@@ -609,6 +614,18 @@ export interface InstallUserLevelResult {
  * from config + the ~/.claude/.managed sentinel, then either writes ~/.claude
  * directly (AgentBoot as the provider) or stages the content + a manifest for an
  * external provider to apply.
+ *
+ * `options.claudeDir` names the slot for BOTH halves — the sentinel lookup and the
+ * write. It used to name only the first: the mode was resolved against the caller's
+ * directory and `writeDirectly()` then reached for `getClaudeDir()`, so an injected
+ * path was answered with "I will write directly" and the write landed in the real
+ * `$HOME/.claude`. That divergence is why the sentinel refusal had to be re-proven
+ * by spawning the CLI (L47c) — a function-boundary assertion about a directory the
+ * writer never consults can pass while the command writes somewhere else — and it
+ * made the SPI's own test suite install a live skill and a manifest into the
+ * developer's home on every run, pruning against whatever a real `install-user` had
+ * left there. An injected path that silently means "the real home" is worse than no
+ * parameter at all.
  */
 export function installUserLevel(
   distClaudeCorePath: string,
@@ -619,7 +636,11 @@ export function installUserLevel(
   const resolved = resolveUserLevelModeDetailed(config, claudeDir);
 
   if (resolved.mode === "direct") {
-    return { mode: resolved.mode, direct: writeDirectly(distClaudeCorePath, options), refusal: null };
+    return {
+      mode: resolved.mode,
+      direct: writeDirectly(distClaudeCorePath, { ...options, claudeDir }),
+      refusal: null,
+    };
   }
 
   const stagingDir = options?.stagingDir

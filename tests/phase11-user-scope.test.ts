@@ -216,6 +216,10 @@ describe("user-level write SPI (§I)", () => {
   let tmp: string;
   let claudeDir: string;
   let distCore: string;
+  /** Stands in for $HOME, so an unhonoured `claudeDir` lands here instead of the developer's. */
+  let homeStub: string;
+  let priorHome: string | undefined;
+  let priorUserProfile: string | undefined;
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-spi-"));
@@ -225,10 +229,47 @@ describe("user-level write SPI (§I)", () => {
     distCore = path.join(tmp, "dist", "claude", "core");
     fs.mkdirSync(path.join(distCore, "skills", "demo"), { recursive: true });
     fs.writeFileSync(path.join(distCore, "skills", "demo", "SKILL.md"), "# Demo\nresolved content.");
+    // These cases inject `claudeDir`, and until it was honoured by the WRITE path
+    // the direct-mode ones installed a live skill + manifest into the real
+    // ~/.claude of whoever ran the suite — and pruned against it. The stub makes
+    // an unhonoured injection land somewhere harmless AND somewhere assertable.
+    homeStub = path.join(tmp, "home");
+    fs.mkdirSync(homeStub, { recursive: true });
+    priorHome = process.env["HOME"];
+    priorUserProfile = process.env["USERPROFILE"];
+    process.env["HOME"] = homeStub;
+    process.env["USERPROFILE"] = homeStub;
   });
 
   afterEach(() => {
+    if (priorHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = priorHome;
+    if (priorUserProfile === undefined) delete process.env["USERPROFILE"];
+    else process.env["USERPROFILE"] = priorUserProfile;
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /**
+   * L47c (the residue): the injected `claudeDir` decided the MODE and had no say
+   * in WHERE. `installUserLevel` resolved direct-vs-manifest against the caller's
+   * directory and then called `writeDirectly()`, which reached for
+   * `getClaudeDir()` on its own — so "direct" was answered about one directory and
+   * performed on another. That is why the sentinel refusal could only be proven by
+   * spawning the CLI: an assertion about a directory the writer never consults can
+   * pass while the write lands in the ambient home.
+   */
+  it("L47c: an injected claudeDir is where the direct write LANDS, not merely where the sentinel is looked for", () => {
+    const res = installUserLevel(distCore, undefined, {
+      claudeDir,
+      stagingDir: path.join(tmp, "stage"),
+    });
+    expect(res.mode).toBe("direct");
+    // Delivered into the directory the caller named …
+    expect(res.direct!.errors).toEqual([]);
+    expect(fs.existsSync(path.join(claudeDir, "skills", "demo", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(claudeDir, ".agentboot-user-manifest.json"))).toBe(true);
+    // … and nothing in the ambient home, which this caller never mentioned.
+    expect(fs.existsSync(path.join(homeStub, ".claude"))).toBe(false);
   });
 
   it("auto mode writes directly when the slot is NOT externally managed", () => {
