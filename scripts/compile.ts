@@ -990,8 +990,12 @@ function buildCopilotOutput(
   const description = personaConfig?.description
     ? `${personaConfig.description}\n\n---\n\n`
     : "";
-  // Strip HTML comments for Copilot output.
-  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").trim();
+  // L51: strip HTML comments AND the composed body's own frontmatter. This
+  // emitter inlines a persona SKILL.md into prose, and it was the only persona
+  // emitter that never stripped — so `name:/description:/id:/slug:/hash:` shipped
+  // to Copilot as instruction body text under the generated header. Same
+  // stripper as every sibling emitter; not a second regex.
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   return `${provenanceHeader(skillPath, config)}${header}${description}${stripped}\n`;
 }
 
@@ -1018,8 +1022,17 @@ function buildCursorRule(
   }
   lines.push(`alwaysApply: ${options?.alwaysApply ?? false}`);
   lines.push("---", "");
-  // Strip HTML comments and trait markers for clean Cursor output
-  const stripped = content.replace(/<!--[\s\S]*?-->/g, "").trim();
+  // Strip HTML comments and trait markers for clean Cursor output.
+  //
+  // L51: the body's own frontmatter is stripped HERE rather than at each call
+  // site. Two of the three callers (instructions, gotchas) already stripped;
+  // the persona caller did not, so all five `.mdc` personas shipped TWO
+  // frontmatter blocks — the generated one, then the raw SKILL.md block as
+  // instruction text. Cursor reads only the first, so the second is prose.
+  // Stripping inside the builder makes the guarantee a property of the emitter
+  // instead of a habit the next caller has to remember; it is a no-op on the
+  // callers that already stripped.
+  const stripped = stripFrontmatterBody(content.replace(/<!--[\s\S]*?-->/g, "")).trim();
   lines.push(stripped);
   return lines.join("\n") + "\n";
 }
