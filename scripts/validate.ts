@@ -49,6 +49,7 @@ import { dangerousHookFindings, unscannableHookEvents } from "./lib/hook-safety.
 import { readScopeGlobs } from "./lib/scope-projection.js";
 import { isSafeRelativeSegment } from "./lib/path-containment.js";
 import { readIdentity, isValidId, isGovernedArtifact } from "./lib/artifact-identity.js";
+import { inertPermissionRules, permissionRuleLists } from "./lib/permission-rules.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -965,6 +966,47 @@ function checkClaudeSettingsPassthrough(config: AgentBootConfig): CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// G1a / AB-DEF-10: semantically inert permission rule verbs
+// ---------------------------------------------------------------------------
+
+/**
+ * `claude.permissions` is a pass-through, so a rule Claude Code's file
+ * permission check never consults compiled clean, passed `validate --strict`,
+ * was signed into the manifest, and shipped. The verb table and the ground
+ * truth it was read out of live in lib/permission-rules.ts.
+ *
+ * Severity follows configuration.md's stated rule — assigned by what the
+ * operator LOSES, not by importance:
+ *
+ *   deny  → ERROR. The operator believes a control is active and it is not.
+ *           An inert `deny: ["Write(**\/.env)"]` reads as `.env` protection and
+ *           blocks nothing.
+ *   allow → WARN (which --strict escalates). An inert allow costs a
+ *           pre-approval; the operator gets prompted where they expected not to
+ *           be. Nothing is falsely believed enforced, and failing a build over
+ *           lost friction-reduction is the over-gating that gets gates
+ *           switched off.
+ */
+function checkPermissionRuleVerbs(config: AgentBootConfig): CheckResult {
+  const result = check(
+    "Permission rule verbs — no path-scoped rule the platform never consults (an inert control)",
+  );
+  for (const { where, kind, rules } of permissionRuleLists(config)) {
+    for (const finding of inertPermissionRules(rules, where)) {
+      if (kind === "deny") {
+        fail(
+          result,
+          `${finding.message} This is a DENY rule: the policy reads as a control and is not one.`,
+        );
+      } else {
+        warn(result, finding.message);
+      }
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // I2 / D.1: dangerous org-authored hook commands
 // ---------------------------------------------------------------------------
 
@@ -1326,6 +1368,7 @@ async function main(): Promise<void> {
     checkMcpGovernance(config),
     checkMcpPinning(config),
     checkClaudeSettingsPassthrough(config),
+    checkPermissionRuleVerbs(config),
     checkDangerousHooks(config, configDir),
     checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
