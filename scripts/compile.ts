@@ -2760,7 +2760,14 @@ function generatePluginOutput(
 // Claude Code event names are canonical; each emitter translates as needed.
 //
 // Cross-platform enforcement caveats (docs/research/platform-refresh-2026-07-11.md):
-//   - Claude Code : matcher is EXACT-match (no substring); exit 2 blocks a tool.
+//   - Claude Code : matcher is a REGEX — `new RegExp(matcher).test(toolName)` —
+//                   not a literal tool-name comparison. Pipe alternation
+//                   ("Edit|Write") is supported and is what we emit. The hazard
+//                   runs the other way: a matcher is silently PERMISSIVE, since
+//                   "Edit" also matches "NotebookEdit". See
+//                   ComplianceHookBinding.matcher for the ground truth and how
+//                   it was established; do not restate it here. exit 2 blocks
+//                   a tool.
 //   - Codex       : same event names as CC, but stdin is snake_case while the
 //                   output envelope is camelCase (hookSpecificOutput /
 //                   permissionDecision); tool coverage is partial (shell + patch
@@ -2787,9 +2794,10 @@ interface ComplianceHookBinding {
   /**
    * CC tool matcher. "" = all tools for this event.
    *
-   * This is a REGEX, not an exact-match string — this comment used to say
-   * "exact-match", which would have made the `Edit|Write|Bash` binding below a
-   * dead hook that silently logged no telemetry. Verified against the shipping
+   * This is a REGEX, not a literal tool-name comparison.
+   * This comment used to say "exact-match", which would have made the
+   * `Edit|Write|Bash` binding below a dead hook that silently logged no
+   * telemetry — the wrong half of the contradiction. Verified against the shipping
    * Claude Code binary (v2.1.226), which compiles the matcher and tests it:
    *
    *     try { const re = new RegExp(matcher); if (re.test(toolName)) ... }
@@ -3318,7 +3326,7 @@ function generateComplianceSettingsJson(
   // Derive the CC wiring from the canonical bindings (input-scan → UserPromptSubmit,
   // output-scan → Stop, telemetry → SubagentStart/Stop + PostToolUse + SessionEnd,
   // pretooluse → PreToolUse only when denyTools is configured). CC event names are
-  // canonical, timeouts in ms, matcher exact-match.
+  // canonical, timeouts in ms, matcher a regex (see ComplianceHookBinding.matcher).
   const denyOn = (_config.managed?.guardrails?.denyTools ?? []).length > 0;
   for (const b of COMPLIANCE_HOOK_BINDINGS) {
     if (b.requiresDenyTools && !denyOn) continue;

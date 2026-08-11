@@ -125,6 +125,34 @@ describe("L49 — every emitted hook matcher is a legal Claude Code matcher", ()
     // silently assert nothing at all.
     expect(COMPLIANCE_HOOK_BINDINGS.length).toBeGreaterThan(0);
     expect(COMPLIANCE_HOOK_BINDINGS.some((b) => b.matcher !== "")).toBe(true);
+    // An ALTERNATION must still be emitted. The contradiction this row settled
+    // has a second, worse resolution available to a future editor: "fix" it by
+    // narrowing `Edit|Write|Bash` to `Edit`. That silently drops Write and Bash
+    // from telemetry coverage and makes every assertion below pass. Pin the
+    // shape, so the only way to satisfy the suite is the correct reading.
+    expect(
+      COMPLIANCE_HOOK_BINDINGS.some((b) => b.matcher.includes("|")),
+      "an alternation matcher must remain — see ComplianceHookBinding.matcher",
+    ).toBe(true);
+  });
+
+  it("no comment in compile.ts still claims matchers are exact-match", () => {
+    // The 2026-08-11 fix corrected the FIELD docstring and left the canonical
+    // header comment 25 lines above it — the one the platform emitters are
+    // pointed at — still asserting "matcher is EXACT-match (no substring)".
+    // Two contradictory statements of the same platform fact in one file is
+    // how the original defect survived review, so the file may hold exactly
+    // one statement of it: the field docstring. Everything else refers.
+    const src = fs.readFileSync(path.join(ROOT, "scripts", "compile.ts"), "utf-8");
+    const offenders = src
+      .split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => /exact.?match/i.test(line))
+      // The field docstring names the retired claim to explain the correction.
+      // That is the record OF the fix, not a restatement of the wrong fact.
+      .filter(({ line }) => !/used to say/.test(line))
+      .map(({ line, n }) => `compile.ts:${n}: ${line}`);
+    expect(offenders).toEqual([]);
   });
 
   it("every matcher compiles as a regex and names only real tools", () => {
