@@ -337,6 +337,7 @@ manager. Controlled by `userLevel.mode` in `agentboot.config.json` (see [Configu
 agentboot install-user
 agentboot install-user --dry-run
 agentboot install-user --mode manifest
+AGENTBOOT_USER_LEVEL_MODE=manifest agentboot install-user
 ```
 
 | Flag | Description |
@@ -344,9 +345,24 @@ agentboot install-user --mode manifest
 | `--dry-run` | Show what would be written/staged without changing anything |
 | `--mode <mode>` | Override the write mode: `auto` (default), `direct`, or `manifest` |
 
+| Env var | Description |
+|---------|-------------|
+| `AGENTBOOT_USER_LEVEL_MODE` | Same three values. For callers that can set an environment variable but cannot edit the hub config or reach the flag (CI jobs, wrapped installers). **Lower precedence than `userLevel.mode` and `--mode`** — including an explicitly passed `--mode auto`, which suppresses it. |
+
 `auto` writes `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns
-the slot (then it stages a handoff manifest); `direct` always writes; `manifest` never writes and only
-stages the resolved content plus a manifest for an external provider to apply.
+the slot (then it stages a handoff manifest); `manifest` never writes and only stages the resolved
+content plus a manifest for an external provider to apply.
+
+`direct` writes `~/.claude` — **except when the sentinel is present, where it is refused rather than
+honoured.** The sentinel is the only signal from the side of the boundary AgentBoot cannot see, so no
+config key or flag may override it. On refusal: `~/.claude` is untouched, the content is staged for
+handoff anyway, the refusal is printed naming the source that asked for `direct`, and the command
+**exits `1`**. A silent downgrade to manifest mode under a green success line would be the same
+green-over-a-refusal failure the exit code exists to prevent. To resolve it, remove
+`~/.claude/.managed` if AgentBoot owns the slot, or stop requesting `direct`.
+
+A mode value that is not `auto`/`direct`/`manifest`, from either the config or the env var, is
+likewise refused — it stages, reports, and exits `1` rather than falling back to `auto`.
 
 ---
 

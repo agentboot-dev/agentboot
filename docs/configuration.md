@@ -298,10 +298,54 @@ Controls `agentboot install-user` (writing compiled skills/rules to `~/.claude`)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `userLevel.mode` | `"auto" \| "direct" \| "manifest"` | `auto` | `auto`: write `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns the slot (then stage for handoff). `direct`: always write. `manifest`: never write — stage resolved content + a handoff manifest for an external provider. |
+| `userLevel.mode` | `"auto" \| "direct" \| "manifest"` | `auto` | `auto`: write `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns the slot (then stage for handoff). `direct`: write `~/.claude` — **unless the sentinel is present, in which case the write is refused** (see below). `manifest`: never write — stage resolved content + a handoff manifest for an external provider. |
 
 `agentboot install-user --mode <auto\|direct\|manifest>` overrides the configured value for one run;
 `--dry-run` reports what either mode would do without touching anything.
+
+**Env override — `AGENTBOOT_USER_LEVEL_MODE`.** Accepts the same three values. It exists for
+callers who can set an environment variable but cannot edit a hub config they do not own and
+cannot always reach the flag — CI jobs, and non-interactive installers wrapping an
+`install-user` they did not write.
+
+```bash
+AGENTBOOT_USER_LEVEL_MODE=manifest agentboot install-user
+```
+
+#### Precedence, and where it refuses
+
+Highest first:
+
+1. **The `~/.claude/.managed` sentinel**, for `direct` only.
+2. **`userLevel.mode` in the config.** `--mode` arrives here too — the CLI injects the flag as
+   config — which is why config beats env rather than the reverse: an inherited environment
+   variable must not quietly beat the most explicit signal a caller has. One consequence worth
+   knowing: passing `--mode auto` explicitly is *not* the same as passing nothing. It counts as
+   a config-level request and therefore **suppresses `AGENTBOOT_USER_LEVEL_MODE`**.
+3. **`AGENTBOOT_USER_LEVEL_MODE`.**
+4. Default `auto` → manifest if the slot is externally managed, else direct.
+
+**The sentinel beats an explicit `direct`, and beating it is a refusal — not a downgrade.** A
+present `~/.claude/.managed` means some other tool has claimed that slot; it is the only signal
+that comes from the side of the boundary AgentBoot cannot see. A hub config key is not allowed
+to override it, because a claim that a config file the claimant cannot read could revoke is not
+a claim at all. So when `direct` meets a sentinel:
+
+- `~/.claude` is **not written** — nothing is touched;
+- the content is still staged for handoff, so the run is not wasted;
+- the refusal is printed, naming which source asked for `direct`;
+- **`install-user` exits non-zero (`1`).**
+
+The non-zero exit is the point. The operator's explicit instruction was not carried out, and
+silently downgrading to manifest mode under a success line is exactly the green-over-a-refusal
+this product refuses to ship. The escape hatch is the honest one: delete
+`~/.claude/.managed` if AgentBoot really does own the slot, or stop asking for `direct`.
+
+**An unrecognized mode is also a refusal.** A value from either config or the env var that is
+not `auto`/`direct`/`manifest` — `"manifest-only"`, `"Direct"`, a typo — does **not** fall back
+to `auto`. It fails toward the safe side (stages, leaves `~/.claude` alone), reports, and exits
+non-zero. Reinterpreting an unreadable instruction is how a request *not* to touch `~/.claude`
+becomes a write.
 
 #### What is written, and what is deliberately not
 
