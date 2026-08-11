@@ -47,18 +47,22 @@ agentboot test --type behavioral       agentboot test --ci
   "Security reviewer missed SQLi"        Test results posted to PR
   Fix it before you push.                Team sees pass/fail, not your drafts.
 
-agentboot cost-estimate                agentboot metrics (aggregate)
+agentboot cost-estimate                agentboot metrics (planned)
   "This persona costs $0.56/run"         "Team cost: $8,200/mo"
   Personal planning tool.                Org-level, anonymized.
 
-/insights                              Org dashboard
+/insights (planned)                    Org dashboard (planned)
   "You rephrase auth questions often"    "Auth patterns asked 89 times (team)"
   Private to you.                        No individual attribution.
 ```
 
-(Illustrative of the principle — `lint`, `validate`, `test`, and `cost-estimate`
-ship today; `agentboot metrics`, `/insights`, and the org dashboard are planned
-V2 capabilities, covered later on this page.)
+(Illustrative of the principle. `lint`, `validate`, `test` and `cost-estimate`
+ship today. `agentboot metrics`, `/insights` and the org dashboard are **planned
+and unbuilt** — they do not exist in v1.0, and every mention of them on this
+page is marked "planned". The single statement of what is planned and when is the
+[What AgentBoot Needs to Build](#what-agentboot-needs-to-build) table at the
+foot of this page; that table is the one place to update if the schedule
+changes.)
 
 This mirrors exactly how code works:
 - `eslint` locally → fix before anyone sees → CI catches what you missed → fair game
@@ -80,8 +84,9 @@ workday). These are conversations. They have **no submit moment.** There is no P
 for "explain this function" or "what is a mutex."
 
 - These are **always private**. There is no "after submit" state.
-- AgentBoot's optimization tools for developer prompts (`/insights`, telemetry)
-  operate on aggregates and patterns, never on the prompts themselves.
+- The planned optimization tools for developer prompts (`/insights` (planned),
+  telemetry) will operate on aggregates and patterns, never on the prompts
+  themselves.
 - The only "output" that crosses the private→public boundary is what the developer
   **chooses to publish**: a PR comment, committed code, a filed issue. The
   conversation that produced that output stays private.
@@ -93,7 +98,7 @@ Persona definitions (Type 1)         Developer prompts (Type 2)
 Local editing (private)              Always private
     │                                    │
     ▼                                    ▼
-agentboot lint (private)             /insights (private)
+agentboot lint (private)             /insights (planned; private)
 agentboot test (private)             Telemetry: aggregates only
     │                                    │
     ▼                                    ▼
@@ -660,9 +665,9 @@ INSTEAD OF                          TRY
 This skill loads on-demand (not always-on), costs nothing when not used, and teaches
 by example.
 
-**Personal `/insights` analysis:**
-As described in the privacy doc, `/insights` analyzes the developer's session
-transcripts and identifies patterns — privately. Key signals:
+**Personal `/insights` analysis (planned — not in v1.0):**
+As described in the privacy doc, `/insights` would analyze the developer's
+session transcripts and identify patterns — privately. Planned signals:
 
 - **Rephrase rate:** How often the developer asks the same question in different
   words. High rephrase rate = the developer isn't getting what they need on the
@@ -676,7 +681,7 @@ transcripts and identifies patterns — privately. Key signals:
   Your longest sessions are code exploration — consider using the Explore subagent
   which uses a cheaper model."
 
-All of this is private. The developer sees it, nobody else.
+All of this would be private. The developer sees it, nobody else.
 
 **Context-aware prompting hints:**
 AgentBoot's always-on CLAUDE.md can include a lightweight prompting guide that
@@ -738,21 +743,25 @@ The developer prompt development experience is primarily delivered through:
 
 1. **Personas** — structured prompts that work better than ad-hoc questions
 2. **Skills** — prompt templates with argument hints and substitution
-3. **`/insights`** — private analytics on prompting patterns
-4. **Prompting tips** — a lightweight personal skill with example patterns
-5. **Always-on hints** — ~50 tokens in CLAUDE.md with contextual prompting guidance
+3. **Prompting tips** — a lightweight personal skill with example patterns
+4. **Always-on hints** — ~50 tokens in CLAUDE.md with contextual prompting guidance
+
+and, once built, **`/insights` (planned)** — private analytics on prompting
+patterns.
 
 None of these require collecting, transmitting, or surfacing developer prompts.
 They work by **giving developers better tools** (personas, skills, templates) so
-their prompts are effective from the start, and **private feedback** (`/insights`)
-so they can improve over time without anyone watching.
+their prompts are effective from the start, and — when the planned **private
+feedback** channel (`/insights` (planned)) exists — so they can improve over
+time without anyone watching.
 
 ---
 
 ## 8. Prompt Ingestion (`agentboot add prompt`)
 
-Before the marketplace, before the PR to the personas repo, there's the moment
-someone says: "Hey, try this prompt — it's great for catching auth bugs." It's in
+Before the PR to the personas repo, before anything is governed at all, there's
+the moment someone says: "Hey, try this prompt — it's great for catching auth
+bugs." It's in
 a Slack message. Or a blog post. Or a tweet. Or scribbled on a sticky note.
 
 This is how most knowledge sharing actually works. Not through formal contribution
@@ -875,26 +884,30 @@ someone else's prompt before incorporating it.
 
 ### The Sharing Spectrum
 
-This feature fills the gap between "I have a raw prompt" and "it's in the
-marketplace":
+This feature fills the gap between "I have a raw prompt" and "it's governed
+content the whole org gets":
 
 ```
-Informal                                                        Formal
-────────────────────────────────────────────────────────────────────────
+Informal                                          Formal
+──────────────────────────────────────────────────────────────
 
-"Try this     agentboot          In my org's        In the        In the
- prompt"  →   add prompt     →   personas repo  →   org's      →  public
-              (classify,         (PR, review,       private       marketplace
-               format,            CI validates)     marketplace   (community)
-               save locally)
+"Try this     agentboot          In my org's        Distributed
+ prompt"  →   add prompt     →   personas repo  →   org-wide
+              (classify,         (PR, review,       (agentboot sync,
+               format,            CI validates)      or the org's own
+               save locally)                         plugin repo)
 
-Slack         Private/Local       Team-visible       Org-wide      Public
-message       (my machine)        (after PR)         (plugin)     (everyone)
+Slack         Private/Local       Team-visible       Org-wide
+message       (my machine)        (after PR)         (every repo)
 ```
 
 Most prompts stay on the left side forever — and that's fine. The developer adds
 it as a personal rule or gotcha, it helps them, nobody else needs to know. But
 the pipeline to formalize it is there when the prompt proves its value.
+
+The spectrum stops at the org boundary on purpose: v1.0 has no cross-org
+publishing channel, so "share it with everyone" is not a step this pipeline
+offers.
 
 ### Batch Ingestion
 
