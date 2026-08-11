@@ -211,10 +211,30 @@ function hubDirOf(configPath: string): string {
   return path.dirname(path.resolve(configPath));
 }
 
-function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, command: string): void {
+/**
+ * Where an informational notice goes.
+ *
+ * On a `--format json` path, stdout is a machine-readable PAYLOAD, not a
+ * transcript. Two gate notices — "dist/ has never been built" and the
+ * ungated-dist announcement — were written to stdout unconditionally, so
+ * `drift-check --format json` handed its caller a yellow sentence followed by
+ * the JSON and every `JSON.parse` on the other end threw. The predictable
+ * downstream repair is `| tail -n +2` or a try/catch that swallows the parse
+ * error, and both of those DISCARD the notice — which is how a gate that
+ * correctly announced it had checked nothing ends up announcing it to nobody.
+ *
+ * So the notice moves to stderr rather than being suppressed: still visible to
+ * a human, still captured by a `2>&1` log, and out of the payload.
+ */
+function notice(message: string, json?: boolean): void {
+  if (json) console.error(message);
+  else console.log(message);
+}
+
+function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, command: string, json?: boolean): void {
   const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
   if (!fs.existsSync(distPath)) {
-    console.log(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`));
+    notice(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`), json);
     return;
   }
   const freshness = checkDistFreshness(distPath, config, path.dirname(configPath));
@@ -242,9 +262,10 @@ function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, comm
  * read as a pass. This says the hub-side dimension was not checked, which is
  * the honest third answer between "verified" and "refused".
  */
-function announceUngatedDist(command: string, why: string): void {
-  console.log(
+function announceUngatedDist(command: string, why: string, json?: boolean): void {
+  notice(
     chalk.yellow(`  ~ \`${command}\` did NOT verify hub build freshness — ${why}`),
+    json,
   );
 }
 
@@ -3184,7 +3205,7 @@ program
     // before this gate: a failed rebuild that revoked denyTools left the deny
     // hook on disk, and conformance reported `deny-tools not-applicable` (reading
     // the NEW config against the OLD tree) and exited 0.
-    assertDistFreshOrExit(configPath, config, "conformance");
+    assertDistFreshOrExit(configPath, config, "conformance", opts.format === "json");
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
     // A5: was `?? ["claude"]` — conformance tested one platform where the build
     // produces three, so two thirds of the hub went unprobed and reported clean.
@@ -3606,6 +3627,8 @@ program
     const { checkDrift, generateComplianceReport } = await import("./lib/drift.js");
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
+    // stdout is the JSON payload in this mode; notices belong on stderr.
+    const json = opts.format === "json";
 
     // A3: a clean drift report off a stale dist/ is a clean report about the
     // PREVIOUS policy. Gate both branches. When drift-check is run from inside a
@@ -3618,7 +3641,7 @@ program
       if (fs.existsSync(hubConfigPath)) {
         // NF4-3: through the helper. A raw loadConfig() here reported a config
         // TYPE error as an uncaught throw — stack trace, exit 7.
-        assertDistFreshOrExit(hubConfigPath, loadHubConfigOrExit(hubConfigPath, "drift-check"), "drift-check");
+        assertDistFreshOrExit(hubConfigPath, loadHubConfigOrExit(hubConfigPath, "drift-check"), "drift-check", json);
       } else {
         // NF4-4: this branch is legitimate — with no hub in reach the command is
         // answering a spoke-local question and any dist/ here belongs to the
@@ -3626,6 +3649,7 @@ program
         announceUngatedDist(
           "drift-check",
           "no hub config in reach, so this is a spoke-local answer only.",
+          json,
         );
       }
     }
@@ -3633,7 +3657,12 @@ program
     if (opts.repo) {
       const report = checkDrift(path.resolve(opts.repo));
       if (!report.manifestFound) {
-        console.log(chalk.yellow("  No AgentBoot manifest found."));
+        // In json mode the caller gets the report — `manifestFound: false` says
+        // "not checked" in the payload's own vocabulary. Printing a sentence and
+        // no JSON at all left a machine consumer with an unparseable empty
+        // stdout and exit 2, which is indistinguishable from a crash.
+        notice(chalk.yellow("  No AgentBoot manifest found."), json);
+        if (json) console.log(JSON.stringify(report, null, 2));
         process.exit(2);
       }
       if (opts.format === "json") {
@@ -3688,7 +3717,10 @@ program
       if (repos.length === 0) {
         // Zero registered repos is a legitimate state, but it is "nothing to
         // check", not "everything is clean". They must not print alike.
-        console.log(chalk.yellow(`\n  ⚠ No repos registered in ${path.basename(reposPath)} — nothing was checked.\n`));
+        notice(chalk.yellow(`\n  ⚠ No repos registered in ${path.basename(reposPath)} — nothing was checked.\n`), json);
+        // json mode still owes its caller a payload; `totalRepos: 0` is how the
+        // report says "nothing was checked" without a second vocabulary.
+        if (json) console.log(JSON.stringify(generateComplianceReport([], path.dirname(configPath)), null, 2));
         return;
       }
       const report = generateComplianceReport(repos, path.dirname(configPath));
@@ -3785,7 +3817,7 @@ program
     //
     // R1-4: through the helper, because A3's unconditional loadConfig made
     // `agentboot audit` outside a hub die with a stack trace and exit 7.
-    assertDistFreshOrExit(configPath, loadHubConfigOrExit(configPath, "audit"), "audit");
+    assertDistFreshOrExit(configPath, loadHubConfigOrExit(configPath, "audit"), "audit", opts.format === "json");
 
     const report = runAudit(hubRoot);
 
