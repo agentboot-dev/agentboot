@@ -2104,6 +2104,28 @@ async function main(): Promise<void> {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo" && argv[i + 1]) repoFilter.push(argv[i + 1]!);
   }
+  // AB-DEF-9: `--repos <path>` — the target LIST, distinct from `--repo <name>`
+  // which filters within it.
+  //
+  // `agentboot sync --repos-file <path>` has been documented since before this
+  // branch (docs/cli-reference.md, and core/skills/learn/quick-ref.md, which
+  // packs into the published tarball). cli.ts declared the option and forwarded
+  // it here as `--repos` — and nothing here parsed it. The `--repo` loop above
+  // uses strict equality, so `--repos` did not match that either; the pair was
+  // dropped silently and the target list came from `config.sync.repos` below.
+  //
+  // The operator's experience: scope a sync to one spoke, sync the ENTIRE
+  // configured fleet, write and sign a manifest on every unintended spoke, exit
+  // 0 with a success report. `--dry-run` inherited the same hole, so the
+  // rehearsal that exists to catch this previewed the wrong fleet. A
+  // blast-radius control that silently widens blast radius is worse than no
+  // control, because the operator stops watching.
+  const reposIdx = argv.indexOf("--repos");
+  const reposOverride = reposIdx !== -1 ? argv[reposIdx + 1] : undefined;
+  if (reposIdx !== -1 && !reposOverride) {
+    console.error(chalk.red("✗ --repos requires a path (e.g. --repos ./repos.one.json)"));
+    process.exit(1);
+  }
 
   console.log(chalk.bold("\nAgentBoot — sync"));
   console.log(chalk.gray(`Config: ${configPath}`));
@@ -2138,7 +2160,18 @@ async function main(): Promise<void> {
     ));
   }
 
-  const reposPath = config.sync?.repos ?? "./repos.json";
+  // A CLI-supplied path is relative to where the operator typed it; a
+  // config-supplied one is relative to the hub. Resolving both against the hub
+  // would silently retarget `--repos ./repos.one.json` at a file the operator
+  // was not looking at — the same class of quiet substitution as the defect
+  // above. `loadRepos` exits non-zero on a missing file, so a typo'd override
+  // fails loudly instead of falling through to the config default.
+  const reposPath = reposOverride
+    ? path.resolve(process.cwd(), reposOverride)
+    : (config.sync?.repos ?? "./repos.json");
+  if (reposOverride) {
+    console.log(chalk.gray(`Repos:  ${reposPath} (--repos override)`));
+  }
   const distPath = path.resolve(
     configDir,
     config.output?.distPath ?? "./dist"
