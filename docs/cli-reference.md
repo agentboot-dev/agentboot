@@ -527,6 +527,73 @@ classification this harness tests.
 
 ---
 
+## `agentboot baseline`
+
+Archive a dated conformance snapshot. Platforms change their enforcement semantics
+without announcing it, and when they do your corpus text does not move — so
+`drift-check` keeps reporting clean while the governance quietly stops working.
+Detecting that needs a record of how the platforms behaved *before*, and a baseline
+cannot be backfilled: probes that start next year cannot say how a platform behaved
+at your 1.0.
+
+```
+agentboot baseline
+agentboot baseline --dir .agentboot/baseline
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Path to `agentboot.config.json` (the hub is its directory) |
+| `--dir <path>` | Archive directory (default: `.agentboot/baseline`) |
+
+Reads the enforcement manifests `agentboot conformance` writes into `dist/<platform>/`
+and stores a timestamped `conformance-<stamp>.json` snapshot: the AgentBoot version,
+the capture time, and each platform's per-probe results.
+
+**This command is the archive only.** It performs no comparison and produces no
+report — reading these snapshots against each other is post-GA work. The point is to
+start a clock that cannot be restarted, so run it on a schedule from now on.
+
+Two states are refusals rather than empty snapshots, because a baseline that
+silently accumulates nothing looks healthy for a year:
+
+- **No enforcement manifests in `dist/`** — exits non-zero and points at
+  `agentboot conformance`. Nothing is archived.
+- **Manifests present but zero probes observed** (every control untested or
+  not-applicable) — exits non-zero. A file count is not a measurement, and banking
+  an unmeasured snapshot as history is worse than banking none, because later it
+  reads as history.
+
+---
+
+## `agentboot identity`
+
+Stamp permanent identifiers onto governed artifacts: mints an `id` for any artifact
+that lacks one and refreshes the content `hash` on any whose body has changed.
+Covers `core/instructions/`, `core/traits/` and `core/gotchas/`.
+
+```
+agentboot identity --dry-run
+agentboot identity
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Path to `agentboot.config.json` (the hub is its directory) |
+| `--dry-run` | Report what would change without writing |
+
+Identity is what lets an artifact be traced across renames, scope moves and spoke
+syncs. It cannot be applied retroactively — an artifact left unstamped can only ever
+date from whenever it is finally stamped — which is why the backfill exists as its
+own command rather than as a build step.
+
+Traits and gotchas carry no frontmatter by convention; `identity` creates a minimal
+block for them. Navigational files (`README.md`, `index.md`) are never stamped: a
+README is not a governed artifact. A duplicate `id` across two files is a hard error
+— it would silently merge two artifacts' histories forever.
+
+---
+
 ## `agentboot status`
 
 Show deployment status: org info, enabled personas, traits, output formats, registered

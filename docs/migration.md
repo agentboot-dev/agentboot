@@ -10,6 +10,195 @@ listed here are backward-compatible and require only a package update.
 
 ---
 
+## v0.20 → v1.0 (1.0.0)
+
+**Read this section before upgrading a hub that builds in CI.** 1.0.0 is the release
+where a long list of *silent losses* became *refusals*. Nothing about your hub source
+is invalid, but configuration that previously compiled to nothing — while `build`,
+`validate --strict` and `doctor` all reported green — now fails the build and names
+what it cannot honour. Expect a red build on the first run, and expect the red build
+to be telling you about enforcement you thought you already had.
+
+```bash
+npm install -g agentboot@latest
+cd /path/to/your-personas-hub
+agentboot build            # read the failures; they are findings, not noise
+agentboot doctor           # new Coverage section, printed before Enforcement
+agentboot sync --dry-run   # review deletions before they propagate
+```
+
+### The one to read first: path scope was inverted, not dropped
+
+An instruction authored `applyTo: "src/api/**"` was delivered to Cursor, Windsurf and
+JetBrains as **always-on, every file** — the compiler stripped the source frontmatter
+without parsing it and hardcoded `alwaysApply: true`. Exit 0, no diagnostic. Your
+narrowly-scoped rules have been firing everywhere.
+
+**Action:** after upgrading, your scoped rules start behaving as authored. If any
+downstream behaviour depended on the accidental always-on delivery, it changes here.
+Related: a malformed `applyTo:`/`paths:` used to read as "no scope" (i.e. always-on)
+and now **stops the build** — fix the YAML, or write `applyTo: "**"` if the rule
+really is universal.
+
+### New build-FAILING gates you can reach from an existing config
+
+- **A configured capability that no configured platform can emit.** Eight of them were
+  found producing zero bytes on a real hub — an org `PreToolUse` gate, a fail-closed
+  DLP scanner, a digest-pinned MCP allowlist, `disableBypassPermissionsMode`, model
+  overrides. **Action:** add the platform that can honour the capability, drop the
+  key, or waive it with a `capability:<id>` entry in `agentboot-exceptions.json`
+  (owner + approver required, and it expires — a waived gap still prints on every
+  build).
+- **A narrowly-scoped instruction aimed at a platform that cannot express scope**
+  (`claude`, `skill`, `plugin`, `agents`, `codex`, `gemini`). Acknowledge it on the
+  artifact with `scope-unsupported: acknowledged`; the emitted file then carries a
+  `Scope:` preamble naming the intended paths, so you are opting into a documented
+  degraded delivery rather than into silence.
+- **A differing-value collision in the managed-scope merge.** Declare intended
+  overrides in `managed.scopeMerge.acknowledgedOverrides`; the loss is then a warning
+  naming winner, loser and both sources, because an acknowledged loss is still a loss.
+- **`managed.guardrails.forcePlugins`** was typed, documented, accepted — and read by
+  no code path on any platform. Setting it now fails the build. Same posture for
+  `personas[*].mcpServers`.
+- **An unreadable `persona.config.json` or managed-settings fragment** is fatal rather
+  than a yellow warning followed by a persona shipping without its tool restrictions.
+- **A gotcha `paths:` value that escapes the output root** fails the build. It was an
+  arbitrary file write from an artifact source, on `agentboot build`.
+
+### Revocation now works — the first sync after upgrading may DELETE
+
+`dist/` was never pruned and `sync` never unlinked anything, so an artifact you
+removed from `instructions.enabled` — or an entire platform you removed from
+`personas.outputFormats` — kept shipping to every spoke indefinitely, with `build`,
+`sync`, `status`, `drift-check` and `audit` all green and the manifest attesting the
+delivered bytes as correct.
+
+**Action, and please do this one deliberately:**
+
+1. Run `agentboot sync --dry-run` **first**. Any stale artifact accumulated before
+   this release is removed in one pass.
+2. Deletion is confined to paths listed in the spoke's previous manifest, so sync can
+   only remove files it wrote.
+3. A revoked artifact the spoke has **edited** is an error, not a silent skip: it is
+   recorded in the manifest's new `retired[]` array, `sync` exits non-zero, and
+   `drift-check` reports it. A `retain` regex on the `repos.json` entry (or hub-wide
+   `sync.retain`) downgrades it to a warning that still prints every sync.
+4. Because several platforms share a `targetDir`, revocation propagation is skipped —
+   loudly — for one run against an untagged manifest.
+
+`manifest_digest` changes for **every** spoke (manifests gained `platform` and
+`retired[]`), so the first sync reports every repo as changed and signed hubs re-sign.
+
+### Other behaviour changes
+
+- **`sync` refuses to ship a platform the hub does not build.** `repos.json` and
+  `personas.outputFormats` could contradict each other, and the contradiction was
+  resolved silently in favour of the stale tree — i.e. in favour of the retired
+  policy. Other repos still sync; the run exits non-zero at the end.
+- **`test`, `baseline`, `drift-check`, `conformance`, `install-user`, `publish` and
+  `connect` refuse to act on a `dist/` whose own build stamp says `failed`.** In
+  particular `agentboot test --snapshot` no longer banks a superseded tree as the
+  baseline every later `--regression` is compared against.
+- **Blocking hooks no longer fail open** on a payload they cannot read, measure or
+  parse. Three routes each turned the DLP input scan and the PreToolUse deny gate into
+  exit 0 with nothing on stdout or stderr. The Stop-hook output scan still exits 0 by
+  design — a Stop hook that blocks strands the session — but now says
+  `output scan SKIPPED, this response was NOT scanned`.
+- **`mcp.enforceApproved: true` with an empty `mcp.approved` list now enforces.** The
+  maximum-shortfall state — nothing approved — was the one state that produced no
+  finding and shipped every configured server.
+- **Persona-declared hooks are scanned for dangerous shell patterns.** A persona hook
+  piping a network download into a shell used to build green.
+- **`drift-check` reports an unreadable manifest** as `UNCHECKED` / `PARTIALLY
+  CHECKED` rather than as `clean`.
+- **`audit` staleness compares the artifact-source digest**, not file mtimes, so an
+  edit with a rewound mtime and a deleted artifact are both caught.
+- **`output.failOnDirtyDist` is deprecated and ignored** (it warns when set). Staging
+  builds make a dirty `dist/` structurally impossible.
+- **`agentboot test --behavioral --allow-unevaluated` waives judgement-only scenarios
+  again.** Structurally broken scenarios remain unwaivable, as does "no cases ran".
+
+### New commands
+
+- **`agentboot baseline`** — archive a dated conformance snapshot. Platforms change
+  their enforcement semantics silently and your corpus text does not move, so
+  `drift-check` stays green while governance stops working. A baseline cannot be
+  backfilled. **Action:** start running it on a schedule now, not when you need it.
+- **`agentboot identity`** — stamp permanent ids and content hashes on governed
+  artifacts. Also cannot be applied retroactively; run it once before your 1.0 cut so
+  your artifacts date from then rather than from whenever you get to it.
+
+Both are documented in the [CLI reference](./cli-reference.md).
+
+---
+
+## v0.19 → v0.20 (0.20.0 through 0.20.2)
+
+Assurance hardening from a GA-readiness audit — every verifier AgentBoot ships now
+fails **closed** on tampered, stripped or unbound input — followed by fixes from a
+beta evaluation that ran the product end to end from the published documentation only.
+Hub **source** does not need rewriting.
+
+```bash
+npm install -g agentboot@latest
+cd /path/to/your-personas-hub
+agentboot build
+agentboot sync
+```
+
+### Behavior changes in 0.20.0
+
+- **Verifiers fail closed.** `telemetry-verify` cryptographically verifies batch
+  signatures and enforces them under `--require-signed` (stripping every signature
+  previously *passed*); signing is all-or-nothing, so a signing failure aborts the
+  spool and leaves the cursor unmoved instead of shipping unsigned.
+  `verify-manifest` no longer reports a signed posture on content failing its digest
+  or file-hash check, and an attestation that cannot be bound to a manifest no longer
+  passes. `mcp-verify` is fail-closed on the `--pins` CI path. **Action:** a CI job
+  that was green on stripped or unbindable evidence turns red — that red is the true
+  state, and it is the point of the release.
+- **`--config` / `AGENTBOOT_HUB` is now honored by `test`, `conformance`,
+  `install-user`, `optimize` and `add`.** **Action:** scripts that passed `--config`
+  to these and relied on the buggy cwd fallback now get the hub they asked for.
+- **Releases fire only on a strict semver increase**, and the version-string guard
+  catches stale `agentboot@` pins of any minor.
+- **The secret scan covers `agentboot.config.json`** and flags literal telemetry-sink
+  header values; sink and pin config files classify as enforcement-risk in sync PR
+  summaries. **Action:** a hub with an inline sink token gets a new finding.
+- **Added:** `agentboot evidence-pack` includes MCP governance (approved servers,
+  registry provenance, pin status) and an explicit `integrity.signed` field.
+
+### Behavior changes in 0.20.2
+
+Reporting honesty — most controls worked, but described what they had done
+inaccurately.
+
+- **`sync` PR mode asserts its preconditions before mutating the repo.** Previously
+  the first sign PR mode could not be honoured was a `git push` or `gh` failure —
+  after a branch had been cut and a commit made. The error now names the cause and
+  states plainly that files were written directly, so nobody is left believing a
+  review gate applied when it did not. `sync --dry-run` also reports that PR mode is
+  active; its output used to be byte-identical to direct-write.
+- **`import` can now clear the gate that recommends it.** The first sync onto a repo
+  with existing instruction files stops and points at `import` — but `import` never
+  modifies the source repo, so the gate re-fired identically and the destructive
+  `--adopt-existing` branch was the only escape. Import now records what it imported,
+  and the gate reads that record.
+- **`drift-check` counts deletions** (a deletion-only drift printed `0 modified`) and
+  **`--verbose` works** — it was accepted and silently ignored.
+- **Shadowing a `guardrail: hard` artifact fails `validate --strict`.** The check
+  covered only trait weights set to `OFF`, so re-declaring the artifact at a lower
+  scope with `guardrail: soft` passed. **Action:** hubs using scope overrides may
+  meet a new strict-mode failure.
+- **Provenance headers, build output and secret-scan findings resolve against the
+  hub** rather than the installed package directory, which had been leaking the
+  operator's filesystem layout into every file synced to every spoke.
+- **Added:** `agentboot add instruction <name>`, and
+  [`docs/guardrails.md`](https://agentboot.dev/docs/guardrails) — the authoring syntax
+  for `guardrail: hard` previously appeared on no documentation surface at all.
+
+---
+
 ## v0.15 → v0.19 (0.16.0 through 0.19.0)
 
 The GA-hardening series: an adversarial audit of AgentBoot's own enforcement claims
