@@ -6,6 +6,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// L3: the pre-publish scan uses the BUILD-TIME set, not a copy of it. See the
+// note above scanComponentForSecrets.
+import { DEFAULT_SECRET_PATTERNS } from "./frontmatter.js";
+
 // ---------------------------------------------------------------------------
 // Org-Specificity Detection
 // ---------------------------------------------------------------------------
@@ -163,20 +167,29 @@ export function generateAttribution(handle: string, org?: string): ContributorAt
  *
  * Two lists that must agree will drift, and these did. One scanner.
  *
- * The `password[:=]` family from the generated hooks' set is deliberately
- * absent: a persona ABOUT credential handling legitimately contains the word,
- * and a scan that cries wolf on documentation gets bypassed, after which it
- * finds nothing at all.
+ * L3: unifying the two publish copies WITH EACH OTHER left them unified on the
+ * weaker of two answers. The seven patterns here were a subset of the build-time
+ * set (DEFAULT_SECRET_PATTERNS), missing twelve classes: the label forms
+ * (password / api_key / secret / token with a quoted value), the AWS key NAMES,
+ * four of the five GitHub token prefixes, three of the five Slack prefixes,
+ * Anthropic keys, Google keys, DB URLs with inline credentials, `Bearer`, Azure
+ * `AccountKey=`, npm tokens and GitLab PATs.
+ *
+ * That ordering is backwards. Build time catches a credential inside a repo that
+ * already holds it; PUBLISH is the last gate before the same credential is
+ * handed to everyone, and it was the weakest gate in the product. There is no
+ * second list to keep in step now — the publish path scans with the canonical
+ * set, so parity is structural rather than maintained, and
+ * tests/secret-parity.test.ts holds a per-pattern canary on both sides so a drop
+ * from EITHER one goes red.
+ *
+ * The earlier note here said the `password[:=]` family was deliberately absent
+ * because a persona ABOUT credential handling legitimately contains the word.
+ * That risk is real and is already handled in the canonical set, which requires
+ * a QUOTED value for the label forms — `password: <your-password>` and prose
+ * mentioning api_key stay clean. The rationale did not justify dropping the
+ * eleven other classes it was attached to.
  */
-export const SECRET_PATTERNS: RegExp[] = [
-  /AKIA[A-Z0-9]{16}/,
-  /sk-[a-zA-Z0-9]{20,}/,
-  /ghp_[a-zA-Z0-9]{36}/,
-  /xox[bp]-[a-zA-Z0-9-]+/,
-  /sk_live_[a-zA-Z0-9]+/,
-  /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
-  /eyJ[a-zA-Z0-9_-]{10,}\.eyJ/,
-];
 
 export interface SecretScanResult {
   /** Absolute paths actually read. Zero is a FAILURE, not a pass. */
@@ -204,7 +217,7 @@ export function scanComponentForSecrets(componentDir: string): SecretScanResult 
         continue;
       }
       scanned.push(abs);
-      for (const p of SECRET_PATTERNS) {
+      for (const p of DEFAULT_SECRET_PATTERNS) {
         if (p.test(content)) { hits.push(path.relative(componentDir, abs)); break; }
       }
     }
