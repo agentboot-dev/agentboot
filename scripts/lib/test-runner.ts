@@ -811,10 +811,42 @@ export function behavioralFindings(
   // A whole FILE that produced no runnable case. Waivable on the same terms as
   // a single unevaluable case: it is the same condition at file granularity,
   // and treating the coarser report as stricter than the finer one is backwards.
+  //
+  // L2: "the same terms" means the same terms — INCLUDING the kind split. The
+  // per-case path below refuses to waive a `malformed` drop, because a scenario
+  // that never said what it tests is not a judgement gap. This loop waived the
+  // file wholesale on `allow` alone, so a scenario file in which EVERY entry was
+  // structurally broken — no `id:`, no `prompt:`, not even a mapping — passed
+  // under `--allow-unevaluated`, the flag AgentBoot's own published reusable
+  // workflow passes. The coarser report was strictly weaker than the finer one,
+  // which is the same inversion in the other direction.
+  //
+  // The wording was wrong for the same reason: "every expectation in it is
+  // unevaluable" is a claim about expectations we READ and could not check
+  // mechanically. For a malformed file we could not read the entries at all, and
+  // saying "unevaluable" points the operator at a waiver flag instead of at the
+  // broken YAML.
   for (const f of run.filesWithNoCases) {
+    const drops = run.droppedCases.filter((d) => d.file === f);
+    const malformed = drops.filter((d) => d.kind === "malformed");
+    // No recorded drops means the file had no `tests:` entries to drop (or came
+    // through the legacy parser). Nothing identifies it as unreadable, so it
+    // keeps the historical waivable treatment.
+    const waivable = malformed.length === 0 && allow;
     findings.push({
-      level: allow ? "warn" : "error",
-      message: `${allow ? "⚠" : "✗"} ${f} produced NO runnable test case — every expectation in it is unevaluable.`,
+      level: waivable ? "warn" : "error",
+      message: malformed.length > 0
+        ? `✗ ${f} produced NO runnable test case — ${malformed.length} of ${drops.length} entr${drops.length === 1 ? "y" : "ies"} ` +
+          `could NOT BE READ (${[...new Set(malformed.map((d) => d.reason))].join("; ")}). ` +
+          `--allow-unevaluated does not waive that: the file never said what it tests.`
+        : `${waivable ? "⚠" : "✗"} ${f} produced NO runnable test case — every expectation in it is unevaluable.`,
+      ...(drops.length > 0
+        ? {
+            detail: drops
+              .map((d) => `    ${d.caseId ?? "(no id)"} — ${d.reason} [${d.kind}]`)
+              .join("\n"),
+          }
+        : {}),
     });
   }
 
