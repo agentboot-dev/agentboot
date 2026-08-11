@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { installUserLevel, stageForHandoff } from "../scripts/lib/user-scope.js";
 
 /**
  * Docs↔code contract.
@@ -87,5 +90,129 @@ describe("L36 — ab.modelOverrides is documented with keys, defaults and legal 
     expect(compileSrc).toContain("Ignoring invalid ab.modelOverrides");
     expect(docs).toMatch(/Ignoring invalid ab\.modelOverrides/);
     expect(docs).toMatch(/does not fail the build/i);
+  });
+});
+
+/**
+ * L38 — the AB↔provider handoff manifest.
+ *
+ * This manifest is the only coupling between AgentBoot and an external
+ * user-scope provider, so its wire format is a published interface. The
+ * assertions below STAGE A REAL HANDOFF and check the published page against
+ * the artifact that came out, rather than against a second copy of the prose.
+ */
+describe("L38 — the user-scope handoff contract is published", () => {
+  const docs = read("docs/configuration.md");
+
+  /** Stage a miniature dist/claude/core and return the real handoff manifest. */
+  function stageFixture(): {
+    manifest: Record<string, unknown>;
+    files: Array<{ path: string; hash: string }>;
+    staged: string[];
+    stagingDir: string;
+    tmp: string;
+  } {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-docs-handoff-"));
+    const coreDir = path.join(tmp, "dist", "claude", "core");
+    fs.mkdirSync(path.join(coreDir, "skills", "ab"), { recursive: true });
+    fs.mkdirSync(path.join(coreDir, "rules"), { recursive: true });
+    fs.writeFileSync(path.join(coreDir, "skills", "ab", "SKILL.md"), "# skill\n");
+    fs.writeFileSync(path.join(coreDir, "rules", "baseline.md"), "# rule\n");
+    // The two composed files that must never cross the membrane.
+    fs.writeFileSync(path.join(coreDir, "CLAUDE.md"), "# claude\n");
+    fs.writeFileSync(path.join(coreDir, "settings.json"), "{}\n");
+
+    const stagingDir = path.join(tmp, "staged");
+    const res = stageForHandoff(coreDir, stagingDir);
+    expect(res.errors, res.errors.join("; ")).toEqual([]);
+    const manifest = JSON.parse(fs.readFileSync(res.manifestPath, "utf-8")) as Record<string, unknown>;
+    return {
+      manifest,
+      files: manifest["files"] as Array<{ path: string; hash: string }>,
+      staged: res.staged,
+      stagingDir,
+      tmp,
+    };
+  }
+
+  it("publishes both manifest filenames and the sentinel that selects the mode", () => {
+    const f = stageFixture();
+    expect(fs.readdirSync(f.stagingDir).find((n) => n.endsWith(".json"))).toBe(".agentboot-handoff.json");
+    for (const name of [".agentboot-handoff.json", ".agentboot-user-manifest.json", ".managed"]) {
+      expect(docs, `docs/configuration.md never names ${name}`).toContain(name);
+    }
+    fs.rmSync(f.tmp, { recursive: true, force: true });
+  });
+
+  it("publishes the default staging path", () => {
+    // No stagingDir supplied — this is the path an external provider must watch.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ab-docs-stagepath-"));
+    const coreDir = path.join(tmp, "dist", "claude", "core");
+    fs.mkdirSync(path.join(coreDir, "skills"), { recursive: true });
+    fs.writeFileSync(path.join(coreDir, "skills", "s.md"), "x\n");
+    const res = installUserLevel(coreDir, { userLevel: { mode: "manifest" } } as never, {
+      dryRun: true,
+      claudeDir: path.join(tmp, "home", ".claude"),
+    });
+    expect(res.mode).toBe("manifest");
+    const rel = path.relative(path.join(tmp, "dist"), res.staged!.stagingDir).replace(/\\/g, "/");
+    expect(rel).toBe("claude-user");
+    expect(docs, "docs/configuration.md never gives the default staging path").toContain("claude-user");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("publishes every field of the emitted manifest schema", () => {
+    const f = stageFixture();
+    // Top-level keys, and the per-file keys, exactly as an implementer sees them.
+    for (const key of Object.keys(f.manifest)) {
+      expect(docs, `docs/configuration.md never names manifest field "${key}"`).toContain(key);
+    }
+    for (const key of Object.keys(f.files[0]!)) {
+      expect(docs, `docs/configuration.md never names files[].${key}`).toContain(key);
+    }
+    // The constants are part of the contract, not decoration.
+    expect(f.manifest["managed_by"]).toBe("agentboot");
+    expect(f.manifest["scope"]).toBe("user");
+    expect(f.manifest["mode"]).toBe("manifest");
+    expect(f.manifest["apply_target"]).toBe("~/.claude");
+    expect(docs).toContain("apply_target");
+    expect(docs).toContain("~/.claude");
+    fs.rmSync(f.tmp, { recursive: true, force: true });
+  });
+
+  it("publishes SHA-256-over-contents and POSIX-relative paths as the wire format", () => {
+    const f = stageFixture();
+    const skill = f.files.find((x) => x.path.endsWith("SKILL.md"))!;
+    expect(skill.path, "manifest paths must be POSIX-relative to the staging root")
+      .toBe("skills/ab/SKILL.md");
+    expect(skill.path.startsWith("/")).toBe(false);
+    expect(skill.path).not.toContain("\\");
+    expect(skill.path).not.toContain("..");
+    expect(skill.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(skill.hash).toBe(
+      createHash("sha256").update(fs.readFileSync(path.join(f.stagingDir, "skills/ab/SKILL.md"))).digest("hex"),
+    );
+    expect(docs).toMatch(/SHA-256/i);
+    expect(docs).toMatch(/POSIX-relative/i);
+    fs.rmSync(f.tmp, { recursive: true, force: true });
+  });
+
+  it("publishes the CLAUDE.md / settings.json exclusion that the stager actually applies", () => {
+    const f = stageFixture();
+    const stagedRel = f.staged.map((p) => path.relative(f.stagingDir, p).replace(/\\/g, "/"));
+    expect(stagedRel.some((p) => p.endsWith("CLAUDE.md")), "CLAUDE.md must never be staged").toBe(false);
+    expect(stagedRel.some((p) => p.endsWith("settings.json")), "settings.json must never be staged").toBe(false);
+    expect(stagedRel.sort()).toEqual(["rules/baseline.md", "skills/ab/SKILL.md"]);
+    // …and the page must say so, because a silent omission is indistinguishable
+    // from a delivery failure to whoever is on the other side of the membrane.
+    const exclusion = docs.match(/[^\n]*never written or staged[\s\S]{0,900}/)?.[0] ?? "";
+    expect(exclusion, "docs/configuration.md never states the exclusion").not.toBe("");
+    expect(exclusion).toContain("CLAUDE.md");
+    expect(exclusion).toContain("settings.json");
+    fs.rmSync(f.tmp, { recursive: true, force: true });
+  });
+
+  it("names the manifest as the only AB↔provider coupling", () => {
+    expect(docs).toMatch(/only coupling between AgentBoot and an external user-scope provider/i);
   });
 });

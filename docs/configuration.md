@@ -300,6 +300,98 @@ Controls `agentboot install-user` (writing compiled skills/rules to `~/.claude`)
 |---|---|---|---|
 | `userLevel.mode` | `"auto" \| "direct" \| "manifest"` | `auto` | `auto`: write `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns the slot (then stage for handoff). `direct`: always write. `manifest`: never write — stage resolved content + a handoff manifest for an external provider. |
 
+`agentboot install-user --mode <auto\|direct\|manifest>` overrides the configured value for one run;
+`--dry-run` reports what either mode would do without touching anything.
+
+#### What is written, and what is deliberately not
+
+Both modes carry exactly two slots, taken from `dist/claude/core/`:
+
+| Slot | Source | Destination (direct mode) |
+|---|---|---|
+| `skills/` | `dist/claude/core/skills/` | `~/.claude/skills/` |
+| `rules/` | `dist/claude/core/rules/` | `~/.claude/rules/` |
+
+**`CLAUDE.md` and `settings.json` are never written or staged, in either mode.** They are *composed*
+files — one needs a safe append between an external provider's markers, the other a deep merge — and
+AgentBoot has no way to perform either without clobbering another tool's content. Direct writes are
+additive into directory slots only: no hooks, no `permissions.deny`. `install-user` prints both
+exclusions on every run so the omission is never mistaken for a failure.
+
+Content is refused rather than delivered if it still contains an unresolved `{{ template_var }}`.
+A user-level config manager typically resolves templates all-or-nothing, so one unresolved variable
+from AgentBoot would fail *every other tool's* content in the same pass. The check runs in dry-run
+too, so it surfaces before it can matter.
+
+#### The handoff contract (`manifest` mode)
+
+This manifest is the **only coupling between AgentBoot and an external user-scope provider**. It is
+what a provider implements against, so it is specified here rather than left to the source.
+
+Nothing under `~/.claude` is touched. The resolved slot content is staged and a manifest is written
+beside it:
+
+```
+<distPath>/claude-user/            # default staging root — dist/claude-user
+├── .agentboot-handoff.json        # the manifest the provider reads
+├── skills/…                       # resolved, ready to copy
+└── rules/…
+```
+
+```jsonc
+// dist/claude-user/.agentboot-handoff.json
+{
+  "managed_by": "agentboot",       // constant — identifies the producer
+  "scope": "user",                 // constant
+  "mode": "manifest",              // constant; present only in the handoff manifest
+  "apply_target": "~/.claude",     // where the provider is asked to apply `files`
+  "written_at": "2026-08-11T09:00:00.000Z",   // ISO 8601, UTC
+  "files": [
+    { "path": "skills/ab/SKILL.md", "hash": "9a52…" },
+    { "path": "rules/baseline.md",  "hash": "1c7f…" }
+  ]
+}
+```
+
+| Field | Contract |
+|---|---|
+| `files[].path` | **POSIX-relative to the staging root**, always `/`-separated even on Windows, and never absolute or `..`-bearing. Join it to `apply_target` to get the destination. |
+| `files[].hash` | Hex-encoded **SHA-256 over the file's contents**. Verify before applying; a mismatch means the staged tree was modified after the build. |
+| `written_at` | Build time, not apply time. |
+
+**The provider's side of the contract:** apply every `files[]` entry under `apply_target`, verify the
+hash first, and treat the manifest as the complete inventory — AgentBoot stages nothing that is not
+listed. AgentBoot does not read this file back; once staged, the slot belongs to the provider.
+
+#### The install manifest (`direct` mode)
+
+Direct writes record what they delivered in `~/.claude/.agentboot-user-manifest.json` — the same
+shape minus `mode` and `apply_target`, with `files[].path` POSIX-relative to `~/.claude`:
+
+```jsonc
+{ "managed_by": "agentboot", "scope": "user", "written_at": "…",
+  "files": [{ "path": "skills/ab/SKILL.md", "hash": "9a52…" }] }
+```
+
+It exists so revocation works, and its semantics are deliberately conservative:
+
+- **Withdrawal is confined to the previous manifest.** The next `install-user` removes what the last
+  one delivered and this one did not. Because the manifest lists only files AgentBoot wrote, it can
+  never delete a file it did not create.
+- **A locally edited artifact is `blocked`, not removed** — its hash no longer matches, so it is left
+  on disk, reported in yellow as *revoked at the hub and still active on this machine*, and **kept in
+  the manifest** so `agentboot uninstall --user` can still reach it. Silently discarding a local edit,
+  or dropping it from tracking, both produce content no command can account for.
+- **"0 revoked" and "pruning never ran" print differently.** An equivalence there is how a withdrawn
+  artifact sits on disk indefinitely while the run looks clean.
+- **An unreadable manifest prunes nothing** and is treated as "no previous install" — guessing would
+  delete files AgentBoot cannot prove it wrote.
+- **Path traversal is refused on read.** `uninstall --user` skips any manifest entry that resolves
+  outside `~/.claude/` and says so, so a tampered manifest cannot aim the uninstaller at the rest of
+  the home directory.
+- Manifests written by older builds may contain `\`-separated paths; both manifests are normalised on
+  read, so an upgrade does not read every legacy entry as an orphan.
+
 ### `agents` — tools & LLM provider
 
 | Field | Type | Description |
