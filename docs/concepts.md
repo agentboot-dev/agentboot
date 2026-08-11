@@ -1385,34 +1385,53 @@ personas share behavior, that behavior belongs in a trait that both compose.
 
 ## Monorepo support
 
-AgentBoot supports monorepos through per-package deployment. A single repo entry in
-`repos.json` can declare a `packages[]` array, and sync writes a scoped `.claude/`
-directory into each listed package path in addition to (or instead of) the repo root.
+A monorepo is one git repo containing several packages, and `.claude/` at the repo root
+is not always where the agent looks — an agent invoked inside `packages/api-service/`
+reads that directory's config. A single repo entry in `repos.json` can therefore declare
+a `packages[]` array, and sync writes into each listed package path instead of the repo
+root.
 
 ```
 monorepo/                  ← single .git/
 ├── packages/
-│   ├── api-service/       ← gets API-specific personas
-│   ├── web-app/           ← gets frontend-specific personas
-│   └── shared-lib/        ← gets library-specific personas
+│   ├── api-service/       ← .claude/ written here
+│   ├── web-app/           ← .claude/ written here
+│   └── shared-lib/        ← .claude/ written here
 ```
 
-In this layout there is one repo but multiple teams with different persona needs. Each
-package maps to a node in the scope hierarchy, so a package can receive its own persona
-set and trait composition layered on top of the org defaults.
+**`packages[]` selects WRITE TARGETS, not scope.** It answers *where* the compiled
+output lands, not *what* lands there. Content is resolved from the repo entry's
+`group`/`team` — one entry has exactly one scope — so every package listed under a
+single entry receives **identical content**: the same personas, skills, traits and
+instructions, written to several directories and differing only in the generation
+timestamp stamped into the output. The `[pkg]` suffix in sync output labels the
+destination, not a distinct build.
 
-Two patterns are available, and they can be combined:
+To get genuinely different rules per package:
 
-- **Per-package personas** — declare `packages[]` in the repo's `repos.json` entry to
-  give each package directory its own scoped `.claude/` output. This lets the API team
-  get `api-contract-reviewer` while the web team does not.
 - **Path-scoped gotchas** — gotchas with `paths:` frontmatter (e.g.,
   `paths: ["packages/api-service/**"]`) activate only for matching files, giving
-  per-package rules without per-package personas. This is the lightest-weight approach
-  and is often sufficient on its own.
+  per-package rules from a single entry. This is the lightest-weight approach, it is
+  the one that works today, and it is usually sufficient on its own.
+- **Separate repo entries** — list the same `path` twice with different `packages[]`
+  and different `group`/`team`. Each entry is validated and resolved independently, and
+  each package's manifest records its own entry's scope, so wherever scope-level content
+  exists the packages receive different content. The cost is two entries in `repos.json`
+  instead of one.
 
-The gotchas-based approach covers many monorepo needs without per-package configuration;
-`packages[]` is there when a monorepo genuinely needs distinct persona sets per package.
+**Acknowledged design residual (post-GA).** Packages are not nodes in the scope
+hierarchy. There is no way for one repo entry to give each of its packages its own
+persona set or trait composition; scope resolution stops at the repo entry. Making a
+package a first-class scope node — so `packages[]` could carry per-package
+`group`/`team` — is a design change to the scope model, not a sync change, and it is
+deliberately deferred past GA rather than approximated.
+
+A second, narrower limit bounds the separate-entries pattern above: per-scope
+**personas** are declared under `nodes`, but a `repos.json` entry's `group` is validated
+against the legacy `groups` map only, so a `nodes`-only config rejects the entry with
+`Group "<name>" is not defined in agentboot.config.json`. Until those two are joined up,
+the separate-entries pattern buys independent scope resolution rather than per-package
+persona sets — so read `packages[]` as fan-out, and reach for path-scoped gotchas first.
 
 ---
 
