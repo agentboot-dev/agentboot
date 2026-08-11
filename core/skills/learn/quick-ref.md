@@ -1,7 +1,7 @@
 ---
 id: 01KZRGW0EVGMKPWGZ8TYFDAVT5
 slug: quick-ref
-hash: sha256:abf2327bba6495b1
+hash: sha256:d7423d6efc1902f8
 ---
 
 # AgentBoot Quick Reference
@@ -55,8 +55,18 @@ hash: sha256:abf2327bba6495b1
 | `dist/skill/` | Cross-platform | SKILL.md (agentskills.io) |
 | `dist/claude/` | Claude Code | `.claude/` native format |
 | `dist/copilot/` | GitHub Copilot | `.github/` format |
-| `dist/cursor/` | Cursor | `.cursor/rules/` (planned) |
-| `dist/agents/` | Universal | AGENTS.md standard (planned) |
+| `dist/codex/` | OpenAI Codex CLI | AGENTS.md + `.codex/` |
+| `dist/agents/` | Universal | AGENTS.md standard |
+| `dist/cursor/` | Cursor | `.cursor/rules/` |
+| `dist/windsurf/` | Windsurf | `.windsurf/rules/` |
+| `dist/gemini/` | Gemini | `GEMINI.md` |
+| `dist/jetbrains/` | JetBrains AI Assistant | `.aiassistant/rules/` |
+| `dist/plugin/` | Claude Code plugin | plugin bundle (not syncable) |
+
+All of the above are emitted today. Which ones a build produces is
+`personas.outputFormats`; the default when that key is absent is `skill`, `claude`,
+`copilot`, `agents`. Emission is not enforcement — only the Claude Code, Codex and
+Copilot CLI surfaces receive blocking hooks.
 
 ## Scope Hierarchy
 
