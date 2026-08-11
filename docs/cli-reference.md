@@ -712,9 +712,9 @@ AgentBoot keeps a global registry of hubs (`~/.agentboot/config.json`) so `/ab` 
 resolve a hub from any repo. Override the registry location with the `AGENTBOOT_HOME` environment
 variable (its `.agentboot` directory is used; handy for isolation or a non-default location).
 
-### Hub resolution order (uniform across commands)
+### Hub resolution order (CLI commands)
 
-Every hub-reading command resolves its hub the same way (UI-14 — previously
+Every hub-reading **CLI** command resolves its hub the same way (UI-14 — previously
 `mcp-server`/`doctor` honored `AGENTBOOT_HUB` while `status`/`drift-check` ignored it):
 
 1. **`--config <path>`** — explicit flag always wins.
@@ -723,6 +723,40 @@ Every hub-reading command resolves its hub the same way (UI-14 — previously
 4. **Fallback** — build scripts fall back to the package root; read-only commands
    (`status`) consult the hub **registry** only to *suggest* a hub, never to silently
    act on one.
+
+### Hub resolution order (`agentboot mcp-server`)
+
+**The MCP server's ladder is different, and it is different in a way that matters.**
+It takes no `--config` flag, and its last two rungs *act* where the CLI only suggests:
+
+1. **`AGENTBOOT_HUB`** — session-scoped hub override. If a registry default also
+   exists and differs, the env var wins and the difference is reported.
+2. **Current directory** — the server was started in a directory containing
+   `agentboot.config.json`.
+3. **Global registry** — the registry's **default hub** is used, not merely
+   suggested. An MCP client has no prompt to answer, so there is nothing to suggest
+   *to*; the server picks one and reports which.
+4. **Package root** — no hub resolved anywhere. The server still starts, serving
+   **AgentBoot's own bundled personas and traits**. Every answer it then gives
+   describes the package, not your organization.
+
+Rung 4 is a real failure mode for a misconfigured spoke, so it is reported on the
+channel you actually read. `agentboot_status` returns a **`hubResolution`** object:
+
+```json
+"hubResolution": {
+  "source": "package-fallback",
+  "path": "/usr/local/lib/node_modules/agentboot",
+  "fallback": true,
+  "note": "No hub resolved from AGENTBOOT_HUB, the current directory, or the global registry — these answers describe AgentBoot's OWN bundled content, not your organization's. …"
+}
+```
+
+`source` is one of `env`, `cwd`, `registry`, `package-fallback`; `fallback` is true
+only on the last. The same condition is also written to **stderr** — but on a stdio
+MCP server stderr goes to the *client's log file*, not to you, which is why the
+resolution is a returned value and not only a diagnostic. If an agent reports your
+org's governance and `hubResolution.fallback` is true, it is describing ours.
 
 ### `agentboot hubs`
 
@@ -837,6 +871,12 @@ Maintainer-profile tools:
 - `agentboot_propose_change` — branch + commit + push + open a PR (never pushes to main)
 
 Reads from compiled `dist/skill/core/` when available, falls back to `core/` source files.
+
+**Which hub is it serving?** The server's hub-resolution ladder differs from the CLI's
+— see [Hub resolution order (`agentboot mcp-server`)](#hub-resolution-order-agentboot-mcp-server).
+Check `hubResolution` on `agentboot_status` before trusting an answer about your org;
+if `hubResolution.fallback` is true, no hub was found and the server is serving
+AgentBoot's bundled content.
 
 ---
 

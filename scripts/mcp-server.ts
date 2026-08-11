@@ -40,13 +40,51 @@ import { fileURLToPath } from "node:url";
 //   2. process.cwd()               — user is in their hub directory
 //   3. ~/.agentboot/config.json    — global registry (default hub, works from any repo)
 //   4. Package install dir          — fallback for running the build tool itself
+//
+// This ladder is NOT the CLI's. There is no `--config` rung (the server takes no
+// such flag), and rungs 3 and 4 ACT where the CLI's read-only commands only
+// suggest. `docs/cli-reference.md § Hub resolution order` documents both ladders
+// and the difference between them; keep the two in step.
 // ---------------------------------------------------------------------------
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 
-function resolveHubRoot(): string {
+/** Which rung of the ladder produced HUB_ROOT. */
+export type HubResolutionSource = "env" | "cwd" | "registry" | "package-fallback";
+
+export interface HubResolution {
+  /** The rung that won. */
+  source: HubResolutionSource;
+  /** The resolved hub root. */
+  path: string;
+  /**
+   * True when NO hub was resolved and AgentBoot's own bundled content is being
+   * served in place of the org's. Every answer this server gives in that state
+   * describes the package, not the organization.
+   */
+  fallback: boolean;
+  /** Operator-facing explanation, present whenever the resolution needs one. */
+  note?: string;
+}
+
+/**
+ * H.1 — THE FALLBACK WAS ONLY EVER ANNOUNCED ON A CHANNEL NOBODY READS.
+ *
+ * When nothing resolves, this server serves AgentBoot's own bundled personas
+ * and traits as though they were the organization's. That was reported by a
+ * single `console.error` — and on an MCP **stdio** server stderr is captured by
+ * the CLIENT, into a log file the user has to know exists and go looking for.
+ * The user's channel is the tool result. So the diagnostic was, in practice,
+ * invisible: a misconfigured spoke got a confident, well-formed, entirely wrong
+ * answer about its org's governance, with no indication anything was wrong.
+ *
+ * The stderr line stays (it is right for the client log). What changes is that
+ * the resolution is now a VALUE, returned on `agentboot_status`, so the surface
+ * the user actually reads can say which rung won and whether it is the fallback.
+ */
+function resolveHubRoot(): HubResolution {
   // Diagnostics go to stderr only — stdout is the JSON-RPC channel and must not
   // be polluted, or the MCP handshake breaks.
   // 1. Explicit env var
@@ -55,28 +93,39 @@ function resolveHubRoot(): string {
     const resolved = path.resolve(envHub);
     // Dual-source clarity: if a registry default also exists and differs, the
     // env var wins — surface that so the operator isn't confused about which SSOT applies.
+    let note: string | undefined;
     try {
       const regDefault = getDefaultHub();
       if (regDefault && path.resolve(regDefault) !== resolved) {
-        console.error(
-          `[agentboot] AGENTBOOT_HUB (${resolved}) overrides the registry default hub (${regDefault}).`
-        );
+        note =
+          `AGENTBOOT_HUB (${resolved}) overrides the registry default hub (${regDefault}).`;
+        console.error(`[agentboot] ${note}`);
       }
     } catch {
       // registry unavailable — nothing to compare against
     }
-    return resolved;
+    return { source: "env", path: resolved, fallback: false, ...(note ? { note } : {}) };
   }
   // 2. cwd is a hub
   const cwdConfig = path.join(process.cwd(), "agentboot.config.json");
   if (fs.existsSync(cwdConfig)) {
-    return process.cwd();
+    return { source: "cwd", path: process.cwd(), fallback: false };
   }
   // 3. Global registry (Phase 11 A3): default hub, or the only hub for single-hub orgs
   try {
     const candidate = getDefaultHub();
     if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
-      return candidate;
+      return {
+        source: "registry",
+        path: candidate,
+        fallback: false,
+        // The CLI's read-only commands only ever *suggest* a registered hub.
+        // This server acts on one, because an MCP client has no prompt to answer
+        // — so say which hub was chosen and on whose authority.
+        note:
+          `No AGENTBOOT_HUB and the current directory is not a hub — served from the ` +
+          `global registry's default hub (${candidate}).`,
+      };
     }
   } catch {
     // Registry file missing/corrupt — fall through (getDefaultHub self-heals a corrupt file)
@@ -85,16 +134,20 @@ function resolveHubRoot(): string {
   //    to AgentBoot's own bundled content so the server still starts, but make the
   //    fallback VISIBLE: a spoke that silently serves the package's demo personas is
   //    the confusing failure mode the registry was built to prevent.
-  console.error(
-    "[agentboot] No hub resolved from AGENTBOOT_HUB, the current directory, or the " +
-      "global registry — falling back to AgentBoot's bundled content. Run " +
-      "'agentboot connect <hub-path>' to register your hub, or set AGENTBOOT_HUB."
-  );
-  return DEFAULT_ROOT;
+  const fallbackNote =
+    "No hub resolved from AGENTBOOT_HUB, the current directory, or the global " +
+    "registry — these answers describe AgentBoot's OWN bundled content, not your " +
+    "organization's. Run 'agentboot connect <hub-path>' to register your hub, or " +
+    "set AGENTBOOT_HUB.";
+  console.error(`[agentboot] ${fallbackNote}`);
+  return { source: "package-fallback", path: DEFAULT_ROOT, fallback: true, note: fallbackNote };
 }
 
+/** How the hub root was resolved — reported on `agentboot_status`. */
+export const HUB_RESOLUTION: HubResolution = resolveHubRoot();
+
 /** Hub root path resolved from env var, cwd, global registry, or package root. */
-export const HUB_ROOT = resolveHubRoot();
+export const HUB_ROOT = HUB_RESOLUTION.path;
 
 /** Sanitize error messages by replacing absolute paths with relative ones. */
 function sanitizeErrorOutput(msg: string): string {
@@ -615,7 +668,10 @@ const TOOLS: McpTool[] = [
   {
     name: "agentboot_status",
     description:
-      "Get the full status of the AgentBoot hub: org info, build state, personas, repos, and platforms.",
+      "Get the full status of the AgentBoot hub: org info, build state, personas, repos, and platforms. " +
+      "Also reports `hubResolution` — how the hub root was resolved (env / cwd / registry / package-fallback). " +
+      "When `hubResolution.fallback` is true no hub was found and every answer below describes AgentBoot's " +
+      "own bundled content rather than this organization's; say so rather than reporting it as the org's state.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -1140,6 +1196,11 @@ function handleStatus(): ToolResult {
       displayName: config?.orgDisplayName ?? config?.org ?? "unknown",
       version: hubVersion,
     },
+    // H.1: which rung of the ladder produced that path, and whether it is the
+    // no-hub fallback. Reported here because this is the channel the user reads
+    // — the stderr diagnostic goes to the MCP client's log file, which is where
+    // a silently-wrong answer had been hiding.
+    hubResolution: HUB_RESOLUTION,
     build: {
       lastBuiltAt,
       distExists,
