@@ -35,4 +35,43 @@ jobs:
       # Pinned agentboot version for reproducible, auditable CI. Keep in step with
       # the version your hub builds with; bump deliberately, like any dependency.
       # (npm accepts either form: agentboot@v0.20.2 and agentboot@0.20.2 are the same.)
-      - run: npx agentboot@v0.20.2 drift-check --format json
+      #
+      # `--repo .` is load-bearing, not decoration. Without it `drift-check`
+      # takes its HUB branch, looks for agentboot.config.json in the checkout,
+      # and exits 1 with "No agentboot.config.json found — `drift-check` needs
+      # a hub" before comparing a single file. This template is installed in a
+      # SPOKE, which by definition has no hub config, so the hubless form could
+      # never run where the header tells you to put it.
+      #
+      # POSTURE FOR EXIT 2 ("No AgentBoot manifest found"): it FAILS this job.
+      # You installed this workflow to prove the managed files still match what
+      # the hub synced. A repo with no manifest has never been synced, so
+      # nothing was compared — that is UNCHECKED, not clean, and a green tick
+      # over it is exactly the outcome this check exists to prevent. Fix it by
+      # running `agentboot sync` from your hub for this repo. If you genuinely
+      # want unsynced repos to pass, change `exit 1` to `exit 0` in the `2)`
+      # branch and accept that this gate then proves nothing until a manifest
+      # appears.
+      - name: AgentBoot drift check
+        run: |
+          set +e
+          npx agentboot@v0.20.2 drift-check --repo . --format json
+          code=$?
+          set -e
+          case "$code" in
+            0)
+              echo "::notice::AgentBoot drift check clean — managed files match the hub manifest."
+              ;;
+            1)
+              echo "::error::AgentBoot drift detected — managed files differ from the hub manifest. Re-run 'agentboot sync' from your hub, or file a policy exception."
+              exit 1
+              ;;
+            2)
+              echo "::error::No AgentBoot manifest in this repo — NOTHING was checked. Run 'agentboot sync' from your hub for this repo."
+              exit 1
+              ;;
+            *)
+              echo "::error::agentboot drift-check exited $code, which this workflow does not recognise. Treating an unknown result as a failure rather than a pass."
+              exit 1
+              ;;
+          esac
