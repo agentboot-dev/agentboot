@@ -84,9 +84,9 @@ const CONTINUATION = /^(\s+\S|- |#)/;
  * blinded, and an emitter that truncates a document mid-fence would otherwise
  * hide every leak after the cut behind a fence that never ends. Refusing to
  * extend an unterminated fence means the worst an unclosed fence can do is make
- * the scan stricter, never blinder. (The trait-tier truncation in AGENTS.md does
- * exactly this today — see the quarantine note; the detector must not depend on
- * that being fixed.)
+ * the scan stricter, never blinder. The trait-tier truncation in AGENTS.md used
+ * to do exactly this (Q66, fixed in `closeTruncatedFence`); the detector still
+ * must not depend on that staying fixed, which is why the rule stands.
  */
 function fencedLines(lines: string[]): boolean[] {
   const inFence = new Array<boolean>(lines.length).fill(false);
@@ -271,6 +271,77 @@ describe("L51 — the corpus invariant, derived from the emitted tree", () => {
       findFrontmatterBlocks(fs.readFileSync(f, "utf-8")).some((b) => b.fenced),
     );
     expect(fenced.length, "no fenced frontmatter example found — the exemption is untested").toBeGreaterThan(0);
+  });
+
+  it("Q66 — every emitted .md/.mdc closes the code fences it opens", () => {
+    // This was the file's ONE documented defence and the one thing it never
+    // actually asserted: the docblock above says "fences must balance in every
+    // emitted file", and meanwhile BOTH emitted AGENTS.md files shipped an
+    // unterminated ```json — the trait tier is capped at 50 lines and the cut
+    // landed inside a fence, so ~280 lines (six traits, the path-scoped rules,
+    // every agent definition) rendered as one code block. AGENTS.md is the
+    // universal surface every platform reads, so it was the most-read artifact
+    // the compiler produces and it was visibly broken to anyone who opened it.
+    //
+    // Naming the AGENTS.md files explicitly matters: this assertion is over a
+    // derived set, and a build that stopped emitting them would otherwise pass
+    // it by emitting nothing.
+    const files = walkEmitted(dist);
+    const rel = files.map((f) => path.relative(dist, f).split(path.sep).join("/"));
+    expect(rel, "the universal AGENTS.md surface was not emitted at all").toContain("agents/AGENTS.md");
+    expect(rel, "the codex AGENTS.md copy was not emitted at all").toContain("codex/core/AGENTS.md");
+
+    const unbalanced = files
+      .filter((f) => unbalancedFences(fs.readFileSync(f, "utf-8")))
+      .map((f) => path.relative(dist, f).split(path.sep).join("/"));
+    expect(
+      unbalanced,
+      `an unterminated code fence renders the rest of these files as one code block:\n${unbalanced.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  it("MUTATION: removing one closing fence turns the balance invariant red", () => {
+    // A check that cannot fail is not a check, and this codebase has shipped
+    // one that could not. So the balance scan is run against a real emitted
+    // artifact with exactly the regression Q66 was — one closer deleted.
+    const victim = path.join(dist, "agents", "AGENTS.md");
+    const original = fs.readFileSync(victim, "utf-8");
+    try {
+      const lines = original.split("\n");
+      // Delete the LAST closer, not the first: an earlier closer's removal is
+      // absorbed by the next opener (```yaml carries an info string, so it can
+      // never itself close a block) and the document stays balanced — which is
+      // exactly how a mutation test passes while proving nothing.
+      const closers: number[] = [];
+      let openChar = "";
+      let openLen = 0;
+      let isOpen = false;
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i]!.trim();
+        const fence = /^(`{3,}|~{3,})/.exec(trimmed);
+        if (!fence) continue;
+        const ch = fence[1]![0]!;
+        const len = fence[1]!.length;
+        if (!isOpen) {
+          isOpen = true;
+          openChar = ch;
+          openLen = len;
+        } else if (ch === openChar && len >= openLen && trimmed === ch.repeat(len)) {
+          closers.push(i);
+          isOpen = false;
+        }
+      }
+      expect(closers.length, "no closing fence to remove — the mutation would be vacuous").toBeGreaterThan(0);
+      lines.splice(closers[closers.length - 1]!, 1);
+      fs.writeFileSync(victim, lines.join("\n"), "utf-8");
+
+      const unbalanced = walkEmitted(dist)
+        .filter((f) => unbalancedFences(fs.readFileSync(f, "utf-8")))
+        .map((f) => path.relative(dist, f).split(path.sep).join("/"));
+      expect(unbalanced, "the corpus scan did not see a deleted closing fence").toEqual(["agents/AGENTS.md"]);
+    } finally {
+      fs.writeFileSync(victim, original, "utf-8");
+    }
   });
 
   it("NO emitted .md/.mdc ships a frontmatter block as body text", () => {

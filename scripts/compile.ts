@@ -1932,6 +1932,41 @@ function generateGeminiMd(
 // AGENTS.md generation — universal cross-tool standard
 // ---------------------------------------------------------------------------
 
+/**
+ * Close a fenced code block that a line-cap cut in half.
+ *
+ * The trait tier below is capped at 50 lines so AGENTS.md stays a reasonable
+ * size. When that cut lands between a ```json opener and its closer, the file
+ * ships an opener with no closer — and in every renderer that reads markdown,
+ * an unterminated fence swallows the ENTIRE REST OF THE DOCUMENT into one code
+ * block. On the shipped corpus that was ~280 lines: six behavioural traits, the
+ * path-scoped rules and every agent definition, all displayed as literal JSON.
+ * AGENTS.md is the universal-official surface — the one artifact every platform
+ * reads — so this is the most-read output the compiler produces.
+ *
+ * Appending the closer keeps the truncation marker that follows it as prose
+ * rather than as the first line of code nobody asked for. The fence grammar
+ * here matches CommonMark's closing rule (same character, at least as long as
+ * the opener, nothing else on the line) so the emitted document balances under
+ * the same reading the emitted-corpus invariant applies.
+ */
+function closeTruncatedFence(lines: string[]): string[] {
+  let open: { char: string; len: number } | null = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const fence = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (!fence) continue;
+    const ch = fence[1]![0]!;
+    const len = fence[1]!.length;
+    if (open === null) {
+      open = { char: ch, len };
+    } else if (ch === open.char && len >= open.len && trimmed === ch.repeat(len)) {
+      open = null;
+    }
+  }
+  return open === null ? lines : [...lines, open.char.repeat(open.len)];
+}
+
 function generateAgentsMd(
   config: AgentBootConfig,
   distPath: string,
@@ -2005,10 +2040,13 @@ function generateAgentsMd(
         lines.push(`### ${traitName}`, "");
         // Include trait content (strip frontmatter, keep concise)
         const traitContent = stripFrontmatterBody(trait.content).trim();
-        // Limit to first ~50 lines to prevent oversized AGENTS.md
-        const traitLines = traitContent.split("\n").slice(0, 50);
+        // Limit to first ~50 lines to prevent oversized AGENTS.md. The cut can
+        // land inside a code fence, so close anything it left open — otherwise
+        // the rest of the document renders as one code block.
+        const allTraitLines = traitContent.split("\n");
+        const traitLines = closeTruncatedFence(allTraitLines.slice(0, 50));
         lines.push(traitLines.join("\n"));
-        if (traitContent.split("\n").length > 50) {
+        if (allTraitLines.length > 50) {
           lines.push("", "*(truncated for brevity)*");
         }
         lines.push("");
