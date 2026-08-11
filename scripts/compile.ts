@@ -2748,7 +2748,25 @@ interface ComplianceHookBinding {
   script: string;
   /** Canonical Claude Code event name. */
   ccEvent: string;
-  /** CC matcher (exact-match). "" = all events/tools. */
+  /**
+   * CC tool matcher. "" = all tools for this event.
+   *
+   * This is a REGEX, not an exact-match string — this comment used to say
+   * "exact-match", which would have made the `Edit|Write|Bash` binding below a
+   * dead hook that silently logged no telemetry. Verified against the shipping
+   * Claude Code binary (v2.1.226), which compiles the matcher and tests it:
+   *
+   *     try { const re = new RegExp(matcher); if (re.test(toolName)) ... }
+   *     catch { log(`Invalid regex pattern in hook matcher: ${matcher}`) }
+   *
+   * and whose own settings-validation hint names the pipe form as supported:
+   * "The matcher is a string: a tool name ("Bash"), pipe-separated list
+   * ("Edit|Write"), or empty to match all."
+   *
+   * Because it is a regex, a matcher is silently permissive if written
+   * carelessly — "Edit" alone also matches "NotebookEdit". Keep matchers to
+   * literal tool names joined by `|`; the legality test pins that.
+   */
   matcher: string;
   /** Timeout in milliseconds. CC/Copilot use ms; the Codex emitter converts to seconds. */
   timeoutMs: number;
@@ -2758,7 +2776,12 @@ interface ComplianceHookBinding {
   requiresDenyTools?: boolean;
 }
 
-const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
+/**
+ * Exported so the matcher-legality test can enumerate EVERY binding rather
+ * than the handful someone remembered to assert on. A new row with an illegal
+ * matcher must fail the suite the moment it is added.
+ */
+export const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
   { script: "agentboot-input-scan.sh",  ccEvent: "UserPromptSubmit", matcher: "",                timeoutMs: 5000 },
   // NOT async: an async Stop hook cannot deliver a blocking decision — its
   // exit code / stdout are ignored by the platform. Blocking output scan
@@ -3647,6 +3670,41 @@ function listNodeScopeRoots(hubRoot: string, nodePath: string): string[] {
   return candidates.filter((c): c is string => c !== undefined && fs.existsSync(c));
 }
 
+/**
+ * The directory Claude Code actually reads managed settings from, per platform.
+ *
+ * THIS IS THE ONE PLACE THESE STRINGS LIVE. Docs cite it; the test suite pins
+ * it. The failure being guarded is silent and total: an MDM profile delivered
+ * to a directory Claude Code never reads installs cleanly, reports success,
+ * drift-checks clean, and enforces *nothing* — a HARD guardrail that exists
+ * only on the admin's console.
+ *
+ * Established empirically against the shipping Claude Code binary (v2.1.226),
+ * whose managed-settings root resolver reads:
+ *
+ *     switch (platform) {
+ *       case "macos":   return "/Library/Application Support/ClaudeCode";
+ *       case "windows": return "C:\\Program Files\\ClaudeCode";
+ *       default:        return "/etc/claude-code";
+ *     }
+ *     managedSettingsDropInDir = join(root, "managed-settings.d")
+ *
+ * Two corrections came out of that check, both of which had shipped:
+ *   - macOS was emitted as ".../Claude/", missing the "Code". That is the
+ *     Claude *Desktop* support directory, a different product.
+ *   - Windows was emitted as "C:\ProgramData\Claude\" — wrong in both
+ *     components; it is "C:\Program Files\ClaudeCode\".
+ * Linux ("/etc/claude-code/") was already correct.
+ *
+ * If a future Claude Code changes these, re-derive from the binary rather than
+ * from memory or from a doc page that may itself have copied this table.
+ */
+export const MANAGED_SETTINGS_ROOTS = {
+  macos: "/Library/Application Support/ClaudeCode/",
+  windows: "C:\\Program Files\\ClaudeCode\\",
+  linux: "/etc/claude-code/",
+} as const;
+
 function generateManagedSettings(
   config: AgentBootConfig,
   distPath: string,
@@ -3660,8 +3718,8 @@ function generateManagedSettings(
   // got a managed-settings.json — and, with `requireAuditLog`, one referencing
   // `.claude/hooks/agentboot-telemetry.sh`, a hook that build never produced.
   // The operator was then told "→ Managed settings written to dist/managed/"
-  // and "→ Target MDM path: /Library/Application Support/Claude/", i.e. handed
-  // a deployable artifact pointing at a script that does not exist.
+  // and a target MDM path, i.e. handed a deployable artifact pointing at a
+  // script that does not exist.
   //
   // Erroring rather than skipping: `managed.enabled` is a configured control,
   // and a control that reaches no platform is the exact class the capability
@@ -3744,12 +3802,14 @@ function generateManagedSettings(
     );
   }
 
-  // Output path guidance
+  // Output path guidance — see MANAGED_SETTINGS_ROOTS for why these values are
+  // what they are. An MDM profile aimed at the wrong directory deploys cleanly
+  // and enforces nothing, so this string is a control surface, not a hint.
   const platformPaths: Record<string, string> = {
-    jamf: "/Library/Application Support/Claude/",
-    intune: "C:\\ProgramData\\Claude\\",
-    jumpcloud: "/etc/claude-code/",
-    kandji: "/Library/Application Support/Claude/",
+    jamf: MANAGED_SETTINGS_ROOTS.macos,
+    intune: MANAGED_SETTINGS_ROOTS.windows,
+    jumpcloud: MANAGED_SETTINGS_ROOTS.linux,
+    kandji: MANAGED_SETTINGS_ROOTS.macos,
     other: "./managed-output/",
   };
   const platform = managed.platform ?? "other";
