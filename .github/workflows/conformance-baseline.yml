@@ -29,10 +29,22 @@
 #
 # STILL OUTSTANDING, AND NOT FIXABLE HERE: GitHub fires `schedule` only from a
 # workflow present on the DEFAULT branch. This file is not on main yet — `gh run
-# list --workflow=conformance-baseline.yml` returns 404 — so no scheduled run
-# has EVER happened and none will until this lands there. That is a push, which
-# arrives with the cut PR. Until then the clock is still not running, and the
-# `workflow_dispatch` trigger below is the only way to bank a snapshot.
+# list --workflow=conformance-baseline.yml` returns 404, and
+# `git ls-tree --name-only origin/main .github/workflows/` lists six workflows,
+# not this one — so no scheduled run has EVER happened and none will until this
+# lands there. That is a push, which arrives with the cut PR.
+#
+# AND THE MANUAL ESCAPE HATCH DOES NOT EXIST EITHER. An earlier note here said
+# `workflow_dispatch` was "the only way to bank a snapshot" in the meantime.
+# That is false, and falsely reassuring: `workflow_dispatch` carries the SAME
+# default-branch requirement as `schedule` — a workflow absent from the default
+# branch is not offered by the API or the UI, so it cannot be dispatched at all.
+# The honest statement is the harder one: **nothing can bank a snapshot today,
+# by any trigger.** Zero conformance baselines exist, and none can exist until
+# the cut PR merges this file to the default branch. The trigger below is still
+# worth keeping — once the file is on the default branch, dispatch is what lets
+# a snapshot be taken from an arbitrary ref without waiting for Monday — but it
+# is not a workaround for the thing that is actually blocking.
 
 name: Conformance baseline
 
