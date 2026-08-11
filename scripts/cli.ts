@@ -47,6 +47,7 @@ import {
 } from "./lib/exceptions.js";
 import { stampIdentity, mintId } from "./lib/artifact-identity.js";
 import { checkDistFreshness, checkDistStamp, staleDistMessage, readDistStamp, type DistFreshness } from "./lib/dist-stamp.js";
+import { DEFAULT_SECRET_PATTERNS } from "./lib/frontmatter.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -2572,14 +2573,17 @@ program
       { pattern: /\bas needed\b/i, msg: "Vague: 'as needed' — specify the condition" },
     ];
 
-    // Secret patterns
-    const secretPatterns = [
-      { pattern: /\bsk-[a-zA-Z0-9]{20,}/, msg: "Possible API key (sk-...)" },
-      { pattern: /\bghp_[a-zA-Z0-9]{36}/, msg: "Possible GitHub token (ghp_...)" },
-      { pattern: /\bAKIA[A-Z0-9]{16}/, msg: "Possible AWS key (AKIA...)" },
-      { pattern: /\beyJ[a-zA-Z0-9_-]{10,}\.eyJ/, msg: "Possible JWT token" },
-      { pattern: /password\s*[:=]\s*["'][^"']+["']/i, msg: "Hardcoded password" },
-    ];
+    // Secret patterns — the canonical set from lib/frontmatter.ts, NOT a local
+    // restatement. `lint` used to carry its own five-pattern copy while the
+    // canonical set held eighteen, so a persona could ship a Slack token, an
+    // Anthropic key, a private-key header or a DB URL with inline credentials
+    // and lint would call it clean. tests/secret-parity.test.ts pins the
+    // canonical set against the runtime hooks; binding lint to the same array
+    // means it can never silently fall behind either.
+    const secretPatterns = DEFAULT_SECRET_PATTERNS.map((pattern) => ({
+      pattern,
+      msg: `Possible credential in prompt (matches /${pattern.source}/)`,
+    }));
 
     for (const personaName of enabledPersonas) {
       if (opts.persona && personaName !== opts.persona) continue;
@@ -2636,7 +2640,9 @@ program
           }
         }
 
-        // Secrets
+        // Secrets — one finding per line: the canonical set overlaps by design
+        // (a quoted `password:` also trips the secret/token label pattern), and
+        // three findings for one credential is noise, not extra signal.
         for (const sp of secretPatterns) {
           if (sp.pattern.test(lines[i]!)) {
             findings.push({
@@ -2646,6 +2652,7 @@ program
               line: i + 1,
               message: sp.msg,
             });
+            break;
           }
         }
       }
