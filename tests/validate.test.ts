@@ -17,6 +17,10 @@ import {
   DEFAULT_SECRET_PATTERNS,
 } from "../scripts/lib/frontmatter.js";
 import { isUnsafeRegex, buildSecretPatterns } from "../scripts/validate.js";
+import {
+  DOMAIN_CONTENT_SUBDIRS,
+  hubContentRoots,
+} from "../scripts/lib/scope-layout.js";
 import type { AgentBootConfig } from "../scripts/lib/config.js";
 
 // ---------------------------------------------------------------------------
@@ -654,6 +658,161 @@ describe("validate — domain layers (A.2)", () => {
     try {
       const output = runValidateRaw(`--config ${tmpConfig}`);
       expect(output).toContain("passed");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // checkNoSecrets over domain layers.
+  //
+  // This block's header has claimed checkNoSecrets coverage since A.2 landed,
+  // and had none: the two tests above exercise checkTraitReferences only. The
+  // claim is what kept the hole invisible — `hubContentRoots` enumerated a
+  // domain's `traits/` and `personas/` and omitted `instructions/`, so a
+  // credential in `domains/<d>/instructions/*.md` (compiled by
+  // compileDomains() through the same emitters as every other instruction, and
+  // synced to every spoke) passed the check that prints "no credentials or
+  // keys anywhere in the hub content surface" and exited 0.
+  //
+  // Every content dir the compiler reads is asserted, not just the one that
+  // was missing — the defect was a partial enumeration, so a test that pins
+  // only the newest member reproduces the defect's own shape.
+  // -------------------------------------------------------------------------
+
+  /** Build a hub whose one referenced domain carries a secret at `relPath`. */
+  function mkDomainHubWithSecretAt(relPath: string): string {
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-domain-secret-"))
+    );
+    const secretFile = path.join(tmpDir, "domains", "test-domain", relPath);
+    fs.mkdirSync(path.dirname(secretFile), { recursive: true });
+    fs.writeFileSync(
+      secretFile,
+      "---\ntitle: Ledger access\n---\n\nCall the service with AKIAIOSFODNN7EXAMPLE and retry twice.\n"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "agentboot.config.json"),
+      JSON.stringify({
+        org: "test-org",
+        personas: { enabled: [] },
+        instructions: { enabled: [] },
+        domains: ["./domains/test-domain"],
+      })
+    );
+    return tmpDir;
+  }
+
+  // `personas/` needs the extra directory level a persona actually has, so the
+  // fixture matches the real layout rather than a flattened stand-in.
+  const domainSecretCases: [label: string, relPath: string][] = [
+    ["instructions", path.join("instructions", "ledger-ops.md")],
+    ["traits", path.join("traits", "ledger-access.md")],
+    ["personas", path.join("personas", "dana-durability", "SKILL.md")],
+  ];
+
+  for (const [label, relPath] of domainSecretCases) {
+    it(`secret in a domain's ${label}/ fails validate non-zero and names the file`, () => {
+      const tmpDir = mkDomainHubWithSecretAt(relPath);
+      const tmpConfig = path.join(tmpDir, "agentboot.config.json");
+      try {
+        const { output, status } = runValidateExpectFailRaw(`--config ${tmpConfig}`);
+        expect(status).not.toBe(0);
+        expect(output).toContain("Potential secret");
+        // The path must be reported relative to the hub, and must name the
+        // domain content dir — a finding you cannot locate is not a finding.
+        expect(output).toContain(path.join("domains", "test-domain", relPath));
+        // And the summary line must not still be claiming a clean scan.
+        expect(output).not.toContain(
+          "✓ Secret scan — no credentials or keys anywhere in the hub content surface"
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  // The negative pole: without the planted credential the identical fixture
+  // passes, so the three tests above are failing on the secret rather than on
+  // some incidental property of a domain hub.
+  it("the same domain hub without a planted secret passes the secret scan", () => {
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-domain-nosecret-"))
+    );
+    const instrDir = path.join(tmpDir, "domains", "test-domain", "instructions");
+    fs.mkdirSync(instrDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(instrDir, "ledger-ops.md"),
+      "---\ntitle: Ledger access\n---\n\nCall the service and retry twice.\n"
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "agentboot.config.json"),
+      JSON.stringify({
+        org: "test-org",
+        personas: { enabled: [] },
+        instructions: { enabled: [] },
+        domains: ["./domains/test-domain"],
+      })
+    );
+    try {
+      const output = runValidateRaw(
+        `--config ${path.join(tmpDir, "agentboot.config.json")}`
+      );
+      expect(output).toContain("passed");
+      expect(output).not.toContain("Potential secret");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Guards the ENUMERATION rather than one instance of it, and derives the
+  // expectation from the WRITER (compile.ts) instead of from the reader's own
+  // constant. Iterating DOMAIN_CONTENT_SUBDIRS to check DOMAIN_CONTENT_SUBDIRS
+  // is a tautology — it stays green while a member is being deleted, which is
+  // precisely how the instructions/ hole survived. So: read the subdirectory
+  // names compileDomains() actually joins onto a domain path, and require the
+  // scan surface to cover every one.
+  it("hubContentRoots covers every domain content dir compile.ts reads", () => {
+    const compileSrc = fs.readFileSync(
+      path.join(__dirname, "..", "scripts", "compile.ts"),
+      "utf-8"
+    );
+    const compilerSubdirs = [
+      ...compileSrc.matchAll(/path\.join\(domainPath,\s*"([^"]+)"\)/g),
+    ].map((m) => m[1]);
+
+    // If this ever finds nothing, the regex has drifted from compile.ts and
+    // every assertion below would pass vacuously — fail loudly instead.
+    expect(
+      compilerSubdirs.length,
+      "found no `path.join(domainPath, ...)` reads in compile.ts — this probe has drifted"
+    ).toBeGreaterThanOrEqual(3);
+
+    for (const sub of compilerSubdirs) {
+      expect(
+        DOMAIN_CONTENT_SUBDIRS as readonly string[],
+        `compile.ts reads domains/<d>/${sub} but the scan-surface SSOT omits it`
+      ).toContain(sub);
+    }
+
+    const tmpDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-domain-roots-"))
+    );
+    try {
+      const domainDir = path.join(tmpDir, "domains", "test-domain");
+      for (const sub of compilerSubdirs) {
+        fs.mkdirSync(path.join(domainDir, sub), { recursive: true });
+      }
+      const roots = hubContentRoots(
+        { org: "test-org", domains: ["./domains/test-domain"] } as AgentBootConfig,
+        tmpDir
+      );
+      for (const sub of compilerSubdirs) {
+        expect(
+          roots,
+          `domains/<d>/${sub} is compiler input but is outside the secret-scan surface`
+        ).toContain(path.join(domainDir, sub));
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
