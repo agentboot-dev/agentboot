@@ -138,6 +138,14 @@ A control it cannot probe is reported `untested`, never as passing.
 
 - **Hooks bind the tool, not the machine.** Someone who uninstalls the agent tooling is
   outside their reach. Branch protection and CI are what cover that.
+- **A hook reads at most 1 MiB from stdin.** A prompt or tool payload larger than that is
+  **blocked outright** by the blocking gates rather than truncated and scanned in part — an
+  unscannable payload is an unscanned payload. The output scan skips (loudly) and the audit
+  trail degrades (loudly) instead, because a Stop hook that blocked on its own failure would
+  strand the session. The limit is an operator-side runtime knob,
+  `AGENTBOOT_MAX_HOOK_INPUT_BYTES`, not org policy, and a value outside its accepted range
+  makes the blocking gates refuse to run rather than run unbounded. See
+  [Hook input limit](./configuration.md#hook-input-limit--agentboot_max_hook_input_bytes).
 - **Scope-level instruction *content* does not compile yet.** Persona definitions and
   trait weights do. Authoring guardrail content at team scope produces a loud build
   warning rather than silent no-op output — put org-wide guardrails in

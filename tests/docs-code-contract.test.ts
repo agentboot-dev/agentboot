@@ -5,6 +5,11 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { installUserLevel, stageForHandoff } from "../scripts/lib/user-scope.js";
+import {
+  DEFAULT_MAX_HOOK_INPUT_BYTES,
+  MAX_ALLOWED_HOOK_INPUT_BYTES,
+  hookInputCapPrelude,
+} from "../scripts/lib/hook-prelude.js";
 
 /**
  * Docs↔code contract.
@@ -214,5 +219,106 @@ describe("L38 — the user-scope handoff contract is published", () => {
 
   it("names the manifest as the only AB↔provider coupling", () => {
     expect(docs).toMatch(/only coupling between AgentBoot and an external user-scope provider/i);
+  });
+});
+
+/**
+ * L42 — the 1 MiB hook stdin cap.
+ *
+ * The emitted hook tells the developer to raise
+ * AGENTBOOT_MAX_HOOK_INPUT_BYTES, so the variable is already part of the
+ * product's user-facing surface; it appeared on no published surface at all.
+ * Both numbers below are IMPORTED from the module that emits the hooks, so a
+ * change to the cap turns this red instead of leaving the docs quietly wrong.
+ */
+describe("L42 — the hook input cap, its override and its postures are documented", () => {
+  const docs = read("docs/configuration.md");
+  const guardrails = read("docs/guardrails.md");
+  const compileSrc = read("scripts/compile.ts");
+
+  it("documents the default cap and the accepted range, taken from the emitter", () => {
+    expect(DEFAULT_MAX_HOOK_INPUT_BYTES).toBe(1048576); // 1 MiB, per the doc's prose
+    expect(docs, "the default cap is not published").toContain(String(DEFAULT_MAX_HOOK_INPUT_BYTES));
+    expect(docs, "the upper bound of the accepted range is not published")
+      .toContain(String(MAX_ALLOWED_HOOK_INPUT_BYTES));
+    expect(docs).toContain("AGENTBOOT_MAX_HOOK_INPUT_BYTES");
+    expect(docs).toMatch(/1 MiB/);
+  });
+
+  it("documents the refuse-on-unusable-limit behaviour for both postures", () => {
+    // A blocking hook refuses; a non-blocking one falls back to the default.
+    const blocking = hookInputCapPrelude({
+      overCapStderr: "x.",
+      action: "block",
+      blockReason: "y",
+    });
+    const degrading = hookInputCapPrelude({ overCapStderr: "x.", action: "continue" });
+    expect(blocking).toContain("refusing to run an unbounded gate");
+    expect(blocking).toContain("exit 2");
+    expect(degrading).toContain(`falling back to ${DEFAULT_MAX_HOOK_INPUT_BYTES}`);
+
+    expect(docs, "the page does not say a blocking gate refuses an unusable limit")
+      .toMatch(/Refuses to run[\s\S]{0,400}unbounded/i);
+    expect(docs, "the page does not say a non-blocking hook falls back to the default")
+      .toMatch(/Falls back to the `?1048576`? default/i);
+    // Range validation is only meaningful if the page says what "usable" means.
+    expect(docs).toMatch(/no leading zero/i);
+  });
+
+  it("documents all four over-cap postures, one per emitted hook", () => {
+    // Derive the postures from the four call sites rather than trusting the count.
+    const actions = [...compileSrc.matchAll(/hookInputCapPrelude\(\{[\s\S]*?action:\s*"(\w+)"/g)]
+      .map((m) => m[1]!);
+    expect(actions, "expected four generated hooks with a declared posture").toHaveLength(4);
+    expect(actions.filter((a) => a === "block")).toHaveLength(2);
+    expect(actions.filter((a) => a === "exit0")).toHaveLength(1);
+    expect(actions.filter((a) => a === "continue")).toHaveLength(1);
+
+    // The page must name each hook's event AND its posture in the same row.
+    const rows = docs.split("\n").filter((l) => l.trim().startsWith("|"));
+    const expected: Array<[string, RegExp]> = [
+      ["UserPromptSubmit", /\*\*block\*\*/],
+      ["PreToolUse", /\*\*block\*\*/],
+      ["Stop", /\*\*skip\*\*/],
+      ["SessionEnd", /\*\*degrade\*\*/],
+    ];
+    for (const [event, posture] of expected) {
+      const row = rows.find((r) => r.includes(`\`${event}\``) && posture.test(r));
+      expect(row, `no row documents the over-cap posture for the ${event} hook`).toBeTruthy();
+    }
+  });
+
+  it("quotes the block message the input-scan hook actually emits", () => {
+    // The emitted message tells the operator to raise the variable; the docs are
+    // where they find out what it is. Pin them to each other.
+    expect(compileSrc).toContain("raise AGENTBOOT_MAX_HOOK_INPUT_BYTES deliberately");
+    expect(docs).toContain("raise `AGENTBOOT_MAX_HOOK_INPUT_BYTES` deliberately");
+  });
+
+  it("does not conflate the cap with failMode or the platform hook timeout", () => {
+    expect(docs).toMatch(/not `compliance\.inputScan\.failMode`/);
+    expect(docs).toMatch(/time out|timeout/i);
+  });
+
+  it("is cross-linked from guardrails.md, and the anchor resolves", () => {
+    expect(guardrails).toContain("AGENTBOOT_MAX_HOOK_INPUT_BYTES");
+    const link = guardrails.match(/configuration\.md#([a-z0-9_-]+)/i);
+    expect(link, "guardrails.md does not link to the hook input limit section").toBeTruthy();
+    const anchor = link![1]!;
+    // Resolve the anchor against the real headings — a cross-link that 404s is
+    // the same silence as no cross-link at all.
+    const slugs = docs
+      .split("\n")
+      .filter((l) => /^#{1,6}\s/.test(l))
+      .map((l) =>
+        l
+          .replace(/^#{1,6}\s+/, "")
+          .toLowerCase()
+          .replace(/[^\w\s-]/g, "")
+          .trim()
+          .replace(/\s/g, "-"),
+      );
+    expect(slugs, `guardrails.md links to #${anchor}, which is not a heading in configuration.md`)
+      .toContain(anchor);
   });
 });

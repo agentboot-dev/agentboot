@@ -584,6 +584,52 @@ AgentBoot does not become a DLP engine; it gives your scanner a reliable integra
 Scanner content never leaves the machine through AgentBoot: the hook pipes content to your
 command locally and surfaces its stdout/stderr to the developer only.
 
+#### Hook input limit — `AGENTBOOT_MAX_HOOK_INPUT_BYTES`
+
+Every generated hook reads a **bounded** amount from stdin. A hook runs on the developer's critical
+path for every prompt and every tool call, so an unbounded read is a memory and latency problem; and
+a payload that cannot be read in full cannot be scanned in full.
+
+| | Value |
+|---|---|
+| Default cap | **1 MiB — `1048576` bytes.** Deliberately larger than any legitimate prompt or tool payload. |
+| Environment override | `AGENTBOOT_MAX_HOOK_INPUT_BYTES` — read by the hook at run time, not baked in at build time. |
+| Accepted range | **`1` … `2147483647`** (2 GiB − 1), written in **plain decimal digits with no leading zero, sign, whitespace, or unit suffix**. `1048576` is valid; `0x100000`, `1MB`, `01048576` and `-1` are not. |
+| Not configurable from | `agentboot.config.json`. This is an operator-side runtime knob, not org policy. |
+
+**There is no "unlimited".** A value outside the accepted range is not silently clamped and not
+silently accepted — it is treated as an **unusable limit**, and what happens next follows the hook's
+own posture:
+
+| Hook posture | Unusable `AGENTBOOT_MAX_HOOK_INPUT_BYTES` |
+|---|---|
+| Blocking (input scan, deny-tools) | **Refuses to run.** Exits `2` with a block reason naming the variable and the accepted range. A gate will not run unbounded. |
+| Non-blocking (output scan, telemetry) | Falls back to the `1048576` default, and says so on stderr. A working scan beats a skipped one. |
+
+**Over-cap behaviour — a prompt larger than the cap is not truncated and quietly scanned.** Each hook
+takes the posture it already takes on every other failure:
+
+| Hook | Event | Over-cap posture | What the developer sees |
+|---|---|---|---|
+| Input scan | `UserPromptSubmit` | **block** | Exit `2`. *"prompt exceeds the hook input limit and could not be scanned. Split it, or raise `AGENTBOOT_MAX_HOOK_INPUT_BYTES` deliberately."* The prompt does not reach the model. |
+| Deny-tools gate | `PreToolUse` | **block** | Exit `2`. *"tool-use payload exceeds the hook input limit and could not be inspected."* |
+| Output scan | `Stop` | **skip** | Exit `0`, with *"output scan SKIPPED for this turn"* on stderr. A Stop hook that blocked on its own failure would strand the session — but an unscanned response must never look like a clean one. |
+| Audit trail | `SubagentStart`, `SubagentStop`, `PostToolUse`, `SessionEnd` | **degrade** | Records the event anyway and warns on stderr that fields may be incomplete. |
+
+So on a `>1 MiB` prompt the DLP gate **blocks outright** rather than scanning a truncated copy. If
+your team legitimately submits payloads that large, raise the variable deliberately — do not read the
+block as a bug.
+
+The same three postures apply when a hook cannot read stdin at all, or cannot measure what it read.
+An unreadable or unmeasurable payload is an unscanned payload and is treated exactly like an over-cap
+one, rather than falling through to exit `0`.
+
+> **This is not `compliance.inputScan.failMode`, and not the platform hook timeout.** `failMode`
+> governs what a *scanner process failure* does once the payload has been read; the Copilot ceiling
+> in [the platform capability matrix](platform-capability-matrix.md) is about hooks that *time out*.
+> The input cap is a third, separate mechanism, and it is the only one of the three that fails closed
+> on the blocking hooks by default.
+
 ### Policy exceptions — owners and expiration dates
 
 Enterprise policies always meet legitimate exceptions; unstructured exceptions become
