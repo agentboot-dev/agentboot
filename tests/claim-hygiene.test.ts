@@ -24,6 +24,7 @@
 
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -145,6 +146,38 @@ function findHits(text: string, m: string | RegExp): boolean {
   return typeof m === "string" ? text.toLowerCase().includes(m.toLowerCase()) : m.test(text);
 }
 
+/**
+ * L18: a banned claim that WRAPS is still a banned claim.
+ *
+ * The scan below is line-oriented, which is right for reporting a location and
+ * wrong for detection: prose in this corpus is hard-wrapped at ~88 columns, so
+ * roughly one sentence in three is split across two lines. The exact instance
+ * that motivated this entry — "They cannot be elevated, overridden, or disabled
+ * at / any scope level" at docs/concepts.md:903-904 — is split mid-phrase, so a
+ * per-line matcher for the retired sentence would have gone GREEN against the
+ * very text it was written to catch. That is this project's own
+ * green-surface-over-nothing class, sitting inside the gate.
+ *
+ * So every claim is tested twice: per line (for the `file:line` report) and
+ * against the file with line breaks collapsed to single spaces (for detection).
+ * A wrapped hit reports `file:(wrapped)` because it has no single line to name.
+ */
+function flow(text: string): string {
+  return text.replace(/[ \t]*\n[ \t]*/g, " ");
+}
+
+/** Every location a claim appears in one file — per-line, plus wrapped-across-lines. */
+function hitsInFile(root: string, file: string, m: string | RegExp): string[] {
+  const raw = fs.readFileSync(file, "utf-8");
+  const rel = path.relative(root, file);
+  const found = raw
+    .split("\n")
+    .map((line, i) => (findHits(line, m) ? `${rel}:${i + 1}` : null))
+    .filter((x): x is string => x !== null);
+  if (found.length === 0 && findHits(flow(raw), m)) found.push(`${rel}:(wrapped)`);
+  return found;
+}
+
 const BANNED: BannedClaim[] = [
   {
     phrase: "highest-impact artifact",
@@ -210,6 +243,23 @@ const BANNED: BannedClaim[] = [
       "minor-1 — the capability matrix's own taxonomy includes Fail-open and Enforced-with-" +
       "known-bypasses; calling those guarantees undercuts the most careful page on the site.",
   },
+  {
+    phrase: "a HARD guardrail cannot be overridden at any scope level",
+    // Whitespace-tolerant BECAUSE the surviving copy was hard-wrapped mid-phrase.
+    // A literal substring would have been a matcher that could not fire on the
+    // one occurrence it was written for.
+    match: /overridden,\s+or\s+disabled\s+at\s+any\s+scope\s+level/i,
+    reason:
+      "L18/E9 — a flat absolute with no platform ceiling. What actually holds is a " +
+      "COMPOSITION property: a lower scope may not shadow a HARD guardrail, downgrade it " +
+      "to soft, or zero its trait weight, and `validate --strict` errors if it tries. " +
+      "Whether it is a MECHANICAL control at runtime depends entirely on the target — " +
+      "hard-enforced on Claude Code, enforced-with-known-bypasses on Codex, fail-open " +
+      "hook timeouts on Copilot, advisory on AGENTS.md and the whole community tier. " +
+      "Retired from docs/glossary.md:52 by 9dcc214 and left standing verbatim at " +
+      "docs/concepts.md:903-904 — the same fix-the-address-not-the-assertion failure this " +
+      "file exists to end.",
+  },
 ];
 
 const FILES = publishedFiles();
@@ -256,12 +306,7 @@ describe("V7 — a claim removed for being unsupportable stays removed, everywhe
   for (const claim of BANNED) {
     it(`no published file says "${claim.phrase}"`, () => {
       const hits: string[] = [];
-      for (const f of FILES) {
-        const lines = fs.readFileSync(f, "utf-8").split("\n");
-        lines.forEach((line, i) => {
-          if (findHits(line, claim.match)) hits.push(`${path.relative(ROOT, f)}:${i + 1}`);
-        });
-      }
+      for (const f of FILES) hits.push(...hitsInFile(ROOT, f, claim.match));
       expect(hits, `${claim.reason}\n  found at: ${hits.join(", ")}`).toEqual([]);
     });
   }
@@ -298,6 +343,17 @@ describe("V7 — a claim removed for being unsupportable stays removed, everywhe
         "  Onboarding time:         -40% (new hires productive faster)",
       ],
       "enforcement guarantees": ["CLI surface for the enforcement guarantees above."],
+      // L18: BOTH addresses the assertion lived at. The first is the glossary
+      // line 9dcc214 retired; the second is the concepts.md copy that survived
+      // it, quoted with its real line break so the matcher is proven wrap-
+      // tolerant rather than assumed to be.
+      "a HARD guardrail cannot be overridden at any scope level": [
+        "**HARD Guardrail** — A non-overridable compliance rule deployed via MDM or marked " +
+          "`required: true` in the org config. Cannot be elevated, overridden, or disabled at " +
+          "any scope level. Used for rules where violation is a compliance incident.",
+        "`required: true` in the org config. They cannot be elevated, overridden, or disabled at\n" +
+          "any scope level. The build system enforces this",
+      ],
     };
     for (const claim of BANNED) {
       const originals = ORIGINALS[claim.phrase];
@@ -308,6 +364,56 @@ describe("V7 — a claim removed for being unsupportable stays removed, everywhe
           .toBe(true);
       }
     }
+  });
+
+  it("L18-neg: the scan catches a banned claim that WRAPS across lines", () => {
+    // Without this, the L18 entry would be a matcher that cannot fire on the one
+    // occurrence it was written for — a check that cannot fail.
+    const claim = BANNED.find((c) => c.phrase.startsWith("a HARD guardrail cannot"))!;
+    // docs/concepts.md:903-905 verbatim, hard wrap included.
+    const wrapped =
+      "**HARD guardrails** are deployed via MDM (managed device management) or marked\n" +
+      "`required: true` in the org config. They cannot be elevated, overridden, or disabled at\n" +
+      "any scope level. The build system enforces this — a team-level config that attempts to\n";
+    // A purely line-oriented scan — what this file shipped with — sees nothing here.
+    expect(
+      wrapped.split("\n").some((l) => findHits(l, claim.match)),
+      "the wrapped fixture is no longer split mid-phrase; this proof has gone vacuous",
+    ).toBe(false);
+    // The scan the gate actually runs does see it.
+    const tmp = path.join(os.tmpdir(), `claim-hygiene-wrap-${process.pid}.md`);
+    fs.writeFileSync(tmp, wrapped);
+    try {
+      expect(hitsInFile(path.dirname(tmp), tmp, claim.match)).toEqual([
+        `${path.basename(tmp)}:(wrapped)`,
+      ]);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  it("L18: concepts.md states the composition property AND the per-target runtime reality", () => {
+    // Retiring the absolute is half the row. The other half is that the page
+    // now says the true thing — otherwise the ban just leaves a hole where a
+    // governance claim used to be, which is the Sanitize-Don't-Ghost failure.
+    const doc = fs.readFileSync(path.join(ROOT, "docs", "concepts.md"), "utf-8");
+    const start = doc.indexOf("## HARD/SOFT guardrail elevation");
+    expect(start, "the HARD/SOFT section was renamed or removed").toBeGreaterThan(-1);
+    const end = doc.indexOf("**SOFT guardrails**", start);
+    expect(end, "the SOFT guardrail subsection anchoring this scan is gone").toBeGreaterThan(start);
+    const section = flow(doc.slice(start, end));
+
+    // The compile-time property that IS true, and the tool that enforces it.
+    expect(section, "composition property not stated").toMatch(/composition/i);
+    expect(section, "the checker that enforces it is not named").toContain("validate --strict");
+
+    // The runtime answer, which is per-target and not one answer.
+    for (const target of ["Claude Code", "Codex", "Copilot"]) {
+      expect(section, `${target}'s runtime enforcement level is not stated`).toContain(target);
+    }
+    expect(section, "the advisory tier is not stated").toMatch(/advisory/i);
+    expect(section, "Copilot's fail-open ceiling is not stated").toMatch(/fail\s*open/i);
+    expect(section, "the capability matrix is not linked").toContain("platform-capability-matrix.md");
   });
 
   it("L17: each of the four fabricated ROI figures is individually caught", () => {

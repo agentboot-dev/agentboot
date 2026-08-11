@@ -900,11 +900,26 @@ senior engineer may need to temporarily override for debugging or experimentatio
 
 AgentBoot distinguishes two tiers:
 
-**HARD guardrails** are deployed via MDM (managed device management) or marked
-`required: true` in the org config. They cannot be elevated, overridden, or disabled at
-any scope level. The build system enforces this — a team-level config that attempts to
-disable a HARD guardrail causes a build failure. HARD guardrails are for rules where
-violation is a compliance incident, not a judgment call.
+**HARD guardrails** are marked `required: true` in the org config. What that buys you is
+a *composition* property, enforced at compile time: a lower scope may not weaken one —
+shadowing it, downgrading it to soft, or zeroing its trait weight are all errors under
+`validate --strict`, and a team-level config that attempts to disable a HARD guardrail
+causes a build failure. HARD guardrails are for rules where violation is a compliance
+incident, not a judgment call.
+
+Whether a HARD guardrail is also a *mechanical* control at runtime depends on the
+target. It is a hard **policy** everywhere and a hard **control** only on the three
+officially supported CLI surfaces, and those three are not equal:
+
+| Target | What a HARD guardrail actually does at runtime |
+|---|---|
+| Claude Code | **Hard-enforced** — blocking hooks, plus `managed-settings.json`, the only non-overridable settings layer any supported platform has (MDM-deployable, Claude Code only) |
+| OpenAI Codex CLI | **Enforced, known bypasses** — blocking hooks, but they require a trust review unless deployed as managed, and tool coverage is partial (shell/patch/MCP, not WebSearch) |
+| GitHub Copilot CLI | **Blocking hooks with a lower ceiling** — command-hook timeouts **fail open**, and exit-2 blocking is documented platform behaviour not yet verified end to end |
+| `AGENTS.md` and the community tier (Cursor, Gemini, Windsurf, JetBrains, `SKILL.md`) | **Advisory** — the content is delivered, nothing blocks |
+
+See the [platform capability matrix](platform-capability-matrix.md) for the full
+classification, and [guardrails.md](guardrails.md) for the compiled-hook mechanics.
 
 **SOFT guardrails** are deployed via the shared repo and can be temporarily elevated.
 The elevation mechanism:
