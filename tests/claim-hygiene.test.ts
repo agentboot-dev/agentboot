@@ -269,25 +269,65 @@ describe("V7 — a claim removed for being unsupportable stays removed, everywhe
   it("V7-neg: every matcher actually matches the text it was written for", () => {
     // A corpus scanner that matches nothing is indistinguishable from one whose
     // file list is empty or whose comparison is broken. Each matcher is proven
-    // against the exact string the audit quoted.
-    const ORIGINALS: Record<string, string> = {
-      "highest-impact artifact": "— making them the HIGHEST-IMPACT ARTIFACT AgentBoot produces.",
-      "single highest-value extension": "They are the single highest-value extension you can add",
-      "battle-tested": "Battle-tested personas for code review, security analysis",
-      "validated in a production implementation": "This pattern was validated in a production implementation, where",
-      "one of the most powerful features": "They are one of the most powerful features in AgentBoot because",
-      "10x the value": "learned to prompt effectively gets 10x the value from the",
-      "the only path to true": "higher effort but the only path to true multi-agent governance.",
-      "finds real bugs, not style nits": "| Code Reviewer | `/review-code` | Finds real bugs, not style nits |",
-      "a causal percentage attributed to an outcome metric": "  Bug escape rate:         -22% (fewer prod bugs)",
-      "enforcement guarantees": "CLI surface for the enforcement guarantees above.",
+    // against the exact string(s) the audit quoted.
+    //
+    // L17: the U4 matcher is a SHAPE, and the audit that removed it quoted FOUR
+    // lines, not one. Proving it against a single line proved only that one
+    // fabricated figure would go red on re-paste — the other three were as
+    // unpinned as any claim the corpus had never scanned. Every original the
+    // removing commit (96df3f4) listed is now a proof string, so the whole block
+    // is pinned rather than its first row.
+    const ORIGINALS: Record<string, string[]> = {
+      "highest-impact artifact": ["— making them the HIGHEST-IMPACT ARTIFACT AgentBoot produces."],
+      "single highest-value extension": ["They are the single highest-value extension you can add"],
+      "battle-tested": ["Battle-tested personas for code review, security analysis"],
+      "validated in a production implementation": [
+        "This pattern was validated in a production implementation, where",
+      ],
+      "one of the most powerful features": ["They are one of the most powerful features in AgentBoot because"],
+      "10x the value": ["learned to prompt effectively gets 10x the value from the"],
+      "the only path to true": ["higher effort but the only path to true multi-agent governance."],
+      "finds real bugs, not style nits": [
+        "| Code Reviewer | `/review-code` | Finds real bugs, not style nits |",
+      ],
+      // All four lines of the deleted docs/privacy.md ROI block, verbatim from 96df3f4.
+      "a causal percentage attributed to an outcome metric": [
+        "  PR review turnaround:    -34% (faster since deployment)",
+        "  Bug escape rate:         -22% (fewer prod bugs)",
+        "  Test coverage:           +15% (from test generation personas)",
+        "  Onboarding time:         -40% (new hires productive faster)",
+      ],
+      "enforcement guarantees": ["CLI surface for the enforcement guarantees above."],
     };
     for (const claim of BANNED) {
-      const original = ORIGINALS[claim.phrase];
-      expect(original, `no proof string for "${claim.phrase}"`).toBeDefined();
-      expect(findHits(original!, claim.match), `"${claim.phrase}" does not match its own original`)
-        .toBe(true);
+      const originals = ORIGINALS[claim.phrase];
+      expect(originals, `no proof string for "${claim.phrase}"`).toBeDefined();
+      expect(originals!.length, `empty proof set for "${claim.phrase}"`).toBeGreaterThan(0);
+      for (const original of originals!) {
+        expect(findHits(original, claim.match), `"${claim.phrase}" does not match: ${original}`)
+          .toBe(true);
+      }
     }
+  });
+
+  it("L17: each of the four fabricated ROI figures is individually caught", () => {
+    // Named, not counted. A count assertion goes green again the moment three of
+    // the four stop matching, which is the whole failure mode of the line-targeted
+    // sweep this file exists to replace.
+    const u4 = BANNED.find((c) => c.phrase.startsWith("a causal percentage"))!;
+    const FABRICATED: Record<string, string> = {
+      "-34% PR review turnaround": "  PR review turnaround:    -34% (faster since deployment)",
+      "-22% bug escape rate": "  Bug escape rate:         -22% (fewer prod bugs)",
+      "+15% test coverage": "  Test coverage:           +15% (from test generation personas)",
+      "-40% onboarding time": "  Onboarding time:         -40% (new hires productive faster)",
+    };
+    for (const [figure, line] of Object.entries(FABRICATED)) {
+      expect(findHits(line, u4.match), `${figure} would survive a re-paste`).toBe(true);
+    }
+    // And the whole block, re-pasted as one chunk, is caught on every line — the
+    // realistic regression is a copy-paste of the block, not of one row.
+    const block = Object.values(FABRICATED);
+    expect(block.filter((l) => findHits(l, u4.match)).length).toBe(4);
   });
 
   it("V7-neg2: the U4 matcher does NOT fire on a legitimate metric row", () => {
