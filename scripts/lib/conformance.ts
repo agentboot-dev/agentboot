@@ -645,6 +645,90 @@ export function hookDirForPlatform(distPath: string, platform: string): string |
   }
 }
 
+/**
+ * Q73: where a platform's hook scripts are BOUND to events, or null when the
+ * platform has no binding artifact.
+ *
+ * The scripts are the mechanism; the binding is what makes the mechanism run.
+ * `dist/plugin/hooks/agentboot-pretooluse.sh` on its own is an inert file — it
+ * only ever executes because `hooks.json` names it against `PreToolUse`. Delete
+ * the binding and every probe still passes, because the harness executes the
+ * script directly and never asks the one question that matters: is anything
+ * going to call it?
+ *
+ * Verified at d9de530 on a `["claude","plugin"]` hub with `denyTools`
+ * configured: `rm dist/plugin/hooks/hooks.json` and BOTH honesty surfaces stayed
+ * green — `conformance` printed four `✓ pass` rows for plugin under
+ * "✓ All 8 probed control(s) behave as declared" and exited 0, and `doctor`
+ * printed "✓ plugin: org policy is enforceable" and exited 0. The enforcement
+ * had been removed and the product reported it was in force.
+ *
+ * Every hook-bearing platform emits its binding unconditionally when the
+ * platform is built (checked against a hub with no `managed`/`compliance` block
+ * at all), so an absent binding is always a defect and never a legitimate
+ * configuration.
+ */
+export function hookBindingForPlatform(distPath: string, platform: string): string | null {
+  switch (platform) {
+    case "claude": return path.join(distPath, "claude", "core", "settings.json");
+    case "codex": return path.join(distPath, "codex", "core", ".codex", "hooks.json");
+    case "copilot": return path.join(distPath, "copilot", "core", ".github", "hooks", "agentboot.json");
+    case "plugin": return path.join(distPath, "plugin", "hooks", "hooks.json");
+    default: return null;
+  }
+}
+
+export type HookBinding =
+  /** The platform has no binding artifact — advisory targets, and anything new. */
+  | { state: "none" }
+  /** No dist/<platform>/ tree at all: this platform was not built. Distinct from
+   *  a built tree with the binding removed, because the remedies differ. */
+  | { state: "not-built"; file: string }
+  | { state: "missing"; file: string }
+  | { state: "unreadable"; file: string; detail: string }
+  | { state: "present"; file: string; boundScripts: string[] };
+
+/**
+ * Read a platform's hook binding and extract the script filenames it references.
+ *
+ * The extraction is deliberately shape-agnostic: it walks every string in the
+ * document and collects `agentboot-*.sh` basenames. The four emitters produce
+ * four different JSON shapes (Claude settings `hooks`, Codex `hooks.json`,
+ * Copilot `agentboot.json`, plugin `hooks.json`), and re-implementing each shape
+ * here would create a second copy of the emitter that drifts silently — exactly
+ * the two-lists-that-must-agree failure this module keeps correcting. A binding
+ * that names the script is what we can honestly assert; how it names it is the
+ * emitter's business.
+ */
+export function readHookBinding(distPath: string, platform: string): HookBinding {
+  const file = hookBindingForPlatform(distPath, platform);
+  if (!file) return { state: "none" };
+  if (!fs.existsSync(path.join(distPath, platform))) return { state: "not-built", file };
+  if (!fs.existsSync(file)) return { state: "missing", file };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch (e) {
+    return { state: "unreadable", file, detail: e instanceof Error ? e.message : String(e) };
+  }
+  const bound = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      for (const m of node.matchAll(/agentboot-[A-Za-z0-9._-]+\.sh/g)) bound.add(m[0]!);
+      return;
+    }
+    if (Array.isArray(node)) { for (const v of node) walk(v); return; }
+    if (node && typeof node === "object") { for (const v of Object.values(node)) walk(v); }
+  };
+  walk(parsed);
+  return { state: "present", file, boundScripts: [...bound].sort() };
+}
+
+/** Does this binding actually wire `scriptName` to an event? */
+export function isScriptBound(binding: HookBinding, scriptName: string): boolean {
+  return binding.state === "present" && binding.boundScripts.includes(scriptName);
+}
+
 // ---------------------------------------------------------------------------
 // Probe runner
 // ---------------------------------------------------------------------------
@@ -897,6 +981,10 @@ export function runPlatformConformance(
   const failMode: "open" | "closed" = config.compliance?.outputScan?.blocking === true ? "closed" : "open";
   const denyTools = config.managed?.guardrails?.denyTools ?? [];
 
+  // Q73: read once per platform — the binding is a property of the tree, not of
+  // the individual control.
+  const binding = readHookBinding(distPath, platform);
+
   const hookControl = (
     control: string,
     scriptName: string,
@@ -911,6 +999,42 @@ export function runPlatformConformance(
     if (!fs.existsSync(script)) {
       return { ...base, status: "untested", probes: [],
         reason: `${scriptName} not present in dist — run agentboot build first` };
+    }
+    // Q73: an UNBOUND script is not a weaker control, it is an absent one — and
+    // it is a determination, not a measurement gap, so it is `fail` and not
+    // `untested`. This runs BEFORE the bash check on purpose: whether anything
+    // will ever invoke the script does not depend on this machine having a bash
+    // to invoke it with.
+    const bindingFile = hookBindingForPlatform(distPath, platform);
+    const bindingFailure = (observed: string, reason: string): ControlResult => ({
+      ...base,
+      status: "fail",
+      probes: [{
+        probe: "hook-binding",
+        expected: `${scriptName} bound to an event by ${bindingFile ? path.basename(bindingFile) : "the platform binding"}`,
+        observed,
+        pass: false,
+      }],
+      reason,
+    });
+    if (binding.state === "missing") {
+      return bindingFailure(
+        `${binding.file} is ABSENT`,
+        `the hook binding is missing from dist — ${scriptName} is on disk but wired to no event, ` +
+        `so it never executes and this control is not enforced. Run \`agentboot build\`.`,
+      );
+    }
+    if (binding.state === "unreadable") {
+      return bindingFailure(
+        `${binding.file} is not parseable JSON (${binding.detail})`,
+        `the hook binding cannot be read, so no hook is registered and this control is not enforced`,
+      );
+    }
+    if (binding.state === "present" && !isScriptBound(binding, scriptName)) {
+      return bindingFailure(
+        `${path.basename(binding.file)} binds ${binding.boundScripts.length > 0 ? binding.boundScripts.join(", ") : "nothing"}`,
+        `${scriptName} is present in dist but no event binds it, so it never executes`,
+      );
     }
     if (!bashPath) {
       return { ...base, status: "untested", probes: [],

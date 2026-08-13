@@ -34,7 +34,7 @@ import { ExitPromptError } from "@inquirer/core";
 import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
-import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, resolveEnforcement, type CapabilityContext } from "./lib/conformance.js";
+import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, resolveEnforcement, readHookBinding, type CapabilityContext } from "./lib/conformance.js";
 import {
   findHardArtifacts, capabilityViolations, capabilityShortfalls,
   countNarrowlyScopedInstructions, countScopedGotchas, countPersonaScopeControls,
@@ -2131,11 +2131,30 @@ program
             // on a plugin-only hub whose dist/plugin/ had no hooks.json. The
             // operator was not merely un-warned, they were reassured.
             const e = resolveEnforcement(fmt, enforcementFormats);
+            // Q73: B2 checked the CONFIG (is `claude` in outputFormats?) and
+            // called that "resolved against this build". It is not — the claim
+            // names an ARTIFACT ("via the plugin's hooks.json") and nothing
+            // looked at the artifact. Verified at d9de530: with `claude` and
+            // `plugin` both configured and dist/plugin/hooks/hooks.json deleted,
+            // doctor printed "✓ plugin: org policy is enforceable — … via the
+            // plugin's hooks.json" and exited 0, naming the very file that was
+            // gone. A missing binding is checked for every hook-bearing target,
+            // not just plugin — the same deletion on dist/claude/core/settings.json
+            // reads identically to Claude Code.
+            const binding = readHookBinding(distPath, fmt);
             if (e.unmetRequires.length > 0) {
               // fail(), not warn(): the org configured HARD policy and this
               // target has no mechanism at all. Nothing is degraded here —
               // nothing exists.
               fail(`${fmt}: org policy is NOT enforced here — ${e.detail}`);
+            } else if (binding.state === "missing" || binding.state === "unreadable") {
+              fail(
+                `${fmt}: org policy is NOT enforced here — the compiled hook binding ` +
+                `${path.relative(hubDir, binding.file)} is ` +
+                (binding.state === "missing" ? "MISSING" : `unreadable (${binding.detail})`) +
+                `. The hook scripts are wired to no event, so nothing invokes them. ` +
+                `Run \`agentboot build\`.`,
+              );
             } else if (e.level === "enforced") {
               ok(`${fmt}: org policy is enforceable — ${e.detail}`);
             } else {
