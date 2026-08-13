@@ -627,19 +627,26 @@ They never call an LLM, never cost money, and never require a login beyond npm:
 
 `install`, `uninstall`, `build`, `validate`, `sync`, `doctor`, `add`, `lint`, `status`,
 `config`, `export`, `cost-estimate` (pricing arithmetic over published rates — no LLM
-call), `conformance`, `verify-manifest`, `drift-check`, `telemetry-inspect`,
-`telemetry-ship`, `telemetry-verify`, `evidence-pack`, `audit`
+call), `test` (SHA-256 snapshot/regression comparison over `dist/`), `conformance`,
+`verify-manifest`, `drift-check`, `telemetry-inspect`, `telemetry-ship`,
+`telemetry-verify`, `evidence-pack`, `audit`
 
 **LLM-powered commands** use `claude -p` (Claude Code's non-interactive mode) to invoke
 the user's existing Claude Code session. They cost money (billed to the user's Claude
 subscription), produce non-deterministic output, and require an active Claude Code login:
 
-`import`, `test --behavioral`
+`import`
 
-The same features are also available as **interactive skills** (`/ab import`,
-`/ab test`) inside Claude Code sessions, using AgentBoot's MCP server as a bridge.
-The CLI versions are batch-oriented; the skill versions are conversational. Both use the
-same personas repo and the same non-destructive guarantees.
+That is the whole list at v1.0 — exactly one command can cost you money. Behavioral
+(LLM-judged) persona evaluation was the second candidate and is **not part of the v1.0
+surface**; see [prompt-guide § 6](prompt-guide.md#6-prompt-testing-agentboot-test) for
+what `agentboot test` does instead, and the [roadmap](roadmap.md) for where behavioral
+evaluation is tracked.
+
+Import is also available **conversationally** through the `/ab` skills inside a Claude
+Code session, using AgentBoot's MCP server as a bridge. The CLI version is
+batch-oriented; the skill version is conversational. Both use the same personas repo and
+the same non-destructive guarantees.
 
 This separation is a deliberate architectural decision. A user running `agentboot build`
 should never be surprised by an LLM call, a cost, or a login prompt. LLM features are
@@ -765,6 +772,50 @@ community-tier platforms (Cursor, JetBrains) generally have no hook mechanism, s
 enforcement there is advisory only. AgentBoot documents these gaps per platform rather
 than promising universal enforcement — see the
 [platform capability matrix](platform-capability-matrix.md).
+
+---
+
+## The capability gate: a control that reaches nothing FAILS the build
+
+**Ruled 2026-08-11, and this is the v1.0 contract: RAISE, not warn.** When a control is
+configured and **no** configured output format can carry it, `agentboot build` exits
+non-zero and names the capability, the formats you configured, and the formats that could
+have carried it. The alternative — emit a warning and build anyway — was considered and
+rejected.
+
+The defect this closes is the product's own signature class. Emission was decided by a
+scattered set of independent "is this format configured" tests, each with an empty `else`,
+so a capability whose test came out false produced no file, no log line and no record that
+it had ever been asked for. Eight of them were found on a real hub — an org `PreToolUse`
+gate, a fail-closed DLP scanner, a digest-pinned MCP allowlist,
+`disableBypassPermissionsMode`, model overrides and more — and all eight passed `build`,
+`validate --strict` **and** `doctor` with zero mention. The configuration said the control
+was on. Nothing anywhere said it was reaching nobody.
+
+Why RAISE rather than warn, stated once so it does not get relitigated at every adopter
+complaint:
+
+- **The direction of the mistake is asymmetric.** Shipping permissive and tightening later
+  breaks builds that had been passing for a whole major version; shipping strict and
+  loosening later breaks nobody. Only one of those two choices is available after the 1.0
+  tag.
+- **A warning on a governance control is a warning nobody reads.** The population that
+  hits this gate is, by construction, the population that believed a control was in force.
+  Telling them in yellow is how the original defect got its eight instances.
+- **It is a build-time refusal, not a runtime one.** Nothing an adopter has already
+  deployed stops working; the next build tells them the truth about what it emits.
+
+**This is a BREAKING change and hubs will meet it on upgrade** — see the CHANGELOG. Two
+exits, both explicit: add an output format that can express the control, or waive the gap
+with a `capability:<id>` entry in `agentboot-exceptions.json`. A waiver requires an owner
+and an approver, **expires**, and still prints on every build — see
+[Exception governance](#exception-governance) below and
+[configuration.md § Capability coverage](configuration.md#capability-coverage--a-configured-control-must-reach-some-platform)
+for the per-capability table of which platforms emit what.
+
+A capability whose severity is `warn` rather than `error` still exists — the gate is not
+uniformly fatal, it is fatal for controls whose whole purpose is enforcement. What changed
+is that no gap is silent.
 
 ---
 

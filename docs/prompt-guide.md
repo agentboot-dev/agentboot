@@ -534,72 +534,55 @@ Findings report with severity classifications:
 
 ## 6. Prompt Testing (`agentboot test`)
 
-Beyond linting (static analysis), personas need behavioral testing — does the prompt
-actually produce the expected output when given known input?
+Two different questions get called "testing a prompt": *did my edit change the
+compiled output in a way I did not intend*, and *does the persona actually behave
+the way the prompt says*. v1.0 ships an answer to the first one only, and this
+section is explicit about which is which — a testing story that overstates its
+reach is worse than a small one, because it retires the caution that would
+otherwise catch the gap.
 
-### Test Types
+### What ships today
 
-**Deterministic tests** (no LLM call, fast, free):
+**Static checks** (no LLM call, fast, free) — `agentboot lint`, `agentboot validate`:
 - Frontmatter validation (schema, required fields)
-- Token budget verification
+- Token budget verification. `lint` scores the **composed** persona, so what it
+  measures is what the model loads, not the pre-composition source file
 - Trait composition verification (all referenced traits exist and compose)
-- Output format schema validation (if `--json-schema` is specified)
 
-**Behavioral tests** (LLM call, slower, costs money):
-- Given known-bad code, does the security reviewer find the vulnerability?
-- Given clean code, does the code reviewer avoid false positives?
-- Given PHI in input, does the guardrail block it?
-- Given a FHIR resource, does the domain expert recognize it?
-
-**Regression tests** (no LLM, fast, free — compare against baseline):
-- SHA-256 snapshot of dist/ files. After a prompt change, does the compiled
-  output differ from the saved baseline? Reports added, removed, and changed files.
-
-### Test File Format
-
-YAML test cases use `assertions` with `contains`, `not-contains`, and `regex` checks.
-The test runner uses js-yaml for parsing with backward compatibility for simple
-key-value formats. Every case **must** have `name`, `persona`, `prompt`, and at
-least one assertion — a case missing any of these is silently skipped by the
-runner. Multiple cases in one file are separated by `---`. Each test case gets
-2-of-3 flake tolerance for LLM non-determinism.
-
-```yaml
-# tests/behavioral/security-reviewer.test.yaml
-name: sql-injection-detection
-persona: security-reviewer
-prompt: |
-  Review this code:
-  ```python
-  def get_user(user_id):
-      query = f"SELECT * FROM users WHERE id = {user_id}"
-      return db.execute(query)
-  ```
-assertions:
-  - contains: "SQL injection"
-  - contains: "parameterized"
-  - not-contains: "no issues found"
-  - regex: "CRITICAL|ERROR"
-```
-
-### Running Tests
+**Snapshot / regression tests** (no LLM call, fast, free) — `agentboot test`:
+SHA-256 hashing of the files under `dist/`. `--snapshot` writes the baseline;
+`--regression` diffs against it and reports added, removed and changed files,
+exiting non-zero on any difference. This is what catches "I edited one trait and
+eleven personas moved".
 
 ```bash
-# LOCAL (private — iterate until tests pass)
-agentboot test --behavioral                # Run YAML behavioral tests (LLM-powered)
 agentboot test --snapshot                  # Create/update snapshot baseline from dist/
 agentboot test --regression                # Compare current dist/ against saved snapshot
-agentboot test --behavioral --test-dir tests/behavioral  # Custom test directory
 agentboot test --regression --snapshot-file .agentboot-snapshot.json  # Custom snapshot path
 ```
 
-**Behavioral tests** use a real YAML parser (js-yaml) with backward compatibility
-for simple key-value formats. Test assertions support `contains`, `not-contains`,
-and `regex` matching, with 2-of-3 flake tolerance for LLM non-determinism.
+### Behavioral evaluation — not in v1.0
 
-**Snapshot and regression tests** use SHA-256 hashing of dist/ files. The
-`--snapshot` flag creates a baseline; `--regression` diffs against it and reports
-added, removed, and changed files.
+The questions a prompt author most wants answered are behavioral:
+
+- Given known-bad code, does the security reviewer find the vulnerability?
+- Given clean code, does the code reviewer avoid false positives?
+- Given PHI in input, does the guardrail block it?
+
+**v1.0 ships no supported command or flag that answers them.** Ruled 2026-08-11:
+a scenario runner exists and executes cases, but the large majority of the
+expectations in the scenario set are judgement calls with no mechanical
+evaluator — so a green run would have meant "nothing we were able to check
+failed", while every reader would have taken it to mean "the persona behaves this
+way". Shipping the flag at 1.0 would have frozen the stronger reading into the
+tag. It is tracked as **behavioral evaluation** on the [roadmap](roadmap.md),
+along with wiring it into CI, and the scenario format will be published when the
+runner that reads it is a supported surface.
+
+Until then the substitute is manual and worth doing anyway: run the composed
+persona against your own known-bad and known-clean inputs, and pin whatever you
+learn as a gotcha or a trait — a rule that ships beats a test case that does not
+run.
 
 ---
 

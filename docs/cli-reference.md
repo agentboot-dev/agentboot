@@ -67,30 +67,36 @@ within 14 days produce warnings. See
 
 ## `agentboot test`
 
-Run behavioral and snapshot tests for personas.
+Snapshot and regression testing over the compiled `dist/` tree. Deterministic:
+no LLM call, no cost, no login, safe to run in CI.
 
 ```
-agentboot test --behavioral              # Run YAML behavioral tests (LLM-powered)
 agentboot test --snapshot                 # Create/update snapshot baseline from dist/
 agentboot test --regression               # Compare dist/ against saved snapshot
-agentboot test --behavioral --test-dir tests/behavioral
 agentboot test --regression --snapshot-file .agentboot-snapshot.json
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--behavioral` | Run behavioral tests (requires LLM, costs money) |
 | `--snapshot` | Create or update snapshot baseline from current `dist/` |
 | `--regression` | Compare current `dist/` against saved snapshot |
-| `--test-dir <dir>` | Directory with behavioral test YAML files (default: `tests/behavioral`) |
 | `--snapshot-file <path>` | Path to snapshot baseline file (default: `.agentboot-snapshot.json`) |
 
-> **`--behavioral` is experimental.** The scenario YAML schema is still in flux,
-> and the runner does not yet parse the scenario set that ships with the repo —
-> expect to write scenarios against the current runner rather than reuse the
-> shipped ones. Do not wire it up as a supported CI gate yet; the
-> [roadmap](roadmap.md) tracks maturing the behavioral evaluation harness.
-> `--snapshot` / `--regression` are deterministic and CI-safe.
+Both compare SHA-256 hashes of the files under `dist/`: `--snapshot` writes the
+baseline, `--regression` diffs against it and reports added, removed and changed
+files. Exit non-zero on a difference, so a prompt change that alters compiled
+output cannot land unnoticed.
+
+> **Behavioral evaluation is NOT part of the v1.0 surface.** There is no
+> supported command or flag for "given this input, does the persona actually
+> behave this way" — v1.0 ships the deterministic half only. Ruled 2026-08-11:
+> the scenario runner parses and executes cases, but the large majority of the
+> expectations in the shipped scenario set are judgement calls with no
+> mechanical evaluator, so a green run would not have meant what a reader would
+> reasonably take it to mean, and shipping the flag at 1.0 would have frozen
+> that reading into the tag. Tracked as **behavioral evaluation** on the
+> [roadmap](roadmap.md). For static persona checks that DO ship, use
+> [`agentboot lint`](#agentboot-lint) and [`agentboot validate`](#agentboot-validate).
 
 ---
 
