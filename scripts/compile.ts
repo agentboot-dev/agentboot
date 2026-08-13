@@ -924,6 +924,41 @@ function injectTraits(
 // Platform-specific output builders
 // ---------------------------------------------------------------------------
 
+/**
+ * Identity fields decision-0005 stamps on source artifacts.
+ *
+ * The Agent Skills ALLOW-list deliberately does not live here. `skills-ref` is
+ * the authority and runs as a merge gate; `tests/skill-spec-frontmatter.test.ts`
+ * carries the local copy for fast feedback. A third copy in the emitter would be
+ * a list that must agree with two others — the shape that has produced eight
+ * reader/writer instances on this branch. The emitter's job is narrower: move
+ * what it stamps, and let the gate judge the result.
+ */
+const IDENTITY_KEYS = ["id", "slug", "hash"] as const;
+
+/**
+ * Emit the cross-platform `dist/skill/` SKILL.md.
+ *
+ * Q-CI-1: artifact identity has to MOVE, not travel. decision-0005 stamps `id`,
+ * `slug` and `hash` onto source personas, and this emitter passed the composed
+ * content straight through — so all three landed at the top level of every
+ * emitted SKILL.md, where the Agent Skills spec forbids unknown keys:
+ *
+ *   Validation failed for dist/skill/core/ai-security-reviewer/:
+ *     - Unexpected fields in frontmatter: hash, id, slug.
+ *
+ * Both required CI legs failed on it, on the branch's first CI run ever. The
+ * local suite could not have caught this: `skills-ref` is pinned and invoked
+ * only by the workflow, so the one authority on this file format does not
+ * execute on a developer machine. That is the argument for E4 in a sentence —
+ * a build can be green everywhere it is cheap to look.
+ *
+ * The identity is NOT dropped. `metadata` is an allowed key, so the stamps move
+ * under it: the emitted artifact stays traceable to its source, which is the
+ * whole point of the VIN, and the spec is satisfied. Dropping them would have
+ * been the easier fix and would have quietly cost the traceability the identity
+ * work exists to provide.
+ */
 function buildSkillOutput(
   _personaName: string,
   _personaConfig: PersonaConfig | null,
@@ -931,7 +966,43 @@ function buildSkillOutput(
   config: AgentBootConfig,
   skillPath: string
 ): string {
-  return withProvenance(composedContent, skillPath, config);
+  return withProvenance(nestIdentityUnderMetadata(composedContent), skillPath, config);
+}
+
+/**
+ * Move top-level identity keys into a `metadata:` block, preserving every other
+ * key and the body byte-for-byte.
+ *
+ * Returns the input unchanged when there is no frontmatter or no identity to
+ * move, so this is a no-op on an unstamped corpus rather than a reformatter.
+ */
+export function nestIdentityUnderMetadata(content: string): string {
+  const normalized = normalizeForFrontmatter(content);
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(normalized);
+  if (!m) return content;
+
+  const lines = (m[1] ?? "").split("\n");
+  const moved: Array<[string, string]> = [];
+  const kept: string[] = [];
+
+  for (const line of lines) {
+    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (kv && (IDENTITY_KEYS as readonly string[]).includes(kv[1]!)) {
+      moved.push([kv[1]!, kv[2]!]);
+      continue;
+    }
+    kept.push(line);
+  }
+  if (moved.length === 0) return content;
+
+  // An existing `metadata:` block would need merging rather than appending, and
+  // getting that silently wrong is worse than refusing: leave it alone and let
+  // the CI gate speak. No persona in this corpus has one.
+  if (kept.some((l) => /^metadata:/.test(l))) return content;
+
+  const block = ["metadata:", ...moved.map(([k, v]) => `  ${k}: ${v}`)];
+  const rebuilt = ["---", ...kept.filter((l) => l.trim() !== ""), ...block, "---"].join("\n");
+  return rebuilt + "\n" + normalized.slice(m[0].length);
 }
 
 /**
