@@ -9,6 +9,41 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+### Deferred to v1.1 — ruled 2026-08-11
+
+Four capabilities were on the v1.0 list and are not in it. None was built, no public surface
+promises any of them, and the ruling costs nothing but this paragraph — which is the reason to write
+it down: an undecided item and a decided-against item are indistinguishable in silence, and only one
+of them is finished.
+
+- **SessionStart runtime drift-detection hook** — hash managed files at session start, warn or block
+  on drift. Unbuilt.
+- **`/ab explain`** — the active-session verify primitive (`--all-scopes`, `--json`). Unbuilt.
+- **User-level MCP writes** — MCP config writes at install (`~/.cursor/mcp.json`, `~/.codex/config.toml`).
+  Unbuilt; repo-level `.mcp.json` and `.codex/config.toml` emission is unaffected and ships.
+- **The conversational import specialist** (`/ab-import`) and its LLM few-shot classifier. Unbuilt;
+  `agentboot import` itself ships and is unaffected.
+
+**Behavioral persona testing is withdrawn from the v1.0 surface.** `agentboot test --behavioral`,
+`--test-dir` and `--allow-unevaluated` are gone. The runner parsed 0 of 7 scenario files until this
+release cycle. Three defects in it were repaired here — every scenario had been running against the
+BARE MODEL with no persona context, a wholly-malformed file was waived as if it were merely
+unevaluable, and a persona-context failure passed silently — and after all three were fixed, 52 of
+its expectations still had no mechanical evaluator. Those repairs are the evidence FOR the
+withdrawal, not features of a shipping command — so
+the flag advertised a capability that did not exist on three of the four surfaces that named it.
+Snapshot and regression testing are unaffected. The `behavioral` input on the published reusable CI
+workflow is **kept and inert**: removing it would fail every adopter already passing it with an
+"unexpected input" error, so it now emits a warning annotation instead, because someone who asked
+for behavioral tests must not silently believe they ran.
+
+### Release mechanics — ruled 2026-08-11
+
+- **npm dist-tag: `latest`.** `release.yml` already publishes with no `--tag`, so the recommendation
+  and the shipped mechanic agree; this is a record, not a change. `^1.0.0` consumers therefore
+  receive v1.0.x GA patches automatically. A `beta` alias may be added post-publish for
+  explicitness without changing what `latest` points at.
+
 ### BREAKING — configurations that used to build green now refuse
 Every item here converts a silent loss into a refusal, so each one can turn a currently-passing hub
 red on upgrade. Read this section before bumping AgentBoot in CI. The companion list of *new* gates
@@ -50,11 +85,6 @@ config you already have.
 - **`agentboot export --format agentskills` exits 1 over an empty index.** On a hub that does not
   build `skill` it printed wrong advice, then a green `✓ Exported 0 skill(s)`, then an instruction to
   submit the file to a public directory — and wrote a well-formed index carrying `"skills": []`.
-- **`agentboot test --behavioral` fails when the persona context did not load, and the failure is
-  UNWAIVABLE.** The runner loaded its system prompt from a path with a `personas` segment the
-  compiler has never written, so `systemPrompt` was always `""` and **every scenario ran against the
-  bare model** while the output was reported as a persona result. `--allow-unevaluated` waives
-  expectations we cannot mechanically check; it must not waive a run whose subject was absent.
 - **`--allow-unevaluated` no longer waives a scenario file that could not be READ.** The
   file-granularity path downgraded every no-cases file to a warning on the flag alone, so a file in
   which every entry was structurally broken passed under the exact invocation the published reusable
@@ -412,11 +442,6 @@ config, so read this section before upgrading a hub in CI.
   `agentboot.config.json` sits beside the tree. In particular `agentboot test --snapshot` no longer
   banks a superseded tree as the baseline that every later `--regression` is compared against.
   `install` joins them as a gated consumer.
-- **`agentboot test --behavioral --allow-unevaluated` waives judgement-only scenarios again.** A
-  regression made every dropped case fatal regardless of the flag, so any adopter with a
-  judgement-only scenario had an unwaivable red CI. Structurally broken scenarios (no `id:`, no
-  `prompt:`, no `expect:` block) remain unwaivable, as does "no cases ran" — and, as of this release,
-  so does a scenario file whose entries could not be read at all (see BREAKING).
 - **`hub.version` is `null` when absent** rather than being omitted, on the MCP agent surface.
 - **Copilot instruction frontmatter is re-serialized rather than passed through**, and a `key:`
   appearing inside another key's block scalar is no longer mistaken for that key. A

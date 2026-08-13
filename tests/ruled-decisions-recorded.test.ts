@@ -153,11 +153,26 @@ describe("D1 — --behavioral is cut from the v1.0 doc surface", () => {
     expect(read(SURFACES.changelog).length - section.length).toBeGreaterThan(2000);
   });
 
+  /**
+   * A line that ANNOUNCES the removal, or narrates what an older release did,
+   * is not an offer — and the CHANGELOG is the one surface whose job is to say
+   * "this is gone". Excluding it wholesale would be weakening the check; the
+   * charter is precise and worth honouring literally: *a doc that still OFFERS
+   * the flag publishes an instruction that fails when followed.* `is REMOVED`
+   * is not an instruction. This mirrors the exemption in
+   * `shipped-surfaces-invoke-real-flags.test.ts`, deliberately, so the two
+   * detectors do not disagree about what counts as an invocation — two rules
+   * for one property is the reader/writer split this branch has eight instances
+   * of.
+   */
+  const ANNOUNCES_REMOVAL = /\bis REMOVED\b|\bremoved\b|withdrawn|deprecated|no longer|unknown option/i;
+
   it("no owned doc surface offers the flag", () => {
     const offenders: string[] = [];
     for (const [name, file] of Object.entries(SURFACES)) {
       const text = name === "changelog" ? unreleasedSection(read(file)) : read(file);
       for (const hit of flagHits(text, "--behavioral")) {
+        if (name === "changelog" && ANNOUNCES_REMOVAL.test(hit.line)) continue;
         offenders.push(`${name} (${path.relative(ROOT, file)}): ${hit.line}`);
       }
     }
