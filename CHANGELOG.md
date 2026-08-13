@@ -103,6 +103,29 @@ config you already have.
   ("no manifest") and on any unrecognised exit code. As shipped it ran the HUB branch inside a spoke
   and exited 1 with "needs a hub" before comparing a single file — so the gate we ship to prove
   managed files are intact never checked anything anywhere it was installed.
+- **`sync.signing.enabled` now defaults to `true`.** It defaulted to `false`, which put every adopter
+  on the caveated side of both headline tamper-evidence claims in `docs/assurance-claims.md` (claims
+  3 and 14 each read "ONLY with `sync.signing` enabled"). Tightening a security default *after* 1.0
+  breaks hubs that had been syncing clean for a whole major version, so this is a now-or-never
+  change, the same shape as the capability-gate RAISE above. **What actually changes for you:** a hub
+  that already set `sync.signing.sshKeyPath` but never wrote `enabled: true` now signs its manifests
+  — that is the flip, and it is the case to check before upgrading, because a spoke-side
+  `verify-manifest --require-signed --allowed-signers` will start seeing signatures from a key it may
+  not yet allow. A hub with **no** key configured signs nothing, exactly as before, but no longer
+  does so silently: `resolveSyncSigning` returns a NAMED error saying what is unsigned, what that
+  costs, and the two ways out. A security default that quietly no-ops is worse than one that is off,
+  because the operator believes they are covered — it is the same green-surface-over-nothing class
+  this release is largely about, and shipping the flip without the diagnostic would have manufactured
+  a fresh instance of it. To state on the record that this hub does not sign, set
+  `sync.signing.enabled: false`; an explicit `false` is honoured and stays silent.
+- **`agentboot test --behavioral` is REMOVED**, along with `--test-dir` and `--allow-unevaluated`,
+  which existed only to configure it. The flag was advertised on four surfaces while only one carried
+  the experimental caveat, and 52 of the scenario expectations it runs still have no mechanical
+  evaluator — an advertised capability with no mechanism behind it, which is precisely what this
+  product exists to refuse. Passing any of the three is now an error rather than a silent no-op: an
+  ignored flag would leave you believing a behavioral run had happened. The runner itself is kept in
+  `scripts/lib/test-runner.ts` and remains reachable through the library API; the flag returns to the
+  CLI when the evaluators exist.
 
 ### Security
 - **A gotcha's `paths:` frontmatter could write outside the hub.** The Gemini emitter derived a

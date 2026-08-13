@@ -31,7 +31,7 @@ import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, resolveSyncSigning, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
 import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, resolveEnforcement, readHookBinding, type CapabilityContext } from "./lib/conformance.js";
@@ -4656,7 +4656,13 @@ program
     } catch { /* no repos registered — hub-only evidence is still valid */ }
 
     const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")).version as string;
-    const signKeyPath = config.sync?.signing?.enabled ? config.sync.signing.sshKeyPath : undefined;
+    // D17: `enabled` now defaults ON, so "no key" is the state most hubs will
+    // be in — and it must be NAMED. The old expression collapsed "signing is
+    // off" and "signing is on with no key" into one falsy value and the pack
+    // shipped digest-only either way, with a line that reads like advice
+    // rather than a defect.
+    const signing = resolveSyncSigning(config, hubPath);
+    const signKeyPath = signing.keyPath ?? undefined;
 
     console.log(chalk.bold("\n  AgentBoot — evidence-pack\n"));
     // The evidence pack is the artifact an AUDITOR reads, digest-protected and
@@ -4696,7 +4702,8 @@ program
     }
     console.log(pack.integrity?.signature
       ? chalk.green(`  ✓ Pack signed (${pack.integrity.pack_digest.slice(0, 12)}…)`)
-      : chalk.yellow(`  – Pack digest-only (${pack.integrity?.pack_digest.slice(0, 12)}…) — enable sync.signing for a signed pack`));
+      : chalk.yellow(`  – Pack digest-only (${pack.integrity?.pack_digest.slice(0, 12)}…) — NOT signed`));
+    if (signing.error) console.error(chalk.red(`  ✗ ${signing.error}`));
     if (signingError) {
       console.error(chalk.red(`  ✗ Signing FAILED: ${signingError}`));
       process.exit(1);
@@ -4724,13 +4731,19 @@ program
     let sink = null;
     let logPath = opts["log"] as string | undefined;
     let signKeyPath: string | null = null;
+    let signingUnavailable: string | null = null;
     try {
       const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
       const config = loadConfig(configPath);
       sink = config.telemetry?.sink ?? null;
       logPath = logPath ?? config.telemetry?.logPath;
-      if (config.sync?.signing?.enabled && config.sync.signing.sshKeyPath && (sink?.sign ?? true)) {
-        signKeyPath = config.sync.signing.sshKeyPath;
+      // D17: same as evidence-pack — an unsigned batch because no key is
+      // configured must say so, not look identical to a hub that chose not to
+      // sign.
+      const signing = resolveSyncSigning(config, path.dirname(configPath));
+      if (sink?.sign ?? true) {
+        signKeyPath = signing.keyPath;
+        signingUnavailable = signing.error;
       }
     } catch { /* no hub config here — spoke side */ }
     if (!sink) sink = findSinkConfig(opts["sinkConfig"] as string | undefined);
@@ -4753,6 +4766,7 @@ program
       signKeyPath,
     });
     console.log(`  Spooled ${spool.eventsSpooled} event(s) into ${spool.batchesWritten} batch(es)${spool.signed ? chalk.green(" [signed]") : ""}`);
+    if (signingUnavailable) console.error(chalk.red(`  ✗ ${signingUnavailable}`));
     if (spool.logReset) console.log(chalk.yellow("  ⚠ Local log shrank below the cursor (rotation/truncation) — re-read from the start; the sink dedups by batch sequence."));
     if (spool.corruptLines > 0) console.log(chalk.yellow(`  ⚠ ${spool.corruptLines} unparseable log line(s) skipped (surfaced, not silently dropped).`));
     if (spool.signingError) {

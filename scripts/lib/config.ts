@@ -1260,7 +1260,90 @@ export function loadConfig(configPath: string): AgentBootConfig {
     );
   }
 
+  // D17: materialise the default HERE, at the one place every consumer reads
+  // the config through, rather than as `?? true` at each read site. Every
+  // "default" spelled out at N call sites is N chances to drift, and this
+  // codebase has already paid for that twice (VALID_OUTPUT_FORMATS,
+  // DEFAULT_OUTPUT_FORMATS).
+  applySyncSigningDefault(parsed as AgentBootConfig);
+
   return parsed as AgentBootConfig;
+}
+
+// ---------------------------------------------------------------------------
+// D17 — sync manifest signing is ON by default at 1.0
+// ---------------------------------------------------------------------------
+
+/**
+ * D17 (ruled 2026-08-11): `sync.signing.enabled` defaults to TRUE.
+ *
+ * Same irreversible-at-tag shape as the capability gate. Tightening a security
+ * default AFTER 1.0 breaks hubs that used to sync clean, so the choice is
+ * now-or-never; the safe side has to be the one that ships. Until this, the
+ * default was `false`, which landed every adopter on the caveated side of both
+ * headline tamper-evidence claims in docs/assurance-claims.md (claims 3 and 14
+ * both read "ONLY with `sync.signing` enabled").
+ */
+export const SYNC_SIGNING_DEFAULT_ENABLED = true;
+
+/** Fill in the 1.0 default for a config that does not mention signing. */
+export function applySyncSigningDefault(config: AgentBootConfig): void {
+  if (!config.sync) config.sync = {};
+  if (!config.sync.signing) config.sync.signing = {};
+  if (config.sync.signing.enabled === undefined) {
+    config.sync.signing.enabled = SYNC_SIGNING_DEFAULT_ENABLED;
+  }
+}
+
+export interface SyncSigningResolution {
+  /** Is signing meant to happen for this hub? */
+  enabled: boolean;
+  /** Absolute path to the signing key, or null when there is none. */
+  keyPath: string | null;
+  /**
+   * The NAMED reason signing will not happen despite being enabled. Null when
+   * signing is off (nothing to explain) or fully configured (nothing wrong).
+   */
+  error: string | null;
+}
+
+/**
+ * Resolve "will this hub sign, and if not, exactly why not".
+ *
+ * The `error` field is the entire point. Before D17 the read site was
+ * `signingCfg?.enabled && signingCfg.sshKeyPath ? resolve(...) : null` — a
+ * single expression in which "signing is off" and "signing is on but there is
+ * no key" collapse into the same `null`, and the caller then ships unsigned
+ * without a word. With the default flipped on, that silence would become the
+ * behaviour EVERY adopter gets: a security default that quietly no-ops, which
+ * is strictly worse than one that is off, because the operator now believes
+ * they are covered. It is this product's signature failure class — a green
+ * surface over a control that is not running — and shipping the flip without
+ * the diagnostic would have manufactured a fresh instance of it at 1.0.
+ *
+ * So the two states are distinguishable by construction, and the caller cannot
+ * accidentally treat them alike.
+ */
+export function resolveSyncSigning(
+  config: AgentBootConfig,
+  configDir: string,
+): SyncSigningResolution {
+  const signing = config.sync?.signing;
+  const enabled = signing?.enabled ?? SYNC_SIGNING_DEFAULT_ENABLED;
+  if (!enabled) return { enabled: false, keyPath: null, error: null };
+  if (!signing?.sshKeyPath) {
+    return {
+      enabled: true,
+      keyPath: null,
+      error:
+        "sync.signing is enabled (the default since 1.0) but sync.signing.sshKeyPath is not set — " +
+        "nothing can be signed, so manifests, evidence packs and telemetry batches ship " +
+        "digest-only and are NOT tamper-evident against a determined editor. " +
+        "Set sync.signing.sshKeyPath to an SSH private key, or set sync.signing.enabled to false " +
+        "to state on the record that this hub does not sign.",
+    };
+  }
+  return { enabled: true, keyPath: path.resolve(configDir, signing.sshKeyPath), error: null };
 }
 
 // ---------------------------------------------------------------------------
