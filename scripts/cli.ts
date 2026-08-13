@@ -15,7 +15,7 @@
  *   agentboot doctor [--fix] [--dry-run] [--format text|json]
  *   agentboot status [--format text|json]
  *   agentboot lint [--persona name] [--severity level] [--format text|json]
- *   agentboot test [--behavioral] [--snapshot] [--regression]
+ *   agentboot test [--snapshot] [--regression]
  *   agentboot migrate [--path dir] [--revert] [--dry-run] [--org name]
  *   agentboot uninstall [--repo path] [--dry-run]
  *   agentboot config [key] [value]
@@ -2237,26 +2237,37 @@ program
     }
   });
 
-// ---- test (AB-123/124) — behavioral and snapshot testing ------------------
+// ---- test (AB-123/124) — snapshot and regression testing -------------------
+//
+// D1 (ruled 2026-08-11): `--behavioral` is CUT from the 1.0 surface.
+//
+// The flag was advertised on four surfaces and only one of them carried the
+// experimental caveat, while 52 of the scenario expectations it runs have no
+// mechanical evaluator at all. An advertised flag whose expectations nothing
+// can check is a capability claim with no mechanism behind it — the same class
+// as a fabricated metric, and precisely what this product exists to refuse.
+//
+// The RUNNER is deliberately kept (`scripts/lib/test-runner.ts`,
+// `behavioralFindings`, and the suites that pin its verdict logic). The ruling
+// is about the ADVERTISED SURFACE, not the code: nothing about the runner is
+// wrong, it is simply not something 1.0 should offer. Deleting working,
+// tested logic to un-advertise it would make re-adding the flag — once the
+// evaluators exist — a rewrite instead of a line.
 
 program
   .command("test")
-  .description("Run behavioral and snapshot tests for personas")
-  .option("--behavioral", "run behavioral tests (requires LLM, costs money)")
+  .description("Run snapshot and regression tests for personas")
   .option("--snapshot", "create or update snapshot baseline from current dist/")
   .option("--regression", "compare current dist/ against saved snapshot")
-  .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
   // The LLM-as-Judge evaluation is not part of the advertised v1.0 surface —
   // its flags are hidden (still functional, just not surfaced in help).
   .addOption(new Option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)").hideHelp())
   .addOption(new Option("--verbose", "show detailed rationale per dimension (for --judge)").hideHelp())
   .addOption(new Option("--min-score <score>", "minimum passing score for --judge (default: 3.0)").argParser(parseFloat).hideHelp())
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
-  .option("--allow-unevaluated", "proceed when scenario expectations have no mechanical evaluator (the count is still reported)")
   .action(async (opts, cmd) => {
     const {
-      runBehavioralTestsDetailed, behavioralFindings, createSnapshot, compareSnapshots,
-      saveSnapshot, loadSnapshot, printSnapshotDiff,
+      createSnapshot, compareSnapshots, saveSnapshot, loadSnapshot, printSnapshotDiff,
     } = await import("./lib/test-runner.js");
 
     // -c/--config is a program-level global; read the merged view and let the
@@ -2267,12 +2278,12 @@ program
       ? path.resolve(globalOpts.config as string)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : null;
-    // A-class: snapshots and behavioral runs are claims ABOUT the compiled
-    // tree. A green run against a superseded tree is a false pass, and
-    // --snapshot banks it as the baseline every later run is compared to.
-    // L46: dist/, the snapshot baseline and the behavioral test dir are all
-    // hub-relative. Resolving them from cwd made `test --config <hub>` snapshot
-    // and regress a tree that has nothing to do with the hub it named.
+    // A-class: a snapshot is a claim ABOUT the compiled tree. A green run
+    // against a superseded tree is a false pass, and --snapshot banks it as the
+    // baseline every later run is compared to.
+    // L46: dist/ and the snapshot baseline are both hub-relative. Resolving
+    // them from cwd made `test --config <hub>` snapshot and regress a tree that
+    // has nothing to do with the hub it named.
     const hubDir = hubDirOf(configPath);
     const distPath = path.resolve(hubDir, config?.output?.distPath ?? "./dist");
     if (config) assertDistFreshOrExit(configPath, config, "test");
@@ -2330,38 +2341,6 @@ program
       }
     }
 
-    // Behavioral tests
-    if (opts["behavioral"]) {
-      console.log(chalk.cyan("  Running behavioral tests...\n"));
-      const testDir = path.resolve(hubDir, opts["testDir"] as string);
-      const run = runBehavioralTestsDetailed(testDir, distPath);
-      const results = run.results;
-
-      // J1 / NEW-4: the verdict lives in behavioralFindings() so it can be
-      // tested. Reaching it here requires runBehavioralTestsDetailed(), which
-      // spawns an LLM per case — which is exactly why the one thing that had to
-      // be right (which conditions are fatal, and which the operator can waive)
-      // was the one thing no test could see, and why 06c9683 could move a fatal
-      // condition outside the waiver guard unnoticed. The message and the
-      // verdict now come from one place, so a "⚠" can never accompany an exit 1.
-      const findings = behavioralFindings(run, {
-        allowUnevaluated: Boolean(opts["allowUnevaluated"]),
-        testDirLabel: path.relative(cwd, testDir) || testDir,
-      });
-      for (const f of findings) {
-        if (f.message) {
-          console.error(f.level === "error" ? chalk.red(`  ${f.message}`) : chalk.yellow(`  ${f.message}`));
-        }
-        if (f.detail) console.error(chalk.gray(f.detail));
-        if (f.level === "error") exitCode = 1;
-      }
-      if (!findings.some((f) => f.level === "error") && results.length > 0) {
-        console.log(chalk.green(
-          `\n  ✓ All ${results.filter((r) => r.passed).length} behavioral test(s) passed ` +
-          `(${run.unevaluated.length} expectation(s) unevaluated).\n`));
-      }
-    }
-
     // If no flags specified, show help
     // AB-156: LLM-as-Judge evaluation
     if (opts["judge"]) {
@@ -2388,9 +2367,8 @@ program
       }
     }
 
-    if (!opts["behavioral"] && !opts["snapshot"] && !opts["regression"] && !opts["judge"]) {
+    if (!opts["snapshot"] && !opts["regression"] && !opts["judge"]) {
       console.log(chalk.gray("  Specify a test type:\n"));
-      console.log(chalk.gray("    --behavioral   Run behavioral tests (LLM-powered, costs money)"));
       console.log(chalk.gray("    --snapshot     Create/update snapshot baseline from dist/"));
       console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot\n"));
     }
