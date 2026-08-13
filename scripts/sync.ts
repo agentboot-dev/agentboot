@@ -37,6 +37,7 @@ import {
   SYNCABLE_OUTPUT_FORMATS,
   PLATFORM_ALIASES,
   resolveRepoPlatforms,
+  resolveSyncSigning,
 } from "./lib/config.js";
 import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
 import { childScopeNames } from "./lib/scope-layout.js";
@@ -2146,14 +2147,31 @@ async function main(): Promise<void> {
     fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
   ) as { version: string }).version;
   const signingCfg = config.sync?.signing;
+  // D17 (ruled 2026-08-11): signing is ON by default as of 1.0. The default
+  // reaches here on its own — `loadConfig` materialises `enabled` — so a hub
+  // with a key and no explicit `enabled` now signs without any change here.
+  //
+  // What did NOT reach here was the DIAGNOSTIC, and that is the half that
+  // matters. The old ternary resolved `enabled && !sshKeyPath` to `null` and
+  // the sync shipped UNSIGNED IN SILENCE — so flipping the default on would
+  // have converted "signing is off, and you know it" into "signing is on, and
+  // it isn't working, and nothing says so." A security default that silently
+  // no-ops is worse than one that is honestly off; that is the exact
+  // green-surface-over-nothing class this release spent its effort killing.
+  //
+  // `resolveSyncSigning` already carries the named error. Use it rather than
+  // restating the precedence here — two copies of one rule is the reader/writer
+  // split that produced eight instances on this branch.
+  const signing = resolveSyncSigning(config, configDir);
   syncRunContext = {
     provenance: collectHubProvenance(configDir, pkgVersion),
-    signingKeyPath: signingCfg?.enabled && signingCfg.sshKeyPath
-      ? path.resolve(configDir, signingCfg.sshKeyPath)
-      : null,
+    signingKeyPath: signing.keyPath,
     emitInToto: signingCfg?.enabled === true && signingCfg.emitInToto === true,
     configDir,
   };
+  if (signing.error) {
+    console.log(chalk.yellow(`  ⚠ ${signing.error}`));
+  }
   if (syncRunContext.provenance.hub_dirty) {
     console.log(chalk.yellow(
       "  ⚠ Hub working tree is DIRTY — artifacts may not match the recorded hub commit. Commit hub changes before syncing for clean provenance.",

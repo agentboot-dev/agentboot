@@ -1,7 +1,7 @@
 ---
 id: 01KZRGW0EVGMKPWGZ8TYFDAVT5
 slug: quick-ref
-hash: sha256:d7423d6efc1902f8
+hash: sha256:0ee275361c1d4d59
 ---
 
 # AgentBoot Quick Reference
@@ -13,7 +13,7 @@ hash: sha256:d7423d6efc1902f8
 | `npx agentboot build` | Validate + compile to `dist/` | `-c <config>` |
 | `npx agentboot validate` | Run pre-build checks only | `--strict` |
 | `npx agentboot sync` | Distribute `dist/` to target repos | `--dry-run`, `--repos-file <path>` |
-| `npx agentboot test` | Run test suite | `--behavioral`, `--snapshot`, `--regression` |
+| `npx agentboot test` | Run test suite | `--snapshot`, `--regression` |
 | `npx agentboot migrate` | Run schema migrations | `--path <dir>`, `--revert`, `--dry-run` |
 | `npx agentboot dev-build` | clean + validate + build + dev-sync | |
 | `npx agentboot install` | Install AgentBoot into a repo | `--non-interactive` |
@@ -97,6 +97,5 @@ Mandatory behaviors (compliance) inherit top-down — org wins.
 | `-c <path>` | `build` | Use alternate config file |
 | `--repos-file <path>` | `sync` | Use alternate repos file |
 | `--non-interactive` | `install` | Skip interactive prompts (CI mode) |
-| `--behavioral` | `test` | Run behavioral (LLM) tests |
 | `--snapshot` | `test` | Run snapshot regression tests |
 | `--revert` | `migrate` | Undo a migration |

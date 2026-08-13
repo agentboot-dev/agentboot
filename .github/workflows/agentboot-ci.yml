@@ -64,7 +64,11 @@ on:
         default: false
         type: boolean
       behavioral:
-        description: "Run behavioral tests (costs money, requires ANTHROPIC_API_KEY)"
+        # DEPRECATED and inert as of v1.0 — see the "Behavioral Tests" step below.
+        # The input is KEPT so that adopters already passing `behavioral: true`
+        # keep a valid workflow call instead of a hard "unexpected input" error.
+        # Removing it would break the callers this deprecation exists to protect.
+        description: "DEPRECATED — no longer runs anything. Behavioral testing was withdrawn from the v1.0 surface."
         required: false
         default: false
         type: boolean
@@ -131,8 +135,24 @@ jobs:
       # now exits non-zero when a file yields no runnable case, when no case
       # ran, or when expectations have no evaluator — the last is waivable with
       # --allow-unevaluated, which still prints the count.
-      - name: Behavioral Tests
+      # D1 (ruled 2026-08-11): `--behavioral` is CUT from the v1.0 surface, and
+      # `agentboot test --behavioral` now exits 1 with "unknown option".
+      #
+      # This is the PUBLISHED reusable workflow — adopters call it as
+      # `uses: agentboot-dev/agentboot/.github/workflows/agentboot-ci.yml@<ref>`
+      # — so removing the flag from the CLI without touching this file turned
+      # every caller passing `behavioral: true` into a red build with an
+      # unknown-option error. The breaking half of a ruling shipped while the
+      # compensating half did not.
+      #
+      # So the step stays, stays green, and SAYS what happened. A caller who
+      # asked for behavioral tests must not silently believe they ran.
+      - name: Behavioral Tests (withdrawn in v1.0)
         if: inputs.behavioral
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: npx agentboot test --behavioral --allow-unevaluated
+        run: |
+          echo "::warning title=behavioral tests withdrawn::\
+          The 'behavioral' input is deprecated and no longer runs anything. \
+          Behavioral persona testing was withdrawn from the AgentBoot v1.0 \
+          surface; 'agentboot test --behavioral' no longer exists. Remove the \
+          'behavioral: true' input from your workflow call. Snapshot and \
+          regression testing are unaffected."
