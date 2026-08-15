@@ -733,9 +733,62 @@ export function isScriptBound(binding: HookBinding, scriptName: string): boolean
 // Probe runner
 // ---------------------------------------------------------------------------
 
+/**
+ * Every bash this machine might have, in precedence order — derived ENTIRELY
+ * from the environment.
+ *
+ * The Windows leg was the single literal `C:\Program Files\Git\bin\bash.exe`,
+ * which is wrong in two directions:
+ *
+ *  - **False untested.** Git for Windows installed anywhere else was invisible:
+ *    the per-user (non-admin) installer defaults to
+ *    `%LOCALAPPDATA%\Programs\Git`, the 32-bit build lands under
+ *    `%ProgramFiles(x86)%`, and a `D:`-drive install is ordinary. Those
+ *    operators were told their hooks were UNTESTED while a perfectly good bash
+ *    sat on disk — the harness under-reporting its own reach.
+ *  - **Unfalsifiable.** A hardcoded absolute path means NO environment can
+ *    express "this machine has no bash", so the honesty gate that fires on an
+ *    untested run could not be exercised on Windows at all. The negative tests
+ *    that assert "a run which measured nothing prints no green claim" therefore
+ *    could not be made to fail there — and a gate nobody can make fire is
+ *    indistinguishable from a gate that does not work. That is this product's
+ *    own green-surface-over-nothing class, sitting in the probe.
+ *
+ * `AGENTBOOT_BASH`, when set, is the ONLY candidate. An operator who names a
+ * bash and silently gets a different one has been handed exactly the
+ * substitution this command exists to detect; if the named one does not run,
+ * the honest answer is "untested", not "here is another one".
+ *
+ * `platform`/`env` are parameters so the Windows candidate set is assertable
+ * from any host — the resolver is the thing most likely to drift, and it is not
+ * testable on the platform it matters on.
+ */
+export function bashCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const explicit = env["AGENTBOOT_BASH"]?.trim();
+  if (explicit) return [explicit];
+
+  const out = ["bash"];
+  if (platform === "win32") {
+    const roots = [
+      env["ProgramFiles"],
+      env["ProgramW6432"],
+      env["ProgramFiles(x86)"],
+      env["LOCALAPPDATA"] ? path.join(env["LOCALAPPDATA"], "Programs") : undefined,
+    ];
+    for (const root of roots) {
+      if (!root) continue;
+      out.push(path.join(root, "Git", "bin", "bash.exe"));
+    }
+  }
+  return [...new Set(out)];
+}
+
 /** Locate a bash usable for executing hook scripts (Git Bash on Windows). */
 export function probeBash(): string | null {
-  for (const candidate of ["bash", "C:\\Program Files\\Git\\bin\\bash.exe"]) {
+  for (const candidate of bashCandidates()) {
     try {
       const r = spawnSync(candidate, ["--version"], { stdio: "pipe", timeout: PROBE_TIMEOUT_MS });
       if (r.status === 0) return candidate;
