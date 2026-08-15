@@ -46,6 +46,53 @@ function ab(args: string[], cwd: string): { status: number; out: string } {
   return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
+/**
+ * Build the scaffolded hub EXPLICITLY, and make a failure say what happened.
+ *
+ * `agentboot install` runs a build itself — but through
+ * `spawnSync("agentboot", ["build"])`, a BARE command name resolved off PATH.
+ * On a machine with a global install that resolves; under CI's `npm ci` there
+ * is no global `agentboot`, so the spawn fails ENOENT, install discards
+ * `result.error`/`status`/stdout/stderr behind one yellow line, and STILL
+ * EXITS 0 over a hub with no `dist/` at all. This suite then died a step later
+ * inside `sync` with "dist/ not found" — a message about the wrong command,
+ * naming nothing about the build that never ran.
+ *
+ * So the scaffold no longer trusts install's internal build. It drives the
+ * build through the same PATH-independent `bin/agentboot.js` every other
+ * assertion here uses, and when it fails it reports the exit status and
+ * carries the output — including the case where there was no output, which is
+ * itself the finding rather than something to interpolate into an empty gap.
+ */
+function buildHubOrExplain(hubDir: string): void {
+  const b = ab(["build"], hubDir);
+  const shown = b.out.trim() || "(the build produced no output on stdout or stderr)";
+  if (b.status !== 0) {
+    throw new Error(
+      `scaffold build FAILED: \`agentboot build\` exited ${b.status} in ${hubDir}\n` +
+        `--- build output ---\n${shown}\n--- end build output ---`,
+    );
+  }
+  const stampPath = path.join(hubDir, "dist", ".agentboot-build.json");
+  if (!fs.existsSync(stampPath)) {
+    const distState = fs.existsSync(path.join(hubDir, "dist"))
+      ? "dist/ exists but carries no build stamp"
+      : "dist/ was never created";
+    throw new Error(
+      `scaffold build exited 0 but left no usable dist/: ${distState} (${stampPath})\n` +
+        `--- build output ---\n${shown}\n--- end build output ---`,
+    );
+  }
+  const stamp = JSON.parse(fs.readFileSync(stampPath, "utf-8")) as { status?: string };
+  if (stamp.status !== "success") {
+    throw new Error(
+      `scaffold build exited 0 but stamped status=${String(stamp.status)} — ` +
+        `the positive cases below would pass against a superseded tree.\n` +
+        `--- build output ---\n${shown}\n--- end build output ---`,
+    );
+  }
+}
+
 function mcp(tool: string, hubDir: string): Record<string, unknown> {
   const req =
     JSON.stringify({
@@ -103,6 +150,8 @@ beforeAll(() => {
     { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
   );
   if (inst.status !== 0) throw new Error(`hub scaffold failed: ${inst.stdout}${inst.stderr}`);
+  // install exits 0 whether or not its internal build ran — see buildHubOrExplain.
+  buildHubOrExplain(hub);
   fs.mkdirSync(spoke, { recursive: true });
   fs.writeFileSync(
     path.join(hub, "repos.json"),
