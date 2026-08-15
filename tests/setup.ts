@@ -62,14 +62,41 @@ export function ensureRootDist(): void {
   }
   if (fresh) return;
 
-  const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
-  const r = spawnSync(tsx, [path.join(ROOT, "scripts", "compile.ts")], {
+  // Run tsx's OWN entry point under the current node, never the `.bin` shim.
+  //
+  // `node_modules/.bin/tsx` is an extensionless shell script; on Windows the
+  // executable shim is `tsx.cmd`, and `spawnSync` without a shell cannot launch
+  // either — it fails with ENOENT, `status` null, and EMPTY stdout/stderr.
+  // That took the whole Windows leg down: this helper is the shared setup, so
+  // one unrunnable build cascaded into 302 failures across the run, none of
+  // which were real defects.
+  //
+  // `scripts/cli.ts` already knew this and resolves the shim through a shell.
+  // The test harness never learned it — one call site taught, the other not,
+  // which is the same reader/writer split this branch has spent itself closing,
+  // one level out from the product.
+  //
+  // Spawning `process.execPath` with `tsx/dist/cli.mjs` sidesteps shims and
+  // shell quoting on every platform, so there is no second rule to keep in sync.
+  const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
+  const r = spawnSync(process.execPath, [tsxCli, path.join(ROOT, "scripts", "compile.ts")], {
     cwd: ROOT,
     env: { ...process.env, NODE_NO_WARNINGS: "1" },
     encoding: "utf-8",
     timeout: 300_000,
   });
   if (r.status !== 0) {
-    throw new Error(`ensureRootDist: build failed\n${r.stdout ?? ""}${r.stderr ?? ""}`);
+    // Report WHY, not just that. The previous message interpolated stdout and
+    // stderr only — both empty on a spawn failure — so the one run that could
+    // have named the cause printed "build failed" and nothing else. A failure
+    // that cannot say what happened costs a whole CI round trip to re-ask.
+    const why = r.error
+      ? `spawn error: ${r.error.message}`
+      : `exit status ${r.status}${r.signal ? ` (signal ${r.signal})` : ""}`;
+    throw new Error(
+      `ensureRootDist: build failed — ${why}\n` +
+        `  command: ${process.execPath} ${tsxCli} scripts/compile.ts\n` +
+        `${r.stdout ?? ""}${r.stderr ?? ""}`,
+    );
   }
 }
