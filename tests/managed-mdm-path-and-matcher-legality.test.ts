@@ -34,29 +34,97 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { MANAGED_SETTINGS_ROOTS, COMPLIANCE_HOOK_BINDINGS } from "../scripts/compile.js";
 
 const ROOT = path.resolve(__dirname, "..");
-const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+
+/**
+ * Run tsx's OWN entry point under the current node, never the `.bin` shim.
+ *
+ * `node_modules/.bin/tsx` is an extensionless shell script. On Windows the
+ * executable shim is `tsx.cmd`, and `spawnSync` without a shell can launch
+ * neither — it fails ENOENT with `status: null` and EMPTY stdout/stderr. That
+ * is what took all five build-driven tests in this file down on the first
+ * Windows CI run: nothing about the MDM path or the matchers was wrong, the
+ * compiler simply never started.
+ *
+ * `tests/setup.ts` learned this and `scripts/cli.ts` already knew it; this file
+ * did not. One call site taught and the other not is the same reader/writer
+ * split this branch has spent itself closing, one level out from the product.
+ *
+ * Spawning `process.execPath` with `tsx/dist/cli.mjs` sidesteps shims and shell
+ * quoting on every platform, so there is no second rule to keep in sync.
+ */
+const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 
 /** Compile a throwaway hub and return the build's stdout. */
 function buildAndCapture(config: Record<string, unknown>): { out: string; dir: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-l49-"));
   const cfgPath = path.join(dir, "agentboot.config.json");
   fs.writeFileSync(cfgPath, JSON.stringify(config));
-  const out = execFileSync(TSX, [path.join(ROOT, "scripts", "compile.ts"), "--config", cfgPath], {
+  const args = [TSX_CLI, path.join(ROOT, "scripts", "compile.ts"), "--config", cfgPath];
+  const r = spawnSync(process.execPath, args, {
     cwd: ROOT,
     env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" },
+    encoding: "utf-8",
     timeout: 120_000,
-  }).toString();
-  return { out, dir };
+  });
+  if (r.status !== 0) {
+    // Say WHY, not just that. `execFileSync` threw an ENOENT whose stdout and
+    // stderr were both empty, so the one run that could have named the cause
+    // reported a bare spawn error — and a diagnosis that has to be guessed at
+    // costs a full CI round trip to disprove.
+    const why = r.error
+      ? `spawn error: ${r.error.message}`
+      : `exit status ${r.status}${r.signal ? ` (signal ${r.signal})` : ""}`;
+    throw new Error(
+      `buildAndCapture: compile failed — ${why}\n` +
+        `  command: ${process.execPath} ${args.join(" ")}\n` +
+        `${r.stdout ?? ""}${r.stderr ?? ""}`,
+    );
+  }
+  return { out: r.stdout, dir };
 }
 
 const BASE_TRAITS = ["critical-thinking", "structured-output", "source-citation", "confidence-signaling"];
+
+describe("L49 — the harness itself runs on every platform we claim to support", () => {
+  // This suite asserts things about an MDM control surface, so a harness that
+  // cannot start the compiler on a supported platform does not report "MDM path
+  // unverified on Windows" — it reports five red tests that look like product
+  // defects. Pin the runner, so the shim cannot come back and cost another leg.
+  it("spawns tsx's own entry point, never the .bin shim", () => {
+    expect(fs.existsSync(TSX_CLI), `${TSX_CLI} must exist — tsx moved its entry`).toBe(true);
+    expect(path.basename(TSX_CLI), "must be tsx's real CLI, not a platform shim").toBe("cli.mjs");
+    // `.bin/tsx` is executable on macOS and linux, so nothing below this line
+    // can catch its reintroduction by running — only by reading.
+    expect(TSX_CLI.split(path.sep)).not.toContain(".bin");
+
+    const src = fs.readFileSync(__filename, "utf-8");
+    // Vacuity guard: a rename or a read failure must not silently satisfy the
+    // scan below by handing it an empty string.
+    expect(src, "could not read this test file back").toContain("function buildAndCapture");
+    expect(src).toContain("spawnSync(process.execPath");
+
+    const shimRefs = src
+      .split("\n")
+      .map((line, n) => ({ line: line.trim(), n: n + 1 }))
+      // Comments explain WHY the shim is banned, and the assertions below name
+      // it to ban it. Both are the record OF the fix, not a use of the shim.
+      .filter(({ line }) => !line.startsWith("*") && !line.startsWith("//"))
+      .filter(({ line }) => !line.startsWith("expect("))
+      // Two shapes: a joined segment (`path.join(…, ".bin", "tsx")`) and an
+      // embedded one (`"node_modules/.bin/tsx"`). Missing either lets the shim
+      // back in through the door the check was not watching.
+      .filter(({ line }) => /["'`]\.bin["'`]/.test(line) || /[\\/]\.bin[\\/]/.test(line))
+      .map(({ line, n }) => `${path.basename(__filename)}:${n}: ${line}`);
+    expect(shimRefs, "spawn tsx/dist/cli.mjs under process.execPath instead").toEqual([]);
+  });
+});
 
 function managedHub(platform: string): Record<string, unknown> {
   return {
