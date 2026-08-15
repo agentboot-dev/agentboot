@@ -1,0 +1,169 @@
+# Interactive + diagnostic access to a CI runner, on demand.
+#
+# WHY THIS EXISTS
+#
+# The v1.0.0 Beta branch reached 187 commits without a single CI run, and its
+# first one produced 302 Windows failures from ONE unrunnable line in the shared
+# test setup — `spawnSync` against `node_modules/.bin/tsx`, which is an
+# extensionless shell script that Windows cannot launch without a shell. The
+# thrown error interpolated stdout and stderr, both empty on a spawn failure, so
+# the run said "build failed" and nothing else. Diagnosing it cost a full
+# push→wait→read cycle per hypothesis.
+#
+# This workflow removes that cost. It reproduces the validate job's environment
+# EXACTLY, runs whatever command you name, and hands back both a diagnostic
+# bundle and (optionally) a live shell on the runner.
+#
+# WHY IT IS NOT JUST A TMATE STEP
+#
+# The interactive session is best-effort: tmate's Windows support is
+# experimental, and a debugging tool that yields nothing when it fails to attach
+# is the same silent-failure class this release spent itself closing. So the
+# diagnostics bundle is UNCONDITIONAL and uploads even when the command fails and
+# even when the shell never opens. The run always produces evidence.
+#
+# SAFETY
+#
+# - `workflow_dispatch` ONLY. It cannot be triggered by a push, a PR, or a fork,
+#   and it is not a required check, so it can never gate or slow a merge.
+# - The session is restricted to the actor who launched it.
+# - `timeout-minutes` is hard-capped so an abandoned session cannot idle for
+#   hours on the account's minutes.
+# - Every third-party action is SHA-pinned, matching the rest of this repo.
+
+name: Debug runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner to debug"
+        required: true
+        default: windows-latest
+        type: choice
+        options:
+          - windows-latest
+          - ubuntu-latest
+      command:
+        description: "Command to run before the session (its failure does NOT skip the session)"
+        required: false
+        default: "npm test"
+        type: string
+      interactive:
+        description: "Open a live shell after the command runs"
+        required: false
+        default: true
+        type: boolean
+      timeout:
+        description: "Hard cap in minutes, session included"
+        required: false
+        default: "45"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    name: Debug ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    defaults:
+      run:
+        # Identical to validate.yml: AgentBoot targets git-bash on Windows, so
+        # every step runs in bash. Debugging under a different shell than the
+        # failing job would reproduce a different environment, which is worse
+        # than not reproducing one at all.
+        shell: bash
+
+    steps:
+      # ---- environment: byte-identical to validate.yml, same pinned SHAs -----
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure git identity (required by tests)
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@agentboot.dev"
+
+      # ---- diagnostics: gathered BEFORE the command, so a hang still leaves them
+      - name: Environment report
+        run: |
+          mkdir -p debug-out
+          {
+            echo "## runner"
+            echo "os=${{ inputs.os }}  runner.os=$RUNNER_OS  arch=$(uname -m 2>/dev/null || echo n/a)"
+            echo "shell=$SHELL  bash=$BASH_VERSION"
+            echo
+            echo "## toolchain"
+            node --version; npm --version; git --version
+            echo "npx tsx: $(npx tsx --version 2>&1 | head -1)"
+            echo
+            echo "## the .bin shim question"
+            # This is the exact thing that took the Windows leg down. On Windows
+            # the executable is tsx.cmd; the extensionless file is a shell script
+            # that spawnSync cannot launch without a shell.
+            ls -la node_modules/.bin/ | grep -i tsx || echo "(no tsx in .bin)"
+            echo "tsx entry present: $([ -f node_modules/tsx/dist/cli.mjs ] && echo yes || echo NO)"
+            echo
+            echo "## path semantics"
+            echo "PWD=$PWD"
+            echo "TMPDIR=${TMPDIR:-${TMP:-unset}}"
+            node -e "console.log('path.sep=' + require('path').sep + '  tmpdir=' + require('os').tmpdir())"
+          } | tee debug-out/environment.txt
+
+      - name: Run the command
+        id: cmd
+        continue-on-error: true
+        run: |
+          echo "$ ${{ inputs.command }}"
+          set +e
+          ${{ inputs.command }} 2>&1 | tee debug-out/command.log
+          # The command's status, not the pipe's. A piped $? has already produced
+          # one false green on this project.
+          status=${PIPESTATUS[0]}
+          echo "exit=$status" | tee debug-out/command.status
+          exit $status
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### \`${{ inputs.command }}\` on \`${{ inputs.os }}\`"
+            echo
+            echo "Exit: **$(cat debug-out/command.status 2>/dev/null || echo 'not reached')**"
+            echo
+            echo '```'
+            tail -40 debug-out/command.log 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Unconditional: the run must produce evidence even if the command hung,
+      # the shell never attached, or the job was cancelled.
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: debug-${{ inputs.os }}-${{ github.run_id }}
+          path: debug-out/
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ---- the live shell, last, so the failed state is intact to inspect ----
+      - name: Open session
+        if: ${{ always() && inputs.interactive }}
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3
+        with:
+          # Only the person who launched the run can connect. Without this the
+          # connection string in the public log is a shell on a runner holding a
+          # checkout of this repository.
+          limit-access-to-actor: true
