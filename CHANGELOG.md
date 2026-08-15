@@ -9,6 +9,8 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-15
+
 ### Deferred to v1.1 — ruled 2026-08-11
 
 Four capabilities were on the v1.0 list and are not in it. None was built, no public surface

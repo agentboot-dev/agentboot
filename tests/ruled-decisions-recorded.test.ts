@@ -87,11 +87,33 @@ function sectionUnder(text: string, heading: RegExp): string {
   return next === -1 ? text.slice(from) : text.slice(from, from + m[0].length + next);
 }
 
+/**
+ * The changelog region this release is responsible for: `[Unreleased]` PLUS the
+ * topmost version section.
+ *
+ * Re-derived when the 0.21.0 bump moved every pending entry out of
+ * `[Unreleased]` and into `[0.21.0]`, which is what cutting a release is
+ * supposed to do. Anchored literally on `[Unreleased]`, this helper then scoped
+ * the scan to an empty region — and an empty region is a scanner whose negative
+ * result means nothing. It would have gone on reporting "no doc surface offers
+ * the flag" forever, because it was no longer looking at anything.
+ *
+ * Spanning both sections keeps the scan on the content being shipped without
+ * reaching into released history, where naming a withdrawn flag is legitimate
+ * and permanent.
+ */
 function unreleasedSection(text: string): string {
   const start = text.indexOf("## [Unreleased]");
   if (start === -1) return "";
-  const next = text.slice(start + 1).search(/\n## \[\d/);
-  return next === -1 ? text.slice(start) : text.slice(start, start + 1 + next);
+  // Skip the first version heading — that is the section this release opened —
+  // and stop at the SECOND, which is already-published history.
+  const rest = text.slice(start + 1);
+  const first = rest.search(/\n## \[\d/);
+  if (first === -1) return text.slice(start);
+  const second = rest.slice(first + 1).search(/\n## \[\d/);
+  return second === -1
+    ? text.slice(start)
+    : text.slice(start, start + 1 + first + 1 + second);
 }
 
 /**
@@ -146,8 +168,14 @@ describe("D1 — --behavioral is cut from the v1.0 doc surface", () => {
     const section = unreleasedSection(read(SURFACES.changelog));
     expect(section.startsWith("## [Unreleased]")).toBe(true);
     expect(section.length).toBeGreaterThan(2000);
-    // It really does STOP at the first released section.
-    expect(section).not.toMatch(/\n## \[\d/);
+    // It stops at ALREADY-RELEASED history, which is one heading further down
+    // than this guard used to assume. Re-derived at the 0.21.0 bump: cutting a
+    // release moves the pending entries out of `[Unreleased]` and into the new
+    // version section, so "contains no version heading" stopped describing a
+    // correct slice and started describing an empty one. Exactly one heading is
+    // the real invariant — zero means the scan region collapsed, two means it
+    // reached into shipped history where naming a withdrawn flag is legitimate.
+    expect((section.match(/\n## \[\d/g) ?? []).length).toBe(1);
     // And the released sections it excludes are non-empty — i.e. the scoping is
     // doing real work rather than being a no-op over a one-version file.
     expect(read(SURFACES.changelog).length - section.length).toBeGreaterThan(2000);

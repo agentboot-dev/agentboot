@@ -54,7 +54,7 @@ jobs:
           node-version: '22'
       # Pinned agentboot version for reproducible, auditable CI. Keep in step with
       # the version your hub builds with; bump deliberately, like any dependency.
-      # (npm accepts either form: agentboot@v0.20.2 and agentboot@0.20.2 are the same.)
+      # (npm accepts either form: agentboot@v0.21.0 and agentboot@0.21.0 are the same.)
       #
       # `--repo .` is load-bearing, not decoration. Without it `drift-check`
       # takes its HUB branch, looks for agentboot.config.json in the checkout,
@@ -75,7 +75,7 @@ jobs:
       - name: AgentBoot drift check
         run: |
           set +e
-          npx agentboot@v0.20.2 drift-check --repo . --format json
+          npx agentboot@v0.21.0 drift-check --repo . --format json
           code=$?
           set -e
           case "$code" in
