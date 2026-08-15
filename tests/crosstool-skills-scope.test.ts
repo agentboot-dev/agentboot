@@ -24,13 +24,29 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 const ROOT = path.resolve(__dirname, "..");
-const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+/**
+ * tsx's OWN entry point, run under the current node — never the `.bin` shim.
+ *
+ * `node_modules/.bin/tsx` is an extensionless shell script; on Windows the
+ * executable shim is `tsx.cmd`, and `spawnSync`/`execFileSync` without a shell
+ * can launch neither — it fails with ENOENT before the compiler is ever
+ * reached. That is what took all five of these tests down on the Windows leg,
+ * and none of the five failures was a defect in what they assert: the scope
+ * emission and the conditional tick were both fine, behind a harness that
+ * could not start the build.
+ *
+ * tests/setup.ts learned this for the shared `ensureRootDist()` build; this
+ * file spawns its own compiler and never got the lesson — one call site
+ * taught, the other not. Spawning `process.execPath` with `tsx/dist/cli.mjs`
+ * sidesteps shims and shell quoting on every platform.
+ */
+const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 /** A real compiled persona shipped with the package — used as node-scope content. */
 const PERSONA_SRC = path.join(ROOT, "core", "personas", "code-reviewer");
 
@@ -74,12 +90,28 @@ function buildHub(
     nodes,
   }));
 
-  const out = execFileSync(TSX, [path.join(ROOT, "scripts", "compile.ts"), "--config", cfgPath], {
+  const args = [TSX_CLI, path.join(ROOT, "scripts", "compile.ts"), "--config", cfgPath];
+  const r = spawnSync(process.execPath, args, {
     cwd: ROOT,
     env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" },
+    encoding: "utf-8",
     timeout: 120_000,
-  }).toString();
-  return { dir, out };
+  });
+  // Say WHY, not just that it failed. `execFileSync` threw "Command failed"
+  // with the output on properties nobody printed, so the one run that could
+  // have named a spawn failure said nothing about it — and a build that cannot
+  // report its own cause costs a full CI round trip to re-ask.
+  if (r.status !== 0) {
+    const why = r.error
+      ? `spawn error: ${r.error.message}`
+      : `exit status ${r.status}${r.signal ? ` (signal ${r.signal})` : ""}`;
+    throw new Error(
+      `compile failed for hub "${name}" — ${why}\n` +
+        `  command: ${process.execPath} ${args.join(" ")}\n` +
+        `${r.stdout ?? ""}${r.stderr ?? ""}`,
+    );
+  }
+  return { dir, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
 const skillPath = (dir: string, scope: string) =>
