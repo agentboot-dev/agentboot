@@ -36,6 +36,24 @@ const CLI = path.join(ROOT, "bin", "agentboot.js");
 let snap = "";
 let personaDir = "";
 
+/**
+ * Normalise the separator in a report before matching a nested path in it.
+ *
+ * The scanner names hits with `path.relative`, so a hit one directory down
+ * prints as `nested/leak.md` on POSIX and `nested\leak.md` on Windows. Both
+ * assertions below matched the POSIX spelling literally, so the Windows leg
+ * read "expected '…✗ Secrets detected in 1 file(s): nested\leak.md…' to
+ * contain 'nested/leak.md'" — the scan had walked into the subdirectory, found
+ * the credential, exited 1 and NAMED the file. Only the separator differed.
+ *
+ * This keeps the invariant these two tests exist for — a secret one directory
+ * DOWN is found, and the report says which file — and drops the separator,
+ * which is the OS's business and not the scanner's. The non-recursive,
+ * `.md`-only scanner they were written against fails them just as dead either
+ * way: it never names the file at all, under any spelling.
+ */
+const slash = (s: string) => s.replace(/\\/g, "/");
+
 const publish = () => {
   const r = spawnSync(
     process.execPath,
@@ -105,7 +123,7 @@ describe("R2-6 — the pre-publish scan covers what publish SHIPS", () => {
     fs.writeFileSync(path.join(personaDir, "nested", "leak.md"), "AKIAIOSFODNN7EXAMPLE\n");
     const r = publish();
     expect(r.status, r.out).toBe(1);
-    expect(r.out).toContain("nested/leak.md");
+    expect(slash(r.out), r.out).toContain("nested/leak.md");
   }, 120_000);
 
   it("R2-6: the widened pattern set catches a private key and a Slack token", () => {
@@ -123,7 +141,10 @@ describe("R2-6 — the pre-publish scan covers what publish SHIPS", () => {
     const r = publish();
     expect(r.status).toBe(1);
     expect(r.out).toContain("a.md");
-    expect(r.out).toContain(path.join("n", "b.md"));
+    // Same normalisation as above rather than a second idiom (`path.join`) for
+    // the same question one screen away. Two spellings of one rule in one file
+    // is how the next reader picks the one that is wrong on their platform.
+    expect(slash(r.out), r.out).toContain("n/b.md");
   }, 120_000);
 
   it("NEGATIVE: prose about credentials does not trip it", () => {
@@ -183,7 +204,7 @@ describe("R2-6 sibling — validateContribution shares the one scanner", () => {
     fs.writeFileSync(path.join(dir, "nested", "leak.md"), "AKIAIOSFODNN7EXAMPLE\n");
     const c = await check("no-secrets");
     expect(c?.passed, "the second copy of the scanner was still .md-only/non-recursive").toBe(false);
-    expect(c?.message).toContain("nested/leak.md");
+    expect(slash(c?.message ?? ""), c?.message).toContain("nested/leak.md");
   });
 
   it("R2-6 sibling: a secret in a NON-.md file is found here too", async () => {
