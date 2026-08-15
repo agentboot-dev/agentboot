@@ -66,7 +66,11 @@ function executedWorkflowFiles(): { label: string; abs: string }[] {
       abs,
     })),
     ...walk(path.join(ROOT, "templates"), /\.ya?ml$/).map((abs) => ({
-      label: path.relative(ROOT, abs),
+      // Windows: `path.relative` yields `templates\ci\x.yml`, and the corpus
+      // assertion is written in the repo-relative POSIX form every other label
+      // uses. Normalise the SEPARATOR, not the assertion — a label that means
+      // one thing on two platforms is the drift this suite exists to catch.
+      label: path.relative(ROOT, abs).split(path.sep).join("/"),
       abs,
     })),
   ];

@@ -117,7 +117,11 @@ function findClaims(): Claim[] {
    * than exempt by default.
    */
   const extra = walk(path.join(ROOT, "website", "src", "pages"), /\.(md|mdx|tsx)$/)
-    .map((abs) => path.relative(ROOT, abs));
+    // POSIX separators throughout: these strings are compared against and
+    // reported as repo-relative paths, and `path.relative` returns `\` on
+    // Windows — which made the scan return nothing there and fired this file's
+    // own vacuity guard. Normalising here keeps ONE spelling of a path.
+    .map((abs) => path.relative(ROOT, abs).split(path.sep).join("/"));
 
   for (const rel of [...files.map((f) => path.join("docs", f)), ...extra]) {
     const abs = path.join(ROOT, rel);

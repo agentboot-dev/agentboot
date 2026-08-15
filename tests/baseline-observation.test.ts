@@ -82,7 +82,16 @@ describe("baseline — a snapshot with no observation is not a baseline", () => 
     // Regenerate the manifests with no bash: every control comes back untested.
     // conformance itself now exits 1 here; --allow-untested is what a local
     // operator would reach for, and it must not unlock the archive.
-    const c = ab(["conformance", "--allow-untested"], hub, { PATH: emptyBinDir, Path: emptyBinDir });
+    // Windows env vars are case-insensitive, so `{PATH, Path}` is one variable
+    // set twice and the emptying is not reliable; Git-for-Windows bash is also
+    // on PATH by design. `AGENTBOOT_BASH` is the SOLE candidate when set
+    // (conformance.ts), so naming a nonexistent file makes every control
+    // untested on every platform — and leaves the hook scripts' own PATH
+    // intact, so this is an all-UNTESTED run rather than an all-FAILED one,
+    // which is the state this case is about.
+    const c = ab(["conformance", "--allow-untested"], hub, {
+      AGENTBOOT_BASH: path.join(emptyBinDir, "no-such-bash"),
+    });
     expect(c.status, c.out).toBe(0);
 
     const before = snapshots().length;
