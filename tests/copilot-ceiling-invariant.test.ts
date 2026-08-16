@@ -38,6 +38,33 @@ import path from "node:path";
 const ROOT = path.resolve(__dirname, "..");
 const DOCS = path.join(ROOT, "docs");
 
+/**
+ * A `Claim.file` is ALWAYS a repo-relative POSIX path — one spelling, declared
+ * here, used by producers and consumers alike.
+ *
+ * This file needed three separate Windows CI rounds to learn that, because each
+ * round fixed one site and left the others: the website producer, then the docs
+ * producer, then the `startsWith(path.join("website","src","pages"))` CONSUMER,
+ * which compared native separators against data that had just been normalised.
+ * Two producers taught and a reader left behind is the same reader/writer split
+ * this release has spent itself closing — and patching a third site would have
+ * invited a fourth. `SITE_PREFIX` and `toRel()` are the fix; the invariant below
+ * is what keeps them honest.
+ */
+const SITE_PREFIX = "website/src/pages";
+
+/**
+ * Normalise EITHER separator to POSIX.
+ *
+ * Splitting on `path.sep` would be untestable on a POSIX machine — `path.sep`
+ * is already "/", so a mutation that removes the normalisation cannot be made
+ * to fail there. Measured: reverting `toRel` on macOS left the suite green.
+ * Splitting on `[\\/]` makes the function's contract provable on every
+ * platform, against a literal Windows-shaped string, with no Windows required.
+ */
+const posix = (p: string): string => p.split(/[\\/]/).join("/");
+const toRel = (abs: string): string => posix(path.relative(ROOT, abs));
+
 /** The page that DEFINES the ceiling; it is the source, not a copy. */
 const SOURCE_OF_TRUTH = "platform-capability-matrix.md";
 
@@ -121,7 +148,7 @@ function findClaims(): Claim[] {
     // reported as repo-relative paths, and `path.relative` returns `\` on
     // Windows — which made the scan return nothing there and fired this file's
     // own vacuity guard. Normalising here keeps ONE spelling of a path.
-    .map((abs) => path.relative(ROOT, abs).split(path.sep).join("/"));
+    .map(toRel);
 
   // `path.join("docs", f)` yields `docs\\concepts.md` on Windows, and these
   // strings are ALSO the identity a caller matches on (`c.file === "docs/..."`).
@@ -165,11 +192,31 @@ describe("the Copilot enforcement ceiling is restated wherever enforcement is cl
     // NF4-6: the website pages are named, not merely counted. A count-only
     // guard goes green again the moment the directory walk stops matching them,
     // which is the failure this fixes.
-    const site = CLAIMS.filter((c) => c.file.startsWith(path.join("website", "src", "pages")));
+    // Pin the spelling itself. Three rounds of this file were separator bugs
+    // that each presented as "the scan found nothing"; this says so directly,
+    // in the vocabulary of the defect, on every platform.
+    const native = CLAIMS.filter((c) => c.file.includes("\\"));
+    expect(native.map((c) => c.file), "a claim path carries native separators").toEqual([]);
+
+    const site = CLAIMS.filter((c) => c.file.startsWith(SITE_PREFIX));
     expect(
       site.length,
       "no website page is in the scan — the site is the surface an evaluator reads first",
     ).toBeGreaterThan(0);
+  });
+
+  it("the path normaliser is provable without Windows", () => {
+    // The live-data assertion above is a Windows-only guard: on macOS and Linux
+    // `path.relative` already returns forward slashes, so it cannot fire and a
+    // mutation cannot redden it. This exercises the CONTRACT directly instead,
+    // so the normalisation is verified on the machines that actually run it.
+    expect(posix("website\\src\\pages\\trust.md")).toBe("website/src/pages/trust.md");
+    expect(posix("docs\\concepts.md")).toBe("docs/concepts.md");
+    expect(posix("docs/concepts.md")).toBe("docs/concepts.md");
+    expect(posix("website\\src/pages\\mixed.md")).toBe("website/src/pages/mixed.md");
+    // And the prefix the consumer compares against must be POSIX too — the
+    // third round of this file was `path.join(...)` on the CONSUMER side.
+    expect(SITE_PREFIX).not.toContain("\\");
   });
 
   it("the source of truth exists and states the ceiling", () => {
