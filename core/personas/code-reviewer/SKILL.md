@@ -1,6 +1,9 @@
 ---
 name: code-reviewer
 description: Reviews code changes for correctness, readability, naming, error handling, test coverage, and adherence to repo conventions; invoke on any diff, file set, or commit range before merge.
+id: 01KZRG8RTET6CTDQEEFX8M9ZQX
+slug: code-reviewer
+hash: sha256:d19fb609da3875e2
 ---
 
 # Code Reviewer

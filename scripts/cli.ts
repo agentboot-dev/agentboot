@@ -15,7 +15,7 @@
  *   agentboot doctor [--fix] [--dry-run] [--format text|json]
  *   agentboot status [--format text|json]
  *   agentboot lint [--persona name] [--severity level] [--format text|json]
- *   agentboot test [--behavioral] [--snapshot] [--regression]
+ *   agentboot test [--snapshot] [--regression]
  *   agentboot migrate [--path dir] [--revert] [--dry-run] [--org name]
  *   agentboot uninstall [--repo path] [--dry-run]
  *   agentboot config [key] [value]
@@ -31,10 +31,23 @@ import os from "node:os";
 import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { ExitPromptError } from "@inquirer/core";
-import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
+import { loadConfig, stripJsoncComments, validatePluginManifest, envHubConfig, DEFAULT_OUTPUT_FORMATS, unbuiltRepoPlatforms, resolveSyncSigning, type AgentBootConfig, type MarketplaceManifest, type MarketplaceEntry } from "./lib/config.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { findManifestPath } from "./lib/drift.js";
-import { PLATFORM_ENFORCEMENT } from "./lib/conformance.js";
+import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, resolveEnforcement, readHookBinding, type CapabilityContext } from "./lib/conformance.js";
+import {
+  findHardArtifacts, capabilityViolations, capabilityShortfalls,
+  countNarrowlyScopedInstructions, countScopedGotchas, countPersonaScopeControls,
+} from "./lib/guardrail-scan.js";
+import { degradedFormats } from "./lib/scope-projection.js";
+import { scopeBearingInstructionDirs } from "./lib/scope-layout.js";
+import {
+  loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE,
+  type PolicyException,
+} from "./lib/exceptions.js";
+import { stampIdentity, mintId } from "./lib/artifact-identity.js";
+import { checkDistFreshness, checkDistStamp, staleDistMessage, readDistStamp, type DistFreshness } from "./lib/dist-stamp.js";
+import { DEFAULT_SECRET_PATTERNS } from "./lib/frontmatter.js";
 
 // Gracefully handle Ctrl-C during interactive prompts
 process.on("uncaughtException", (err) => {
@@ -134,6 +147,263 @@ function collectGlobalArgs(opts: { config?: string }): string[] {
   return args;
 }
 
+/**
+ * AB-DEF-9, the `--config` face: refuse a global flag the target cannot honor.
+ *
+ * `-c/--config` is declared on the program, so commander accepts it everywhere.
+ * Three commands forwarded it to scripts that never read argv for it —
+ * `mcp-server`, `dev-sync`, and the `dev-sync` leg of `dev-build`. Each of those
+ * resolves its hub some other way (AGENTBOOT_HUB / the registry / the checkout
+ * root), so the flag was dropped in silence and the command ran happily against
+ * a DIFFERENT hub than the operator named, then reported success. That is worse
+ * than an unsupported flag: the operator has explicit written evidence, in their
+ * own shell history, that they scoped the command.
+ *
+ * Refusing is the honest option and the one that matches the compiled hooks:
+ * a control that cannot do what it was asked must say so, not proceed. The
+ * alternative — translating `--config` into AGENTBOOT_HUB behind the operator's
+ * back — would make the flag "work" while making every diagnostic that names its
+ * hub resolution a lie.
+ */
+function refuseUnhonoredConfig(config: string | undefined, command: string, advice: string): void {
+  if (!config) return;
+  console.error(chalk.red(`✗ \`agentboot ${command}\` does not honor --config.`));
+  console.error(`    ${advice}`);
+  console.error(`    Refusing rather than running against a hub you did not name.`);
+  process.exit(1);
+}
+
+/**
+ * A3 / N1: refuse to REPORT GREEN against a dist/ that does not correspond to
+ * the hub config.
+ *
+ * `drift-check` and `audit` both exited 0 in the N1 repro. Neither is wrong in
+ * isolation — each spoke really did match its manifest, and the hub sources
+ * really were healthy. What made the pair dangerous is what the operator reads
+ * off them: "governance is in force." After a failed build the manifests
+ * describe the policy that was in force BEFORE the edit, so a clean report is
+ * a report about the superseded policy, delivered in the present tense.
+ *
+ * A dist/ that does not exist at all is NOT stale — it is unbuilt, which is a
+ * legitimate state for a hub being audited before its first build. That case
+ * says so out loud rather than passing quietly, because "I checked nothing" and
+ * "I checked everything and it was fine" must not print the same.
+ */
+/**
+ * L46: `--config <path>` names the HUB. Every hub-relative path a command
+ * touches — the compiled tree, the source `core/` tree, the snapshot baseline,
+ * the hub's package.json — must be resolved against the directory that OWNS
+ * that config, never against `process.cwd()`.
+ *
+ * Honouring the flag for the config file and ignoring it for the artifact tree
+ * is worse than not honouring it at all. A plain "no dist/ here" error is at
+ * least visible; a foreign cwd that happens to contain its own `./dist` made
+ * `install-user` write THAT tree into ~/.claude while reading the named hub's
+ * `userLevel` config. Reproduced live: 6 skill files from a foreign cwd
+ * against the same hub that yields 5 from its own directory — a
+ * silently-wrong-hub install, at exit 0, with two green ticks.
+ *
+ * The default path is unchanged by construction: when no `--config` and no
+ * AGENTBOOT_HUB are given, `configPath` is `<cwd>/agentboot.config.json`, whose
+ * dirname is `cwd`.
+ */
+function hubDirOf(configPath: string): string {
+  return path.dirname(path.resolve(configPath));
+}
+
+/**
+ * Where an informational notice goes.
+ *
+ * On a `--format json` path, stdout is a machine-readable PAYLOAD, not a
+ * transcript. Two gate notices — "dist/ has never been built" and the
+ * ungated-dist announcement — were written to stdout unconditionally, so
+ * `drift-check --format json` handed its caller a yellow sentence followed by
+ * the JSON and every `JSON.parse` on the other end threw. The predictable
+ * downstream repair is `| tail -n +2` or a try/catch that swallows the parse
+ * error, and both of those DISCARD the notice — which is how a gate that
+ * correctly announced it had checked nothing ends up announcing it to nobody.
+ *
+ * So the notice moves to stderr rather than being suppressed: still visible to
+ * a human, still captured by a `2>&1` log, and out of the payload.
+ */
+function notice(message: string, json?: boolean): void {
+  if (json) console.error(message);
+  else console.log(message);
+}
+
+function assertDistFreshOrExit(configPath: string, config: AgentBootConfig, command: string, json?: boolean): void {
+  const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
+  if (!fs.existsSync(distPath)) {
+    notice(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`), json);
+    return;
+  }
+  const freshness = checkDistFreshness(distPath, config, path.dirname(configPath));
+  if (!freshness.fresh) {
+    console.error(chalk.red(staleDistMessage(freshness, command)));
+    process.exit(1);
+  }
+}
+
+/**
+ * NF4-4: the third posture a conditional gate can legitimately take — SAY the
+ * dimension went unchecked.
+ *
+ * `assertDistStampOrExit` is right when the command's job is to act on dist/
+ * (install-user, publish, test, baseline): a `dist/` under those commands IS
+ * the agentboot output tree, so "no stamp" is evidence and refusing is correct.
+ *
+ * It is wrong for `drift-check --repo <spoke>`, which answers a purely
+ * spoke-local question from a cwd that has no hub in it. Any `dist/` sitting
+ * there belongs to the spoke's own build (webpack, tsc, whatever), so gating on
+ * its stamp would refuse real work over an unrelated directory — a gate that
+ * fires on the wrong evidence gets disabled, and then protects nothing.
+ *
+ * What is NOT acceptable is what was there: nothing at all. A skip must never
+ * read as a pass. This says the hub-side dimension was not checked, which is
+ * the honest third answer between "verified" and "refused".
+ */
+function announceUngatedDist(command: string, why: string, json?: boolean): void {
+  notice(
+    chalk.yellow(`  ~ \`${command}\` did NOT verify hub build freshness — ${why}`),
+    json,
+  );
+}
+
+/**
+ * NF2-1: the gate for a `gated` consumer that has NO hub config in reach.
+ *
+ * `install-user` and `publish` guarded their gate on `if (config)` /
+ * `if (fs.existsSync(publishConfigPath))`. Pointed at a `dist/` with no
+ * agentboot.config.json beside it they installed org policy into ~/.claude and
+ * published a plugin from a tree whose own stamp said `status: "failed"`, at
+ * exit 0 — and install-user also PRUNED from that tree, acting on the stale
+ * tree's idea of what had been revoked. Same bytes, same failed stamp: exit 1
+ * inside the hub, exit 0 one directory over.
+ *
+ * "No stamp" and "status: failed" require no config to read. A missing config
+ * means SOME dimensions cannot be checked; it never means none of them can, and
+ * turning "I can only check two of four" into "I will check none" is the
+ * silent-skip this codebase keeps re-finding.
+ */
+function assertDistStampOrExit(
+  distPath: string,
+  command: string,
+  /**
+   * What to do when dist/ does not exist at all.
+   *
+   * `refuse` — the command's whole job is to act on dist/ (install-user,
+   *            publish). Nothing to act on is a failure.
+   * `warn`   — the command has work that does not need dist/ (a behavioral
+   *            `test` run, an empty `baseline`). This mirrors what
+   *            assertDistFreshOrExit already does in the config-present case;
+   *            the two must not disagree about the same tree just because a
+   *            config happened to be next to it.
+   */
+  missingDist: "refuse" | "warn" = "refuse",
+): void {
+  if (!fs.existsSync(distPath)) {
+    if (missingDist === "warn") {
+      console.log(chalk.yellow(`  ⚠ dist/ has never been built — \`${command}\` cannot speak to what is deployed.`));
+      return;
+    }
+    console.error(chalk.red(`✗ dist/ not found — \`${command}\` has nothing to act on.`));
+    process.exit(1);
+  }
+  const check = checkDistStamp(distPath);
+  if (!check.fresh) {
+    console.error(chalk.red(staleDistMessage(check, command)));
+    console.error(
+      chalk.gray(
+        "    (no agentboot.config.json in reach, so the config and artifact-source\n" +
+          "     dimensions were not checked — this refusal is on the build stamp alone.)",
+      ),
+    );
+    process.exit(1);
+  }
+  console.log(
+    chalk.gray(
+      `  ~ no hub config in reach — \`${command}\` verified the build stamp only,\n` +
+        `    not that dist/ matches a current config or current artifact sources.`,
+    ),
+  );
+}
+
+/**
+ * R1-4: load a hub config, or say "this is not a hub" and exit 1.
+ *
+ * `loadConfig` THROWS when the file is absent. Every command action here is an
+ * async function with no handler, so an unguarded call does not print an error —
+ * it prints a raw Node stack trace and exits 7. Measured outside a hub before
+ * this: `audit`, `drift-check`, `mcp-verify` and `telemetry-inspect` all did,
+ * `--format json` included, so a machine consumer got a stack trace on stderr
+ * where it expected JSON.
+ *
+ * `drift-check` had been given an fs.existsSync guard for exactly this and the
+ * siblings had not — the recurring shape. One helper, and a test that runs every
+ * command in an empty directory and asserts none of them emits a stack trace.
+ */
+function loadHubConfigOrExit(configPath: string, command: string): AgentBootConfig {
+  if (!fs.existsSync(configPath)) {
+    console.error(chalk.red(`✗ No agentboot.config.json found — \`${command}\` needs a hub.`));
+    console.error(chalk.gray(`    Looked for: ${configPath}`));
+    console.error(chalk.gray("    Run it from a hub directory, or pass -c <path>."));
+    process.exit(1);
+  }
+  try {
+    return loadConfig(configPath);
+  } catch (e: unknown) {
+    console.error(chalk.red(`✗ Failed to read ${configPath}: ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+}
+
+/**
+ * NF4-3: load a hub config that MAY legitimately be absent.
+ *
+ * `install-user`, `publish` and `baseline` all wrote
+ * `fs.existsSync(p) ? loadConfig(p) : null` — a guard that answers "is there a
+ * hub" and not "is the hub READABLE", so a config TYPE error still threw out of
+ * an async action with no handler: raw stack trace, exit 7. A guard for the
+ * adjacent question reads, at a glance, as a guard.
+ *
+ * Absent → null, and the caller's own else-branch runs. Present but unreadable
+ * → the same named refusal every other command gives.
+ */
+function readHubConfigIfPresent(configPath: string, command: string): AgentBootConfig | null {
+  if (!fs.existsSync(configPath)) return null;
+  return loadHubConfigOrExit(configPath, command);
+}
+
+/**
+ * The `reports` posture (see scripts/lib/dist-consumers.ts).
+ *
+ * `doctor`, `status` and `lint` exist to TELL the operator what state the hub is
+ * in. Exiting before their checks run would withhold the very answer they were
+ * run to get — "why is my hub unhealthy?" is not usefully answered by refusing
+ * to look. They print the same finding, in the same words as the gate, and get
+ * it back so they can fold it into their own result and exit code.
+ *
+ * This is not a weaker posture. What is forbidden is SILENCE, not continuing:
+ * `status` printing a successful-looking build time for a build that failed is
+ * the defect; `status` printing "the last build FAILED" and carrying on is the
+ * fix.
+ *
+ * Returns null when dist/ has never been built (nothing to be stale about), or
+ * the failed freshness result otherwise.
+ */
+function reportDistFreshness(
+  configPath: string,
+  config: AgentBootConfig,
+  command: string,
+): DistFreshness | null {
+  const distPath = path.resolve(path.dirname(configPath), config.output?.distPath ?? "./dist");
+  if (!fs.existsSync(distPath)) return null;
+  const freshness = checkDistFreshness(distPath, config, path.dirname(configPath));
+  if (freshness.fresh) return null;
+  console.error(chalk.red(staleDistMessage(freshness, command, "report")));
+  return freshness;
+}
+
 // ---------------------------------------------------------------------------
 // Program
 // ---------------------------------------------------------------------------
@@ -174,6 +444,167 @@ program
   });
 
 // ---- validate -------------------------------------------------------------
+
+program
+  .command("baseline")
+  .description("Archive a dated conformance snapshot — starts the platform-behaviour baseline (XP4)")
+  .option("--config <path>", "path to agentboot.config.json")
+  .option("--dir <path>", "archive directory (default: .agentboot/baseline)")
+  .action(async (opts: { config?: string; dir?: string }) => {
+    // XP4 / Continental Drift, pre-GA slice.
+    //
+    // Platforms change their semantics silently — a Tuesday release with no
+    // changelog — and the corpus's TEXT does not move, so drift-check reports
+    // green while the governance quietly stops working. Detecting that needs a
+    // BASELINE, and a baseline cannot be backfilled: probes that begin at 1.4
+    // cannot say how the platforms behaved at 1.0.
+    //
+    // This is deliberately only the archive. No analysis, no comparison, no
+    // reporting surface — that is the Continental Drift epic and it is post-GA.
+    // The point is to start a clock that cannot be restarted.
+    const cwd = opts.config ? path.dirname(path.resolve(opts.config)) : process.cwd();
+    const outDir = opts.dir ? path.resolve(opts.dir) : path.join(cwd, ".agentboot", "baseline");
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    // Read the hub's configured distPath. Hardcoding `dist` meant a hub with
+    // `output.distPath` set archived nothing, forever, on a schedule.
+    const baselineConfigPath = opts.config
+      ? path.resolve(opts.config)
+      : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    // NF4-3: the existsSync guard covered "no hub" and not "unreadable hub",
+    // so a config TYPE error still threw. The helper answers both.
+    const baselineConfig = readHubConfigIfPresent(baselineConfigPath, "baseline");
+    const distPath = baselineConfig
+      ? path.resolve(path.dirname(baselineConfigPath), baselineConfig.output?.distPath ?? "./dist")
+      : path.join(cwd, "dist");
+
+    // The archive is meant to be citable years later. A snapshot taken off a
+    // stale dist/ records the previous policy under today's date, which is worse
+    // than a gap — a gap is visibly a gap.
+    if (baselineConfig) assertDistFreshOrExit(baselineConfigPath, baselineConfig, "baseline");
+    // NF4-3 sibling: `baseline` carried the identical `if (config)`-with-no-else
+    // hatch. It exits 1 today only incidentally (a bare dist/ has no enforcement
+    // manifests to archive), which is luck, not a gate — an archive meant to be
+    // citable years later must not be able to record a failed tree under today's
+    // date. Fixed with the reported one, because fixing the named instance and
+    // leaving the sibling is how this class keeps returning.
+    else assertDistStampOrExit(distPath, "baseline", "warn");
+
+    const manifests: Record<string, unknown> = {};
+    // The point of the archive is OBSERVED platform behaviour. A manifest whose
+    // every control is `untested`/`not-applicable` records no observation at
+    // all — it is a snapshot of "we did not look".
+    let observedProbes = 0;
+    if (fs.existsSync(distPath)) {
+      for (const platform of fs.readdirSync(distPath)) {
+        const mf = path.join(distPath, platform, "enforcement-manifest.json");
+        if (!fs.existsSync(mf)) continue;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(mf, "utf-8")) as { controls?: Array<{ status?: string }> };
+          manifests[platform] = parsed;
+          observedProbes += (parsed.controls ?? [])
+            .filter((c) => c.status === "pass" || c.status === "fail").length;
+        } catch {
+          manifests[platform] = { error: "unparseable enforcement-manifest.json" };
+        }
+      }
+    }
+
+    if (Object.keys(manifests).length === 0) {
+      // Silence is not success: an empty archive must say so and fail, or the
+      // baseline quietly accumulates nothing and looks healthy for a year.
+      console.error(chalk.red(`  ✗ No enforcement manifests found in ${path.relative(cwd, distPath) || distPath}.`));
+      console.error(chalk.gray("    Run `agentboot conformance` first — it writes dist/<platform>/enforcement-manifest.json."));
+      console.error(chalk.gray("    Nothing was archived."));
+      process.exit(1);
+    }
+
+    if (observedProbes === 0) {
+      // A file count is not a measurement. Manifests exist here, so the
+      // emptiness check above passes and the CI `find | wc -l` assertion passes
+      // — while the snapshot contains zero probe results. Banking that as
+      // history is worse than banking nothing, because it looks like history.
+      console.error(chalk.red("  ✗ Every control in every manifest is untested or not-applicable — this snapshot records NO observed behaviour."));
+      console.error(chalk.gray(`    ${Object.keys(manifests).length} manifest(s) present, 0 probes executed.`));
+      console.error(chalk.gray("    A baseline of unmeasured platforms cannot answer \"how did the platform behave in August\" later."));
+      console.error(chalk.gray("    Fix: make `agentboot conformance` produce real probe results (it needs bash, and a built dist/), then re-run."));
+      console.error(chalk.gray("    Nothing was archived."));
+      process.exit(1);
+    }
+
+    const snapshot = {
+      schema: 1,
+      capturedAt: new Date().toISOString(),
+      agentbootVersion: getVersion(),
+      note: "Point-in-time platform enforcement behaviour. Archive only — comparison is post-GA (Continental Drift).",
+      observedProbes,
+      platforms: manifests,
+    };
+    const outFile = path.join(outDir, `conformance-${stamp}.json`);
+    fs.writeFileSync(outFile, JSON.stringify(snapshot, null, 2), "utf-8");
+
+    const count = fs.readdirSync(outDir).filter((f) => f.startsWith("conformance-")).length;
+    console.log(chalk.bold(`\n  ${chalk.green("✓")} Baseline archived`));
+    console.log(chalk.gray(`    ${path.relative(cwd, outFile)}`));
+    console.log(chalk.gray(`    ${Object.keys(manifests).length} platform(s) · ${observedProbes} observed probe(s) · ${count} snapshot(s) on record\n`));
+  });
+
+program
+  .command("identity")
+  .description("Stamp permanent artifact identifiers (decision-0005) — mints missing ids, refreshes content hashes")
+  .option("--config <path>", "path to agentboot.config.json")
+  .option("--dry-run", "report what would change without writing")
+  .action(async (opts: { config?: string; dryRun?: boolean }) => {
+    // decision-0005. Backfill exists because identity cannot be applied to the
+    // past — every artifact that goes unstamped before the 1.0 tag can only ever
+    // date from whenever it is finally stamped.
+    const cwd = opts.config ? path.dirname(path.resolve(opts.config)) : process.cwd();
+    const dirs = [
+      path.join(cwd, "core", "instructions"),
+      path.join(cwd, "core", "traits"),
+      path.join(cwd, "core", "gotchas"),
+    ];
+    let minted = 0, refreshed = 0, skipped = 0, seen = 0;
+    const collisions = new Map<string, string>();
+
+    for (const dir of dirs) {
+      if (!fs.existsSync(dir)) continue;
+      for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+        const full = path.join(dir, file);
+        const before = fs.readFileSync(full, "utf-8");
+        // Never stamp navigational files — a README is not a governed artifact.
+        if (/^(README|index)\.md$/i.test(file)) { skipped++; seen++; continue; }
+        const slug = file.replace(/\.(instructions|gotchas?)?\.?md$/, "").replace(/\.md$/, "");
+        // Traits/gotchas carry no frontmatter by convention; create it for them.
+        const r = stampIdentity(before, { slug, createFrontmatter: true });
+        seen++;
+        if (!r.changed) { skipped++; continue; }
+
+        const id = r.content.match(/^id:\s*(\S+)$/m)?.[1];
+        if (id) {
+          const prior = collisions.get(id);
+          // Should be impossible, but a duplicated id silently merges two
+          // artifacts' histories forever — worth one comparison to never find out.
+          if (prior) {
+            console.error(chalk.red(`  ✗ duplicate id ${id}: ${prior} and ${path.relative(cwd, full)}`));
+            process.exit(1);
+          }
+          collisions.set(id, path.relative(cwd, full));
+        }
+
+        if (r.minted) minted++; else refreshed++;
+        if (!opts.dryRun) fs.writeFileSync(full, r.content, "utf-8");
+        console.log(chalk.gray(`  ${r.minted ? "mint " : "hash "} ${path.relative(cwd, full)}`));
+      }
+    }
+
+    const verb = opts.dryRun ? "would be" : "";
+    console.log(chalk.bold(`\n  ${seen} artifact(s) scanned`));
+    console.log(`  ${chalk.green(String(minted))} id(s) ${verb} minted · ${refreshed} hash(es) ${verb} refreshed · ${skipped} unchanged`);
+    if (opts.dryRun) console.log(chalk.yellow("  --dry-run: nothing written"));
+    console.log("");
+  });
 
 program
   .command("validate")
@@ -236,11 +667,19 @@ program
   .description("Copy dist/ to local repo for dogfooding (internal)")
   .action((_opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
-    const args = collectGlobalArgs({ config: globalOpts.config });
+    // dev-sync.ts installs dist/ from THIS checkout into the local agent-tool
+    // locations; it reads the checkout's own config for its freshness gate and
+    // has no argv config path to give it.
+    refuseUnhonoredConfig(
+      globalOpts.config as string | undefined,
+      "dev-sync",
+      "dev-sync always installs from this checkout. To build another hub, run " +
+        "`agentboot build --config <path>` there.",
+    );
 
     runScript({
       script: "dev-sync.ts",
-      args,
+      args: [],
       verbose: globalOpts.verbose,
       quiet: globalOpts.quiet,
     });
@@ -253,7 +692,18 @@ program
   .description("Run clean → validate → build → dev-sync pipeline")
   .action((_opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
-    const baseArgs = collectGlobalArgs({ config: globalOpts.config });
+    // validate and build would honor --config; the dev-sync leg cannot. Honoring
+    // it for two of three stages is the worst outcome available — it would
+    // validate and compile a named hub and then install the result over the
+    // checkout's own dogfooding config, with a green report on all three.
+    refuseUnhonoredConfig(
+      globalOpts.config as string | undefined,
+      "dev-build",
+      "dev-build's dev-sync stage always installs from this checkout, so the flag " +
+        "could only apply to two of its three stages. Run `agentboot validate` and " +
+        "`agentboot build --config <path>` directly for another hub.",
+    );
+    const baseArgs: string[] = [];
     const quiet = globalOpts.quiet;
 
     // Clean
@@ -386,14 +836,28 @@ program
       console.error(chalk.red("--mode must be one of: auto, direct, manifest"));
       process.exit(1);
     }
-    const { installUserLevel } = await import("./lib/user-scope.js");
+    const { installUserLevel, resolveUserLevelModeDetailed, isExternallyManaged, USER_LEVEL_MODE_ENV } =
+      await import("./lib/user-scope.js");
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config as string)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
-    const config = fs.existsSync(configPath) ? loadConfig(configPath) : undefined;
-    const distCore = path.join(cwd, config?.output?.distPath ?? "./dist", "claude", "core");
+    const config = readHubConfigIfPresent(configPath, "install-user") ?? undefined;
+    // A2-residual: install-user is a SECOND delivery channel — it writes org
+    // policy onto a developer's machine — and its only precondition was
+    // fs.existsSync(distCore). That is existence read as freshness, the exact
+    // pattern the sync gate was written to kill: a failed build leaves dist/
+    // byte-identical, so a revoked control installs with two green ticks.
+    // L46: the tree we install FROM must be the hub named by --config, not
+    // whatever ./dist the operator happens to be standing next to.
+    const installUserDist = path.join(hubDirOf(configPath), config?.output?.distPath ?? "./dist");
+    if (config) assertDistFreshOrExit(configPath, config, "install-user");
+    // NF2-1: and when there is no config, the dimensions that need none still
+    // apply. `if (config)` alone made this the one delivery channel a failed
+    // build could still reach.
+    else assertDistStampOrExit(installUserDist, "install-user");
+    const distCore = path.join(installUserDist, "claude", "core");
     if (!fs.existsSync(distCore)) {
       console.error(chalk.red("dist/claude/core not found — run `agentboot build` first."));
       process.exit(1);
@@ -410,12 +874,54 @@ program
       const r = res.direct!;
       for (const e of r.errors) console.log(chalk.red(`  ✗ ${e}`));
       console.log(chalk.green(`  ✓ ${opts.dryRun ? "Would write" : "Wrote"} ${r.skillsWritten.length} skill file(s) + ${r.rulesWritten.length} rule file(s) to ~/.claude/`));
+      // E1: report the withdrawal explicitly. "0 revoked" and "pruning never
+      // ran" must not print identically — that equivalence is what let a
+      // revoked user-level artifact sit on disk, untracked, indefinitely.
+      const removedUser = r.pruned.filter((p) => p.status === "removed");
+      const blockedUser = r.pruned.filter((p) => p.status === "blocked");
+      if (removedUser.length > 0) {
+        console.log(chalk.green(`  ✓ ${opts.dryRun ? "Would withdraw" : "Withdrew"} ${removedUser.length} revoked artifact(s) from ~/.claude/`));
+        for (const p of removedUser) console.log(chalk.gray(`      ${p.path}`));
+      } else {
+        console.log(chalk.gray(`  ~/.claude/ pruned: 0 revoked artifact(s)`));
+      }
+      if (blockedUser.length > 0) {
+        // Not an error: a local edit is a decision. But it must be SEEN — the
+        // artifact is revoked at the hub and still active on this machine.
+        console.log(chalk.yellow(`  ⚠ ${blockedUser.length} revoked artifact(s) kept — edited locally, still active:`));
+        for (const p of blockedUser) console.log(chalk.yellow(`      ${p.path}`));
+        console.log(chalk.gray(`    Remove with: agentboot uninstall --user`));
+      }
       for (const s of r.skipped) console.log(chalk.gray(`  – skipped ${s}`));
       if (r.errors.length) process.exit(1);
     } else {
       const s = res.staged!;
       for (const e of s.errors) console.log(chalk.red(`  ✗ ${e}`));
-      console.log(chalk.yellow(`  ~/.claude is externally managed — ${opts.dryRun ? "would stage" : "staged"} ${s.staged.length} file(s) for handoff.`));
+      // The reason this run staged instead of writing was a FIXED string:
+      // "~/.claude is externally managed". Manifest mode has four causes and
+      // only one of them is that. `--mode manifest`, `userLevel.mode` in the
+      // hub config, and the env override all reach here on a machine with no
+      // sentinel anywhere — and the line asserted, in the present tense, that
+      // some other tool owns the operator's ~/.claude. An operator debugging
+      // "why did AgentBoot not write my home directory" was sent to look for a
+      // sentinel that does not exist, and a support transcript containing that
+      // line is evidence for a fact that was never checked.
+      //
+      // Re-resolving is pure — same config, same env, same directory the
+      // install just used — so it reports the cause that actually fired rather
+      // than a second, drifting guess at it.
+      const resolution = resolveUserLevelModeDetailed(effectiveConfig as AgentBootConfig);
+      const why = res.refusal
+        // The refusal text is already printed above, in red, as an error.
+        ? "the requested write mode was refused"
+        : isExternallyManaged()
+        ? "~/.claude is externally managed (a .managed sentinel claims that slot)"
+        : resolution.source === "env"
+        ? `manifest mode was requested via ${USER_LEVEL_MODE_ENV}`
+        : resolution.source === "config"
+        ? `manifest mode was requested explicitly (${opts.mode ? "--mode manifest" : "userLevel.mode in the hub config"})`
+        : "manifest mode was selected";
+      console.log(chalk.yellow(`  ${opts.dryRun ? "Would stage" : "Staged"} ${s.staged.length} file(s) for handoff — ${why}.`));
       console.log(chalk.gray(`  Staging dir: ${s.stagingDir}`));
       console.log(chalk.gray(`  Manifest:    ${s.manifestPath}`));
       if (s.errors.length) process.exit(1);
@@ -699,7 +1205,7 @@ paths:
 
 # ${name.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
 
-<!-- Path-scoped knowledge: battle-tested rules that activate for matching files.
+<!-- Path-scoped knowledge: hard-won rules that activate for matching files.
      Sources: post-incident reviews, onboarding notes, repeated code review comments. -->
 
 - **TODO:** First gotcha rule — explain the what AND the why
@@ -729,13 +1235,29 @@ paths:
         fs.mkdirSync(instructionsDir, { recursive: true });
       }
 
+      // decision-0005: every artifact is born with a permanent identifier.
+      // Minted at creation because identity cannot be applied retroactively —
+      // an id added later can only date from later.
       const instructionMd = `---
+id: ${mintId()}
+slug: ${name}
 description: "TODO — brief description of this instruction"
 # applyTo is a comma-separated glob list. "**" = always on, every file.
+# NARROWING this requires \`scope-unsupported: acknowledged\` below when any
+# configured target cannot express path scoping (claude, skill, plugin, agents,
+# codex, gemini) — those platforms deliver the rule always-on, with a Scope:
+# preamble in the emitted file. Cursor, Windsurf and JetBrains receive the exact
+# scope; Copilot reads applyTo natively.
 applyTo: "**"
+# scope-unsupported: acknowledged
 # Uncomment to make this a HARD guardrail that lower scopes cannot override or
 # downgrade. Without it the instruction is a soft preference teams may adapt.
 # guardrail: hard
+# Reserved (XP3): declared change-rate for this artifact. Nothing consumes it yet.
+#   constitutional — rare, high ceremony, decade-scale
+#   statutory      — normal review, year-scale
+#   ephemeral      — write it in a morning, expires, no ceremony
+# tier: statutory
 ---
 
 # ${name.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
@@ -843,9 +1365,15 @@ Add to \`agentboot.config.json\`:
 #     }
 #   }
 
+# Fail-closed: if node is missing, block (compliance requires enforcement).
+# Same guard every compiled AgentBoot hook carries. Without it, the node parse
+# below silently yields "", every event comparison misses, and this hook exits 0
+# having enforced nothing.
+command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node required for compliance hooks"}'; exit 2; }
+
 INPUT=$(cat)
-# Parse JSON with node (guaranteed present wherever the harness runs) rather than
-# jq, which is not installed on Windows/git-bash — keeps this hook portable.
+# Parse JSON with node (guarded above) rather than jq, which is not installed on
+# Windows/git-bash — keeps this hook portable.
 EVENT_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(d).hook_event_name||''))}catch{process.stdout.write('')}})")
 
 # TODO: Add your compliance logic here
@@ -1044,6 +1572,12 @@ program
     const configPath = globalOpts.config
       ? path.resolve(globalOpts.config)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+    // L46: every check below asks a question ABOUT the hub — does it have
+    // core/personas, is its dist/ fresh, do its composition overrides resolve.
+    // Anchoring them to cwd made `doctor --config <hub>` diagnose whatever
+    // directory the operator was standing in and attribute the verdict to the
+    // hub it had just named.
+    const hubDir = hubDirOf(configPath);
 
     if (fs.existsSync(configPath)) {
       ok(`agentboot.config.json found`);
@@ -1077,13 +1611,46 @@ program
         }
 
         // Check personas
+        //
+        // NF4-6: resolve the way the COMPILER resolves — package bundle first,
+        // hub second, hub wins on name. compile.ts merges ROOT/core/* with
+        // HUB_ROOT/core/* precisely so a hub can enable a shipped default
+        // WITHOUT copying it locally; doctor looked only in the hub, so a hub
+        // scaffolded by `agentboot install --hub` failed its own health check
+        // immediately:
+        //
+        //     agentboot build   -> exit 0, "✓ Compiled 4 persona(s)"
+        //     agentboot doctor  -> exit 1, "✗ Persona not found: code-reviewer" ×4
+        //                                  "✗ Trait not found: …" ×6
+        //
+        // Identical on a real `npm pack` + install, so it was not a dev-checkout
+        // artifact. Build and doctor disagreed about the same fact, and the first
+        // thing a new adopter saw was a red health check on a hub the tool had
+        // just created. `doctor --fix` "fixed" it by materialising copies into
+        // the hub — which changes real behaviour (a local copy stops tracking
+        // package updates) to satisfy a check that was wrong.
         const enabledPersonas = config.personas?.enabled ?? [];
-        const personasDir = path.join(cwd, "core", "personas");
+        const personasDir = path.join(hubDir, "core", "personas");
+        const packagePersonasDir = path.join(ROOT, "core", "personas");
+        /** Where this persona resolves from, hub first, or null if nowhere. */
+        const resolvePersonaDir = (name: string): string | null => {
+          for (const d of [path.join(personasDir, name), path.join(packagePersonasDir, name)]) {
+            if (fs.existsSync(d)) return d;
+          }
+          return null;
+        };
         let personaIssues = 0;
         let personasScaffolded = 0;
         for (const p of enabledPersonas) {
+          const resolved = resolvePersonaDir(p);
           const pDir = path.join(personasDir, p);
-          if (!fs.existsSync(pDir)) {
+          if (resolved && resolved !== pDir) {
+            // Found in the package bundle. Not an issue — but not silent either:
+            // an operator reading this list should be able to tell which
+            // artifacts they own and which they are inheriting.
+            continue;
+          }
+          if (!resolved) {
             if (fixMode) {
               if (!dryRun) {
                 fs.mkdirSync(pDir, { recursive: true });
@@ -1114,12 +1681,17 @@ program
           ok(`All ${enabledPersonas.length} enabled personas found (${personasScaffolded} scaffolded)`);
         }
 
-        // Check traits
+        // Check traits — same package-then-hub resolution as personas above.
         const enabledTraits = config.traits?.enabled ?? [];
-        const traitsDir = path.join(cwd, "core", "traits");
+        const traitsDir = path.join(hubDir, "core", "traits");
+        const packageTraitsDir = path.join(ROOT, "core", "traits");
         let traitIssues = 0;
         let traitsScaffolded = 0;
         for (const t of enabledTraits) {
+          if (fs.existsSync(path.join(packageTraitsDir, `${t}.md`)) &&
+              !fs.existsSync(path.join(traitsDir, `${t}.md`))) {
+            continue; // inherited from the package bundle, exactly as compile reads it
+          }
           if (!fs.existsSync(path.join(traitsDir, `${t}.md`))) {
             if (fixMode) {
               if (!dryRun) {
@@ -1143,7 +1715,7 @@ program
         // Check core directories
         const coreDirs = ["core/personas", "core/traits", "core/instructions", "core/gotchas"];
         for (const dir of coreDirs) {
-          const fullDir = path.join(cwd, dir);
+          const fullDir = path.join(hubDir, dir);
           if (!fs.existsSync(fullDir)) {
             if (fixMode) {
               if (!dryRun) fs.mkdirSync(fullDir, { recursive: true });
@@ -1207,22 +1779,59 @@ program
               }
             }
             if (checkedAnyRepo && !anyConflict) ok("No gitignore conflicts in synced repos");
+
+            // A4: repos.json targets a platform the hub does not build. sync
+            // refuses at ship time, but only for the repos that run — this is a
+            // static contradiction between two files, and doctor is where a
+            // static contradiction belongs. fail(), not warn(): the repo will
+            // NEVER receive anything.
+            const entries = (Array.isArray(reposArr) ? reposArr : []) as Array<{
+              label?: string; path?: string; platform?: string; platforms?: string[];
+            }>;
+            const declaredFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+            const unbuilt = unbuiltRepoPlatforms(entries, declaredFormats);
+            for (const u of unbuilt) {
+              fail(
+                `repos.json targets \`${u.platform}\` but personas.outputFormats = [${declaredFormats.join(", ")}] — ` +
+                `${u.repos.join(", ")} can never be synced`,
+              );
+            }
+            if (entries.length > 0 && unbuilt.length === 0) {
+              ok(`Every repos.json platform is built by the hub`);
+            }
           } catch {
             // repos.json unparseable — the check above already surfaced that.
           }
         }
 
         // Check dist/
-        const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+        //
+        // V5: `dist/ exists (built)` was a green tick for a tree whose last
+        // build FAILED — in the one command an operator runs to ask whether
+        // the hub is healthy. Existence is not builtness. doctor takes the
+        // `reports` posture (dist-consumers.ts): it says what is wrong instead
+        // of refusing to run its other checks, and the finding counts as a
+        // FAILED check, so `doctor` still exits non-zero.
+        const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath)) {
-          ok(`dist/ exists (built)`);
+          const distFreshness = checkDistFreshness(distPath, config, path.dirname(configPath));
+          if (distFreshness.fresh) {
+            ok(`dist/ exists and its last build succeeded against this config`);
+          } else {
+            fail(
+              `dist/ exists but is NOT trustworthy — ${distFreshness.reason}. ` +
+              `A failed build leaves the previous dist/ byte-identical, so the files being ` +
+              `there is not evidence they reflect current policy. Fix: run \`agentboot build\` ` +
+              `and let it succeed.`,
+            );
+          }
         } else if (fixMode) {
           if (!isJson) console.log(`  ${chalk.cyan("→")} Building dist/...`);
           if (!dryRun) {
             const compileScript = path.join(SCRIPTS_DIR, "compile.ts");
             const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
             const buildResult = spawnSync(tsx, [compileScript], {
-              cwd,
+              cwd: hubDir,
               encoding: "utf-8",
               stdio: ["pipe", "pipe", "pipe"],
               // Windows: the .bin/tsx shim is tsx.cmd — resolve it via the shell
@@ -1245,7 +1854,7 @@ program
         if (!isJson) { console.log(""); console.log(chalk.cyan("Composition")); }
 
         // 120a: Missing composition manifests
-        const distPath2 = path.resolve(cwd, config.output?.distPath ?? "./dist");
+        const distPath2 = path.resolve(hubDir, config.output?.distPath ?? "./dist");
         if (fs.existsSync(distPath2)) {
           const manifestPath = path.join(distPath2, "claude", "core", "composition-manifest.json");
           if (fs.existsSync(manifestPath)) {
@@ -1259,23 +1868,23 @@ program
         const overrides = (config.composition as Record<string, unknown> | undefined)?.["overrides"] as Record<string, string> | undefined;
         if (overrides && typeof overrides === "object") {
           for (const [filePath] of Object.entries(overrides)) {
-            const fullOverridePath = path.join(cwd, filePath);
+            const fullOverridePath = path.join(hubDir, filePath);
             if (!fs.existsSync(fullOverridePath)) {
               warn(`Orphaned composition override: "${filePath}" does not exist`);
             }
           }
           if (Object.keys(overrides).length > 0) {
             const orphanCount = Object.keys(overrides).filter(
-              fp => !fs.existsSync(path.join(cwd, fp))
+              fp => !fs.existsSync(path.join(hubDir, fp))
             ).length;
             if (orphanCount === 0) ok(`All ${Object.keys(overrides).length} composition overrides reference existing files`);
           }
         }
 
         // 120c: Shadow detection (filename collisions across scopes)
-        const coreDir = path.join(cwd, "core");
-        const groupsDir = path.join(cwd, "groups");
-        const teamsDir = path.join(cwd, "teams");
+        const coreDir = path.join(hubDir, "core");
+        const groupsDir = path.join(hubDir, "groups");
+        const teamsDir = path.join(hubDir, "teams");
         const coreFiles = new Set<string>();
         if (fs.existsSync(coreDir)) {
           function walkCore(dir: string): void {
@@ -1351,25 +1960,202 @@ program
           ok("Tool/format consistency (no agents.tools configured)");
         }
 
+        // Capability coverage (2026-08-08). Coverage answers "was it emitted at
+        // all?"; Enforcement answers "how strongly?". Coverage is the prior
+        // question and must be read first: an operator who learns "cursor is
+        // advisory" already knew that, and still does not learn that their
+        // PreToolUse hook produced zero files.
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Coverage")); }
+        {
+          // A5: was `?? []` — Coverage iterated over zero platforms and printed
+          // clean for every hub that omits personas.outputFormats.
+          const covFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+          // R4-2: `domains/*/instructions` compile through the same emitters and
+          // were in neither hand-built pair, so a hub whose only narrow rules
+          // live in a domain got "nothing to check" here while `build` refused.
+          const narrow = countNarrowlyScopedInstructions(
+            scopeBearingInstructionDirs(
+              path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions"), config, cwd,
+            ),
+          );
+          const scopedG = countScopedGotchas(path.join(cwd, "core", "gotchas"));
+          const capCtx: CapabilityContext = {
+            config, narrowlyScopedInstructions: narrow, scopedGotchas: scopedG,
+            // R2-9: same two roots, same order as compile. doctor asserting
+            // "all configured capabilities have a target" while blind to the
+            // persona scope is what made this loss silent.
+            personaControls: countPersonaScopeControls(
+              [path.join(ROOT, "core", "personas"), path.join(cwd, "core", "personas")],
+              config.personas?.enabled,
+            ),
+          };
+          let activeEx: PolicyException[] = [];
+          try {
+            const loaded = loadExceptionsFile(path.join(cwd, HUB_EXCEPTIONS_FILE));
+            if (loaded.length > 0) activeEx = validateExceptions(loaded).active;
+          } catch { /* unreadable → treated as empty, so the gate still fires */ }
+
+          const capViolations = capabilityViolations(capCtx, covFormats, activeEx);
+          // NF2-4: how many rows were EVALUATED at all. A gate that examined zero
+          // capabilities is not a passing gate, it is an absent one — the same
+          // shape NF-5 fixed for the Enforcement and Scoping blocks, which the
+          // Coverage ticks did not get. On a hub with instructions.enabled = []
+          // and no managed config, `detect()` is false for every row and both
+          // ticks below printed a pass over nothing.
+          const configuredRows = CAPABILITY_SUPPORT.filter((r) => r.detect(capCtx));
+          if (configuredRows.length === 0) {
+            ok(
+              "Capability coverage — nothing to check: no capability in the support table is " +
+              "configured on this hub",
+            );
+          } else if (capViolations.length === 0) {
+            ok(`Capability coverage — all ${configuredRows.length} configured capability/ies have a target that emits them`);
+          } else {
+            for (const v of capViolations) {
+              // B1: report the EFFECTIVE emitters. Naming a platform whose
+              // emitter is itself gated on a format this hub does not build
+              // would send the operator to add a target that changes nothing.
+              const effective = effectiveEmitters(v.row, covFormats);
+              const needs = v.row.emittedBy.length === 0
+                ? "implemented on no platform"
+                : effective.length === 0
+                  ? `needs one of: ${v.row.emittedBy.join(", ")} — every emitter for this key is gated on a format this hub does not build`
+                  : `needs one of: ${effective.join(", ")}`;
+              if (v.waivedBy) {
+                warn(`${v.row.id} — gap accepted under ${v.waivedBy.id} (owner: ${v.waivedBy.owner}, expires ${v.waivedBy.expires})`);
+              } else if (v.row.severity === "error") {
+                // fail() drives the exit code; warn() does not. That distinction
+                // is the whole point of the severity split.
+                fail(`${v.row.id} — configured, but ${needs}`);
+              } else {
+                warn(`${v.row.id} — configured, but ${needs}`);
+              }
+            }
+          }
+
+          // H5: the OTHER axis — a capability that reaches some configured
+          // platforms and not others. `capabilityViolations` is the
+          // reaches-nothing gate by design; partial coverage went unreported by
+          // ANY per-capability surface, so the only signal was the platform-level
+          // Enforcement advisory below, which does not say WHICH control fails to
+          // reach WHICH target. "Your hub has advisory platforms" is read once
+          // and stopped being seen; "denyTools does not reach cursor, gemini" is
+          // actionable.
+          //
+          // Advisory, never fail(): partial coverage is the normal state of a
+          // multi-platform org, and a gate that fires on the normal state is how
+          // a check becomes noise inside a week.
+          const shortfalls = capabilityShortfalls(capCtx, covFormats);
+          for (const sf of shortfalls) {
+            warn(
+              `${sf.row.id} — reaches ${sf.honoured.join(", ")} but NOT ${sf.missing.join(", ")}; ` +
+              `on those targets this control is absent, not weaker`,
+            );
+          }
+          // NF2-4: this tick ALSO printed over zero evaluated rows, and it
+          // duplicated the wording of the tick above, so the operator read
+          // coverage as verified twice. It is now conditioned on something
+          // actually having been evaluated, and says what it adds over the first
+          // tick — reach across ALL platforms, not merely reach across one.
+          if (
+            configuredRows.length > 0 &&
+            shortfalls.length === 0 &&
+            capViolations.length === 0 &&
+            covFormats.length > 1
+          ) {
+            ok(
+              `Capability coverage — each of those ${configuredRows.length} also reaches all ` +
+              `${covFormats.length} configured platforms`,
+            );
+          }
+        }
+
         // B12: enforcement honesty — when the org has configured HARD policy
         // (managed guardrails, deny lists, blocking output scan), say plainly
         // which output platforms can actually enforce it and which only receive
         // instructions. Ambiguity here is how compliance theater happens.
         if (!isJson) { console.log(""); console.log(chalk.cyan("Enforcement")); }
+        // The trigger reads BOTH planes. `guardrail: hard` is an ARTIFACT-level
+        // declaration, and deriving this from config keys alone is what let a HARD
+        // guardrail ship to platforms that cannot enforce it behind a green report
+        // (confirmed 2026-08-07). Same scan the compiler uses.
+        const hardArtifacts = findHardArtifacts({
+          instructions: [path.join(cwd, "core", "instructions")],
+          traits: [path.join(cwd, "core", "traits")],
+        });
         const hasHardPolicy =
           Boolean(config.managed?.enabled) ||
           Boolean(config.managed?.guardrails?.denyTools?.length) ||
           Boolean(config.claude?.permissions?.deny?.length) ||
-          Boolean(config.compliance?.outputScan?.blocking);
-        const enforcementFormats = config.personas?.outputFormats ?? [];
+          Boolean(config.compliance?.outputScan?.blocking) ||
+          // A fail-closed DLP scanner is hard policy by any definition. Its
+          // omission is why doctor printed "no hard org policy configured"
+          // against a config declaring one (observed 2026-08-08).
+          Boolean(config.compliance?.inputScan?.scannerCommand) ||
+          hardArtifacts.length > 0;
+        // A5: was `?? []` — same absent-gate defect as Coverage above.
+        const enforcementFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
         // D2: the classification is the conformance harness's SSOT — doctor
         // reads the same table `agentboot conformance` tests empirically.
-        const ENFORCEMENT_LEVELS = PLATFORM_ENFORCEMENT;
         if (hasHardPolicy) {
+          if (hardArtifacts.length > 0) {
+            const acked = hardArtifacts.filter(a => a.acknowledgedAdvisory).length;
+            ok(
+              `${hardArtifacts.length} artifact(s) declare \`guardrail: hard\`` +
+              (acked > 0 ? ` (${acked} acknowledged as advisory-only on unenforceable targets)` : "")
+            );
+          }
+          // NF-5: zero configured platforms is not "everything is fine", it is
+          // "there was nothing to check". The loop below emitted NO rows at all
+          // for `outputFormats: []`, leaving the Enforcement header with an
+          // empty body — the same "a gate that evaluates zero platforms is not a
+          // passing gate, it is an absent one" shape A5 was written to remove,
+          // surviving in the two blocks A5's own commit message names.
+          if (enforcementFormats.length === 0) {
+            fail(
+              "Enforcement — personas.outputFormats is EMPTY, so org policy reaches no platform. " +
+              "This section checked nothing.",
+            );
+          }
           for (const fmt of enforcementFormats) {
-            const e = ENFORCEMENT_LEVELS[fmt];
-            if (!e) continue;
-            if (e.level === "enforced") {
+            if (!PLATFORM_ENFORCEMENT[fmt]) {
+              // Previously `continue` — a platform dropped from the Enforcement
+              // report with no trace, in a function whose entire job is honesty.
+              // The compile-time coverage assertion makes this unreachable, which
+              // is exactly why it should say so rather than skip.
+              warn(`${fmt}: no enforcement classification — cannot state whether org policy is enforced here`);
+              continue;
+            }
+            // B2: resolve against THIS build. doctor positively asserted
+            // "✓ plugin: org policy is enforceable — bundles Claude Code hooks"
+            // on a plugin-only hub whose dist/plugin/ had no hooks.json. The
+            // operator was not merely un-warned, they were reassured.
+            const e = resolveEnforcement(fmt, enforcementFormats);
+            // Q73: B2 checked the CONFIG (is `claude` in outputFormats?) and
+            // called that "resolved against this build". It is not — the claim
+            // names an ARTIFACT ("via the plugin's hooks.json") and nothing
+            // looked at the artifact. Verified at d9de530: with `claude` and
+            // `plugin` both configured and dist/plugin/hooks/hooks.json deleted,
+            // doctor printed "✓ plugin: org policy is enforceable — … via the
+            // plugin's hooks.json" and exited 0, naming the very file that was
+            // gone. A missing binding is checked for every hook-bearing target,
+            // not just plugin — the same deletion on dist/claude/core/settings.json
+            // reads identically to Claude Code.
+            const binding = readHookBinding(distPath, fmt);
+            if (e.unmetRequires.length > 0) {
+              // fail(), not warn(): the org configured HARD policy and this
+              // target has no mechanism at all. Nothing is degraded here —
+              // nothing exists.
+              fail(`${fmt}: org policy is NOT enforced here — ${e.detail}`);
+            } else if (binding.state === "missing" || binding.state === "unreadable") {
+              fail(
+                `${fmt}: org policy is NOT enforced here — the compiled hook binding ` +
+                `${path.relative(hubDir, binding.file)} is ` +
+                (binding.state === "missing" ? "MISSING" : `unreadable (${binding.detail})`) +
+                `. The hook scripts are wired to no event, so nothing invokes them. ` +
+                `Run \`agentboot build\`.`,
+              );
+            } else if (e.level === "enforced") {
               ok(`${fmt}: org policy is enforceable — ${e.detail}`);
             } else {
               warn(
@@ -1380,6 +2166,40 @@ program
           }
         } else {
           ok("Enforcement (no hard org policy configured — nothing requires platform enforcement)");
+        }
+
+        // F-6: scoping is a THIRD question — not "how strongly is it enforced"
+        // but "did the target even receive the scope the operator wrote".
+        if (!isJson) { console.log(""); console.log(chalk.cyan("Scoping")); }
+        {
+          const degraded = degradedFormats(enforcementFormats);
+          // R4-2: same omission, second surface — this one printed
+          // "Path scoping is expressible on every configured target" over a
+          // domain rule the build had just refused to ship.
+          const scopedNarrow = countNarrowlyScopedInstructions(
+            scopeBearingInstructionDirs(
+              path.join(ROOT, "core", "instructions"), path.join(cwd, "core", "instructions"), config, cwd,
+            ),
+          );
+          if (enforcementFormats.length === 0) {
+            // NF-5: "expressible on every configured target" over ZERO targets is
+            // a vacuous truth printed as a green tick. Say what is actually the
+            // case.
+            fail(
+              "Scoping — personas.outputFormats is EMPTY, so there is no target to express " +
+              "path scope on. This section checked nothing.",
+            );
+          } else if (degraded.length === 0 || scopedNarrow === 0) {
+            ok("Path scoping is expressible on every configured target");
+          } else {
+            // warn(), not fail(): a correctly-authored hub's doctor exit code
+            // must not change. The BUILD is where an unacknowledged scope
+            // stops the pipeline.
+            warn(
+              `${scopedNarrow} scoped instruction(s) delivered always-on on ${degraded.join(", ")} ` +
+              `(acknowledged on the artifact; the emitted files carry a Scope: preamble)`,
+            );
+          }
         }
 
       } catch (e: unknown) {
@@ -1417,15 +2237,28 @@ program
     }
   });
 
-// ---- test (AB-123/124) — behavioral and snapshot testing ------------------
+// ---- test (AB-123/124) — snapshot and regression testing -------------------
+//
+// D1 (ruled 2026-08-11): `--behavioral` is CUT from the 1.0 surface.
+//
+// The flag was advertised on four surfaces and only one of them carried the
+// experimental caveat, while 52 of the scenario expectations it runs have no
+// mechanical evaluator at all. An advertised flag whose expectations nothing
+// can check is a capability claim with no mechanism behind it — the same class
+// as a fabricated metric, and precisely what this product exists to refuse.
+//
+// The RUNNER is deliberately kept (`scripts/lib/test-runner.ts`,
+// `behavioralFindings`, and the suites that pin its verdict logic). The ruling
+// is about the ADVERTISED SURFACE, not the code: nothing about the runner is
+// wrong, it is simply not something 1.0 should offer. Deleting working,
+// tested logic to un-advertise it would make re-adding the flag — once the
+// evaluators exist — a rewrite instead of a line.
 
 program
   .command("test")
-  .description("Run behavioral and snapshot tests for personas")
-  .option("--behavioral", "run behavioral tests (requires LLM, costs money)")
+  .description("Run snapshot and regression tests for personas")
   .option("--snapshot", "create or update snapshot baseline from current dist/")
   .option("--regression", "compare current dist/ against saved snapshot")
-  .option("--test-dir <dir>", "directory with behavioral test YAML files", "tests/behavioral")
   // The LLM-as-Judge evaluation is not part of the advertised v1.0 surface —
   // its flags are hidden (still functional, just not surfaced in help).
   .addOption(new Option("--judge", "run LLM-as-Judge evaluation tests (5-dimension scoring)").hideHelp())
@@ -1434,8 +2267,7 @@ program
   .option("--snapshot-file <path>", "path to snapshot baseline file", ".agentboot-snapshot.json")
   .action(async (opts, cmd) => {
     const {
-      runBehavioralTests, createSnapshot, compareSnapshots,
-      saveSnapshot, loadSnapshot, printSnapshotDiff,
+      createSnapshot, compareSnapshots, saveSnapshot, loadSnapshot, printSnapshotDiff,
     } = await import("./lib/test-runner.js");
 
     // -c/--config is a program-level global; read the merged view and let the
@@ -1446,7 +2278,24 @@ program
       ? path.resolve(globalOpts.config as string)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const config = fs.existsSync(configPath) ? loadConfig(configPath) : null;
-    const distPath = path.resolve(cwd, config?.output?.distPath ?? "./dist");
+    // A-class: a snapshot is a claim ABOUT the compiled tree. A green run
+    // against a superseded tree is a false pass, and --snapshot banks it as the
+    // baseline every later run is compared to.
+    // L46: dist/ and the snapshot baseline are both hub-relative. Resolving
+    // them from cwd made `test --config <hub>` snapshot and regress a tree that
+    // has nothing to do with the hub it named.
+    const hubDir = hubDirOf(configPath);
+    const distPath = path.resolve(hubDir, config?.output?.distPath ?? "./dist");
+    if (config) assertDistFreshOrExit(configPath, config, "test");
+    // NF4-3: and when there is no config, the dimensions that need none still
+    // apply. `if (config)` with no `else` left `test` the one gated consumer a
+    // failed build could still reach: on a dist/ stamped status:"failed" with no
+    // config beside it, install-user/publish/export/cost-estimate all exited 1
+    // while `agentboot test --snapshot` printed "Snapshot saved (100 files)" and
+    // exited 0 — banking a superseded tree as the baseline every later
+    // --regression is measured against. The registry declared `test` posture
+    // `gated` for exactly that reason; the code disagreed with the registry.
+    else assertDistStampOrExit(distPath, "test", "warn");
 
     console.log(chalk.bold("\nAgentBoot — test\n"));
 
@@ -1460,7 +2309,7 @@ program
         process.exit(1);
       }
       const baseline = createSnapshot(distPath);
-      const snapshotPath = path.resolve(cwd, opts["snapshotFile"] as string);
+      const snapshotPath = path.resolve(hubDir, opts["snapshotFile"] as string);
       saveSnapshot(baseline, snapshotPath);
       console.log(chalk.green(`  ✓ Snapshot saved (${baseline.entries.length} files) → ${path.relative(cwd, snapshotPath)}\n`));
     }
@@ -1468,7 +2317,7 @@ program
     // Regression test
     if (opts["regression"]) {
       console.log(chalk.cyan("  Running regression test..."));
-      const snapshotPath = path.resolve(cwd, opts["snapshotFile"] as string);
+      const snapshotPath = path.resolve(hubDir, opts["snapshotFile"] as string);
       const baseline = loadSnapshot(snapshotPath);
       if (!baseline) {
         console.log(chalk.red(`  Snapshot not found: ${snapshotPath}`));
@@ -1489,41 +2338,6 @@ program
         exitCode = 1;
       } else {
         console.log(chalk.green("  ✓ No regression detected.\n"));
-      }
-    }
-
-    // Behavioral tests
-    if (opts["behavioral"]) {
-      console.log(chalk.cyan("  Running behavioral tests...\n"));
-      const testDir = path.resolve(cwd, opts["testDir"] as string);
-      const results = runBehavioralTests(testDir, distPath);
-
-      if (results.length === 0) {
-        // The scenario schema is still in flux and the runner does not yet parse
-        // the set that ships with the repo. Saying "no test cases found" implies
-        // the operator authored their files wrongly and sends them to debug a
-        // schema that isn't published — so state the actual situation instead.
-        const yamlPresent = fs.existsSync(testDir) &&
-          fs.readdirSync(testDir).some(f => f.endsWith(".yaml") || f.endsWith(".yml"));
-        console.log(chalk.yellow("  No behavioral test cases were parsed.\n"));
-        if (yamlPresent) {
-          console.log(chalk.yellow(
-            `  YAML files ARE present in ${path.relative(cwd, testDir)}/ — this is not your schema.\n`));
-        }
-        console.log(chalk.gray(
-          "  --behavioral is EXPERIMENTAL: the scenario schema is not yet stabilised or\n" +
-          "  published, and the runner does not yet parse it. Do not use it as a CI gate.\n" +
-          "  Track: https://github.com/agentboot-dev/agentboot/issues\n"));
-      } else {
-        const passed = results.filter(r => r.passed).length;
-        const failed = results.length - passed;
-        console.log("");
-        if (failed > 0) {
-          console.log(chalk.red(`  ✗ ${failed}/${results.length} behavioral test(s) failed.\n`));
-          exitCode = 1;
-        } else {
-          console.log(chalk.green(`  ✓ All ${passed} behavioral test(s) passed.\n`));
-        }
       }
     }
 
@@ -1553,9 +2367,8 @@ program
       }
     }
 
-    if (!opts["behavioral"] && !opts["snapshot"] && !opts["regression"] && !opts["judge"]) {
+    if (!opts["snapshot"] && !opts["regression"] && !opts["judge"]) {
       console.log(chalk.gray("  Specify a test type:\n"));
-      console.log(chalk.gray("    --behavioral   Run behavioral tests (LLM-powered, costs money)"));
       console.log(chalk.gray("    --snapshot     Create/update snapshot baseline from dist/"));
       console.log(chalk.gray("    --regression   Compare current dist/ against saved snapshot\n"));
     }
@@ -1570,6 +2383,10 @@ program
   .description("Show deployment status across synced repositories")
   .option("--format <fmt>", "output format: text, json", "text")
   .action(async (opts, cmd) => {
+    // A4-residual: a status readout that describes a stale tree must not exit 0.
+    // `status` is a health surface; reporting the problem and then returning
+    // success is the same false-green as not reporting it at all.
+    let distStale = false;
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
     const configPath = globalOpts.config
@@ -1620,7 +2437,7 @@ program
 
     const enabledPersonas = config.personas?.enabled ?? [];
     const enabledTraits = config.traits?.enabled ?? [];
-    const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+    const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
     const targetDir = config.sync?.targetDir ?? ".claude";
 
     // Load repos
@@ -1637,6 +2454,9 @@ program
         personas: enabledPersonas,
         traits: enabledTraits,
         outputFormats,
+        // A4: machine consumers need the comparison too — a field that is
+        // always `[]` on a healthy hub is how a monitor learns to alert.
+        unbuiltPlatforms: unbuiltRepoPlatforms(repos, outputFormats),
         repos: repos.map((r) => {
           const manifestPath = path.join(r.path, targetDir, ".agentboot-manifest.json");
           let manifest = null;
@@ -1656,6 +2476,21 @@ program
     console.log(`  Personas:  ${enabledPersonas.length} enabled (${enabledPersonas.join(", ")})`);
     console.log(`  Traits:    ${enabledTraits.length} enabled`);
     console.log(`  Platforms: ${outputFormats.join(", ")}`);
+    // A4: the two lists are printed four lines apart; compare them in code.
+    // Displaying a contradiction and expecting the operator to cross-reference
+    // by eye is not a check. sync catches this, but only at ship time and only
+    // for the repos it reaches.
+    const unbuilt = unbuiltRepoPlatforms(repos, outputFormats);
+    if (unbuilt.length > 0) {
+      for (const u of unbuilt) {
+        console.log(chalk.red(
+          `  ✗ repos.json targets \`${u.platform}\` but the hub does not build it — ${u.repos.join(", ")}`,
+        ));
+      }
+      console.log(chalk.gray(
+        `    Fix: add the platform to personas.outputFormats, or change/remove the repo entry.`,
+      ));
+    }
     console.log("");
 
     if (repos.length === 0) {
@@ -1687,14 +2522,40 @@ program
       console.log("");
     }
 
-    // Check dist/ freshness
-    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+    // A4-residual: report dist/ freshness from the STAMP, not from the
+    // directory's mtime.
+    //
+    // The old line was `fs.statSync(distPath).mtime` sitting directly beside a
+    // file that records the build OUTCOME. A failed build leaves the tree
+    // byte-identical, so the mtime is the timestamp of the last SUCCESSFUL
+    // build and status printed it unchanged seconds after a build failed —
+    // a successful-looking build time for a build that did not succeed, at
+    // exit 0. `status` takes the `reports` posture (dist-consumers.ts): it
+    // exists to describe the hub, so it says what is wrong rather than
+    // refusing to say anything.
+    // L46: hub-relative, so it follows --config.
+    const distPath = path.resolve(hubDirOf(configPath), config.output?.distPath ?? "./dist");
     if (fs.existsSync(distPath)) {
-      const stat = fs.statSync(distPath);
-      console.log(chalk.gray(`  Last build: ${stat.mtime.toISOString()}\n`));
+      const stamp = readDistStamp(distPath);
+      if (!stamp) {
+        console.log(chalk.yellow(
+          `  Last build: unknown — dist/ carries no build stamp. Run \`agentboot build\`.\n`,
+        ));
+      } else if (stamp.status === "failed") {
+        console.log(chalk.red(`  Last build: ${stamp.builtAt} — FAILED`));
+        if (stamp.failureReason) console.log(chalk.red(`              ${stamp.failureReason}`));
+        console.log(chalk.gray(
+          "              The tree on disk is the output of an EARLIER build.\n",
+        ));
+      } else {
+        console.log(chalk.gray(`  Last build: ${stamp.builtAt}\n`));
+      }
+      // Separately from the stamp's own status: has the config moved since?
+      if (reportDistFreshness(configPath, config, "status")) distStale = true;
     } else {
       console.log(chalk.yellow("  dist/ not found — run `agentboot build`\n"));
     }
+    if (distStale) process.exitCode = 1;
   });
 
 // ---- lint (AB-38) ---------------------------------------------------------
@@ -1736,13 +2597,59 @@ program
     }
 
     const findings: Finding[] = [];
+    /** Source-file estimates, kept only to contrast with the composed number. */
+    const sourceTokens = new Map<string, number>();
     const severityOrder = { info: 0, warn: 1, error: 2 };
     const minSeverity = severityOrder[opts.severity as keyof typeof severityOrder] ?? 1;
 
-    const personasDir = path.join(cwd, "core", "personas");
+    // L46: lint's subject is the hub named by --config, sources and compiled
+    // tree alike.
+    const hubDir = hubDirOf(configPath);
+    const personasDir = path.join(hubDir, "core", "personas");
     const enabledPersonas = config.personas?.enabled ?? [];
     const enabledTraits = config.traits?.enabled ?? [];
     const tokenBudget = config.output?.tokenBudget?.warnAt ?? 8000;
+    const tokenFailAt = config.output?.tokenBudget?.failAt;
+
+    // ---- L33: lint was measuring the PRE-COMPOSITION source ---------------
+    //
+    // The persona a model actually loads is the COMPOSED artifact: SKILL.md
+    // plus its traits, gotchas and group/team overlays. lint read
+    // core/personas/<n>/SKILL.md and divided by four, so its error-severity
+    // `prompt-too-long` rule was scored against a number that is a fraction of
+    // the real one. On this repo the largest SOURCE is ~3,331 estimated tokens
+    // against the 8,000 default — the error branch could not fire at all —
+    // while three personas are 27–49% OVER budget once composed (10,131 /
+    // 11,244 / 7,828 in dist/persona-sizes.json). A budget check that cannot
+    // reach its own threshold is a green surface over an unmeasured control,
+    // and `compile.ts` had already fixed this identical defect on the build
+    // side (B11: "prompt size is a property of the composed persona").
+    //
+    // The composed sizes come from dist/persona-sizes.json, which every
+    // successful build writes. When that file is absent lint SAYS SO
+    // (`compiled-size-unknown`) rather than quietly measuring nothing, because
+    // a silent skip would reproduce the same defect one file over.
+    const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
+    const personaSizesPath = path.join(distPath, "persona-sizes.json");
+    const personaSizesLabel = path.relative(hubDir, personaSizesPath).split(path.sep).join("/")
+      || personaSizesPath;
+    let composedSizes: Record<string, number> | null = null;
+    let composedSizesProblem: string | null = null;
+    if (!fs.existsSync(personaSizesPath)) {
+      composedSizesProblem = "no such file — run `agentboot build` (every successful build writes it)";
+    } else {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(personaSizesPath, "utf-8")) as { personas?: unknown };
+        const personas = parsed.personas;
+        if (personas && typeof personas === "object" && !Array.isArray(personas)) {
+          composedSizes = personas as Record<string, number>;
+        } else {
+          composedSizesProblem = "the file carries no `personas` object — rebuild with `agentboot build`";
+        }
+      } catch (e: unknown) {
+        composedSizesProblem = `unreadable (${e instanceof Error ? e.message : String(e)}) — rebuild with \`agentboot build\``;
+      }
+    }
 
     // Vague language patterns
     const vaguePatterns = [
@@ -1754,14 +2661,17 @@ program
       { pattern: /\bas needed\b/i, msg: "Vague: 'as needed' — specify the condition" },
     ];
 
-    // Secret patterns
-    const secretPatterns = [
-      { pattern: /\bsk-[a-zA-Z0-9]{20,}/, msg: "Possible API key (sk-...)" },
-      { pattern: /\bghp_[a-zA-Z0-9]{36}/, msg: "Possible GitHub token (ghp_...)" },
-      { pattern: /\bAKIA[A-Z0-9]{16}/, msg: "Possible AWS key (AKIA...)" },
-      { pattern: /\beyJ[a-zA-Z0-9_-]{10,}\.eyJ/, msg: "Possible JWT token" },
-      { pattern: /password\s*[:=]\s*["'][^"']+["']/i, msg: "Hardcoded password" },
-    ];
+    // Secret patterns — the canonical set from lib/frontmatter.ts, NOT a local
+    // restatement. `lint` used to carry its own five-pattern copy while the
+    // canonical set held eighteen, so a persona could ship a Slack token, an
+    // Anthropic key, a private-key header or a DB URL with inline credentials
+    // and lint would call it clean. tests/secret-parity.test.ts pins the
+    // canonical set against the runtime hooks; binding lint to the same array
+    // means it can never silently fall behind either.
+    const secretPatterns = DEFAULT_SECRET_PATTERNS.map((pattern) => ({
+      pattern,
+      msg: `Possible credential in prompt (matches /${pattern.source}/)`,
+    }));
 
     for (const personaName of enabledPersonas) {
       if (opts.persona && personaName !== opts.persona) continue;
@@ -1774,23 +2684,28 @@ program
       const content = fs.readFileSync(skillPath, "utf-8");
       const lines = content.split("\n");
 
-      // Token budget check
+      // Token budget check — SOURCE only. This is a source-hygiene signal, not
+      // the persona's real cost; the composed number is checked below and is
+      // the one the budget is about. The message says which it is so a green
+      // line here can never be read as "this persona fits".
       const estimatedTokens = Math.ceil(content.length / 4);
       if (estimatedTokens > tokenBudget) {
         findings.push({
           rule: "prompt-too-long",
           severity: "error",
           file: `core/personas/${personaName}/SKILL.md`,
-          message: `Estimated ${estimatedTokens} tokens exceeds budget of ${tokenBudget}`,
+          message: `Source SKILL.md alone is ~${estimatedTokens} tokens, over the ${tokenBudget} budget before any trait or overlay is composed in`,
         });
       } else if (estimatedTokens > tokenBudget * 0.8) {
         findings.push({
           rule: "prompt-too-long",
           severity: "warn",
           file: `core/personas/${personaName}/SKILL.md`,
-          message: `Estimated ${estimatedTokens} tokens — approaching budget of ${tokenBudget}`,
+          message: `Source SKILL.md alone is ~${estimatedTokens} tokens — approaching the ${tokenBudget} budget before composition`,
         });
       }
+
+      sourceTokens.set(personaName, estimatedTokens);
 
       // Line count check
       if (lines.length > 1000) {
@@ -1813,7 +2728,9 @@ program
           }
         }
 
-        // Secrets
+        // Secrets — one finding per line: the canonical set overlaps by design
+        // (a quoted `password:` also trips the secret/token label pattern), and
+        // three findings for one credential is noise, not extra signal.
         for (const sp of secretPatterns) {
           if (sp.pattern.test(lines[i]!)) {
             findings.push({
@@ -1823,6 +2740,7 @@ program
               line: i + 1,
               message: sp.msg,
             });
+            break;
           }
         }
       }
@@ -1838,8 +2756,89 @@ program
       }
     }
 
+    // ---- L33: the composed budget, checked over the ENABLED personas --------
+    //
+    // Deliberately NOT inside the source loop above. That loop `continue`s on a
+    // persona with no local core/personas/<n>/SKILL.md, and a hub scaffolded by
+    // `agentboot install --hub` has NO local persona sources at all — its
+    // personas come from the package. Hanging the composed check off the source
+    // loop therefore skipped it entirely on the default shape a new adopter
+    // gets: reproduced on a fresh hub whose four composed personas are
+    // 7,640–11,244 tokens against the 8,000 default, where `lint` printed
+    // "✓ No issues found". The composed budget is a property of the ENABLED
+    // set, so it is iterated over the enabled set.
+    //
+    // Severity split, and the reason for it:
+    //   failAt exceeded  -> ERROR (exit 1). `failAt` is a gate the operator
+    //     opted into, and `compile.ts` already FAILS THE BUILD on it. lint
+    //     reporting a warning for a condition that breaks the build would make
+    //     lint the greener of two surfaces measuring the same number — the
+    //     false-green class this project keeps finding.
+    //   warnAt exceeded  -> WARN. `warnAt` is advisory by design (config.ts:
+    //     "warnAt (default 8000) warns; failAt (opt-in) FAILS the build").
+    //     Promoting it to an error in lint would make lint stricter than the
+    //     build on every hub that never asked for a gate, and a linter that
+    //     fails a hub the build accepts is one people stop running.
+    // The two surfaces therefore agree, and `failAt` stays the single place an
+    // operator decides how hard the budget bites.
+    if (composedSizes) {
+      for (const personaName of enabledPersonas) {
+        if (opts.persona && personaName !== opts.persona) continue;
+        const composed = composedSizes[personaName];
+        if (typeof composed !== "number") {
+          findings.push({
+            rule: "compiled-size-unknown",
+            severity: "warn",
+            file: personaSizesLabel,
+            message: `No composed size recorded for '${personaName}' — its budget went UNCHECKED. Rebuild with \`agentboot build\`.`,
+          });
+          continue;
+        }
+        const src = sourceTokens.get(personaName);
+        const contrast = src === undefined ? "" : ` (source SKILL.md alone is ~${src})`;
+        if (tokenFailAt !== undefined && composed > tokenFailAt) {
+          findings.push({
+            rule: "compiled-too-large",
+            severity: "error",
+            file: personaSizesLabel,
+            message: `Composed '${personaName}' is ~${composed} tokens, over output.tokenBudget.failAt (${tokenFailAt})${contrast}`,
+          });
+        } else if (composed > tokenBudget) {
+          findings.push({
+            rule: "compiled-too-large",
+            severity: "warn",
+            file: personaSizesLabel,
+            message: `Composed '${personaName}' is ~${composed} tokens, over the ${tokenBudget} budget${contrast}`,
+          });
+        } else if (composed > tokenBudget * 0.8) {
+          findings.push({
+            rule: "compiled-too-large",
+            severity: "warn",
+            file: personaSizesLabel,
+            message: `Composed '${personaName}' is ~${composed} tokens — approaching the ${tokenBudget} budget${contrast}`,
+          });
+        }
+      }
+    }
+
+    // L33: the composed budget went UNMEASURED. Say it once, loudly, instead of
+    // printing the source-only numbers as though they were the whole check —
+    // "I checked nothing" and "I checked everything and it was fine" must not
+    // print the same.
+    if (composedSizesProblem) {
+      findings.push({
+        rule: "compiled-size-unknown",
+        severity: "warn",
+        file: personaSizesLabel,
+        message:
+          `Composed persona sizes NOT checked: ${composedSizesProblem}. ` +
+          `The numbers above are source SKILL.md files only — a composed persona is ` +
+          `typically several times larger, so they cannot stand in for the budget check.`,
+      });
+    }
+
     // Also lint traits
-    const traitsDir = path.join(cwd, "core", "traits");
+    const traitsDir = path.join(hubDir, "core", "traits");
     if (fs.existsSync(traitsDir)) {
       for (const file of fs.readdirSync(traitsDir).filter((f) => f.endsWith(".md"))) {
         const content = fs.readFileSync(path.join(traitsDir, file), "utf-8");
@@ -1859,7 +2858,16 @@ program
 
     // Compiled output token check — CLAUDE.md content costs money on every turn
     // because it's injected as system-reminder, not in the cached system prompt.
-    const distClaudeMd = path.join(cwd, "dist", "claude", "core", "CLAUDE.md");
+    // L46: hub-relative, and it honours output.distPath rather than assuming
+    // the literal "dist" a hub may well have renamed.
+    const distClaudeMd = path.join(distPath, "claude", "core", "CLAUDE.md");
+    // A-class: lint's dist/ read is one advisory token count. Refusing to lint
+    // the SOURCES because the compiled tree is stale would be an outage, so
+    // lint takes the `reports` posture — but a token count taken from a
+    // superseded tree must not be presented as the current one.
+    if (fs.existsSync(distClaudeMd)) {
+      reportDistFreshness(configPath, config, "lint (compiled-output token check)");
+    }
     if (fs.existsSync(distClaudeMd)) {
       const compiled = fs.readFileSync(distClaudeMd, "utf-8");
       // Expand @import directives to count total tokens
@@ -1867,7 +2875,7 @@ program
       const importPattern = /^@(.+)$/gm;
       let importMatch;
       while ((importMatch = importPattern.exec(compiled)) !== null) {
-        const importPath = path.join(cwd, importMatch[1]!);
+        const importPath = path.join(hubDir, importMatch[1]!);
         if (fs.existsSync(importPath)) {
           totalContent += "\n" + fs.readFileSync(importPath, "utf-8");
         }
@@ -1963,12 +2971,50 @@ program
 
 program
   .command("uninstall")
-  .description("Remove AgentBoot managed files from a repository")
+  .description("Remove AgentBoot managed files from a repository (or from ~/.claude/ with --user)")
   .option("--repo <path>", "target repository path")
+  .option("--user", "remove user-level content from ~/.claude/ instead of a repo")
   .option("-d, --dry-run", "preview what would be removed")
-  .action((opts) => {
-    const targetRepo = opts.repo ? path.resolve(opts.repo) : process.cwd();
+  .action(async (opts) => {
     const dryRun = opts.dryRun ?? false;
+
+    // E2: `install-user` writes into ~/.claude/ and `removeUserContent()` has
+    // existed to undo it since the SPI landed — with ZERO callers outside tests.
+    // So user-level artifacts were installable and, in production, permanently
+    // unremovable: a revoked user-level control could not be withdrawn by any
+    // command the product ships.
+    if (opts.user) {
+      const { removeUserContent, detectExistingContent } = await import("./lib/user-scope.js");
+      console.log(chalk.bold("\nAgentBoot — uninstall (user level)\n"));
+      const { hasManifest, manifestPath: userManifest } = detectExistingContent();
+      if (!hasManifest) {
+        console.log(chalk.yellow("  No AgentBoot user manifest found in ~/.claude/ — nothing to uninstall."));
+        console.log(chalk.gray("  User-level content is written by `agentboot install-user`.\n"));
+        process.exit(0);
+      }
+      if (dryRun) {
+        // Report from the manifest without touching anything. A dry run that
+        // silently did nothing would be indistinguishable from an empty install.
+        let files: Array<{ path: string }> = [];
+        try {
+          files = (JSON.parse(fs.readFileSync(userManifest, "utf-8")).files ?? []) as Array<{ path: string }>;
+        } catch { /* reported below as 0 files */ }
+        console.log(chalk.yellow(`  DRY RUN — ${files.length} tracked file(s) would be removed from ~/.claude/\n`));
+        for (const f of files) console.log(chalk.gray(`    would remove ${f.path}`));
+        console.log("");
+        process.exit(0);
+      }
+      const { removed, errors } = removeUserContent();
+      for (const r of removed) console.log(chalk.green(`    removed ${r}`));
+      for (const e of errors) console.log(chalk.red(`    ✗ ${e}`));
+      console.log("");
+      console.log(chalk.bold(`  removed: ${removed.length}, errors: ${errors.length}\n`));
+      // A partial removal is not a success: the untouched files are still active
+      // in every session on this machine.
+      process.exit(errors.length > 0 ? 1 : 0);
+    }
+
+    const targetRepo = opts.repo ? path.resolve(opts.repo) : process.cwd();
     const targetDir = ".claude";
     const manifestPath = path.join(targetRepo, targetDir, ".agentboot-manifest.json");
 
@@ -2059,6 +3105,22 @@ program
     const verb = dryRun ? "would remove" : "removed";
     console.log(chalk.bold(`  ${verb}: ${removed}, skipped (modified): ${modified}, already gone: ${missing}`));
 
+    // E2: user-level content lives in ~/.claude/ and is NOT touched by a repo
+    // uninstall. Saying so is the difference between "AgentBoot is removed" and
+    // "AgentBoot is removed from this repo" — an operator who believes the first
+    // while the second is true has org instructions still loading in every
+    // session on this machine.
+    {
+      const home = process.env["HOME"] ?? process.env["USERPROFILE"] ?? os.homedir();
+      const userManifest = path.join(home, ".claude", ".agentboot-user-manifest.json");
+      if (fs.existsSync(userManifest)) {
+        console.log(chalk.yellow(
+          `\n  Note: user-level AgentBoot content is also installed in ~/.claude/ and was NOT removed.`,
+        ));
+        console.log(chalk.gray(`    Remove it with: agentboot uninstall --user`));
+      }
+    }
+
     // Auto-restore from archive if it exists.
     const archiveDir = path.join(targetRepo, targetDir, ".agentboot-archive");
     const archiveManifestPath = path.join(archiveDir, "archive-manifest.json");
@@ -2138,6 +3200,7 @@ program
   .description("Empirically test compiled enforcement (hooks: block/deny/timeouts/malformed input) per platform and write dist/<platform>/enforcement-manifest.json")
   .option("--platform <name>", "test a single platform (default: all configured output formats)")
   .option("--format <type>", "output format: text or json", "text")
+  .option("--allow-untested", "exit 0 even when a declared control could not be probed (local convenience — never in CI)")
   .action(async (opts, cmd) => {
     const { runConformance } = await import("./lib/conformance.js");
     const globalOpts = cmd.optsWithGlobals();
@@ -2149,23 +3212,49 @@ program
       console.error(chalk.red("No agentboot.config.json found — run conformance from the hub (or set AGENTBOOT_HUB)."));
       process.exit(1);
     }
-    const { loadConfig } = await import("./lib/config.js");
-    const config = loadConfig(configPath);
+    await import("./lib/config.js");
+    // NF4-3: `conformance` reported a config error as an uncaught throw.
+    const config = loadHubConfigOrExit(configPath, "conformance");
     const hubDir = path.dirname(configPath);
     const distPath = path.resolve(hubDir, config.output?.distPath ?? "./dist");
     if (!fs.existsSync(distPath)) {
       console.error(chalk.red(`dist/ not found at ${distPath} — run \`agentboot build\` first.`));
       process.exit(1);
     }
+    // A2: probing a stale dist/ measures the policy it REPLACED, and then writes
+    // that measurement into dist/<platform>/enforcement-manifest.json — where
+    // `baseline` archives it and `evidence-pack` hands it to an auditor. Verified
+    // before this gate: a failed rebuild that revoked denyTools left the deny
+    // hook on disk, and conformance reported `deny-tools not-applicable` (reading
+    // the NEW config against the OLD tree) and exited 0.
+    assertDistFreshOrExit(configPath, config, "conformance", opts.format === "json");
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf-8")) as { version: string };
-    const configured = config.personas?.outputFormats ?? ["claude"];
+    // A5: was `?? ["claude"]` — conformance tested one platform where the build
+    // produces three, so two thirds of the hub went unprobed and reported clean.
+    const configured = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
     const platforms = opts["platform"] ? [opts["platform"] as string] : configured;
 
     const run = runConformance(distPath, platforms, config, pkg.version);
 
+    // "Could not verify" must not resolve upward. A control that declares a
+    // mechanism and could not be exercised (bash absent, script missing from
+    // dist/) is UNTESTED — recording that in the manifest and then exiting 0
+    // under "✓ All probed controls behave as declared" is a skip reading as a
+    // pass, on the one command whose whole job is empirical verification.
+    // Verified before this change: with bash off PATH every control came back
+    // untested and `conformance` still exited 0 with the green line.
+    const allowUntested = opts["allowUntested"] === true;
+    const notGreen = run.failedPlatforms.length > 0 || (!allowUntested && run.untestedPlatforms.length > 0);
+
     if (opts["format"] === "json") {
-      console.log(JSON.stringify({ bashAvailable: run.bashAvailable, failedPlatforms: run.failedPlatforms, manifests: run.manifests }, null, 2));
-      process.exit(run.failedPlatforms.length > 0 ? 1 : 0);
+      console.log(JSON.stringify({
+        bashAvailable: run.bashAvailable,
+        failedPlatforms: run.failedPlatforms,
+        untestedPlatforms: run.untestedPlatforms,
+        probedControls: run.probedControls,
+        manifests: run.manifests,
+      }, null, 2));
+      process.exit(notGreen ? 1 : 0);
     }
 
     console.log(chalk.bold("\n  AgentBoot — platform conformance\n"));
@@ -2185,14 +3274,34 @@ program
           console.log(chalk.red(`        FAILED: ${p.probe} — expected ${p.expected}, observed ${p.observed}`));
         }
       }
-      console.log(chalk.gray(`    manifest: dist/${m.platform}/enforcement-manifest.json`));
+      // Only name a file that exists. This line was unconditional while the
+      // write was guarded — verified with dist/claude and dist/cursor deleted:
+      // both paths printed, `ls` confirmed neither file was there.
+      const written = run.manifestPaths[m.platform];
+      console.log(written
+        ? chalk.gray(`    manifest: ${written}`)
+        : chalk.yellow(`    manifest: NOT WRITTEN — no dist/${m.platform}/ tree to write it into`));
       console.log("");
     }
     if (run.failedPlatforms.length > 0) {
       console.log(chalk.red(`  ✗ Conformance FAILED on: ${run.failedPlatforms.join(", ")}\n`));
-      process.exit(1);
     }
-    console.log(chalk.green("  ✓ All probed controls behave as declared.\n"));
+    if (run.untestedPlatforms.length > 0) {
+      const line = `  ${allowUntested ? "⚠" : "✗"} UNTESTED controls on: ${run.untestedPlatforms.join(", ")} — ${run.probedControls} control(s) actually probed.`;
+      console.log((allowUntested ? chalk.yellow : chalk.red)(line));
+      console.log(chalk.gray(run.bashAvailable
+        ? "      A declared hook is missing from dist/ — run `agentboot build`, or the platform is not emitting it."
+        : "      No bash on this machine (Windows without Git Bash) — install one, or pass --allow-untested to accept an unverified run."));
+      console.log("");
+    }
+    if (notGreen) process.exit(1);
+    if (run.probedControls === 0) {
+      // Every control was not-applicable. Nothing failed, but nothing was
+      // measured either, and those must not print the same sentence.
+      console.log(chalk.yellow("  ⚠ No control was probed — this configuration declares no enforceable mechanism on any target.\n"));
+      return;
+    }
+    console.log(chalk.green(`  ✓ All ${run.probedControls} probed control(s) behave as declared.\n`));
   });
 
 // ---- v0.19.0: MCP tool-definition digest pinning (rug-pull defense) --------
@@ -2211,7 +3320,7 @@ program
     // there, so read the merged view.
     const opts = cmd.optsWithGlobals();
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "mcp-pin");
     const approved = config.mcp?.approved ?? [];
     const wanted = opts["server"] as string | undefined;
     const targets = approved.filter((s) => (s.command || s.url) && (!wanted || s.name === wanted));
@@ -2296,18 +3405,32 @@ program
       approved = pinsFile.approved ?? [];
     } else {
       configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-      const config = loadConfig(configPath);
+      const config = loadHubConfigOrExit(configPath, "mcp-verify");
       approved = config.mcp?.approved ?? [];
     }
     const wanted = opts["server"] as string | undefined;
-    const targets = approved.filter((s) => (s.command || s.url) && (!wanted || s.name === wanted));
+    const inScope = approved.filter((s) => !wanted || s.name === wanted);
+    const targets = inScope.filter((s) => s.command || s.url);
+    // R1-I: an approved server with neither `command` nor `url` used to vanish —
+    // dropped from `targets` AND absent from the summary counts. An org that
+    // approved a server it cannot reach got a clean report about the ones it
+    // could, or "nothing to verify" and exit 0 if all of them were like that.
+    // An unreachable approval is an UNVERIFIED approval; it must be counted.
+    const undescribed = inScope.filter((s) => !s.command && !s.url);
 
     if (targets.length === 0) {
       if (wanted) {
         console.error(chalk.red(`  ✗ No approved MCP server named "${wanted}" with a command or url in ${configPath}`));
         process.exit(1);
       }
-      console.log(chalk.yellow("\n  No approved MCP servers with a command or url — nothing to verify.\n"));
+      if (undescribed.length > 0) {
+        console.error(chalk.red(
+          `\n  ✗ ${undescribed.length} approved MCP server(s) declare neither \`command\` nor \`url\`, so NONE could be verified:`));
+        for (const s of undescribed) console.error(chalk.red(`      ${s.name}`));
+        console.error(chalk.gray("    An approved server that cannot be reached is an unverified one, not an absent one.\n"));
+        process.exit(1);
+      }
+      console.log(chalk.yellow("\n  No approved MCP servers — nothing to verify.\n"));
       return;
     }
 
@@ -2361,8 +3484,18 @@ program
       }
     }
 
-    const summary = `${okCount} ok, ${mismatched} mismatched, ${unpinned} unpinned, ${errors} error${errors === 1 ? "" : "s"}`;
-    const failed = mismatched > 0 || errors > 0 || (strict && unpinned > 0);
+    // R1-I: undescribed servers appear in the summary. Leaving them out made the
+    // denominator smaller than the org's approved list, which is the quiet way
+    // to report a clean surface you did not look at.
+    if (undescribed.length > 0) {
+      for (const s of undescribed) {
+        console.log(chalk.yellow(`  ⚠ ${s.name} — NOT VERIFIABLE: no \`command\` or \`url\` in mcp.approved`));
+      }
+    }
+    const summary =
+      `${okCount} ok, ${mismatched} mismatched, ${unpinned} unpinned, ` +
+      `${undescribed.length} unverifiable, ${errors} error${errors === 1 ? "" : "s"}`;
+    const failed = mismatched > 0 || errors > 0 || (strict && (unpinned > 0 || undescribed.length > 0));
     if (failed) {
       console.log(chalk.red(`\n  ✗ mcp-verify: ${summary}\n`));
       process.exit(1);
@@ -2370,8 +3503,12 @@ program
     // Never render a plain green "verified" while any server is unchecked — an
     // unpinned server is not evidence of a clean surface, and a bare ✓ reads as
     // one. Only all-pinned-and-matching earns the green check.
-    if (unpinned > 0) {
-      console.log(chalk.yellow(`\n  ⚠ mcp-verify: ${summary} — ${unpinned} server(s) UNVERIFIED (unpinned). Run mcp-pin --write, or --strict to fail.\n`));
+    if (unpinned > 0 || undescribed.length > 0) {
+      const why = [
+        unpinned > 0 ? `${unpinned} unpinned` : "",
+        undescribed.length > 0 ? `${undescribed.length} with no command/url` : "",
+      ].filter(Boolean).join(", ");
+      console.log(chalk.yellow(`\n  ⚠ mcp-verify: ${summary} — UNVERIFIED: ${why}. Run mcp-pin --write, or --strict to fail.\n`));
     } else {
       console.log(chalk.green(`\n  ✓ mcp-verify: ${summary}\n`));
     }
@@ -2512,11 +3649,42 @@ program
     const { checkDrift, generateComplianceReport } = await import("./lib/drift.js");
     const globalOpts = cmd.optsWithGlobals();
     const cwd = process.cwd();
+    // stdout is the JSON payload in this mode; notices belong on stderr.
+    const json = opts.format === "json";
+
+    // A3: a clean drift report off a stale dist/ is a clean report about the
+    // PREVIOUS policy. Gate both branches. When drift-check is run from inside a
+    // spoke there is no hub config to check against, and that is fine — the
+    // command is then answering a purely spoke-local question.
+    {
+      const hubConfigPath = globalOpts.config
+        ? path.resolve(globalOpts.config)
+        : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+      if (fs.existsSync(hubConfigPath)) {
+        // NF4-3: through the helper. A raw loadConfig() here reported a config
+        // TYPE error as an uncaught throw — stack trace, exit 7.
+        assertDistFreshOrExit(hubConfigPath, loadHubConfigOrExit(hubConfigPath, "drift-check"), "drift-check", json);
+      } else {
+        // NF4-4: this branch is legitimate — with no hub in reach the command is
+        // answering a spoke-local question and any dist/ here belongs to the
+        // spoke's own build — but it was SILENT, which reads as a pass.
+        announceUngatedDist(
+          "drift-check",
+          "no hub config in reach, so this is a spoke-local answer only.",
+          json,
+        );
+      }
+    }
 
     if (opts.repo) {
       const report = checkDrift(path.resolve(opts.repo));
       if (!report.manifestFound) {
-        console.log(chalk.yellow("  No AgentBoot manifest found."));
+        // In json mode the caller gets the report — `manifestFound: false` says
+        // "not checked" in the payload's own vocabulary. Printing a sentence and
+        // no JSON at all left a machine consumer with an unparseable empty
+        // stdout and exit 2, which is indistinguishable from a crash.
+        notice(chalk.yellow("  No AgentBoot manifest found."), json);
+        if (json) console.log(JSON.stringify(report, null, 2));
         process.exit(2);
       }
       if (opts.format === "json") {
@@ -2534,6 +3702,12 @@ program
         if (report.exceptionIssues) {
           for (const issue of report.exceptionIssues) console.log(chalk.yellow(`    ⚠ ${issue}`));
         }
+        // NF4-4: an unreadable manifest is red, not yellow — it means a set of
+        // managed files went unchecked, which is the state this report exists
+        // to distinguish from clean.
+        if (report.manifestIssues) {
+          for (const issue of report.manifestIssues) console.log(chalk.red(`    ✗ ${issue}`));
+        }
         console.log(`\n  Result: ${report.summary.modifiedCount} modified, ${report.summary.missingCount} missing, ${report.summary.exceptedCount} excepted (approved), ${report.summary.cleanCount} clean\n`);
       }
       process.exit(report.clean ? 0 : 1);
@@ -2542,19 +3716,44 @@ program
       const configPath = globalOpts.config
         ? path.resolve(globalOpts.config)
         : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
-      const config = loadConfig(configPath);
+      // R1-4: the all-repos branch is the HUB side of drift-check; without a hub
+      // config there is no repos.json to read. It used to reach loadConfig
+      // unguarded and die with a stack trace at exit 7.
+      const config = loadHubConfigOrExit(configPath, "drift-check");
       const reposPath = config.sync?.repos ? path.resolve(path.dirname(configPath), config.sync.repos) : path.join(path.dirname(configPath), "repos.json");
+      // An unreadable repos.json used to degrade to `repos = []`, which produced
+      // "Summary: 0/0 clean, 0 drifted" and exit 0 — a compliance report that
+      // checked nothing, in the sentence shape of a clean one. Reproduced by
+      // writing `{{{` into repos.json. Say what happened and fail.
       let repos: Array<{ path: string; label?: string }> = [];
       try {
-        repos = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
-      } catch { /* empty or missing */ }
+        const parsed: unknown = JSON.parse(fs.readFileSync(reposPath, "utf-8"));
+        if (!Array.isArray(parsed)) throw new Error("not a JSON array of repo entries");
+        repos = parsed as Array<{ path: string; label?: string }>;
+      } catch (err: unknown) {
+        console.error(chalk.red(`\n  ✗ Cannot read the repo registry — no repo was checked.`));
+        console.error(chalk.gray(`      ${reposPath}`));
+        console.error(chalk.gray(`      ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exit(1);
+      }
+      if (repos.length === 0) {
+        // Zero registered repos is a legitimate state, but it is "nothing to
+        // check", not "everything is clean". They must not print alike.
+        notice(chalk.yellow(`\n  ⚠ No repos registered in ${path.basename(reposPath)} — nothing was checked.\n`), json);
+        // json mode still owes its caller a payload; `totalRepos: 0` is how the
+        // report says "nothing was checked" without a second vocabulary.
+        if (json) console.log(JSON.stringify(generateComplianceReport([], path.dirname(configPath)), null, 2));
+        return;
+      }
       const report = generateComplianceReport(repos, path.dirname(configPath));
       if (opts.format === "json") {
         console.log(JSON.stringify(report, null, 2));
       } else {
         console.log(chalk.bold(`\n  Compliance Report — ${report.generatedAt}\n`));
         for (const r of report.repos) {
-          const icon = r.clean ? chalk.green("✓") : r.manifestFound ? chalk.red("✗") : chalk.yellow("?");
+          // An unchecked repo is not a yellow footnote. Deleting one JSON file
+          // was the cheapest way to make an org-wide compliance report green.
+          const icon = r.clean ? chalk.green("✓") : chalk.red("✗");
           const label = path.basename(r.repoPath);
           // A repo can drift by modification OR deletion. Reporting only
           // modifiedCount rendered a deletion-only drift as "0 modified" — a line
@@ -2565,14 +3764,30 @@ program
           if (r.summary.modifiedCount > 0) parts.push(`${r.summary.modifiedCount} modified`);
           if (r.summary.missingCount > 0) parts.push(`${r.summary.missingCount} deleted`);
           if (r.summary.exceptedCount > 0) parts.push(`${r.summary.exceptedCount} excepted`);
-          const detail = !r.manifestFound
-            ? "(no manifest)"
-            : r.clean
-              ? "clean"
-              : parts.length > 0
-                ? parts.join(", ")
-                : "drifted";
+          // F-1: a revoked control still live here must be named, not folded
+          // into a generic "drifted" — it is a different remediation entirely.
+          if (r.summary.retiredCount > 0) parts.push(`${r.summary.retiredCount} retired-but-present`);
+          // NF4-4: "present but unreadable" is its own state. Reporting it as
+          // "no manifest (never synced, or the manifest was deleted)" sends the
+          // operator to the wrong remediation, and reporting it as `clean` —
+          // which is what happened when a READABLE manifest sat beside it —
+          // sends them nowhere at all.
+          const corruptCount = r.manifestIssues?.length ?? 0;
+          const detail = !r.pathExists
+            ? "UNCHECKED — repo path not found on this machine"
+            : !r.manifestFound
+            ? corruptCount > 0
+              ? `UNCHECKED — ${corruptCount} manifest(s) present but UNREADABLE`
+              : "UNCHECKED — no AgentBoot manifest (never synced, or the manifest was deleted)"
+            : corruptCount > 0
+              ? `PARTIALLY CHECKED — ${corruptCount} other manifest(s) present but UNREADABLE`
+              : r.clean
+                ? "clean"
+                : parts.length > 0
+                  ? parts.join(", ")
+                  : "drifted";
           console.log(`    ${icon} ${label} — ${detail}`);
+          for (const issue of r.manifestIssues ?? []) console.log(chalk.red(`        ✗ ${issue}`));
           // --verbose names the individual files. Without this the compliance
           // report says a repo drifted but never which file, so the operator has
           // to re-run per-repo to act on it.
@@ -2581,14 +3796,26 @@ program
               if (entry.status === "clean" || entry.status === "unmanaged") continue;
               const mark = entry.status === "excepted" ? chalk.cyan("◦") : chalk.red("✗");
               const suffix = entry.status === "excepted" ? ` (approved exception ${entry.exceptionId})` : "";
-              const state = entry.status === "missing" ? "deleted" : entry.status;
+              const state = entry.status === "missing" ? "deleted"
+                : entry.status === "retired" ? "retired — revoked at the hub, still present here"
+                : entry.status;
               console.log(`        ${mark} ${entry.file} — ${state}${suffix}`);
             }
           }
         }
-        console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${report.summary.noManifestRepos} no manifest\n`);
+        const unchecked = report.summary.noManifestRepos;
+        console.log(`\n  Summary: ${report.summary.cleanRepos}/${report.summary.totalRepos} clean, ${report.summary.driftedRepos} drifted, ${unchecked} UNCHECKED (${report.summary.unreachableRepos} unreachable)\n`);
+        if (unchecked > 0) {
+          console.log(chalk.red(`  ✗ ${unchecked} repo(s) could not be checked — this report does not speak for them.`));
+          console.log(chalk.gray(`      A missing manifest is not evidence of compliance. Re-sync the repo, or`));
+          console.log(chalk.gray(`      remove it from ${path.basename(reposPath)} if it is no longer governed.\n`));
+        }
       }
-      process.exit(report.summary.driftedRepos > 0 ? 1 : 0);
+      // A repo that was not checked must not exit 0. `drift-check --repo` has
+      // always exited 2 on a missing manifest; the all-repos path folded the
+      // same state into the green branch, so deleting .agentboot-manifest.json
+      // on a spoke made the org-wide report pass. The two modes now agree.
+      process.exit(report.summary.driftedRepos > 0 || report.summary.noManifestRepos > 0 ? 1 : 0);
     }
   });
 
@@ -2604,6 +3831,15 @@ program
       ? path.resolve(globalOpts.config)
       : envHubConfig() ?? path.join(cwd, "agentboot.config.json");
     const hubRoot = path.dirname(configPath);
+
+    // A3: `audit` reports on hub health, and an operator reads "✓ No issues
+    // found" as "the hub is in the state I asked for". After a failed build the
+    // hub SOURCES are healthy and the deployed tree is not — so the clean
+    // verdict is true and misleading. Refuse rather than qualify.
+    //
+    // R1-4: through the helper, because A3's unconditional loadConfig made
+    // `agentboot audit` outside a hub die with a stack trace and exit 7.
+    assertDistFreshOrExit(configPath, loadHubConfigOrExit(configPath, "audit"), "audit", opts.format === "json");
 
     const report = runAudit(hubRoot);
 
@@ -2671,7 +3907,7 @@ program
       console.error(chalk.red(`  No agentboot.config.json found at ${absPath}`));
       process.exit(1);
     }
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "connect");
     registerHub(absPath, config.org);
     console.log(chalk.green(`  ✓ Hub registered: ${config.org ?? absPath}`));
     console.log(chalk.gray(`    Path: ${absPath}`));
@@ -2819,7 +4055,15 @@ program
       process.exit(1);
     }
 
-    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+    // A3-residual: export PACKAGES dist/ into a distributable — a plugin
+    // directory, an agentskills bundle told to submit itself to a public
+    // directory. That is a higher-consequence path than `audit`, which was
+    // gated first, and it was shipping superseded policy at exit 0.
+    assertDistFreshOrExit(configPath, config, "export");
+    // L46: what export READS is hub-relative and follows --config. Where it
+    // WRITES stays cwd-relative — that is the operator saying "put it here",
+    // and the delete-guard below is phrased against cwd on purpose.
+    const distPath = path.resolve(hubDirOf(configPath), config.output?.distPath ?? "./dist");
     const format = opts.format;
 
     console.log(chalk.bold(`\nAgentBoot — export (${format})\n`));
@@ -2934,7 +4178,9 @@ program
     } else if (format === "agentskills") {
       // AB-162: agentskills.io listing export
       const { generateSkillsIndex } = await import("./lib/export.js");
-      const pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf-8"));
+      // L46: the hub's package.json, not the foreign cwd's (which may not exist
+      // at all — this line threw ENOENT rather than exporting the named hub).
+      const pkg = JSON.parse(fs.readFileSync(path.join(hubDirOf(configPath), "package.json"), "utf-8"));
       const index = generateSkillsIndex(distPath, {
         org: config.org,
         orgDisplayName: config.orgDisplayName as string | undefined,
@@ -2943,6 +4189,27 @@ program
       const outputPath = opts.output ?? path.join(distPath, "skills-index.json");
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
       fs.writeFileSync(outputPath, JSON.stringify(index, null, 2) + "\n", "utf-8");
+      // R4-5: an empty export is a SKIP, and a skip must never read as a pass.
+      //
+      // `generateSkillsIndex` reads dist/skill/core/, and `skill` is one of ten
+      // output formats. On a hub that does not build it the command printed
+      // "No dist/skill/core/ found. Run: agentboot build" — advice that is
+      // simply wrong, the build had just succeeded — then a GREEN
+      // "✓ Exported 0 skill(s)" and exit 0, and wrote a well-formed index with
+      // `"skills": []` for the operator to submit to a public directory.
+      if (index.skills.length === 0) {
+        console.error(chalk.red(`\n✗ Exported 0 skill(s) — ${outputPath} is an empty listing.`));
+        const formats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+        console.error(chalk.gray(
+          formats.includes("skill")
+            ? "    dist/skill/core/ carries no persona with a SKILL.md. Run `agentboot build`\n" +
+              "    and check personas.enabled."
+            : `    The agentskills export is built from dist/skill/, and personas.outputFormats\n` +
+              `    is [${formats.join(", ")}] — "skill" is not among them, so nothing was\n` +
+              `    compiled to export. Add "skill" to personas.outputFormats and rebuild.`,
+        ));
+        process.exit(1);
+      }
       console.log(chalk.green(`\n✓ Exported ${index.skills.length} skill(s) to ${outputPath}`));
       console.log(chalk.gray("  Submit this file to agentskills.io for directory listing."));
 
@@ -2965,6 +4232,26 @@ program
   .action((opts) => {
     const cwd = process.cwd();
     const dryRun = opts.dryRun ?? false;
+    // A-class: `publish` is `export`'s consequence made public. If the hub it
+    // runs in has a config, the tree it is about to publish must be current.
+    // The freshness gate applies to what publish is about to SHIP. A
+    // hand-maintained `.claude-plugin/` is not built from dist/, so gating it on
+    // dist/ freshness is a false coupling — and a hub with no dist/ at all can
+    // legitimately publish one. When the plugin comes from `dist/plugin`, the
+    // gate is exactly right: publishing a tree whose stamp says `failed` ships
+    // the PREVIOUS policy under the new version number.
+    const publishesFromDist = !fs.existsSync(path.join(cwd, ".claude-plugin", "plugin.json"));
+    if (publishesFromDist) {
+      const publishConfigPath = envHubConfig() ?? path.join(cwd, "agentboot.config.json");
+      if (fs.existsSync(publishConfigPath)) {
+        assertDistFreshOrExit(publishConfigPath, loadHubConfigOrExit(publishConfigPath, "publish"), "publish");
+      } else {
+        // NF2-1: `if (config)` was the whole gate, so with no config beside the
+        // tree publish shipped a failed build at exit 0. "No stamp" and
+        // "status: failed" need no config to read.
+        assertDistStampOrExit(path.join(cwd, "dist"), "publish");
+      }
+    }
 
     console.log(chalk.bold("\nAgentBoot — publish\n"));
     if (dryRun) console.log(chalk.yellow("  DRY RUN — no files will be modified\n"));
@@ -3147,6 +4434,10 @@ program
       process.exit(1);
     }
 
+    // A-class: cost-estimate states what the DEPLOYED prompt costs. Computed
+    // from a superseded tree that is a wrong number stated as a fact.
+    assertDistFreshOrExit(configPath, config, "cost-estimate");
+
     const { estimateCosts, MODEL_PRICING } = await import("./lib/cost-estimate.js");
 
     const model = opts.model as "haiku" | "sonnet" | "opus";
@@ -3168,7 +4459,10 @@ program
     }
 
     const enabledPersonas = config.personas?.enabled ?? [];
-    const distPath = path.resolve(cwd, config.output?.distPath ?? "./dist");
+    // L46: hub-relative, so it follows --config. A cost estimate is a claim
+    // about the named hub's compiled personas; taking the sizes from a foreign
+    // ./dist priced somebody else's tree under this hub's name.
+    const distPath = path.resolve(hubDirOf(configPath), config.output?.distPath ?? "./dist");
 
     if (!fs.existsSync(distPath)) {
       console.error(chalk.red("dist/ not found. Run `agentboot build` first."));
@@ -3183,9 +4477,13 @@ program
       teamSize,
     });
 
+    // R4-3: silence is not success. An unmeasured persona costs $0.00 in the
+    // arithmetic and "we could not look" in fact, and the two were
+    // indistinguishable — on `--json` there was not even a marker. A hub that
+    // does not build `skill` reported Total $0.00, exit 0.
     if (opts.json) {
       console.log(JSON.stringify(result, null, 2));
-      process.exit(0);
+      process.exit(result.unmeasured.length > 0 ? 1 : 0);
     }
 
     console.log(chalk.bold("\nAgentBoot — cost-estimate\n"));
@@ -3207,11 +4505,11 @@ program
     console.log("  " + "-".repeat(colPersona + colTokens + colInvocations + colCost));
 
     for (const p of result.personas) {
-      const tokens = p.inputTokens > 0 ? p.inputTokens.toLocaleString() : chalk.yellow("n/a");
+      const tokens = p.measured ? p.inputTokens.toLocaleString() : chalk.yellow("not measured");
       const inv = p.monthlyInvocations.toLocaleString();
-      const cost = p.inputTokens > 0
+      const cost = p.measured
         ? `$${p.monthlyCostUsd.toFixed(2)}`
-        : chalk.yellow("$0.00");
+        : chalk.yellow("unknown");
 
       console.log(
         "  " +
@@ -3228,11 +4526,32 @@ program
       chalk.bold("Total".padEnd(colPersona)) +
       "".padEnd(colTokens) +
       "".padEnd(colInvocations) +
-      chalk.bold(`$${result.totalMonthlyCostUsd.toFixed(2)}`)
+      (result.unmeasured.length > 0
+        // A total over a partly-unmeasured set is a LOWER BOUND, and printing it
+        // bare is what turned "we could not look" into "$0.00" on every hub that
+        // does not build `skill`.
+        ? chalk.yellow(`>= $${result.totalMonthlyCostUsd.toFixed(2)} (incomplete)`)
+        : chalk.bold(`$${result.totalMonthlyCostUsd.toFixed(2)}`))
     );
     console.log("");
     console.log(chalk.gray("  Note: Estimates assume ~4 chars/token and output tokens = 2x input tokens."));
-    console.log(chalk.gray("  Actual costs depend on conversation length, caching, and usage patterns.\n"));
+    console.log(chalk.gray("  Actual costs depend on conversation length, caching, and usage patterns."));
+    if (result.unmeasured.length > 0) {
+      console.error("");
+      console.error(chalk.red(
+        `  ✗ ${result.unmeasured.length} of ${result.personas.length} persona(s) could not be sized from dist/: ` +
+        result.unmeasured.join(", "),
+      ));
+      console.error(chalk.gray(
+        "    The size comes from dist/persona-sizes.json, which every successful build writes.\n" +
+        "    A missing entry means the persona was not compiled by this build — it is not\n" +
+        "    evidence that the persona is free. Re-run `agentboot build`, or drop the persona\n" +
+        "    from personas.enabled.",
+      ));
+      console.error("");
+      process.exit(1);
+    }
+    console.log("");
   });
 
 // ---- mcp-server (AB-140) ---------------------------------------------------
@@ -3246,7 +4565,16 @@ program
   )
   .action((opts, cmd) => {
     const globalOpts = cmd.optsWithGlobals();
-    const args = collectGlobalArgs(globalOpts);
+    // mcp-server.ts resolves its hub from AGENTBOOT_HUB, the cwd, or the registry
+    // default — never from argv. Forwarding --config served whichever hub that
+    // ladder picked while the operator believed they had pinned one.
+    refuseUnhonoredConfig(
+      globalOpts.config as string | undefined,
+      "mcp-server",
+      "The MCP server resolves its hub from AGENTBOOT_HUB, the current directory, " +
+        "or the registry default. Set AGENTBOOT_HUB=<hub dir> instead.",
+    );
+    const args: string[] = [];
     if (opts["profile"]) args.push("--profile", opts["profile"] as string);
     runScript({
       script: "mcp-server.ts",
@@ -3265,10 +4593,10 @@ program
   .action(async (_opts, cmd: Command) => {
     // Merged view — the program-level -c/--config global captures the value.
     const opts = cmd.optsWithGlobals();
-    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+    const { resolveConfigPath } = await import("./lib/config.js");
     const { TELEMETRY_EVENTS, TELEMETRY_SCHEMA_VERSION, sampleEvents } = await import("./lib/telemetry-schema.js");
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "telemetry-inspect");
     const t = config.telemetry ?? {};
     const enabled = t.enabled === true;
     const devIdMode = (t.includeDevId ?? false) as false | string;
@@ -3314,10 +4642,10 @@ program
     // Merged view — the program-level -c/--config global captures the value.
     const opts = cmd.optsWithGlobals();
     const { buildEvidencePack } = await import("./lib/evidence-pack.js");
-    const { resolveConfigPath, loadConfig } = await import("./lib/config.js");
+    const { resolveConfigPath } = await import("./lib/config.js");
 
     const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
-    const config = loadConfig(configPath);
+    const config = loadHubConfigOrExit(configPath, "evidence-pack");
     const hubPath = path.dirname(configPath);
     const distPath = path.resolve(hubPath, config.output?.distPath ?? "./dist");
 
@@ -3328,9 +4656,21 @@ program
     } catch { /* no repos registered — hub-only evidence is still valid */ }
 
     const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")).version as string;
-    const signKeyPath = config.sync?.signing?.enabled ? config.sync.signing.sshKeyPath : undefined;
+    // D17: `enabled` now defaults ON, so "no key" is the state most hubs will
+    // be in — and it must be NAMED. The old expression collapsed "signing is
+    // off" and "signing is on with no key" into one falsy value and the pack
+    // shipped digest-only either way, with a line that reads like advice
+    // rather than a defect.
+    const signing = resolveSyncSigning(config, hubPath);
+    const signKeyPath = signing.keyPath ?? undefined;
 
     console.log(chalk.bold("\n  AgentBoot — evidence-pack\n"));
+    // The evidence pack is the artifact an AUDITOR reads, digest-protected and
+    // SSH-signed. Built off a stale dist/ it describes the policy the org
+    // REPLACED, in the present tense, under a valid signature — the exact shape
+    // this product exists to prevent. `sync`, `drift-check` and `audit` already
+    // refuse; the compliance deliverable must refuse hardest.
+    assertDistFreshOrExit(configPath, config, "evidence-pack");
     const { pack, signingError } = buildEvidencePack({
       hubPath, config, agentbootVersion: version, repos, distPath,
       telemetryBatchDir: opts["telemetryBatches"] as string | undefined,
@@ -3344,8 +4684,17 @@ program
     fs.writeFileSync(out, JSON.stringify(pack, null, 2) + "\n", { mode: 0o600 });
 
     console.log(`  Hub:        ${pack.hub.hub_commit ?? "(not a git repo)"}${pack.hub.hub_dirty ? chalk.yellow(" DIRTY") : ""}`);
-    console.log(`  Platforms:  ${Object.keys(pack.enforcement.manifests).length} with enforcement manifests` +
+    // R1-G: name the platform SET the pack was computed over. "2 with
+    // enforcement manifests" is not a claim until the denominator is stated.
+    console.log(`  Platforms:  ${pack.enforcement.platform_set.platforms.join(", ")} ` +
+      `(from ${pack.enforcement.platform_set.source})`);
+    console.log(`              ${Object.keys(pack.enforcement.manifests).length} with enforcement manifests` +
       (pack.enforcement.unprobed_platforms.length ? chalk.yellow(` — UNPROBED: ${pack.enforcement.unprobed_platforms.join(", ")} (run \`agentboot conformance\`)`) : ""));
+    if (pack.enforcement.derived_platforms.length > 0) {
+      console.log(chalk.gray(
+        `              derived output present for: ${pack.enforcement.derived_platforms.join(", ")} ` +
+        `— not configured targets, so \`conformance\` does not probe them`));
+    }
     console.log(`  Repos:      ${pack.repos.length} (${pack.repos.filter((r) => r.drift.clean === true).length} drift-clean)`);
     console.log(`  Exceptions: ${pack.guardrails.exceptions.length} (${pack.guardrails.exceptions.filter((e) => e.expired).length} expired)`);
     if (pack.telemetry.chain) {
@@ -3353,7 +4702,8 @@ program
     }
     console.log(pack.integrity?.signature
       ? chalk.green(`  ✓ Pack signed (${pack.integrity.pack_digest.slice(0, 12)}…)`)
-      : chalk.yellow(`  – Pack digest-only (${pack.integrity?.pack_digest.slice(0, 12)}…) — enable sync.signing for a signed pack`));
+      : chalk.yellow(`  – Pack digest-only (${pack.integrity?.pack_digest.slice(0, 12)}…) — NOT signed`));
+    if (signing.error) console.error(chalk.red(`  ✗ ${signing.error}`));
     if (signingError) {
       console.error(chalk.red(`  ✗ Signing FAILED: ${signingError}`));
       process.exit(1);
@@ -3381,13 +4731,19 @@ program
     let sink = null;
     let logPath = opts["log"] as string | undefined;
     let signKeyPath: string | null = null;
+    let signingUnavailable: string | null = null;
     try {
       const configPath = resolveConfigPath(opts["config"] ? ["--config", opts["config"] as string] : [], process.cwd());
       const config = loadConfig(configPath);
       sink = config.telemetry?.sink ?? null;
       logPath = logPath ?? config.telemetry?.logPath;
-      if (config.sync?.signing?.enabled && config.sync.signing.sshKeyPath && (sink?.sign ?? true)) {
-        signKeyPath = config.sync.signing.sshKeyPath;
+      // D17: same as evidence-pack — an unsigned batch because no key is
+      // configured must say so, not look identical to a hub that chose not to
+      // sign.
+      const signing = resolveSyncSigning(config, path.dirname(configPath));
+      if (sink?.sign ?? true) {
+        signKeyPath = signing.keyPath;
+        signingUnavailable = signing.error;
       }
     } catch { /* no hub config here — spoke side */ }
     if (!sink) sink = findSinkConfig(opts["sinkConfig"] as string | undefined);
@@ -3410,6 +4766,7 @@ program
       signKeyPath,
     });
     console.log(`  Spooled ${spool.eventsSpooled} event(s) into ${spool.batchesWritten} batch(es)${spool.signed ? chalk.green(" [signed]") : ""}`);
+    if (signingUnavailable) console.error(chalk.red(`  ✗ ${signingUnavailable}`));
     if (spool.logReset) console.log(chalk.yellow("  ⚠ Local log shrank below the cursor (rotation/truncation) — re-read from the start; the sink dedups by batch sequence."));
     if (spool.corruptLines > 0) console.log(chalk.yellow(`  ⚠ ${spool.corruptLines} unparseable log line(s) skipped (surfaced, not silently dropped).`));
     if (spool.signingError) {
@@ -3440,6 +4797,7 @@ program
   .option("--require-signed", "FAIL if any batch is unsigned or its signature does not verify (the only defense against signature stripping — set this in CI)")
   .option("--allowed-signers <path>", "OpenSSH allowed_signers file to authenticate batch signatures against")
   .option("--signer <principal>", "expected signer principal")
+  .option("--partial", "the directory holds a deliberate SLICE of the chain (e.g. the live spool root) — do not fail because it does not begin at batch 1")
   .action(async (opts) => {
     const { verifyTelemetryLog, verifyBatchChain } = await import("./lib/telemetry-sink.js");
     if (!opts["log"] && !opts["batches"]) {
@@ -3468,6 +4826,7 @@ program
       // signature stripping — and --allowed-signers authenticates each signer.
       const v = verifyBatchChain(dir, {
         requireSigned: opts["requireSigned"] === true,
+        allowPartial: opts["partial"] === true,
         allowedSignersPath: opts["allowedSigners"] as string | undefined,
         signerPrincipal: opts["signer"] as string | undefined,
       });
@@ -3479,8 +4838,12 @@ program
       if (!opts["requireSigned"] && !opts["allowedSigners"] && v.signed < v.batches) {
         console.log(chalk.yellow(`    ⚠ ${v.batches - v.signed} batch(es) unsigned — pass --require-signed to fail on stripped signatures.`));
       }
+      if (v.truncatedPrefix && opts["partial"]) {
+        console.log(chalk.yellow("    ⚠ this directory does not begin at batch 1 — accepted under --partial; it is a slice, not the whole chain."));
+      }
       console.log(v.ok
         ? chalk.green("  ✓ Batch chain verifies — digests intact, sequence continuous"
+            + (v.truncatedPrefix ? " within this slice" : " from batch 1")
             + (opts["requireSigned"] || opts["allowedSigners"] ? ", signatures enforced" : ""))
         : chalk.red("  ✗ Batch chain FAILED"));
       console.log("");
@@ -3570,6 +4933,7 @@ marketplaceCmd
   .option("--dry-run", "Show what would be submitted without submitting")
   .action(async (component: string | undefined, opts) => {
     const { validateLicense } = await import("./lib/marketplace.js");
+    const { scanComponentForSecrets, readComponentManifest } = await import("./lib/contribution.js");
     if (!component) { console.error(chalk.red("Usage: agentboot marketplace publish <type>/<name>")); process.exit(1); }
     const parts = component.split("/");
     if (parts.length !== 2) { console.error(chalk.red("Format: <type>/<name>")); process.exit(1); }
@@ -3582,21 +4946,33 @@ marketplaceCmd
     if (contentFiles.length === 0 && type !== "domain") { console.error(chalk.red("  ✗ No content files")); process.exit(1); }
     console.log(chalk.green("  ✓ Content file found"));
     const manifestPath = path.join(componentDir, "manifest.json");
-    let manifest: any = {};
-    if (fs.existsSync(manifestPath)) { try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {} }
-    const license = manifest.license;
+    // "Could not read it" must not be reported as "the field is missing" — that
+    // sends the contributor to add a field that is already there, instead of to
+    // the syntax error one line above it.
+    const { manifest, error: manifestError } = readComponentManifest(manifestPath);
+    if (manifestError) { console.error(chalk.red(`  ✗ ${manifestError}`)); process.exit(1); }
+    const license = manifest["license"] as string | undefined;
     if (!license) { console.error(chalk.red("  ✗ No license in manifest")); process.exit(1); }
     const licenseCheck = validateLicense(license);
     if (!licenseCheck.valid) { console.error(chalk.red(`  ✗ ${licenseCheck.reason}`)); process.exit(1); }
     console.log(chalk.green(`  ✓ License: ${license}`));
-    const secretPatterns = [/AKIA[A-Z0-9]{16}/, /sk-[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/];
-    let secretsFound = false;
-    for (const file of contentFiles) {
-      const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
-      for (const p of secretPatterns) { if (p.test(content)) { secretsFound = true; break; } }
+    // R2-6: the SHARED scanner (scripts/lib/contribution.ts). `marketplace
+    // publish` and `checkContribution` each had their own copy and the two had
+    // already drifted — different pattern sets, and both `.md`-only and
+    // non-recursive while submission ships the whole directory. One scanner.
+    const { scanned, hits } = scanComponentForSecrets(componentDir);
+    if (hits.length > 0) {
+      console.error(chalk.red(`  ✗ Secrets detected in ${hits.length} file(s):`));
+      for (const f of hits) console.error(chalk.red(`      ${f}`));
+      process.exit(1);
     }
-    if (secretsFound) { console.error(chalk.red("  ✗ Secrets detected")); process.exit(1); }
-    console.log(chalk.green("  ✓ No secrets detected"));
+    // Silence is not success: say what was covered. "No secrets detected" over
+    // zero files is the shape this whole finding is made of.
+    if (scanned.length === 0) {
+      console.error(chalk.red("  ✗ No files could be scanned — this is not evidence that the component is clean."));
+      process.exit(1);
+    }
+    console.log(chalk.green(`  ✓ No secrets detected (${scanned.length} file(s) scanned, recursively)`));
     if (opts.dryRun) { console.log(chalk.yellow(`\n  [dry-run] Would submit PR for ${component}`)); return; }
     console.log(chalk.green("\n  All pre-publish checks passed."));
   });

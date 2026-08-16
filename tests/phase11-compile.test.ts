@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { ensureRootDist } from "./setup.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
@@ -24,9 +25,7 @@ function run(script: string, cwd = ROOT): string {
 
 beforeAll(() => {
   const distPath = path.join(ROOT, "dist");
-  if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, "agents", "AGENTS.md"))) {
-    run("scripts/compile.ts");
-  }
+  ensureRootDist();
 });
 
 // ---------------------------------------------------------------------------
@@ -57,16 +56,20 @@ describe("B2: Cursor instruction .mdc format", () => {
     expect(mdcFiles.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("cursor instruction .mdc files have alwaysApply: true", () => {
+  it("cursor .mdc files have alwaysApply true XOR globs", () => {
+    // Renamed from "…have alwaysApply: true" (F-6). The old title documented the
+    // defect as intended behaviour: `alwaysApply: true` was hardcoded for every
+    // instruction, so a rule authored `applyTo: "src/api/**"` shipped always-on.
+    // A scoped rule now carries globs + alwaysApply:false; an always-on one
+    // carries alwaysApply:true and no globs. The two are mutually exclusive.
     const files = fs.readdirSync(cursorRulesDir).filter(f => f.endsWith(".mdc"));
     for (const file of files) {
       const content = fs.readFileSync(path.join(cursorRulesDir, file), "utf-8");
-      if (content.includes("alwaysApply:")) {
-        // Instructions should have alwaysApply: true
-        // Gotchas may have alwaysApply: false (with globs)
-        // Just verify the field exists
-        expect(content).toMatch(/alwaysApply: (true|false)/);
-      }
+      if (!content.includes("alwaysApply:")) continue;
+      expect(content).toMatch(/alwaysApply: (true|false)/);
+      const alwaysOn = /alwaysApply: true/.test(content);
+      const hasGlobs = /^globs:/m.test(content);
+      expect(alwaysOn && hasGlobs, `${file}: globs and alwaysApply:true must not coexist`).toBe(false);
     }
   });
 

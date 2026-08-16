@@ -137,7 +137,22 @@ describe("runAudit() edge cases", () => {
     }
   });
 
-  it("detects manifest drift when source is newer than dist", async () => {
+  /**
+   * R2-7: this used to assert the mtime mechanism's wording ("newer than dist").
+   * The audit now compares the artifact-source DIGEST — the same one dist-stamp
+   * records at build time — because mtime cannot see a deletion, and a rewound
+   * mtime hid a real edit.
+   *
+   * This fixture writes a `dist/` by hand, so it carries NO build stamp at all.
+   * Under the digest contract the correct answer is not "some file is newer", it
+   * is "there is no source digest, so the comparison did NOT run" — which is
+   * strictly more honest about what was and was not checked, and is exactly the
+   * silence-is-not-success posture the rest of this file tests for.
+   *
+   * Real drift detection against a genuinely built hub — an edit, a DELETION,
+   * and a change under nodes/ — is covered in tests/audit-source-staleness.test.ts.
+   */
+  it("says the staleness comparison did not run when dist/ carries no source digest", async () => {
     const { runAudit } = await import("../scripts/lib/audit.js");
     const tempHub = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-audit-drift-"));
     try {
@@ -163,7 +178,12 @@ describe("runAudit() edge cases", () => {
       const report = runAudit(tempHub);
       const driftFindings = report.findings.filter(f => f.type === "manifest-drift");
       expect(driftFindings.length).toBeGreaterThanOrEqual(1);
-      expect(driftFindings.some(f => f.message.includes("newer than dist"))).toBe(true);
+      // "I could not compare" must not print as "nothing is stale".
+      expect(driftFindings.some(f => f.message.includes("did NOT run"))).toBe(true);
+      expect(
+        driftFindings.some(f => f.message.includes("not evidence that dist/ is current")),
+        "the finding did not say what it failed to establish",
+      ).toBe(true);
     } finally {
       fs.rmSync(tempHub, { recursive: true, force: true });
     }

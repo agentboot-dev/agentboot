@@ -1188,7 +1188,14 @@ describe("Security: applyWholeFileImports hardening", () => {
     expect(result.errors[0]).toContain("not in original scan");
   });
 
-  it("rejects symlinks as source files", () => {
+  // L40 — PLATFORM GUARD. Creating the FILE symlink this case needs requires
+  // SeCreateSymbolicLinkPrivilege on Windows, which a default GitHub-hosted
+  // runner does not grant, so fs.symlinkSync throws EPERM before the import is
+  // ever called. The guard under test (import refuses symlinked sources) is
+  // itself platform-independent; only the fixture is not. Note the sibling case
+  // in import-phase10.test.ts has carried this same guard since the original
+  // Windows pass — this one was simply missed.
+  it.skipIf(process.platform === "win32")("rejects symlinks as source files", () => {
     const hubPath = path.join(tmpDir, "hub");
     scaffoldHub(hubPath);
 

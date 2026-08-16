@@ -48,7 +48,7 @@ Keywords: create, add, write, scaffold, import, migrate, promote, demote, share,
 - Check health or fix problems
 - Validate the hub configuration
 - Lint personas for quality issues
-- Run tests (behavioral, snapshot)
+- Run tests (snapshot, regression)
 - Optimize persona weights or token costs
 - Audit for stale or orphaned content
 - Score or analyze persona quality

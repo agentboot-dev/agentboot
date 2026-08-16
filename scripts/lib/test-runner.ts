@@ -23,10 +23,96 @@ export interface BehavioralTestCase {
   assertions: Array<{
     type: "contains" | "not-contains" | "regex";
     value: string;
+    /** The `expect:` key this assertion was derived from, for the report. */
+    from?: string;
   }>;
   /** Number of retries for flake tolerance. Default: 3 (pass 2-of-3). */
   retries?: number;
 }
+
+/**
+ * J1 — what a parse could NOT turn into a check.
+ *
+ * The runner used to return `[]` for every scenario file in this repo and say
+ * nothing: `parseTestCases` split on `/^---$/m` and required name+persona+prompt
+ * +assertions, while all seven files use `tests:` / `- id:` / `prompt:` /
+ * `expect:`. `agentboot test --behavioral` therefore ran VACUOUSLY in
+ * .github/workflows/agentboot-ci.yml — the largest check-that-cannot-fail on
+ * the branch.
+ *
+ * Parsing the real schema is half the fix. The other half is that most `expect:`
+ * keys (`confirms_scope`, `asks_for_base_persona`, `groups_by_confidence_tier`,
+ * …) are judgements about a conversation, not string matches, and have no
+ * mechanical evaluator. Silently ignoring them would rebuild the same lie one
+ * layer up: a green run that checked a third of what the file asserts. They are
+ * REPORTED, counted, and they fail the run unless explicitly waived.
+ */
+/**
+ * NF2-6: a scenario entry that did not become a runnable case, and WHY.
+ *
+ * "Which scenarios did not run" is a different question from "how many
+ * expectation keys had no evaluator", and only the second was answerable.
+ */
+export interface DroppedCase {
+  file: string;
+  /** The scenario id, or null when the entry was too malformed to have one. */
+  caseId: string | null;
+  reason: string;
+  /**
+   * NEW-4: WHY it dropped, in a form the caller can branch on.
+   *
+   * `unevaluable` — the scenario is well formed and its expectations are real;
+   *     none of them maps onto a mechanical check. This is the same state
+   *     `--allow-unevaluated` exists to waive, one granularity finer, so it must
+   *     answer to the same flag. Reporting it as unwaivable made
+   *     `--allow-unevaluated` unable to waive the thing it is named after — and
+   *     AgentBoot's own published reusable workflow passes that flag.
+   * `malformed` — the entry is structurally broken (not a mapping, no `id:`, no
+   *     `prompt:`, no `expect:` block). No flag should wave that through: it is
+   *     a scenario file that does not say what it is testing.
+   *
+   * A string `reason` alone is not branchable without matching on prose, which
+   * is how a classifier and its consumer drift.
+   */
+  kind: "unevaluable" | "malformed";
+}
+
+export interface UnevaluatedExpectation {
+  file: string;
+  caseId: string;
+  /** The `expect:` key with no evaluator. */
+  key: string;
+}
+
+export interface BehavioralParse {
+  cases: BehavioralTestCase[];
+  unevaluated: UnevaluatedExpectation[];
+  /** NF2-6: scenario entries that did not become runnable cases, and why. */
+  droppedCases: DroppedCase[];
+}
+
+/**
+ * `expect:` keys that map onto a mechanical check of the transcript.
+ *
+ * Deliberately small and literal. An evaluator that "sort of" checks a
+ * judgement key is worse than one that declares it unevaluated: it converts an
+ * honest gap into a false pass.
+ */
+const MECHANICAL_EXPECTATIONS: Record<string, "contains" | "regex" | "not-contains"> = {
+  calls_tool: "contains",
+  routes_to: "contains",
+  intent: "contains",
+  artifact_type: "contains",
+  proposed_artifact_type: "contains",
+  promotion_target_scope: "contains",
+  runs_command: "contains",
+  response_contains: "contains",
+  response_includes: "contains",
+  summary_includes: "contains",
+  table_includes: "contains",
+  response_matches: "regex",
+  does_not_call_tool_before_clarification: "not-contains",
+};
 
 export interface BehavioralTestResult {
   name: string;
@@ -35,6 +121,12 @@ export interface BehavioralTestResult {
   attempts: number;
   passes: number;
   failures: string[];
+  /**
+   * R4-4: did the persona's compiled SKILL.md actually get loaded as the system
+   * prompt? `false` means the scenario exercised the BARE MODEL, and its verdict
+   * says nothing about the compiled persona it is named for.
+   */
+  personaContextLoaded: boolean;
 }
 
 /**
@@ -100,7 +192,147 @@ function extractYamlAssertions(parsed: Record<string, unknown>): BehavioralTestC
  *
  * Blocks are separated by `---`.
  */
+/**
+ * J1: parse the `tests:` scenario schema every file in tests/behavioral/ uses.
+ *
+ *     tests:
+ *       - id: author-add-gotcha
+ *         prompt: "..."
+ *         expect:
+ *           - calls_tool: agentboot_propose_change
+ *           - confirms_scope: true
+ *
+ * Returns null when the document is not in this shape, so the legacy
+ * `---`-separated parser still runs for files that are.
+ */
+function parseScenarioSchema(content: string, file: string): BehavioralParse | null {
+  let doc: unknown;
+  try {
+    doc = yaml.load(content);
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return null;
+  const root = doc as Record<string, unknown>;
+  const tests = root["tests"];
+  if (!Array.isArray(tests)) return null;
+
+  // The persona under test: an explicit key, else the file stem. The scenario
+  // files are named for the skill they exercise (ab-author-add.yaml →
+  // ab-author), and guessing is stated rather than hidden — runBehavioralTest
+  // tolerates a missing SKILL.md by running with no system prompt.
+  const declaredPersona =
+    (typeof root["persona"] === "string" && root["persona"]) ||
+    (typeof root["skill"] === "string" && root["skill"]) ||
+    null;
+  const stem = file.replace(/\.(ya?ml)$/, "");
+  const persona = declaredPersona ?? (stem.match(/^(ab-[a-z]+)/)?.[1] ?? stem);
+
+  const cases: BehavioralTestCase[] = [];
+  const unevaluated: UnevaluatedExpectation[] = [];
+  // NF2-6: a case that produced no runnable check, and an entry too malformed to
+  // become a case at all, are both "we did not run this scenario" — and both
+  // were `continue`d with no record. A FILE with no cases is reported loudly
+  // ("✗ … produced NO runnable test case"); a CASE with no checks was reported
+  // only as an anonymous by-key count, so nothing named the scenario. Same
+  // class, finer granularity, opposite treatment.
+  //
+  // Today `author-import-duplicate-detection` (ab-author-import.yaml) and
+  // `routing-ambiguous-clarify` (ab-routing.yaml) are dropped this way — 28
+  // `tests:` entries in the YAML, 26 cases returned — and nothing names them.
+  const droppedCases: DroppedCase[] = [];
+
+  for (const entry of tests) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      droppedCases.push({ file, caseId: null, reason: "entry is not a mapping", kind: "malformed" });
+      continue;
+    }
+    const tc = entry as Record<string, unknown>;
+    const id = typeof tc["id"] === "string" ? tc["id"] : undefined;
+    const prompt = typeof tc["prompt"] === "string" ? tc["prompt"] : undefined;
+    if (!id || !prompt) {
+      droppedCases.push({
+        file,
+        caseId: id ?? null,
+        reason: !id ? "no `id:`" : "no `prompt:`",
+        kind: "malformed",
+      });
+      continue;
+    }
+
+    const assertions: BehavioralTestCase["assertions"] = [];
+    const expects = Array.isArray(tc["expect"]) ? tc["expect"] : [];
+    for (const e of expects) {
+      if (!e || typeof e !== "object" || Array.isArray(e)) continue;
+      for (const [key, value] of Object.entries(e as Record<string, unknown>)) {
+        const kind = MECHANICAL_EXPECTATIONS[key];
+        if (!kind) {
+          unevaluated.push({ file, caseId: id, key });
+          continue;
+        }
+        // A mechanical key whose value is not a string (e.g. `calls_tool: true`)
+        // asserts nothing checkable — count it as unevaluated rather than
+        // silently dropping it.
+        const values = typeof value === "string"
+          ? [value]
+          : Array.isArray(value) && value.every((v) => typeof v === "string")
+            ? (value as string[])
+            : null;
+        if (!values || values.length === 0) {
+          unevaluated.push({ file, caseId: id, key });
+          continue;
+        }
+        for (const v of values) assertions.push({ type: kind, value: v, from: key });
+      }
+    }
+
+    if (assertions.length === 0) {
+      // Every expectation in this case was unevaluable. Running it would report
+      // a pass for having checked nothing — so it is not run, and it IS named.
+      droppedCases.push({
+        file,
+        caseId: id,
+        reason: expects.length === 0
+          ? "no `expect:` block"
+          : "every expectation is unevaluable — no mechanical evaluator matched",
+        // A scenario with no `expect:` block asserts nothing at all — that is
+        // structurally broken, not "we have judgement expectations we cannot
+        // check mechanically". Only the latter answers to --allow-unevaluated.
+        kind: expects.length === 0 ? "malformed" : "unevaluable",
+      });
+      continue;
+    }
+    cases.push({
+      name: id,
+      persona,
+      prompt,
+      assertions,
+      ...(typeof tc["retries"] === "number" ? { retries: tc["retries"] } : {}),
+    });
+  }
+
+  return { cases, unevaluated, droppedCases };
+}
+
+/**
+ * Parse one scenario FILE, reporting what it could not turn into a check.
+ *
+ * `parseTestCases` (below) remains the string-in/cases-out entry point the older
+ * tests use; this is the one the runner calls, because the runner needs to know
+ * about the gaps.
+ */
+export function parseTestFile(content: string, file = "inline.yaml"): BehavioralParse {
+  const scenario = parseScenarioSchema(content, file);
+  if (scenario) return scenario;
+  return { cases: parseTestCases(content), unevaluated: [], droppedCases: [] };
+}
+
 export function parseTestCases(content: string): BehavioralTestCase[] {
+  // J1: the scenario schema first — every file that ships with this repo is in
+  // it, and the legacy splitter returned 0 cases for all of them.
+  const scenario = parseScenarioSchema(content, "inline.yaml");
+  if (scenario) return scenario.cases;
+
   const cases: BehavioralTestCase[] = [];
 
   // Split by "---" test case separator
@@ -222,12 +454,27 @@ export function runBehavioralTest(
   let attempts = 0;
   const allFailures: string[] = [];
 
-  // Load persona SKILL.md as system context
-  const skillPath = path.join(distPath, "skill", "core", "personas", testCase.persona, "SKILL.md");
+  // Load persona SKILL.md as system context.
+  //
+  // R4-4: this path carried a `personas` segment the compiler has never written.
+  // compileInstructions writes `dist/skill/<scope>/<persona>/SKILL.md`
+  // (compile.ts: `path.join(distPath, "skill", scopePath, personaName)`), so
+  // `dist/skill/core/personas/<persona>/SKILL.md` did not exist on ANY hub, in
+  // any configuration. `systemPrompt` was therefore always "" and every
+  // behavioral scenario ran against the bare model — while the runner printed
+  // "Running: <case> (<persona>)" and reported the verdict as a persona result.
+  //
+  // The existsSync was written as tolerance ("runBehavioralTest tolerates a
+  // missing SKILL.md by running with no system prompt") and became total
+  // vacuity, because a tolerance with no diagnostic cannot distinguish "this hub
+  // does not build skill" from "the path is wrong". It says so now, and the
+  // caller turns it into a finding.
+  const skillPath = path.join(distPath, "skill", "core", testCase.persona, "SKILL.md");
   let systemPrompt = "";
   if (fs.existsSync(skillPath)) {
     systemPrompt = fs.readFileSync(skillPath, "utf-8");
   }
+  const personaContextLoaded = systemPrompt.length > 0;
 
   for (let i = 0; i < maxAttempts; i++) {
     attempts++;
@@ -256,36 +503,76 @@ export function runBehavioralTest(
     attempts,
     passes,
     failures: allFailures,
+    personaContextLoaded,
   };
 }
 
 /**
  * Run all behavioral tests from a directory.
  */
-export function runBehavioralTests(
+export interface BehavioralRun {
+  results: BehavioralTestResult[];
+  /** Scenario files present in the directory. */
+  filesSeen: string[];
+  /** Files that produced ZERO runnable cases — the vacuity signal. */
+  filesWithNoCases: string[];
+  /** Expectations with no mechanical evaluator, by file and case. */
+  unevaluated: UnevaluatedExpectation[];
+  /**
+   * NF2-6: scenario entries that produced NO runnable case, BY NAME.
+   *
+   * `filesWithNoCases` answers the same question at file granularity and is
+   * reported loudly. At case granularity the answer existed only as an
+   * anonymous by-key count, so an operator could not learn WHICH scenarios did
+   * not run.
+   */
+  droppedCases: DroppedCase[];
+}
+
+/**
+ * Run all behavioral tests from a directory.
+ *
+ * J1: returns the GAPS as well as the results. Returning only `[]` — which is
+ * what it did for every file in this repo — is indistinguishable from "all
+ * tests passed" to anything that counts failures, and that is precisely how
+ * `agentboot test --behavioral` ran vacuously in CI.
+ */
+export function runBehavioralTestsDetailed(
   testDir: string,
   distPath: string,
   provider?: LLMProvider,
-): BehavioralTestResult[] {
+): BehavioralRun {
   const results: BehavioralTestResult[] = [];
+  const unevaluated: UnevaluatedExpectation[] = [];
+  const filesWithNoCases: string[] = [];
+  const droppedCases: DroppedCase[] = [];
   const llm = provider ?? new ClaudeCodeProvider();
 
   if (!fs.existsSync(testDir)) {
     console.log(chalk.yellow(`  Test directory not found: ${testDir}`));
-    return results;
+    return { results, filesSeen: [], filesWithNoCases, unevaluated, droppedCases };
   }
 
   const files = fs.readdirSync(testDir).filter(f => f.endsWith(".yaml") || f.endsWith(".yml"));
 
   for (const file of files) {
     const content = fs.readFileSync(path.join(testDir, file), "utf-8");
-    const testCases = parseTestCases(content);
+    const parsed = parseTestFile(content, file);
+    const testCases = parsed.cases;
+    unevaluated.push(...parsed.unevaluated);
+    droppedCases.push(...parsed.droppedCases);
+    if (testCases.length === 0) filesWithNoCases.push(file);
 
     for (const tc of testCases) {
       console.log(chalk.cyan(`  Running: ${tc.name} (${tc.persona})...`));
       const result = runBehavioralTest(tc, llm, distPath);
       results.push(result);
 
+      if (!result.personaContextLoaded) {
+        console.log(chalk.yellow(
+          `    ~ no compiled SKILL.md for "${tc.persona}" — this case ran against the BARE MODEL`,
+        ));
+      }
       if (result.passed) {
         console.log(chalk.green(`    ✓ Passed (${result.passes}/${result.attempts})`));
       } else {
@@ -297,7 +584,16 @@ export function runBehavioralTests(
     }
   }
 
-  return results;
+  return { results, filesSeen: files, filesWithNoCases, unevaluated, droppedCases };
+}
+
+/** Back-compatible shape: results only. Prefer runBehavioralTestsDetailed. */
+export function runBehavioralTests(
+  testDir: string,
+  distPath: string,
+  provider?: LLMProvider,
+): BehavioralTestResult[] {
+  return runBehavioralTestsDetailed(testDir, distPath, provider).results;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,4 +736,170 @@ export function printSnapshotDiff(diff: SnapshotDiff): void {
     }
     if (diff.changed.length > 10) console.log(chalk.gray(`      ... and ${diff.changed.length - 10} more`));
   }
+}
+
+
+/**
+ * NEW-4 — the verdict on a behavioral run, as data.
+ *
+ * This logic used to live inline in the `test` command action, which is why it
+ * could not be tested: reaching it requires runBehavioralTestsDetailed(), and
+ * that spawns an LLM per case. So the ONE thing about this feature that must be
+ * right — which conditions are fatal, and which the operator can waive — was the
+ * one thing no test could see. 06c9683 then moved a fatal condition outside the
+ * waiver guard and nothing noticed, breaking the flag for exactly the state the
+ * flag names, in the invocation AgentBoot's own published reusable workflow uses
+ * (`npx agentboot test --behavioral --allow-unevaluated`).
+ *
+ * Returning findings rather than printing them means the MESSAGE and the VERDICT
+ * come from one place and cannot disagree — a report that says "⚠" while exiting
+ * 1 is its own kind of lie.
+ *
+ * `error` findings fail the run. `warn` findings are printed and do not.
+ * Nothing is silent either way: silence is not success.
+ */
+export interface BehavioralFinding {
+  level: "error" | "warn";
+  /** Lines to print, already worded. No color — the caller owns presentation. */
+  message: string;
+  /** Extra indented detail printed under the message. */
+  detail?: string;
+}
+
+export function behavioralFindings(
+  run: BehavioralRun,
+  opts: { allowUnevaluated: boolean; testDirLabel: string },
+): BehavioralFinding[] {
+  const findings: BehavioralFinding[] = [];
+  const allow = opts.allowUnevaluated;
+
+  // R4-4: a scenario that ran WITHOUT the compiled persona as its system prompt
+  // did not test the persona. It tested the bare model, and reported the verdict
+  // under the persona's name.
+  //
+  // This was total, not occasional: the loader looked for
+  // `dist/skill/core/personas/<p>/SKILL.md` and the compiler writes
+  // `dist/skill/core/<p>/SKILL.md`, so the system prompt was empty on every hub
+  // in every configuration, silently, behind an `fs.existsSync` written as
+  // tolerance. Not waivable by --allow-unevaluated: that flag waives
+  // expectations we cannot MECHANICALLY check, and this is a run whose subject
+  // was absent.
+  const contextless = run.results.filter((r) => !r.personaContextLoaded);
+  if (contextless.length > 0) {
+    const personas = [...new Set(contextless.map((r) => r.persona))].sort();
+    findings.push({
+      level: "error",
+      message:
+        `✗ ${contextless.length} of ${run.results.length} scenario(s) ran with NO compiled persona ` +
+        `as system prompt (${personas.join(", ")}) — those verdicts describe the bare model, not the persona.`,
+      detail:
+        "    The prompt comes from dist/skill/core/<persona>/SKILL.md. Build `skill` in\n" +
+        "    personas.outputFormats, or name a persona the hub compiles (`persona:` /\n" +
+        "    `skill:` in the scenario file, else the file stem).",
+    });
+  }
+
+  // J1: a directory with no scenario files checked nothing. Not waivable —
+  // there is no judgement gap here, there is no corpus.
+  if (run.filesSeen.length === 0) {
+    findings.push({
+      level: "error",
+      message: `✗ No scenario files in ${opts.testDirLabel}/ — nothing was checked.`,
+    });
+  }
+
+  // A whole FILE that produced no runnable case. Waivable on the same terms as
+  // a single unevaluable case: it is the same condition at file granularity,
+  // and treating the coarser report as stricter than the finer one is backwards.
+  //
+  // L2: "the same terms" means the same terms — INCLUDING the kind split. The
+  // per-case path below refuses to waive a `malformed` drop, because a scenario
+  // that never said what it tests is not a judgement gap. This loop waived the
+  // file wholesale on `allow` alone, so a scenario file in which EVERY entry was
+  // structurally broken — no `id:`, no `prompt:`, not even a mapping — passed
+  // under `--allow-unevaluated`, the flag AgentBoot's own published reusable
+  // workflow passes. The coarser report was strictly weaker than the finer one,
+  // which is the same inversion in the other direction.
+  //
+  // The wording was wrong for the same reason: "every expectation in it is
+  // unevaluable" is a claim about expectations we READ and could not check
+  // mechanically. For a malformed file we could not read the entries at all, and
+  // saying "unevaluable" points the operator at a waiver flag instead of at the
+  // broken YAML.
+  for (const f of run.filesWithNoCases) {
+    const drops = run.droppedCases.filter((d) => d.file === f);
+    const malformed = drops.filter((d) => d.kind === "malformed");
+    // No recorded drops means the file had no `tests:` entries to drop (or came
+    // through the legacy parser). Nothing identifies it as unreadable, so it
+    // keeps the historical waivable treatment.
+    const waivable = malformed.length === 0 && allow;
+    findings.push({
+      level: waivable ? "warn" : "error",
+      message: malformed.length > 0
+        ? `✗ ${f} produced NO runnable test case — ${malformed.length} of ${drops.length} entr${drops.length === 1 ? "y" : "ies"} ` +
+          `could NOT BE READ (${[...new Set(malformed.map((d) => d.reason))].join("; ")}). ` +
+          `--allow-unevaluated does not waive that: the file never said what it tests.`
+        : `${waivable ? "⚠" : "✗"} ${f} produced NO runnable test case — every expectation in it is unevaluable.`,
+      ...(drops.length > 0
+        ? {
+            detail: drops
+              .map((d) => `    ${d.caseId ?? "(no id)"} — ${d.reason} [${d.kind}]`)
+              .join("\n"),
+          }
+        : {}),
+    });
+  }
+
+  // NF2-6: name the SCENARIOS that did not run, not just an anonymous count.
+  const skipped = run.droppedCases.filter((d) => !run.filesWithNoCases.includes(d.file));
+  for (const d of skipped) {
+    // NEW-4: `unevaluable` is precisely what --allow-unevaluated waives.
+    // `malformed` — not a mapping, no `id:`, no `prompt:`, no `expect:` block —
+    // is a scenario that does not say what it tests, and no flag waives that.
+    const waivable = d.kind === "unevaluable" && allow;
+    findings.push({
+      level: waivable ? "warn" : "error",
+      message: `${waivable ? "⚠" : "✗"} ${d.file}: scenario ${d.caseId ?? "(no id)"} did NOT run — ${d.reason}.`,
+    });
+  }
+  if (!allow && skipped.some((d) => d.kind === "unevaluable")) {
+    findings.push({
+      level: "warn",
+      message: "",
+      detail: "Pass --allow-unevaluated to proceed anyway (the scenarios are still named).",
+    });
+  }
+
+  if (run.unevaluated.length > 0) {
+    const byKey = new Map<string, number>();
+    for (const u of run.unevaluated) byKey.set(u.key, (byKey.get(u.key) ?? 0) + 1);
+    const top = [...byKey.entries()].sort((a, b) => b[1] - a[1]);
+    findings.push({
+      level: allow ? "warn" : "error",
+      message:
+        `⚠ ${run.unevaluated.length} expectation(s) across ${run.filesSeen.length} file(s) have NO evaluator:`,
+      detail:
+        top.map(([key, n]) => `    ${key} ×${n}`).join("\n") +
+        "\n  These are judgements about a conversation, not string matches. They are NOT\n" +
+        "  checked. A run that ignored them and reported green would be checking a\n" +
+        "  fraction of what the scenario files assert." +
+        (allow ? "" : "\n  Pass --allow-unevaluated to proceed anyway (the count is still printed)."),
+    });
+  }
+
+  // Nothing ran at all. NOT waivable, and deliberately distinct from the
+  // conditions above: a flag that says "I accept some checks are judgement-only"
+  // cannot also mean "I accept that zero checks ran".
+  if (run.results.length === 0) {
+    findings.push({ level: "error", message: "✗ No behavioral test cases ran." });
+  } else {
+    const failed = run.results.filter((r) => !r.passed).length;
+    if (failed > 0) {
+      findings.push({
+        level: "error",
+        message: `✗ ${failed}/${run.results.length} behavioral test(s) failed.`,
+      });
+    }
+  }
+  return findings;
 }

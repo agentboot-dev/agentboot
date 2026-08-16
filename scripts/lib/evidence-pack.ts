@@ -32,7 +32,7 @@ import {
   type ManifestVerification,
 } from "./provenance.js";
 import { checkDrift, findManifestPath, type DriftReport } from "./drift.js";
-import { PLATFORM_ENFORCEMENT } from "./conformance.js";
+import { PLATFORM_ENFORCEMENT, configuredPlatforms, resolveEnforcement } from "./conformance.js";
 import { verifyBatchChain, type BatchChainVerification } from "./telemetry-sink.js";
 import { loadExceptionsFile, HUB_EXCEPTIONS_FILE } from "./exceptions.js";
 
@@ -59,11 +59,42 @@ export interface EvidencePack {
   generated_at: string;
   hub: HubProvenance;
   enforcement: {
-    declared: typeof PLATFORM_ENFORCEMENT;
+    /**
+     * R1-H: the RESOLVED enforcement for the platforms this org actually
+     * builds — not the whole PLATFORM_ENFORCEMENT table verbatim.
+     *
+     * The pack used to ship all ten rows including `plugin: {level: "enforced"}`
+     * unqualified, for nine platforms the org does not build. `plugin`'s
+     * enforcement is conditional on `claude` being in outputFormats (that is
+     * what its `requires` says), so the unqualified row is a claim that is only
+     * conditionally true, handed to an auditor as though it were unconditional.
+     * Blast-limited today because commit 883253e makes a plugin-without-claude
+     * build fail — but a stale or hand-assembled dist still reaches this code,
+     * and "currently unreachable" is not the same as "not asserted".
+     */
+    declared: Record<string, { level: string; detail: string; unmetRequires: string[] }>;
     /** Per-platform enforcement manifests from the last conformance run, verbatim. */
     manifests: Record<string, unknown>;
-    /** Platforms with compiled output but no enforcement manifest — conformance not run. */
+    /**
+     * CONFIGURED platforms with no enforcement manifest — conformance has not
+     * been run for them, and running it WILL cover them.
+     *
+     * R1-G: this used to be derived from `fs.readdirSync(distPath)`, which
+     * includes `dist/plugin/` on any hub that builds `claude` even though
+     * `plugin` is not a configured format. `conformance` iterates the CONFIG,
+     * so the pack told the auditor to run a command that could never change
+     * what the pack reported.
+     */
     unprobed_platforms: string[];
+    /** The platform set this pack was computed over, and where it came from. */
+    platform_set: { platforms: string[]; source: "personas.outputFormats" };
+    /**
+     * Platform trees present in dist/ that are NOT configured formats — today
+     * `plugin`, which the claude emitter derives. Reported so an auditor is not
+     * left wondering why a directory exists with no manifest, and kept OUT of
+     * `unprobed_platforms` because `conformance` will never probe them.
+     */
+    derived_platforms: string[];
   };
   guardrails: {
     denyTools: string[];
@@ -88,7 +119,7 @@ export interface EvidencePack {
   telemetry: {
     batchStoreChecked: string | null;
     chain:
-      | (Pick<BatchChainVerification, "batches" | "signed" | "gaps" | "ok"> & { signatureVerified: number })
+      | (Pick<BatchChainVerification, "batches" | "signed" | "gaps" | "truncatedPrefix" | "ok"> & { signatureVerified: number })
       | null;
   };
   integrity?: {
@@ -117,22 +148,38 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
   const { hubPath, config, agentbootVersion, repos, distPath } = options;
 
   // Enforcement manifests from the last conformance run — never fabricated.
+  //
+  // R1-G: the platform set comes from the SAME resolver `conformance` uses, so
+  // "unprobed" names platforms that running `agentboot conformance` will
+  // actually cover.
+  const configured = configuredPlatforms(config);
   const manifests: Record<string, unknown> = {};
   const unprobed: string[] = [];
+  const derived: string[] = [];
+  const readManifest = (platform: string): boolean => {
+    const manifestPath = path.join(distPath, platform, "enforcement-manifest.json");
+    if (!fs.existsSync(manifestPath)) return false;
+    try {
+      manifests[platform] = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    } catch {
+      manifests[platform] = { error: "unreadable enforcement manifest" };
+    }
+    return true;
+  };
   if (fs.existsSync(distPath)) {
+    for (const platform of configured) {
+      if (!readManifest(platform)) unprobed.push(platform);
+    }
+    // Everything else on disk that IS a known platform is derived output, not a
+    // configured target. Its manifest is still carried if one exists — an
+    // observation is evidence wherever it came from — but its absence is not
+    // an action item, because no command will produce it.
     for (const platform of fs.readdirSync(distPath)) {
-      const platformDir = path.join(distPath, platform);
-      if (!fs.statSync(platformDir).isDirectory()) continue;
-      const manifestPath = path.join(platformDir, "enforcement-manifest.json");
-      if (fs.existsSync(manifestPath)) {
-        try {
-          manifests[platform] = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-        } catch {
-          manifests[platform] = { error: "unreadable enforcement manifest" };
-        }
-      } else if (platform in PLATFORM_ENFORCEMENT) {
-        unprobed.push(platform);
-      }
+      if (configured.includes(platform)) continue;
+      if (!(platform in PLATFORM_ENFORCEMENT)) continue;
+      if (!fs.statSync(path.join(distPath, platform)).isDirectory()) continue;
+      derived.push(platform);
+      readManifest(platform);
     }
   }
 
@@ -182,7 +229,10 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
           ? entries.every((e) => e.status === "clean" || e.status === "unmanaged" || e.status === "excepted")
           : null,
         driftedFiles: entries
-          .filter((e) => e.status === "modified" || e.status === "missing")
+          // F-1: a "retired" entry is a control the org withdrew that this repo
+          // still carries. Omitting it from the evidence pack would reproduce
+          // the exact false-green this fix removes.
+          .filter((e) => e.status === "modified" || e.status === "missing" || e.status === "retired")
           .map((e) => e.file),
         unmanagedFiles: entries.filter((e) => e.status === "unmanaged").map((e) => e.file),
       },
@@ -209,7 +259,9 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     const v = verifyBatchChain(options.telemetryBatchDir, { verifySignatures: true });
     telemetryChain = {
       batchStoreChecked: options.telemetryBatchDir,
-      chain: { batches: v.batches, signed: v.signed, signatureVerified: v.signatureVerified, gaps: v.gaps, ok: v.ok },
+      // truncatedPrefix travels with the chain state: an auditor reading
+      // "12 batches, ok" must be able to see that the chain did not start at 1.
+      chain: { batches: v.batches, signed: v.signed, signatureVerified: v.signatureVerified, gaps: v.gaps, truncatedPrefix: v.truncatedPrefix, ok: v.ok },
     };
   }
 
@@ -218,7 +270,17 @@ export function buildEvidencePack(options: BuildEvidenceOptions): { pack: Eviden
     version: 1,
     generated_at: new Date().toISOString(),
     hub: collectHubProvenance(hubPath, agentbootVersion),
-    enforcement: { declared: PLATFORM_ENFORCEMENT, manifests, unprobed_platforms: unprobed },
+    enforcement: {
+      declared: Object.fromEntries(
+        configured
+          .filter((f) => f in PLATFORM_ENFORCEMENT)
+          .map((f) => [f, resolveEnforcement(f, configured)]),
+      ),
+      manifests,
+      unprobed_platforms: unprobed,
+      platform_set: { platforms: configured, source: "personas.outputFormats" },
+      derived_platforms: derived,
+    },
     guardrails: { denyTools, exceptions },
     mcp: mcpEvidence,
     repos: repoEvidence,

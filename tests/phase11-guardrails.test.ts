@@ -10,6 +10,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+import { ensureRootDist } from "./setup.js";
+
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
 
@@ -20,6 +22,12 @@ function run(script: string, cwd = ROOT): string {
     timeout: 30_000,
   }).toString();
 }
+
+// R4-6: this file asserts over ROOT/dist and had NO guard at all — it simply
+// inherited whatever tree the previously-run file left behind.
+beforeAll(() => {
+  ensureRootDist();
+});
 
 // ---------------------------------------------------------------------------
 // Validation: HARD guardrails cannot be overridden

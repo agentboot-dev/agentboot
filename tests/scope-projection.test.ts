@@ -1,0 +1,1116 @@
+/**
+ * Regression guards for F-6 — `applyTo` scope silently INVERTED to always-on.
+ *
+ * `compileInstructions` never parsed the source frontmatter. It stripped it, then
+ * hardcoded `alwaysApply: true` for Cursor and the string literal
+ * `trigger: always_on` for Windsurf. A rule authored as `applyTo: "src/api/**"`
+ * was therefore delivered as *always on, every file* — not dropped, INVERTED —
+ * with exit 0 and zero diagnostics. It happened by default to AgentBoot's own
+ * shipped `security.instructions.md`, and was visible in this repo's committed
+ * `dist/`.
+ *
+ * Inversion is strictly worse than omission: a warning is the right response to
+ * "we dropped something" and the wrong response to "we shipped the opposite of
+ * what you wrote."
+ *
+ * Structured like tests/capability-gate.test.ts: every rule asserts BOTH the
+ * firing case and the silent case. The silent cases here are the load-bearing
+ * ones — the translated tier must produce NO diagnostic at all, because a guard
+ * that also fires on the fixed path is how a channel gets tuned out.
+ *
+ * See docs/research/capability-platform-matrix-2026-08-08.md §4, F-6.
+ */
+
+import { describe, it, expect, beforeAll } from "vitest";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import yaml from "js-yaml";
+
+import {
+  inspectScope, degradedFormats, scopeViolations, APPLY_TO_PROJECTION,
+  readScopeGlobs, rewriteFrontmatterKeyBlock,
+  type ScopedArtifact,
+} from "../scripts/lib/scope-projection.js";
+
+const ROOT = path.resolve(__dirname, "..");
+const CLI = path.join(ROOT, "bin", "agentboot.js");
+
+const fm = (body: string) => `---\ndescription: x\n${body}---\n\n# body\n`;
+
+// ---------------------------------------------------------------------------
+// Unit — inspectScope
+// ---------------------------------------------------------------------------
+
+describe("inspectScope", () => {
+  it("1: parses a narrowing glob", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**"\n`)))
+      .toMatchObject({ globs: ["src/api/**"], alwaysOn: false });
+  });
+
+  it("2: splits a comma-separated list", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**, src/db/**"\n`)).globs)
+      .toEqual(["src/api/**", "src/db/**"]);
+  });
+
+  it('3/4: "**" and "**/*" are the documented always-on sentinels', () => {
+    // cli.ts `add instruction` scaffold: `"**" = always on, every file`.
+    for (const g of ["**", "**/*", "*"]) {
+      expect(inspectScope(fm(`applyTo: "${g}"\n`)), g)
+        .toMatchObject({ globs: [], alwaysOn: true });
+    }
+  });
+
+  it("5/6: a missing applyTo, and no frontmatter at all, are always-on", () => {
+    expect(inspectScope(fm(""))).toMatchObject({ globs: [], alwaysOn: true });
+    expect(inspectScope("# just a heading\n")).toMatchObject({ globs: [], alwaysOn: true });
+  });
+
+  it("7: trailing-empty entries are dropped", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**, , "\n`)).globs).toEqual(["src/api/**"]);
+  });
+
+  it("8: single quotes are stripped like double quotes", () => {
+    expect(inspectScope(fm(`applyTo: 'src/api/**'\n`)).globs).toEqual(["src/api/**"]);
+  });
+
+  it("9: reads the acknowledgement", () => {
+    expect(inspectScope(fm(`applyTo: "src/**"\nscope-unsupported: acknowledged\n`))
+      .acknowledgedUnscoped).toBe(true);
+    expect(inspectScope(fm(`applyTo: "src/**"\n`)).acknowledgedUnscoped).toBe(false);
+  });
+
+  it("10 (NEGATIVE): the acknowledgement in the BODY is not a declaration", () => {
+    const content = `---\ndescription: x\napplyTo: "src/**"\n---\n\nscope-unsupported: acknowledged\n`;
+    expect(inspectScope(content).acknowledgedUnscoped).toBe(false);
+  });
+
+  it("a mixed universal+narrow list is still narrowing", () => {
+    expect(inspectScope(fm(`applyTo: "**, src/api/**"\n`)).alwaysOn).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit — degradedFormats (fail-closed)
+// ---------------------------------------------------------------------------
+
+describe("degradedFormats", () => {
+  it("11 (NEGATIVE): the translated + native tier degrades nothing", () => {
+    // The guard must be SILENT here. This is the whole point of the fix.
+    expect(degradedFormats(["cursor", "windsurf", "jetbrains", "copilot"])).toEqual([]);
+  });
+
+  it("12: the unsupported tier is reported in full", () => {
+    expect(degradedFormats(["claude", "skill", "agents"])).toEqual(["claude", "skill", "agents"]);
+  });
+
+  it("13: FAILS CLOSED on an unknown platform", () => {
+    // A classifier may ignore what it has no data for; a safety gate may not.
+    // The opposite default is exactly how the HARD gate failed open on `plugin`.
+    expect(degradedFormats(["not-a-platform"])).toEqual(["not-a-platform"]);
+  });
+
+  it("14: one unsupported target is enough", () => {
+    expect(degradedFormats(["cursor", "claude"])).toEqual(["claude"]);
+  });
+
+  it("every projection row names a real mechanism", () => {
+    for (const [fmt, row] of Object.entries(APPLY_TO_PROJECTION)) {
+      expect(["native", "translated", "unsupported"], fmt).toContain(row.support);
+      expect(row.detail.length, fmt).toBeGreaterThan(10);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit — scopeViolations
+// ---------------------------------------------------------------------------
+
+const art = (over: Partial<ScopedArtifact> = {}): ScopedArtifact => ({
+  name: "a", file: "/x/a.md", scopePath: "src/api/**",
+  globs: ["src/api/**"], acknowledgedUnscoped: false, ...over,
+});
+
+describe("scopeViolations", () => {
+  it("15: a scoped artifact against an unsupported target fires", () => {
+    const v = scopeViolations([art()], ["claude"]);
+    expect(v).toHaveLength(1);
+    expect(v[0]!.formats).toEqual(["claude"]);
+  });
+
+  it("16 (NEGATIVE): the translated tier is silent", () => {
+    expect(scopeViolations([art()], ["cursor", "copilot"])).toEqual([]);
+  });
+
+  it("17 (NEGATIVE): an always-on artifact never fires — every default hub is this shape", () => {
+    // The highest-value negative. If this fires the gate is unusable.
+    expect(scopeViolations([art({ globs: [], scopePath: "**" })], ["claude", "agents"])).toEqual([]);
+  });
+
+  it("18 (NEGATIVE): an acknowledged artifact does not fire", () => {
+    expect(scopeViolations([art({ acknowledgedUnscoped: true })], ["claude"])).toEqual([]);
+  });
+
+  it("19 (NEGATIVE): no artifacts at all", () => {
+    expect(scopeViolations([], ["claude", "agents"])).toEqual([]);
+  });
+
+  it("20: every offending artifact is named — the operator with twenty needs twenty", () => {
+    const v = scopeViolations(
+      [art({ name: "a" }), art({ name: "b" }), art({ name: "c", acknowledgedUnscoped: true })],
+      ["claude"],
+    );
+    expect(v.map((x) => x.artifact.name)).toEqual(["a", "b"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Emission — the actual defect
+// ---------------------------------------------------------------------------
+
+function ab(args: string[], cwd: string): { status: number; out: string } {
+  const r = spawnSync("node", [CLI, ...args], {
+    cwd, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 120_000,
+  });
+  return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+function scaffoldHub(): string {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-scope-"));
+  const hub = path.join(base, "hub");
+  const r = spawnSync("node",
+    [CLI, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+    { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 180_000 });
+  if (r.status !== 0) throw new Error(`scaffold failed: ${r.stdout}${r.stderr}`);
+  return hub;
+}
+
+/** Hub with one narrow instruction and one universal one. */
+function hubWithScopedInstruction(formats: string[], acknowledged = false): string {
+  const hub = scaffoldHub();
+  const dir = path.join(hub, "core", "instructions");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "scoped.instructions.md"),
+    `---\ndescription: API layer rules\napplyTo: "src/api/**"\n` +
+    (acknowledged ? "scope-unsupported: acknowledged\n" : "") +
+    `---\n\n# API only\nNever widen a public API without an ADR.\n`);
+  fs.writeFileSync(path.join(dir, "global.instructions.md"),
+    `---\ndescription: Everywhere\napplyTo: "**"\n---\n\n# Global\nAlways true.\n`);
+  const p = path.join(hub, "agentboot.config.json");
+  const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+  c.personas.outputFormats = formats;
+  c.instructions = { enabled: ["scoped.instructions", "global.instructions"] };
+  fs.writeFileSync(p, JSON.stringify(c, null, 2));
+  return hub;
+}
+
+const read = (hub: string, ...seg: string[]) =>
+  fs.readFileSync(path.join(hub, "dist", ...seg), "utf-8");
+
+describe("emission — the translated tier receives the operator's exact scope", () => {
+  const TRANSLATED = ["cursor", "windsurf", "jetbrains", "copilot"];
+
+  it("21-27: cursor/windsurf/jetbrains/copilot all carry src/api/**, and always-on stays always-on", () => {
+    const hub = hubWithScopedInstruction(TRANSLATED);
+    expect(ab(["build"], hub).status).toBe(0);
+
+    // 21 — Cursor. `alwaysApply: true` was hardcoded here.
+    const cScoped = read(hub, "cursor", "core", "rules", "scoped.instructions.mdc");
+    expect(cScoped).toContain("src/api/**");
+    expect(cScoped).toContain("alwaysApply: false");
+    expect(cScoped).not.toMatch(/^alwaysApply:\s*true/m);
+    // 22 — the mutual-exclusivity invariant: globs XOR alwaysApply.
+    const cGlobal = read(hub, "cursor", "core", "rules", "global.instructions.mdc");
+    expect(cGlobal).toMatch(/^alwaysApply:\s*true/m);
+    expect(cGlobal).not.toContain("globs:");
+
+    // 23/24 — Windsurf. `trigger: always_on` was a string literal.
+    const wScoped = read(hub, "windsurf", "core", ".windsurf", "rules", "scoped.instructions.md");
+    expect(wScoped).toContain("trigger: glob");
+    expect(wScoped).toContain(`- "src/api/**"`);
+    expect(wScoped).not.toContain("trigger: always_on");
+    expect(read(hub, "windsurf", "core", ".windsurf", "rules", "global.instructions.md"))
+      .toContain("trigger: always_on");
+
+    // 25 — JetBrains reads `globs:`, not `applyTo:`; the identity stamp survives.
+    const jScoped = read(hub, "jetbrains", "core", ".aiassistant", "rules", "scoped.instructions.md");
+    expect(jScoped).toContain(`globs: ["src/api/**"]`);
+    expect(jScoped).not.toContain("applyTo:");
+    expect(jScoped).toContain("description: API layer rules");
+    // The always-on one loses the inert applyTo line entirely (no globs ⇒ always-on).
+    expect(read(hub, "jetbrains", "core", ".aiassistant", "rules", "global.instructions.md"))
+      .not.toContain("applyTo:");
+
+    // 26 — Copilot: native passthrough, unchanged.
+    expect(read(hub, "copilot", "core", "instructions", "scoped.instructions.md"))
+      .toContain(`applyTo: "src/api/**"`);
+  }, 300_000);
+
+  /**
+   * V2 — this test was written to catch V1 and could not fail.
+   *
+   * It used the single simple glob `src/api/**` — the one input on which the
+   * instruction parser and the seven hand-rolled gotcha parsers coincidentally
+   * agree. Mutating only the fixture to `src/**\/*.{ts,tsx}` turned it RED
+   * immediately: the instruction path emitted one correct glob and the gotcha
+   * path emitted `["src/**\/*.{ts", "tsx}"]`. The assertion was right; the data
+   * was drawn from the axis where the two implementations cannot disagree.
+   *
+   * It is now table-driven over the inputs that actually distinguish them: a
+   * brace group, a bracket class, a trailing YAML comment, a comma list, and a
+   * block sequence.
+   */
+  const SCOPE_FORMS: Array<{ name: string; value: string }> = [
+    { name: "simple glob", value: `"src/api/**"` },
+    { name: "brace group (C3)", value: `"src/**/*.{ts,tsx}"` },
+    { name: "bracket class", value: `"src/*.[ch]"` },
+    { name: "trailing YAML comment (C2)", value: `"src/**/*.ts"  # activation scope` },
+    { name: "comma list", value: `"src/api/**, src/db/**"` },
+    { name: "block sequence (NF-4)", value: `\n  - "src/db/**"\n  - "src/auth/**"` },
+  ];
+
+  for (const form of SCOPE_FORMS) {
+    it(`27[${form.name}]: one scoping projection, not two — instruction and gotcha agree`, () => {
+      const hub = scaffoldHub();
+      fs.mkdirSync(path.join(hub, "core", "instructions"), { recursive: true });
+      fs.mkdirSync(path.join(hub, "core", "gotchas"), { recursive: true });
+      fs.writeFileSync(path.join(hub, "core", "instructions", "x.instructions.md"),
+        `---\ndescription: "x"\napplyTo: ${form.value}\n---\n\nbody\n`);
+      fs.writeFileSync(path.join(hub, "core", "gotchas", "x.md"),
+        `---\ndescription: "x"\npaths: ${form.value}\n---\n\nbody\n`);
+      const p = path.join(hub, "agentboot.config.json");
+      const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+      c.personas.outputFormats = ["cursor"];
+      c.instructions = { enabled: ["x.instructions"] };
+      c.gotchas = { enabled: ["x"] };
+      fs.writeFileSync(p, JSON.stringify(c, null, 2));
+      expect(ab(["build"], hub).status).toBe(0);
+
+      const fmOf = (t: string) => t.match(/^---\n[\s\S]*?\n---/)![0]
+        .split("\n").filter((l) => /^(globs|alwaysApply|\s+- )/.test(l)).join("\n");
+      const instr = fmOf(read(hub, "cursor", "core", "rules", "x.instructions.mdc"));
+      const gotcha = fmOf(read(hub, "cursor", "core", "rules", "x.mdc"));
+      expect(gotcha).toBe(instr);
+      // And neither may be empty, or "they agree" is agreeing about nothing.
+      expect(instr).toMatch(/globs/);
+      // The corruption signature: an unbalanced quote or a YAML list marker
+      // that leaked into a scalar.
+      expect(instr).not.toMatch(/globs: "- /);
+      expect(gotcha).not.toMatch(/globs: "- /);
+    }, 300_000);
+  }
+
+  it("35 (NEGATIVE): the translated tier produces NO diagnostic at the CLI boundary", () => {
+    // A guard that also fires on the fixed path is how a channel gets tuned out.
+    const hub = hubWithScopedInstruction(TRANSLATED);
+    const build = ab(["build"], hub);
+    expect(build.status).toBe(0);
+    expect(build.out).not.toContain("Path scoping cannot be expressed");
+    expect(build.out).not.toContain("delivered always-on");
+  }, 300_000);
+});
+
+describe("emission — the unsupported tier degrades honestly", () => {
+  it("28-32: an acknowledged artifact builds, carries the Scope preamble, and always-on gets none", () => {
+    const hub = hubWithScopedInstruction(["claude", "agents", "gemini"], true);
+    const build = ab(["build"], hub);
+    expect(build.status).toBe(0);                              // 28
+    expect(build.out).toContain("delivered always-on");        // still reported, never silent
+
+    const claudeScoped = read(hub, "claude", "core", "rules", "scoped.instructions.md");
+    expect(claudeScoped).toContain("**Scope — `src/api/**`");  // 29
+    // Frontmatter-first contract preserved: the file still opens with ---.
+    expect(claudeScoped.startsWith("---\n")).toBe(true);
+
+    expect(read(hub, "agents", "AGENTS.md")).toContain("**Scope — `src/api/**`");   // 30
+    expect(read(hub, "gemini", "core", "GEMINI.md")).toContain("**Scope — `src/api/**`"); // 31
+
+    // 32 — the always-on artifact gets NO preamble anywhere.
+    expect(read(hub, "claude", "core", "rules", "global.instructions.md"))
+      .not.toContain("**Scope —");
+  }, 300_000);
+
+  it("33: an UNacknowledged scoped artifact fails the build and names both sides", () => {
+    const hub = hubWithScopedInstruction(["claude"], false);
+    const build = ab(["build"], hub);
+    expect(build.status).toBe(1);
+    expect(build.out).toContain("scoped.instructions");
+    expect(build.out).toContain("claude");
+    expect(build.out).toContain("scope-unsupported: acknowledged");
+  }, 300_000);
+
+  it("34: acknowledging it turns the failure into a single warning line", () => {
+    const hub = hubWithScopedInstruction(["claude"], true);
+    const build = ab(["build"], hub);
+    expect(build.status).toBe(0);
+    expect(build.out).toContain("⚠");
+    expect(build.out).toContain("delivered always-on");
+    expect(build.out).not.toContain("Build failed");
+  }, 300_000);
+
+  it("36 (NEGATIVE): a stock install builds clean — the default path is not broken", () => {
+    // Guards §2.6: the shipped narrow instructions carry the acknowledgement, so
+    // an operator meets the error only on THEIR OWN narrow rule.
+    const hub = scaffoldHub();
+    const build = ab(["build"], hub);
+    expect(build.status).toBe(0);
+    expect(build.out).not.toContain("Build failed");
+  }, 300_000);
+
+  it("the shipped narrow instructions are pre-acknowledged", () => {
+    // If this fails, every default install and this repo's own build break.
+    for (const f of ["security.instructions.md", "agentboot-authoring.instructions.md"]) {
+      const src = fs.readFileSync(path.join(ROOT, "core", "instructions", f), "utf-8");
+      const s = inspectScope(src);
+      expect(s.globs.length, f).toBeGreaterThan(0);
+      expect(s.acknowledgedUnscoped, f).toBe(true);
+    }
+    // baseline is applyTo: "**" — universal, so no acknowledgement is needed.
+    const baseline = inspectScope(
+      fs.readFileSync(path.join(ROOT, "core", "instructions", "baseline.instructions.md"), "utf-8"));
+    expect(baseline.alwaysOn).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C1 — the same defect, reachable through a LINE ENDING
+// ---------------------------------------------------------------------------
+
+/**
+ * `frontmatterBlock` was re-implemented, strictly, in TWO places
+ * (scope-projection.ts and guardrail-scan.ts), neither normalizing CRLF or a
+ * BOM — while the tolerant parser sat unused ten lines away in frontmatter.ts.
+ *
+ * A file checked out on Windows (git autocrlf) therefore matched nothing,
+ * `inspectScope` returned `{globs: [], alwaysOn: true}`, and this gate — the
+ * gate that exists BECAUSE `applyTo` was being inverted — concluded there was no
+ * scope to lose and let it through. F-6 verbatim, on every Windows checkout,
+ * behind a green build.
+ */
+
+import { frontmatterBlock, scopePreamble } from "../scripts/lib/scope-projection.js";
+import { inspectArtifact } from "../scripts/lib/guardrail-scan.js";
+import { VALID_OUTPUT_FORMATS } from "../scripts/lib/config.js";
+
+const C1_LF = `---\ndescription: x\napplyTo: "src/api/**"\n---\n\n# body\n`;
+const C1_CRLF = C1_LF.replace(/\n/g, "\r\n");
+const C1_BOM = `﻿${C1_LF}`;
+const C1_BOM_CRLF = `﻿${C1_CRLF}`;
+const C1_CR = C1_LF.replace(/\n/g, "\r");
+
+describe("C1 — frontmatter detection must survive a line ending", () => {
+  it("C1-1: LF is the control case", () => {
+    expect(frontmatterBlock(C1_LF)).toContain("applyTo");
+    expect(inspectScope(C1_LF)).toMatchObject({ globs: ["src/api/**"], alwaysOn: false });
+  });
+
+  it.each([
+    ["CRLF", C1_CRLF],
+    ["BOM", C1_BOM],
+    ["BOM+CRLF", C1_BOM_CRLF],
+    ["lone CR", C1_CR],
+  ])("C1-2 (%s): the scope is READ, not silently discarded", (_label, content) => {
+    // The pre-C1 result was exactly `{globs: [], alwaysOn: true}` — which the
+    // gate reads as "nothing to lose".
+    expect(inspectScope(content).alwaysOn).toBe(false);
+    expect(inspectScope(content).globs).toEqual(["src/api/**"]);
+  });
+
+  it("C1-3: the gate FIRES on a CRLF artifact against an unsupported target", () => {
+    const globs = inspectScope(C1_CRLF).globs;
+    expect(globs.length).toBeGreaterThan(0); // precondition, not decoration
+    const v = scopeViolations([art({ globs })], ["claude"]);
+    expect(v).toHaveLength(1);
+    expect(v[0]!.formats).toEqual(["claude"]);
+  });
+
+  it("C1-4 (NEGATIVE): a genuinely unscoped CRLF artifact still does not fire", () => {
+    expect(inspectScope(`---\r\ndescription: x\r\n---\r\n\r\n# body\r\n`))
+      .toMatchObject({ globs: [], alwaysOn: true });
+    expect(inspectScope(`---\r\napplyTo: "**"\r\n---\r\n`).alwaysOn).toBe(true);
+  });
+
+  it("C1-5: the acknowledgement escape hatch survives CRLF too", () => {
+    // If the hatch were unreadable on Windows the gate would be unresolvable
+    // there, and an error the operator cannot silence is a gate that gets removed.
+    expect(inspectScope(`---\r\napplyTo: "src/**"\r\nscope-unsupported: acknowledged\r\n---\r\n`)
+      .acknowledgedUnscoped).toBe(true);
+  });
+
+  it("C1-6: the HARD-guardrail twin had the identical defect and is fixed with it", () => {
+    const hardLF = `---\ndescription: x\nguardrail: hard\n---\n\n# body\n`;
+    const hardCRLF = hardLF.replace(/\n/g, "\r\n");
+    expect(inspectArtifact(hardLF).hard).toBe(true);
+    expect(inspectArtifact(hardCRLF).hard).toBe(true);
+    expect(inspectArtifact(`﻿${hardCRLF}`).hard).toBe(true);
+    // NEGATIVE: still not fooled by prose in the body.
+    expect(inspectArtifact(`---\r\ndescription: x\r\n---\r\n\r\nguardrail: hard\r\n`).hard).toBe(false);
+  });
+
+  it("C1-7 (NEGATIVE): no frontmatter at all is still no frontmatter", () => {
+    expect(frontmatterBlock("# just a heading\n")).toBeNull();
+    expect(frontmatterBlock("﻿# just a heading\r\n")).toBeNull();
+  });
+
+  it("C1-8: scopePreamble names the globs it stands in for", () => {
+    expect(scopePreamble(["src/api/**", "lib/**"])).toContain("src/api/**, lib/**");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C2 — a trailing YAML comment was parsed as part of the glob
+// ---------------------------------------------------------------------------
+
+describe("C2 — inline YAML comments in applyTo", () => {
+  it("C2-1: AgentBoot's OWN documented scaffold parses as universal", () => {
+    // core/instructions/agentboot-authoring.instructions.md and the
+    // `agentboot add instruction` template both write exactly this line. Before
+    // the fix it parsed to the single glob
+    // `** # glob pattern for activation scope` — not universal, so the gate
+    // fired on the default install of our own documented example.
+    const s = inspectScope(fm(`applyTo: "**"  # glob pattern for activation scope\n`));
+    expect(s.alwaysOn).toBe(true);
+    expect(s.globs).toEqual([]);
+  });
+
+  it("C2-2: a comment after an UNQUOTED narrowing glob is stripped", () => {
+    expect(inspectScope(fm(`applyTo: src/api/**  # only the API\n`)).globs)
+      .toEqual(["src/api/**"]);
+  });
+
+  it("C2-3: a comment after a quoted list is stripped, the list survives", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**, src/db/**"  # two trees\n`)).globs)
+      .toEqual(["src/api/**", "src/db/**"]);
+  });
+
+  it("C2-4 (NEGATIVE): a `#` with no leading space is a legal glob character", () => {
+    // YAML only starts an inline comment at whitespace-then-hash. Stripping
+    // every `#` would corrupt a legitimate path.
+    expect(inspectScope(fm(`applyTo: "src/#tag/**"\n`)).globs).toEqual(["src/#tag/**"]);
+  });
+
+  it("C2-5 (NEGATIVE): a line with no comment is untouched", () => {
+    expect(inspectScope(fm(`applyTo: "src/api/**"\n`)).globs).toEqual(["src/api/**"]);
+  });
+
+  it("C2-6: an EMPTY frontmatter block is a block, not a missing one", () => {
+    // `!fm` treated "" as absent. Same observable result here, but the
+    // conflation is the kind that becomes a defect the moment a second field is
+    // read from the block.
+    expect(inspectScope(`---\n---\n\n# body\n`)).toMatchObject({ globs: [], alwaysOn: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C3 — `.split(",")` split INSIDE brace groups
+// ---------------------------------------------------------------------------
+
+describe("C3 — brace and bracket groups in an applyTo list", () => {
+  it("C3-1: a brace group survives as ONE glob", () => {
+    // `.split(",")` produced ["src/**/*.{ts", "tsx}"] — two globs that match no
+    // file, so the rule reached nothing. Exit 0, no diagnostic.
+    expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}"\n`)).globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+
+  it("C3-2: commas BETWEEN entries still split", () => {
+    expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}, docs/**/*.md"\n`)).globs)
+      .toEqual(["src/**/*.{ts,tsx}", "docs/**/*.md"]);
+  });
+
+  it("C3-3: nested braces are tracked, not merely detected", () => {
+    expect(inspectScope(fm(`applyTo: "src/{a,{b,c}}/**"\n`)).globs)
+      .toEqual(["src/{a,{b,c}}/**"]);
+  });
+
+  it("C3-4: a bracket character class is not split either", () => {
+    expect(inspectScope(fm(`applyTo: "src/*.[ch]"\n`)).globs).toEqual(["src/*.[ch]"]);
+  });
+
+  it("C3-5 (NEGATIVE): the plain multi-glob case is unchanged", () => {
+    // The regression risk of a hand-rolled splitter is that it stops splitting.
+    expect(inspectScope(fm(`applyTo: "src/api/**, src/db/**, lib/**"\n`)).globs)
+      .toEqual(["src/api/**", "src/db/**", "lib/**"]);
+  });
+
+  it("C3-6 (NEGATIVE): an unbalanced brace does not swallow the rest of the list", () => {
+    // Malformed input should degrade to something, not to one giant glob that
+    // silently matches nothing.
+    expect(inspectScope(fm(`applyTo: "src/{a/**, docs/**"\n`)).globs.length).toBeGreaterThan(0);
+  });
+
+  it("C3-7: a brace glob combined with a trailing comment (C2 + C3 together)", () => {
+    expect(inspectScope(fm(`applyTo: "src/**/*.{ts,tsx}"  # code only\n`)).globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B5 — APPLY_TO_PROJECTION was the one table with no coverage assertion
+// ---------------------------------------------------------------------------
+
+describe("B5 — every valid output format has a projection row", () => {
+  it("B5-1: VALID_OUTPUT_FORMATS ⊆ keys(APPLY_TO_PROJECTION)", () => {
+    // PLATFORM_ENFORCEMENT and CAPABILITY_SUPPORT both had this assertion at
+    // build start; this table did not. It is the one whose gate fails CLOSED on
+    // an unknown format, so a missing row would not fail loudly — it would make
+    // every scoped instruction targeting that format an error on every build,
+    // blaming the artifact instead of the missing row.
+    const missing = VALID_OUTPUT_FORMATS.filter((f) => !(f in APPLY_TO_PROJECTION));
+    expect(missing).toEqual([]);
+  });
+
+  it("B5-2: and no projection row names a format that is not valid", () => {
+    const stray = Object.keys(APPLY_TO_PROJECTION).filter((f) => !VALID_OUTPUT_FORMATS.includes(f));
+    expect(stray).toEqual([]);
+  });
+});
+
+/**
+ * V1 / V3 / H3 / NF-4 — the gotcha emitters, the CRLF body strippers, and the
+ * unscoped case.
+ *
+ * C2 and C3 were fixed in `inspectScope` (the instruction path) and the seven
+ * hand-rolled `paths` parsers in the gotcha emitters kept the defect — the exact
+ * shape commit 6c5ffdc described as "the correct implementation ten lines away",
+ * in the opposite direction. These build one hub carrying every input class and
+ * read the emitted artifacts on every platform that can express scope.
+ */
+describe("V1/V3/H3/NF-4 — one parser for every emitter", () => {
+  let vhub: string;
+
+  const gotcha = (desc: string, paths?: string) =>
+    `---\ndescription: ${desc}\n${paths ? `paths: ${paths}\n` : ""}---\n# ${desc}\nBody.\n`;
+
+  beforeAll(() => {
+    vhub = scaffoldHub();
+    fs.mkdirSync(path.join(vhub, "core", "gotchas"), { recursive: true });
+    fs.mkdirSync(path.join(vhub, "core", "instructions"), { recursive: true });
+    fs.writeFileSync(path.join(vhub, "core", "gotchas", "bracescope.md"),
+      gotcha("brace scope", `"src/**/*.{ts,tsx}"`));
+    fs.writeFileSync(path.join(vhub, "core", "gotchas", "commentscope.md"),
+      gotcha("comment scope", `"src/**"  # glob pattern for activation scope`));
+    fs.writeFileSync(path.join(vhub, "core", "gotchas", "unscoped.md"),
+      gotcha("unscoped gotcha"));
+    fs.writeFileSync(path.join(vhub, "core", "instructions", "multi.instructions.md"),
+      `---\ndescription: multi\napplyTo:\n  - "src/db/**"\n  - "src/auth/**"\nscope-unsupported: acknowledged\n---\n# Multi\nBody.\n`);
+    // Authored with CRLF, as a Windows checkout produces.
+    fs.writeFileSync(path.join(vhub, "core", "instructions", "crlfnarrow.instructions.md"),
+      '---\r\ndescription: crlf narrow\r\napplyTo: "src/api/**"\r\nscope-unsupported: acknowledged\r\n---\r\n# CRLF\r\nBody.\r\n');
+
+    const p = path.join(vhub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    c.personas.outputFormats = ["claude", "cursor", "windsurf", "jetbrains", "copilot", "gemini"];
+    c.instructions = { enabled: ["multi.instructions", "crlfnarrow.instructions"] };
+    c.gotchas = { enabled: ["bracescope", "commentscope", "unscoped"] };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    expect(ab(["build"], vhub).status).toBe(0);
+  }, 600_000);
+
+  it("V1-1: a brace group survives to cursor, windsurf, jetbrains and copilot as ONE glob", () => {
+    // Was: ["src/**/*.{ts", "tsx}"] — two globs that match nothing, exit 0.
+    expect(read(vhub, "cursor", "core", "rules", "bracescope.mdc"))
+      .toContain(`globs: "src/**/*.{ts,tsx}"`);
+    expect(read(vhub, "windsurf", "core", ".windsurf", "rules", "gotcha-bracescope.md"))
+      .toContain(`  - "src/**/*.{ts,tsx}"`);
+    expect(read(vhub, "jetbrains", "core", ".aiassistant", "rules", "bracescope.rules.md"))
+      .toContain(`globs: ["src/**/*.{ts,tsx}"]`);
+    expect(read(vhub, "copilot", "core", "instructions", "bracescope.instructions.md"))
+      .toContain(`applyTo: "src/**/*.{ts,tsx}"`);
+  });
+
+  it("V1-2: a trailing YAML comment is stripped, not baked into the glob", () => {
+    // jetbrains was the worst: JSON.stringify escaped the quote, so YAML could
+    // not strip the comment either — globs: ["src/**\"  # glob pattern …"].
+    for (const [plat, file] of [
+      ["cursor", ["core", "rules", "commentscope.mdc"]],
+      ["jetbrains", ["core", ".aiassistant", "rules", "commentscope.rules.md"]],
+      ["copilot", ["core", "instructions", "commentscope.instructions.md"]],
+    ] as const) {
+      const t = read(vhub, plat, ...(file as unknown as string[]));
+      expect(t, `${plat} baked the comment into the glob`).not.toContain("glob pattern for activation");
+      expect(t).toMatch(/src\/\*\*/);
+    }
+  });
+
+  it("H3-1: an UNSCOPED gotcha is always-on on cursor, not scoped-to-nothing", () => {
+    // Was `alwaysApply: false` with no globs — a rule that applies NOWHERE.
+    // compileInstructions was fixed to `globs.length === 0` and this sibling
+    // emitter kept the hardcoded false: the same drift, one round later.
+    const t = read(vhub, "cursor", "core", "rules", "unscoped.mdc");
+    expect(t).toContain("alwaysApply: true");
+    expect(t).not.toMatch(/^globs:/m);
+  });
+
+  it("H3-2: an UNSCOPED gotcha reaches copilot at all", () => {
+    // Was emitted to nothing on copilot while claude and skill both got it.
+    expect(read(vhub, "copilot", "core", "instructions", "unscoped.instructions.md"))
+      .toContain(`applyTo: "**"`);
+  });
+
+  it("NF-4-1: a block-sequence applyTo keeps EVERY path and emits valid YAML", () => {
+    // Was: cursor `globs: "- "src/db/**"` and windsurf `- "- "src/db/**"` —
+    // unbalanced quotes, and src/auth/** silently gone.
+    const cur = read(vhub, "cursor", "core", "rules", "multi.instructions.mdc");
+    expect(cur).toContain(`  - "src/db/**"`);
+    expect(cur).toContain(`  - "src/auth/**"`);
+    expect(cur).not.toContain(`globs: "- `);
+    const ws = read(vhub, "windsurf", "core", ".windsurf", "rules", "multi.instructions.md");
+    expect(ws).toContain(`  - "src/db/**"`);
+    expect(ws).toContain(`  - "src/auth/**"`);
+    expect(ws).not.toContain(`- "- `);
+  });
+
+  it("V3-1: a CRLF-authored instruction does not ship its raw frontmatter as body text", () => {
+    // Was: TWO frontmatter blocks in the .mdc — the generated one, then the raw
+    // source block with applyTo:/scope-unsupported: rendered as instruction text.
+    const cur = read(vhub, "cursor", "core", "rules", "crlfnarrow.instructions.mdc");
+    expect(cur.split("---").length - 1, "more than one frontmatter block").toBeLessThanOrEqual(2);
+    expect(cur).not.toMatch(/^applyTo:/m);
+    expect(cur).not.toMatch(/^scope-unsupported:/m);
+    expect(cur).toContain(`globs: "src/api/**"`);
+  });
+
+  it("V3-2: the claude Scope preamble lands AFTER the frontmatter, not above it", () => {
+    // insertAfterFrontmatter could not find CRLF frontmatter either, so the
+    // preamble was prepended and the raw YAML rendered underneath it.
+    const cl = read(vhub, "claude", "core", "rules", "crlfnarrow.instructions.md");
+    expect(cl.startsWith("---\n")).toBe(true);
+    const preamble = cl.indexOf("**Scope —");
+    const closing = cl.indexOf("\n---\n");
+    expect(preamble).toBeGreaterThan(closing);
+  });
+});
+
+/**
+ * C4 — the scope gate's coverage of `domains/*` was unpinned.
+ *
+ * `grep -rn scopeSeen scripts/ tests/` returned ten hits, all in
+ * scripts/compile.ts and ZERO in tests/. The out-param was declared
+ * `scopeSeen?:`, so dropping the argument from the `compileDomains(...)` call
+ * silently reinstated F-6 for every domain instruction — rules authored narrow,
+ * delivered ALWAYS-ON to targets that cannot express scope — with a fully green
+ * suite AND a green tsc.
+ *
+ * Two defences, because they fail differently: the parameter is now REQUIRED (a
+ * dropped argument is a type error), and this case pins the behaviour end to
+ * end (a throwaway map passed to silence the compiler still goes red).
+ */
+describe("C4 — a domain instruction reaches the scope gate", () => {
+  function hubWithDomainInstruction(acknowledged: boolean): string {
+    const hub = scaffoldHub();
+    const dom = path.join(hub, "domains", "payments", "instructions");
+    fs.mkdirSync(dom, { recursive: true });
+    fs.writeFileSync(path.join(dom, "ledger.instructions.md"),
+      `---\ndescription: Ledger rules\napplyTo: "src/ledger/**"\n` +
+      (acknowledged ? "scope-unsupported: acknowledged\n" : "") +
+      `---\n\n# Ledger\nDouble-entry only.\n`);
+    const p = path.join(hub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    // claude cannot express path scope — the gate's whole subject.
+    c.personas.outputFormats = ["claude"];
+    c.domains = [{ name: "payments" }];
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+    return hub;
+  }
+
+  it("C4-1: an UNACKNOWLEDGED narrow domain instruction FAILS the build", () => {
+    const hub = hubWithDomainInstruction(false);
+    const build = ab(["build"], hub);
+    expect(build.out).toContain("Path scoping cannot be expressed");
+    expect(build.out).toContain("ledger.instructions");
+    expect(build.status, build.out).toBe(1);
+  }, 300_000);
+
+  it("C4-2: acknowledging it builds, and the artifact carries the Scope preamble", () => {
+    // The negative direction: the gate must be escapable exactly as documented,
+    // or acknowledging is not a decision, it is a dead end.
+    const hub = hubWithDomainInstruction(true);
+    const build = ab(["build"], hub);
+    expect(build.status, build.out).toBe(0);
+    expect(build.out).toContain("delivered always-on");
+    const emitted = read(hub, "claude", "domains", "payments", "rules", "ledger.instructions.md");
+    expect(emitted).toContain("**Scope — `src/ledger/**`");
+  }, 300_000);
+});
+
+/**
+ * C5 / NF-5 — doctor's Scoping and Enforcement blocks.
+ *
+ * C5: `grep -rln Scoping tests/` matched this file only via an import; there was
+ * no assertion anywhere on doctor's Scoping OUTPUT. The block that tells an
+ * operator "your narrow rules are being delivered always-on" was unpinned.
+ *
+ * NF-5: with `personas.outputFormats: []` the Enforcement block emitted no rows
+ * at all and Scoping printed "✓ Path scoping is expressible on every configured
+ * target" — over ZERO targets. Doctor still exited 1 because Coverage fired, so
+ * it was not reachable as a false green today; it is the same "a gate that
+ * evaluates zero platforms is not a passing gate, it is an absent one" shape A5
+ * was written to remove, surviving in the two blocks A5's own commit message
+ * names.
+ */
+describe("C5/NF-5 — doctor says what it checked", () => {
+  it("C5-1: an acknowledged narrow instruction on an unscopable target is REPORTED by doctor", () => {
+    const hub = hubWithScopedInstruction(["claude"], true);
+    expect(ab(["build"], hub).status).toBe(0);
+    const d = ab(["doctor"], hub);
+    expect(d.out).toContain("Scoping");
+    expect(d.out).toMatch(/scoped instruction\(s\) delivered always-on on claude/);
+  }, 300_000);
+
+  it("C5-2 (NEGATIVE): on a target that CAN express scope, Scoping is green and silent", () => {
+    // A guard that also fires on the fixed path is how a channel gets tuned out.
+    const hub = hubWithScopedInstruction(["cursor"], false);
+    expect(ab(["build"], hub).status).toBe(0);
+    const d = ab(["doctor"], hub);
+    expect(d.out).toContain("Path scoping is expressible on every configured target");
+    expect(d.out).not.toMatch(/delivered always-on/);
+  }, 300_000);
+
+  it("NF-5-1: with ZERO configured platforms, both blocks say they checked nothing", () => {
+    const hub = scaffoldHub();
+    const p = path.join(hub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(p, "utf-8"));
+    c.personas.outputFormats = [];
+    c.managed = { enabled: true, guardrails: { denyTools: ["Bash"] } };
+    fs.writeFileSync(p, JSON.stringify(c, null, 2));
+
+    const d = ab(["doctor"], hub);
+    expect(d.out).toMatch(/Enforcement — personas\.outputFormats is EMPTY/);
+    expect(d.out).toMatch(/Scoping — personas\.outputFormats is EMPTY/);
+    // And specifically NOT the vacuous green tick it used to print.
+    expect(d.out).not.toContain("✓ Path scoping is expressible on every configured target");
+    expect(d.status).not.toBe(0);
+  }, 300_000);
+});
+
+/**
+ * NF2-3 / V1 — the one scope parser handled BLOCK sequences and nothing else.
+ *
+ * YAML FLOW sequences and BLOCK SCALARS are ordinary YAML, and AgentBoot's own
+ * documentation teaches the flow form (docs/concepts.md `paths:
+ * ["packages/api-service/**"]`, docs/prompt-guide.md) while the repo's own
+ * fixtures use it. Before this fix:
+ *
+ *     applyTo: ["src/db/**", "src/auth/**"]
+ *       → ONE glob: the literal string `["src/db/**", "src/auth/**"]`
+ *     applyTo: >  /  applyTo: |
+ *       → ONE glob: `>` / `|`, and the real scope on the next line DROPPED
+ *
+ * End to end at `agentboot build`, exit 0 and no diagnostic:
+ *   dist/cursor/…/phi.instructions.mdc   globs: "["src/db/**", "src/auth/**"]"
+ *   dist/windsurf/…/phi.instructions.md  - "["src/db/**", "src/auth/**"]"
+ * both of which FAIL a js-yaml parse — the NF-4 symptom verbatim, restored on a
+ * different YAML form. Routing all seven gotcha emitters through one parser (V1)
+ * made the defect UNIFORM rather than closing it.
+ *
+ * Zero cases in this file previously covered a flow sequence or a block scalar.
+ */
+describe("NF2-3 — every ordinary YAML form of a scope key parses", () => {
+  const doc = (fm: string) => `---\n${fm}\n---\nbody\n`;
+
+  it("FLOW sequence: two globs, not one literal string", () => {
+    const r = readScopeGlobs(doc('applyTo: ["src/db/**", "src/auth/**"]'), "applyTo");
+    expect(r.globs).toEqual(["src/db/**", "src/auth/**"]);
+    expect(r.malformed).toBeNull();
+  });
+
+  it("FLOW sequence, unquoted items", () => {
+    expect(readScopeGlobs(doc("applyTo: [src/db/**, src/auth/**]"), "applyTo").globs)
+      .toEqual(["src/db/**", "src/auth/**"]);
+  });
+
+  it("FLOW sequence: a comma INSIDE a quoted item is not a separator", () => {
+    // Distinct from the C3 brace case: here the comma is protected by YAML
+    // quoting, not by a brace group, and one splitter cannot be right for both.
+    expect(readScopeGlobs(doc('applyTo: ["src/**/*.{ts,tsx}"]'), "applyTo").globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+  });
+
+  it("FOLDED block scalar: the scope on the next line is NOT dropped", () => {
+    expect(readScopeGlobs(doc("applyTo: >\n  src/api/**"), "applyTo").globs)
+      .toEqual(["src/api/**"]);
+  });
+
+  it("LITERAL block scalar, multi-line: one glob per line", () => {
+    expect(readScopeGlobs(doc("applyTo: |\n  src/api/**\n  src/db/**"), "applyTo").globs)
+      .toEqual(["src/api/**", "src/db/**"]);
+  });
+
+  it("block scalar with a chomping indicator", () => {
+    expect(readScopeGlobs(doc("applyTo: |-\n  src/api/**"), "applyTo").globs)
+      .toEqual(["src/api/**"]);
+  });
+
+  it("a block scalar stops at the next key — it does not swallow the frontmatter", () => {
+    const r = readScopeGlobs(doc("applyTo: >\n  src/api/**\ndescription: x"), "applyTo");
+    expect(r.globs).toEqual(["src/api/**"]);
+  });
+
+  it("the `paths:` key gets the identical treatment — same parser, same forms", () => {
+    // The gotcha variant hit all seven emitters identically. It must not need a
+    // second fix.
+    expect(readScopeGlobs(doc('paths: ["packages/api-service/**"]'), "paths").globs)
+      .toEqual(["packages/api-service/**"]);
+    expect(readScopeGlobs(doc("paths: |\n  a/**\n  b/**"), "paths").globs).toEqual(["a/**", "b/**"]);
+  });
+
+  it("NEGATIVE: the forms that already worked still work", () => {
+    expect(readScopeGlobs(doc('applyTo: "src/api/**"'), "applyTo").globs).toEqual(["src/api/**"]);
+    expect(readScopeGlobs(doc('applyTo: "src/**/*.{ts,tsx}"'), "applyTo").globs)
+      .toEqual(["src/**/*.{ts,tsx}"]);
+    expect(readScopeGlobs(doc('applyTo: "**"  # glob pattern'), "applyTo").globs).toEqual(["**"]);
+    expect(readScopeGlobs(doc('applyTo:\n  - "src/db/**"\n  - "src/auth/**"'), "applyTo").globs)
+      .toEqual(["src/db/**", "src/auth/**"]);
+  });
+
+  it("an EMPTY flow sequence is an empty scope, not a malformed one", () => {
+    const r = readScopeGlobs(doc("applyTo: []"), "applyTo");
+    expect(r.globs).toEqual([]);
+    expect(r.malformed).toBeNull();
+  });
+});
+
+describe("NF2-3 — an UNPARSEABLE scope is reported, never treated as absent", () => {
+  const doc = (fm: string) => `---\n${fm}\n---\nbody\n`;
+
+  it("an unterminated flow sequence is malformed", () => {
+    const r = readScopeGlobs(doc('applyTo: ["src/db/**"'), "applyTo");
+    expect(r.malformed).toContain("unterminated flow sequence");
+  });
+
+  it("a mapping where a glob belongs is malformed", () => {
+    expect(readScopeGlobs(doc("applyTo: {a: 1}"), "applyTo").malformed).toContain("mapping");
+  });
+
+  it("FAIL CLOSED: inspectScope reports a malformed scope as NARROW, not always-on", () => {
+    // Always-on is the inversion this module exists to prevent. "I could not
+    // read it" must make the degradation gate fire, not wave the artifact past.
+    const s = inspectScope(doc('applyTo: ["src/db/**"'));
+    expect(s.alwaysOn).toBe(false);
+    expect(s.malformed).not.toBeNull();
+  });
+});
+
+describe("NF2-3 — the frontmatter rewriter handles a MULTI-LINE value", () => {
+  it("replacing a block-scalar key leaves no orphaned continuation line", () => {
+    // The JetBrains emitter used .replace(/^\s*applyTo:.*$/im, …) — one line —
+    // so a block scalar left `  src/api/**` dangling under the new `globs:`
+    // value, which js-yaml rejects. Getting the parser right and leaving the
+    // rewriter single-line only moves the invalid YAML to another platform.
+    const src = `---\ndescription: d\napplyTo: >\n  src/api/**\n---\nbody\n`;
+    const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["src/api/**"]');
+    expect(out).toContain('globs: ["src/api/**"]');
+    expect(out.split("---")[1]).not.toContain("src/api/**\n  ");
+    expect(out).toBe(`---\ndescription: d\nglobs: ["src/api/**"]\n---\nbody\n`);
+  });
+
+  it("replacing a block-SEQUENCE key consumes every item", () => {
+    const src = `---\napplyTo:\n  - "a/**"\n  - "b/**"\ndescription: d\n---\nbody\n`;
+    const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["a/**","b/**"]');
+    expect(out).toBe(`---\nglobs: ["a/**","b/**"]\ndescription: d\n---\nbody\n`);
+  });
+
+  it("DELETING a multi-line key removes the whole value", () => {
+    const src = `---\napplyTo:\n  - "a/**"\ndescription: d\n---\nbody\n`;
+    expect(rewriteFrontmatterKeyBlock(src, "applyTo", null))
+      .toBe(`---\ndescription: d\n---\nbody\n`);
+  });
+
+  it("NEGATIVE: a single-line key still rewrites, and the body is untouched", () => {
+    const src = `---\napplyTo: "a/**"\ndescription: d\n---\napplyTo: not frontmatter\n`;
+    const out = rewriteFrontmatterKeyBlock(src, "applyTo", 'globs: ["a/**"]');
+    expect(out).toBe(`---\nglobs: ["a/**"]\ndescription: d\n---\napplyTo: not frontmatter\n`);
+  });
+});
+
+/**
+ * NEW-2 — the reader and the rewriter both matched the key at ANY indent.
+ *
+ * `rewriteFrontmatterKeyBlock`'s own doc comment claimed it acts "only on a key
+ * at the TOP level"; the matcher was `^([ \t]*)<key>:`. `readScopeGlobsFromBlock`
+ * had the same shape. Indentation is precisely what distinguishes a key from the
+ * CONTENT of a block scalar, so a `description: |` whose prose happens to
+ * mention `applyTo:` was read as the scope, and rewritten as if it were.
+ *
+ * 296b21e switched Copilot from source-line passthrough to re-serialization
+ * through this helper, so Copilot went from "valid YAML, correct glob" to
+ * "unparseable YAML, wrong glob" for a whole input class. Copilot is one of the
+ * three officially supported v1.0 platforms, and this is exactly the defect
+ * class ("emitted frontmatter no YAML parser accepts") the helper exists to
+ * close.
+ *
+ * Measured on a scratch hub, before: dist/copilot emitted
+ *
+ *     description: |
+ *     applyTo: "narrows a rule to a path glob."
+ *       Keep it as tight as you can.
+ *     applyTo: "narrows a rule to a path glob."
+ *
+ * — js-yaml "bad indentation of a mapping entry (3:3)", a duplicate key, and a
+ * glob taken from prose. After: valid YAML, block scalar intact, and cursor,
+ * jetbrains and copilot all carrying src/pay/**.
+ */
+describe("NEW-2 — a key inside a block scalar is text, not structure", () => {
+  const PROSE =
+    "---\n" +
+    "description: |\n" +
+    "  applyTo: narrows a rule to a path glob.\n" +
+    "  Keep it as tight as you can.\n" +
+    'applyTo: "src/pay/**"\n' +
+    "---\n" +
+    "# prose\nbody\n";
+
+  it("the READER takes the top-level key, not the prose that mentions it", () => {
+    expect(readScopeGlobs(PROSE, "applyTo").globs).toEqual(["src/pay/**"]);
+  });
+
+  it("the REWRITER leaves the block scalar untouched and replaces once", () => {
+    const out = rewriteFrontmatterKeyBlock(PROSE, "applyTo", 'globs: ["src/pay/**"]');
+    expect(out).toContain("  applyTo: narrows a rule to a path glob.");
+    expect(out).toContain("  Keep it as tight as you can.");
+    expect(out.match(/globs: \["src\/pay\/\*\*"\]/g)?.length, "replacement emitted twice").toBe(1);
+    // The old glob line is gone; the prose line survives at its own indent.
+    expect(out).not.toMatch(/^applyTo: "src\/pay/m);
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+
+  it("DELETION does not reach into someone else's nested mapping", () => {
+    const nested =
+      "---\ndescription: nested\nmeta:\n" +
+      '  applyTo: "internal-note"\n  owner: platform\n' +
+      'applyTo: "src/a/**"\n---\nbody\n';
+    const out = rewriteFrontmatterKeyBlock(nested, "applyTo", null);
+    expect(out, "the nested meta.applyTo was silently deleted").toContain('  applyTo: "internal-note"');
+    expect(out, "an orphaned sibling was consumed as a continuation").toContain("  owner: platform");
+    expect(out).not.toMatch(/^applyTo: "src\/a/m);
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+
+  it("REPLACEMENT into a nested-key document emits the replacement exactly once", () => {
+    const nested =
+      "---\ndescription: nested\nmeta:\n" +
+      '  applyTo: "internal-note"\n  owner: platform\n' +
+      'applyTo: "src/a/**"\n---\nbody\n';
+    const out = rewriteFrontmatterKeyBlock(nested, "applyTo", 'globs: ["src/a/**"]');
+    expect(out.match(/globs: \["src\/a\/\*\*"\]/g)?.length).toBe(1);
+    expect(out).toContain("  owner: platform");
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+
+  it("NEGATIVE: an ordinary top-level key is still read and still rewritten", () => {
+    // Anchoring at column 0 must not turn the helper into a no-op.
+    const plain = '---\ndescription: plain\napplyTo: "src/db/**"\n---\nbody\n';
+    expect(readScopeGlobs(plain, "applyTo").globs).toEqual(["src/db/**"]);
+    expect(rewriteFrontmatterKeyBlock(plain, "applyTo", 'globs: ["src/db/**"]')).toContain(
+      'globs: ["src/db/**"]',
+    );
+    expect(rewriteFrontmatterKeyBlock(plain, "applyTo", null)).not.toContain("applyTo");
+  });
+
+  it("NEGATIVE: a top-level BLOCK-SCALAR scope still round-trips — the F-6 case", () => {
+    const blockScalar = "---\ndescription: bs\napplyTo: |\n  src/one/**\n  src/two/**\n---\nbody\n";
+    expect(readScopeGlobs(blockScalar, "applyTo").globs).toEqual(["src/one/**", "src/two/**"]);
+    const out = rewriteFrontmatterKeyBlock(blockScalar, "applyTo", 'globs: ["src/one/**"]');
+    expect(out, "continuation lines were left orphaned").not.toContain("  src/two/**");
+    const block = /^---\n([\s\S]*?)\n---/.exec(out)![1]!;
+    expect(() => yaml.load(block)).not.toThrow();
+  });
+});
+
+/**
+ * NF4-7 — a multi-line YAML flow sequence hard-failed the build.
+ *
+ * The reader handled a flow sequence only when it opened and closed on ONE
+ * line, so this — legal YAML, and the form the product's own docs teach, just
+ * wrapped —
+ *
+ *     paths: [
+ *       "src/n/**",
+ *       "src/o/**"
+ *     ]
+ *
+ * hit the unterminated branch: `agentboot build` exit 1, "✗ FATAL: 1
+ * artifact(s) have an unreadable path scope: … paths: unterminated flow
+ * sequence: [".
+ *
+ * The POSTURE was right — it failed closed, loudly, naming the file — and the
+ * PARSE was wrong, which is the worst combination available. A well-worded
+ * refusal of valid input teaches the operator that the gate is broken, and a
+ * gate the operator works around protects nothing.
+ *
+ * Asserted as EQUIVALENCE rather than against an expected list: the wrapped and
+ * unwrapped forms are the same YAML, so they must produce the same globs. A
+ * literal expectation would let the two drift apart while both looked correct.
+ */
+describe("NF4-7 — a flow sequence may span lines", () => {
+  const fmOf = (body: string) => `---\ndescription: x\n${body}\n---\n# t\nbody\n`;
+
+  it("the wrapped and unwrapped forms are the SAME scope", () => {
+    const oneLine = readScopeGlobs(fmOf('paths: ["src/n/**", "src/o/**"]'), "paths");
+    const wrapped = readScopeGlobs(fmOf('paths: [\n  "src/n/**",\n  "src/o/**"\n]'), "paths");
+    expect(wrapped.malformed, "legal YAML the docs teach was refused").toBeNull();
+    expect(wrapped.globs).toEqual(oneLine.globs);
+  });
+
+  it("a trailing comma before the close is accepted — YAML allows it", () => {
+    const r = readScopeGlobs(fmOf('paths: [\n  "a/**",\n  "b/**",\n]'), "paths");
+    expect(r.malformed).toBeNull();
+    expect(r.globs).toEqual(["a/**", "b/**"]);
+  });
+
+  it("applyTo takes the same treatment — one reader, not two", () => {
+    const r = readScopeGlobs(fmOf('applyTo: [\n  "src/pay/**"\n]'), "applyTo");
+    expect(r.malformed).toBeNull();
+    expect(r.globs).toEqual(["src/pay/**"]);
+  });
+
+  it("the key AFTER a wrapped sequence is not swallowed", () => {
+    const src = '---\npaths: [\n  "a/**"\n]\napplyTo: "src/z/**"\n---\nbody\n';
+    expect(readScopeGlobs(src, "paths").globs).toEqual(["a/**"]);
+    expect(readScopeGlobs(src, "applyTo").globs).toEqual(["src/z/**"]);
+  });
+
+  it("NEGATIVE: a genuinely unterminated sequence still FAILS CLOSED", () => {
+    // The whole point of the branch. Widening the parser must not widen it into
+    // accepting a scope it cannot read — that would report the scope as absent,
+    // i.e. as ALWAYS-ON.
+    const r = readScopeGlobs(fmOf('paths: [\n  "src/n/**",'), "paths");
+    expect(r.malformed).toMatch(/unterminated flow sequence/);
+    expect(r.globs).toEqual([]);
+  });
+
+  it("NEGATIVE: a character-class glob is not a bracket to balance", () => {
+    // `src/**/*.[jt]s` is a legitimate glob. Counting raw brackets would make a
+    // sequence look unbalanced and swallow the rest of the block.
+    expect(readScopeGlobs(fmOf('paths: "src/**/*.[jt]s"'), "paths").globs).toEqual(["src/**/*.[jt]s"]);
+    const inFlow = readScopeGlobs(fmOf('paths: ["src/**/*.[jt]s", "b/**"]'), "paths");
+    expect(inFlow.malformed).toBeNull();
+    expect(inFlow.globs).toEqual(["src/**/*.[jt]s", "b/**"]);
+  });
+
+  it("NEGATIVE: an UNBALANCED bracket inside a quoted glob is still just text", () => {
+    // The case that makes quote-skipping load-bearing rather than decorative:
+    // a balanced character class cancels itself out even when counted raw, so
+    // it proves nothing. `"src/[a.md"` does not, and a raw count would leave
+    // depth at 1 and swallow the following key.
+    const src = '---\npaths: ["src/[a.md", "b/**"]\napplyTo: "src/z/**"\n---\nbody\n';
+    const r = readScopeGlobs(src, "paths");
+    expect(r.malformed).toBeNull();
+    expect(r.globs).toEqual(["src/[a.md", "b/**"]);
+    expect(readScopeGlobs(src, "applyTo").globs, "the next key was swallowed").toEqual(["src/z/**"]);
+  });
+
+  it("NEGATIVE: every other YAML form is unchanged", () => {
+    expect(readScopeGlobs(fmOf('paths: []'), "paths").globs).toEqual([]);
+    expect(readScopeGlobs(fmOf('paths:\n  - "src/x/**"\n  - "src/y/**"'), "paths").globs)
+      .toEqual(["src/x/**", "src/y/**"]);
+    expect(readScopeGlobs(fmOf("paths: |\n  src/one/**\n  src/two/**"), "paths").globs)
+      .toEqual(["src/one/**", "src/two/**"]);
+    expect(readScopeGlobs(fmOf('paths: "src/a/**"  # a comment'), "paths").globs).toEqual(["src/a/**"]);
+  });
+});

@@ -5,10 +5,10 @@ sidebar_position: 3
 
 # Prompt & Cost Optimization
 
-AgentBoot's core claim is "prompts as code." If prompts are code, they need the same
-discipline as code: linting, testing, measurement, optimization, and review. This doc
-covers how AgentBoot helps organizations write better prompts, spend less on tokens,
-and measure the effectiveness of their personas.
+AgentBoot's core claim is "prompts as code." If prompts are code, they get the same
+discipline as code: linting, review, version control, and a cost budget. This doc
+covers how AgentBoot helps organizations keep persona prompts reviewable and lean,
+and spend less on tokens.
 
 ---
 
@@ -47,18 +47,22 @@ agentboot test --type behavioral       agentboot test --ci
   "Security reviewer missed SQLi"        Test results posted to PR
   Fix it before you push.                Team sees pass/fail, not your drafts.
 
-agentboot cost-estimate                agentboot metrics (aggregate)
+agentboot cost-estimate                agentboot metrics (planned)
   "This persona costs $0.56/run"         "Team cost: $8,200/mo"
   Personal planning tool.                Org-level, anonymized.
 
-/insights                              Org dashboard
+/insights (planned)                    Org dashboard (planned)
   "You rephrase auth questions often"    "Auth patterns asked 89 times (team)"
   Private to you.                        No individual attribution.
 ```
 
-(Illustrative of the principle — `lint`, `validate`, `test`, and `cost-estimate`
-ship today; `agentboot metrics`, `/insights`, and the org dashboard are planned
-V2 capabilities, covered later on this page.)
+(Illustrative of the principle. `lint`, `validate`, `test` and `cost-estimate`
+ship today. `agentboot metrics`, `/insights` and the org dashboard are **planned
+and unbuilt** — they do not exist in v1.0, and every mention of them on this
+page is marked "planned". The single statement of what is planned and when is the
+[What AgentBoot Needs to Build](#what-agentboot-needs-to-build) table at the
+foot of this page; that table is the one place to update if the schedule
+changes.)
 
 This mirrors exactly how code works:
 - `eslint` locally → fix before anyone sees → CI catches what you missed → fair game
@@ -80,8 +84,9 @@ workday). These are conversations. They have **no submit moment.** There is no P
 for "explain this function" or "what is a mutex."
 
 - These are **always private**. There is no "after submit" state.
-- AgentBoot's optimization tools for developer prompts (`/insights`, telemetry)
-  operate on aggregates and patterns, never on the prompts themselves.
+- The planned optimization tools for developer prompts (`/insights` (planned),
+  telemetry) will operate on aggregates and patterns, never on the prompts
+  themselves.
 - The only "output" that crosses the private→public boundary is what the developer
   **chooses to publish**: a PR comment, committed code, a filed issue. The
   conversation that produced that output stays private.
@@ -93,7 +98,7 @@ Persona definitions (Type 1)         Developer prompts (Type 2)
 Local editing (private)              Always private
     │                                    │
     ▼                                    ▼
-agentboot lint (private)             /insights (private)
+agentboot lint (private)             /insights (planned; private)
 agentboot test (private)             Telemetry: aggregates only
     │                                    │
     ▼                                    ▼
@@ -252,8 +257,10 @@ model: sonnet
 
 ### Why This Matters
 
-Claude Code's context window is 200k tokens. But effective adherence drops sharply
-after the first ~50k tokens of instructions. A persona that loads 15k tokens of
+Claude Code's context window is 200k tokens, but the window is not the budget — every
+token of standing instruction competes with file reads, tool definitions, and
+conversation history for the model's attention, and is re-paid on every turn. A
+persona that loads 15k tokens of
 instructions is pushing against the useful limit, especially when combined with
 file reads, tool definitions, and conversation history. Keeping personas lean (under
 6k tokens) leaves room for the actual work.
@@ -527,72 +534,55 @@ Findings report with severity classifications:
 
 ## 6. Prompt Testing (`agentboot test`)
 
-Beyond linting (static analysis), personas need behavioral testing — does the prompt
-actually produce the expected output when given known input?
+Two different questions get called "testing a prompt": *did my edit change the
+compiled output in a way I did not intend*, and *does the persona actually behave
+the way the prompt says*. v1.0 ships an answer to the first one only, and this
+section is explicit about which is which — a testing story that overstates its
+reach is worse than a small one, because it retires the caution that would
+otherwise catch the gap.
 
-### Test Types
+### What ships today
 
-**Deterministic tests** (no LLM call, fast, free):
+**Static checks** (no LLM call, fast, free) — `agentboot lint`, `agentboot validate`:
 - Frontmatter validation (schema, required fields)
-- Token budget verification
+- Token budget verification. `lint` scores the **composed** persona, so what it
+  measures is what the model loads, not the pre-composition source file
 - Trait composition verification (all referenced traits exist and compose)
-- Output format schema validation (if `--json-schema` is specified)
 
-**Behavioral tests** (LLM call, slower, costs money):
-- Given known-bad code, does the security reviewer find the vulnerability?
-- Given clean code, does the code reviewer avoid false positives?
-- Given PHI in input, does the guardrail block it?
-- Given a FHIR resource, does the domain expert recognize it?
-
-**Regression tests** (no LLM, fast, free — compare against baseline):
-- SHA-256 snapshot of dist/ files. After a prompt change, does the compiled
-  output differ from the saved baseline? Reports added, removed, and changed files.
-
-### Test File Format
-
-YAML test cases use `assertions` with `contains`, `not-contains`, and `regex` checks.
-The test runner uses js-yaml for parsing with backward compatibility for simple
-key-value formats. Every case **must** have `name`, `persona`, `prompt`, and at
-least one assertion — a case missing any of these is silently skipped by the
-runner. Multiple cases in one file are separated by `---`. Each test case gets
-2-of-3 flake tolerance for LLM non-determinism.
-
-```yaml
-# tests/behavioral/security-reviewer.test.yaml
-name: sql-injection-detection
-persona: security-reviewer
-prompt: |
-  Review this code:
-  ```python
-  def get_user(user_id):
-      query = f"SELECT * FROM users WHERE id = {user_id}"
-      return db.execute(query)
-  ```
-assertions:
-  - contains: "SQL injection"
-  - contains: "parameterized"
-  - not-contains: "no issues found"
-  - regex: "CRITICAL|ERROR"
-```
-
-### Running Tests
+**Snapshot / regression tests** (no LLM call, fast, free) — `agentboot test`:
+SHA-256 hashing of the files under `dist/`. `--snapshot` writes the baseline;
+`--regression` diffs against it and reports added, removed and changed files,
+exiting non-zero on any difference. This is what catches "I edited one trait and
+eleven personas moved".
 
 ```bash
-# LOCAL (private — iterate until tests pass)
-agentboot test --behavioral                # Run YAML behavioral tests (LLM-powered)
 agentboot test --snapshot                  # Create/update snapshot baseline from dist/
 agentboot test --regression                # Compare current dist/ against saved snapshot
-agentboot test --behavioral --test-dir tests/behavioral  # Custom test directory
 agentboot test --regression --snapshot-file .agentboot-snapshot.json  # Custom snapshot path
 ```
 
-**Behavioral tests** use a real YAML parser (js-yaml) with backward compatibility
-for simple key-value formats. Test assertions support `contains`, `not-contains`,
-and `regex` matching, with 2-of-3 flake tolerance for LLM non-determinism.
+### Behavioral evaluation — not in v1.0
 
-**Snapshot and regression tests** use SHA-256 hashing of dist/ files. The
-`--snapshot` flag creates a baseline; `--regression` diffs against it and reports
-added, removed, and changed files.
+The questions a prompt author most wants answered are behavioral:
+
+- Given known-bad code, does the security reviewer find the vulnerability?
+- Given clean code, does the code reviewer avoid false positives?
+- Given PHI in input, does the guardrail block it?
+
+**v1.0 ships no supported command or flag that answers them.** Ruled 2026-08-11:
+a scenario runner exists and executes cases, but the large majority of the
+expectations in the scenario set are judgement calls with no mechanical
+evaluator — so a green run would have meant "nothing we were able to check
+failed", while every reader would have taken it to mean "the persona behaves this
+way". Shipping the flag at 1.0 would have frozen the stronger reading into the
+tag. It is tracked as **behavioral evaluation** on the [roadmap](roadmap.md),
+along with wiring it into CI, and the scenario format will be published when the
+runner that reads it is a supported surface.
+
+Until then the substitute is manual and worth doing anyway: run the composed
+persona against your own known-bad and known-clean inputs, and pin whatever you
+learn as a gotcha or a trait — a rule that ships beats a test case that does not
+run.
 
 ---
 
@@ -604,8 +594,8 @@ These prompts are never submitted, never reviewed, and never visible to anyone e
 But they're where most of the value (and waste) lives.
 
 A developer who doesn't know how to ask for what they need wastes time, tokens, and
-trust. A developer who's learned to prompt effectively gets 10x the value from the
-same tooling. AgentBoot should help developers get better at this — privately.
+trust — a question that takes four attempts costs four times the tokens of one that
+lands first time. AgentBoot should help developers close that gap — privately.
 
 ### The Prompt Development Lifecycle
 
@@ -658,9 +648,9 @@ INSTEAD OF                          TRY
 This skill loads on-demand (not always-on), costs nothing when not used, and teaches
 by example.
 
-**Personal `/insights` analysis:**
-As described in the privacy doc, `/insights` analyzes the developer's session
-transcripts and identifies patterns — privately. Key signals:
+**Personal `/insights` analysis (planned — not in v1.0):**
+As described in the privacy doc, `/insights` would analyze the developer's
+session transcripts and identify patterns — privately. Planned signals:
 
 - **Rephrase rate:** How often the developer asks the same question in different
   words. High rephrase rate = the developer isn't getting what they need on the
@@ -674,7 +664,7 @@ transcripts and identifies patterns — privately. Key signals:
   Your longest sessions are code exploration — consider using the Explore subagent
   which uses a cheaper model."
 
-All of this is private. The developer sees it, nobody else.
+All of this would be private. The developer sees it, nobody else.
 
 **Context-aware prompting hints:**
 AgentBoot's always-on CLAUDE.md can include a lightweight prompting guide that
@@ -736,21 +726,25 @@ The developer prompt development experience is primarily delivered through:
 
 1. **Personas** — structured prompts that work better than ad-hoc questions
 2. **Skills** — prompt templates with argument hints and substitution
-3. **`/insights`** — private analytics on prompting patterns
-4. **Prompting tips** — a lightweight personal skill with example patterns
-5. **Always-on hints** — ~50 tokens in CLAUDE.md with contextual prompting guidance
+3. **Prompting tips** — a lightweight personal skill with example patterns
+4. **Always-on hints** — ~50 tokens in CLAUDE.md with contextual prompting guidance
+
+and, once built, **`/insights` (planned)** — private analytics on prompting
+patterns.
 
 None of these require collecting, transmitting, or surfacing developer prompts.
 They work by **giving developers better tools** (personas, skills, templates) so
-their prompts are effective from the start, and **private feedback** (`/insights`)
-so they can improve over time without anyone watching.
+their prompts are effective from the start, and — when the planned **private
+feedback** channel (`/insights` (planned)) exists — so they can improve over
+time without anyone watching.
 
 ---
 
 ## 8. Prompt Ingestion (`agentboot add prompt`)
 
-Before the marketplace, before the PR to the personas repo, there's the moment
-someone says: "Hey, try this prompt — it's great for catching auth bugs." It's in
+Before the PR to the personas repo, before anything is governed at all, there's
+the moment someone says: "Hey, try this prompt — it's great for catching auth
+bugs." It's in
 a Slack message. Or a blog post. Or a tweet. Or scribbled on a sticky note.
 
 This is how most knowledge sharing actually works. Not through formal contribution
@@ -873,26 +867,30 @@ someone else's prompt before incorporating it.
 
 ### The Sharing Spectrum
 
-This feature fills the gap between "I have a raw prompt" and "it's in the
-marketplace":
+This feature fills the gap between "I have a raw prompt" and "it's governed
+content the whole org gets":
 
 ```
-Informal                                                        Formal
-────────────────────────────────────────────────────────────────────────
+Informal                                          Formal
+──────────────────────────────────────────────────────────────
 
-"Try this     agentboot          In my org's        In the        In the
- prompt"  →   add prompt     →   personas repo  →   org's      →  public
-              (classify,         (PR, review,       private       marketplace
-               format,            CI validates)     marketplace   (community)
-               save locally)
+"Try this     agentboot          In my org's        Distributed
+ prompt"  →   add prompt     →   personas repo  →   org-wide
+              (classify,         (PR, review,       (agentboot sync,
+               format,            CI validates)      or the org's own
+               save locally)                         plugin repo)
 
-Slack         Private/Local       Team-visible       Org-wide      Public
-message       (my machine)        (after PR)         (plugin)     (everyone)
+Slack         Private/Local       Team-visible       Org-wide
+message       (my machine)        (after PR)         (every repo)
 ```
 
 Most prompts stay on the left side forever — and that's fine. The developer adds
 it as a personal rule or gotcha, it helps them, nobody else needs to know. But
 the pipeline to formalize it is there when the prompt proves its value.
+
+The spectrum stops at the org boundary on purpose: v1.0 has no cross-org
+publishing channel, so "share it with everyone" is not a step this pipeline
+offers.
 
 ### Batch Ingestion
 

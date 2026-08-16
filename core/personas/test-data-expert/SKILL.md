@@ -1,6 +1,9 @@
 ---
 name: test-data-expert
 description: Generates synthetic, constraint-respecting test data sets from type definitions, database schemas, API specs, or example objects in any requested output format.
+id: 01KZRG8RTEFQQTY8ZJ4XRQ6ZDB
+slug: test-data-expert
+hash: sha256:7acb834a216fe4c2
 ---
 
 # Test Data Expert

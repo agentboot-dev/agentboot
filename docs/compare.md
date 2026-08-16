@@ -185,7 +185,7 @@ Here's the capability answer.
 | Capability | AGENTS.md as SSOT | Ruler / rulesync | Packmind | Portal-managed | AgentBoot |
 |---|---|---|---|---|---|
 | One source → many tool formats | thin per-tool wrappers | **yes — their core job** (rulesync targets 40+) | yes (8 incl. AGENTS.md) | AGENTS.md-centric | yes (8 platforms + AGENTS.md) |
-| Org → group → team → repo scoping | nearest-file-wins *replacement* | directory nesting / concatenation | file-pattern + subdirectory scoping | scoped rules with *override* precedence | **merge composition** — scopes layer; hard guardrails can't be silently overridden below (soft preferences stay adaptable) |
+| Org → group → team → repo scoping | nested files; v1.1 *proposes* accumulation, per-tool in practice | directory nesting / concatenation | file-pattern + subdirectory scoping | scoped rules with *override* precedence | **merge composition** — scopes layer; hard guardrails can't be silently overridden below (soft preferences stay adaptable) |
 | Delivery to many repos | manual / DIY | local apply per repo | **yes — centralized, unlimited repos** | sync (PR-based in the portal we reviewed) | PRs from the hub, per scope |
 | Drift detection | none | re-apply and diff (DIY in CI) | **yes — code-vs-standards linter** | portal-side regeneration only | content-hash manifests + `drift-check` on the *delivered files*, exceptions with expiry |
 | Verification / tamper evidence | — | — | — | — | signed manifests, `verify-manifest`, optional in-toto/DSSE attestation |
@@ -199,10 +199,18 @@ Here's the capability answer.
 Now Linux Foundation infrastructure under the Agentic AI Foundation, adopted by 60k+
 projects and read by 30+ tools. If you're standardizing on one file, this is the one.
 
-Its scoping model is nested files with **nearest-wins replacement** — a deeper file
-replaces a shallower one rather than layering on top of it. That's simple and
-predictable, and it means a team-level file can quietly drop an org-level rule without
-anyone noticing.
+Its scoping model is nested files. The [v1.1 proposal](https://github.com/agentsmd/agents.md/issues/135)
+describes guidance as **accumulating** down the tree — a local file extends its ancestors and
+takes precedence only where instructions actually conflict — but that proposal is not yet
+accepted, and **each tool decides for itself what it does with the files it finds.** So what an
+org actually gets is the behaviour of whichever agents its engineers run, which may be
+accumulation, may be nearest-wins replacement, and is not verified anywhere.
+
+That variance is the real gap, and it is narrower than an earlier version of this page claimed:
+we described replacement as the standard's model, which overstated it. The composition argument
+does not need that. Even under full accumulation, nothing checks that a team-level file has not
+contradicted an org-level rule, and nothing tells you which behaviour your fleet is actually
+getting.
 
 **When it's the right choice:** one file per repo genuinely covers your needs, your tools
 all read it, and you don't need composition, delivery, or verification.

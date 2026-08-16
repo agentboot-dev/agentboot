@@ -17,13 +17,21 @@
  * "untested", never "pass". Advisory platforms get a manifest stating plainly
  * that no enforcement mechanism exists. Nothing is fabricated at compile time
  * — empirical fields only exist after a real harness run.
+ *
+ * And "untested" is not a green result. Recording it truthfully in the manifest
+ * was only half the rule: the RUN must also refuse to report success, or a
+ * machine without bash produces a full sheet of `untested` under the line
+ * "✓ All probed controls behave as declared" and exit 0. A skip must alarm as
+ * loudly as a failure — see `untestedPlatforms` / `probedControls` below.
  */
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AgentBootConfig } from "./config.js";
+import { PLATFORM_REQUIRES, DEFAULT_OUTPUT_FORMATS, type AgentBootConfig } from "./config.js";
+import { APPLY_TO_PROJECTION } from "./scope-projection.js";
+import type { PersonaScopeCounts } from "./guardrail-scan.js";
 
 /** Same bound as every external-binary probe (v0.12.4 hang-class fix). */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -35,6 +43,17 @@ const PROBE_TIMEOUT_MS = 10_000;
 export interface PlatformEnforcement {
   level: "enforced" | "partial" | "fail-open" | "advisory";
   detail: string;
+  /**
+   * B2: other output formats that must ALSO be built for this platform's
+   * enforcement mechanism to exist at all.
+   *
+   * `plugin` does not have hooks of its own — it bundles Claude Code's, copied
+   * out of dist/claude/ by an emitter that only runs when `claude` is built. On
+   * a plugin-only hub dist/plugin/ has no hooks.json, so the declared level
+   * `enforced` describes a mechanism that is not present. A level is a claim
+   * about an artifact; when the artifact is absent the claim must not be made.
+   */
+  requires?: string[];
 }
 
 export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
@@ -47,7 +66,572 @@ export const PLATFORM_ENFORCEMENT: Record<string, PlatformEnforcement> = {
   jetbrains: { level: "advisory", detail: "instructions only — no hook binding" },
   agents: { level: "advisory", detail: "AGENTS.md is instructions only" },
   skill: { level: "advisory", detail: "skill content is instructions only" },
+  plugin: { level: "enforced", requires: PLATFORM_REQUIRES["plugin"]!, detail: "bundles Claude Code hooks — enforcement is Claude Code's, via the plugin's hooks.json" },
 };
+
+export interface EnforcementResolution {
+  level: PlatformEnforcement["level"];
+  detail: string;
+  /** Declared prerequisites that this build does NOT satisfy. */
+  unmetRequires: string[];
+}
+
+/**
+ * The enforcement level a platform ACTUALLY has in a given build.
+ *
+ * One resolver, used by the HARD-guardrail gate and by doctor, because two
+ * places deciding "is `plugin` enforcing?" is the drift that produced
+ * `✓ plugin: org policy is enforceable` on a hub whose dist/plugin/ contained no
+ * hooks.json at all.
+ *
+ * FAILS CLOSED twice over: an unknown platform resolves to `advisory`, and a
+ * platform whose prerequisites are unmet resolves to `advisory` rather than to
+ * its declared level. "We could not verify it" must never resolve upward.
+ */
+/**
+ * R1-G: THE platform set, for every consumer that needs one.
+ *
+ * `conformance` derived it from `personas.outputFormats`; `evidence-pack`
+ * derived it from `fs.readdirSync(distPath)`. Two lists that must agree, and
+ * they did not: `dist/plugin/` is emitted whenever `claude` is built
+ * (generatePluginOutput sits inside `if (outputFormats.includes("claude"))`)
+ * even though `plugin` is not a configured format. So on a claude-only hub the
+ * evidence pack printed `UNPROBED: plugin (run agentboot conformance)` and
+ * `agentboot conformance` would never probe plugin, because it iterates the
+ * config. The remedy the pack printed could not resolve the state the pack
+ * reported — permanently, on every pack.
+ *
+ * One resolver, and consumers that state which set they used.
+ */
+export function configuredPlatforms(config: {
+  personas?: { outputFormats?: string[] } | undefined;
+}): string[] {
+  return config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+}
+
+export function resolveEnforcement(
+  format: string,
+  outputFormats: readonly string[],
+): EnforcementResolution {
+  const e = PLATFORM_ENFORCEMENT[format];
+  if (!e) {
+    return {
+      level: "advisory",
+      detail: "no enforcement classification for this platform",
+      unmetRequires: [],
+    };
+  }
+  const unmet = (e.requires ?? []).filter((r) => !outputFormats.includes(r));
+  if (unmet.length > 0) {
+    return {
+      level: "advisory",
+      detail:
+        `${e.detail} — but ${unmet.join(", ")} is not in personas.outputFormats, ` +
+        `so no hooks are produced for this platform at all`,
+      unmetRequires: unmet,
+    };
+  }
+  return { level: e.level, detail: e.detail, unmetRequires: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Capability × platform SUPPORT — the second, orthogonal axis
+// ---------------------------------------------------------------------------
+
+/**
+ * `PLATFORM_ENFORCEMENT` answers "how strongly does platform P enforce?".
+ * Nothing in the codebase answered "which platforms EMIT capability C?", so the
+ * intersection of configured capabilities with configured platforms was never
+ * computed — and an empty intersection was indistinguishable from a correct
+ * build. Eight capabilities passed `build`, `validate --strict` AND `doctor`
+ * with zero mention (confirmed 2026-08-08).
+ *
+ * The two axes are deliberately kept separate. Restating enforcement strength
+ * here would create a second, drifting copy of the first table, which is exactly
+ * how `plugin` came to be in `validFormats` but not in `PLATFORM_ENFORCEMENT`.
+ * Support = "is there a mechanism at all". Enforcement = "how strong is it".
+ */
+
+export interface CapabilityContext {
+  config: AgentBootConfig;
+  /** Instructions whose `applyTo` NARROWS scope (present, and not "**"/"**\/*"). */
+  narrowlyScopedInstructions: number;
+  /** Gotchas carrying a `paths:` value. */
+  scopedGotchas: number;
+  /**
+   * R2-9 / NF3-5 / NF3-4: controls declared in persona.config.json.
+   *
+   * Every row below keys off AgentBootConfig, so this context could not SEE
+   * persona.config.json and the whole persona scope was invisible to the gate.
+   * A persona-declared PreToolUse hook is a blocking control of the same class
+   * as `claude.hooks` (severity error) and vanished, silently, on any hub
+   * without `claude` in outputFormats.
+   */
+  personaControls: PersonaScopeCounts;
+}
+
+export interface CapabilityRow {
+  /** The key as the operator writes it in agentboot.config.json. Printed verbatim. */
+  id: string;
+  /** Is it configured? */
+  detect: (ctx: CapabilityContext) => boolean;
+  /** Platforms whose compiled dist tree contains a mechanism acting on this key.
+   *  EMPTY ARRAY means: implemented on no platform, at all.
+   *
+   *  This is the DECLARED set — what the platform is capable of carrying. It is
+   *  not, on its own, what a given build emits: see `conditionalOn`. */
+  emittedBy: string[];
+  /**
+   * B1: emission preconditions, platform → other output formats that must ALSO
+   * be built for that platform's emitter to run.
+   *
+   * `emittedBy` is a flat list and therefore cannot express the one thing that
+   * is true of `plugin`: the plugin tree is assembled by copying artifacts out
+   * of `dist/claude/`, and both `generatePluginOutput` and
+   * `generateComplianceHooks` sit INSIDE `if (outputFormats.includes("claude"))`
+   * in compile.ts. On a `plugin`-only hub those emitters never run, `dist/plugin/`
+   * comes out near-empty, and four error-severity rows claimed the capability was
+   * honoured — so the gate stayed silent about a control that reached nothing.
+   *
+   * Modelling this as data rather than as a special case in the gate is
+   * deliberate: the next platform with a build-order dependency gets a row, not
+   * a second `if`.
+   */
+  conditionalOn?: Record<string, string[]>;
+  /** Severity when emittedBy ∩ outputFormats is empty. */
+  severity: "error" | "warn";
+  /** What the operator actually loses. Printed under the finding. */
+  consequence: string;
+  /**
+   * NEW-3: which `agentboot.config.json` path this row governs, for the
+   * CONFIG_SHAPE completeness invariant.
+   *
+   * `undefined` — derive it from `id` (the common case; `groups[].x` maps to
+   *     `groups.*.x`).
+   * `null`      — this row is NOT an agentboot.config.json key. Artifact
+   *     frontmatter (`instructions[].applyTo`, `gotchas[].paths`) and
+   *     persona.config.json (`personas[*].*`) live in other files and have no
+   *     business in a table that types the hub config.
+   *
+   * Explicit rather than pattern-matched on the id, because "which of these ids
+   * is a config key" is exactly the judgement that a regex gets wrong silently.
+   */
+  configPath?: string | null;
+  /** file:line of the emitter, so a reviewer can check the row against the code.
+   *  An unverified row here is the same class of error as an unsourced claim. */
+  warrant: string;
+}
+
+/**
+ * Every `emittedBy` set below was OBSERVED — a hub was built with all hook
+ * platforms configured and `dist/` grepped for the configured value — not
+ * inferred from the gate structure. Two of them correct the research matrix:
+ * `plugin` does NOT carry `claude.hooks` (it carries the generated compliance
+ * hooks only), and `plugin`/`copilot` DO receive the denyTools PreToolUse hook.
+ */
+/**
+ * NF2-3: the platforms that CAN express a path scope, derived from the ONE table
+ * that answers that question.
+ *
+ * `instructions[].applyTo` declared `emittedBy: ["copilot"]` while
+ * APPLY_TO_PROJECTION in this same repo classifies cursor, windsurf and
+ * jetbrains as `translated` — and all three demonstrably emit a real, functional
+ * scope (`globs:` + `alwaysApply: false`, `trigger: glob` + `globs:`, and
+ * `globs: [...]` respectively, verified in the emitted frontmatter). The
+ * under-declaration was then wired into an operator-facing sentence:
+ *
+ *   "instructions[].applyTo - configured, but needs one of: copilot"
+ *      (on a hub where cursor ALREADY received the scope)
+ *   "…reaches copilot but NOT claude, cursor, windsurf, jetbrains;
+ *    on those targets this control is absent, not weaker"
+ *      (false for three of the four)
+ *
+ * Two lists that must agree, with nothing asserting it — and the sibling row
+ * `gotchas[].paths` had the correct four, which is what an unasserted invariant
+ * looks like from the inside. Derived here so the disagreement is not
+ * expressible.
+ */
+export const SCOPE_EMITTERS: string[] = Object.entries(APPLY_TO_PROJECTION)
+  .filter(([, p]) => p.support === "native" || p.support === "translated")
+  .map(([name]) => name)
+  .sort();
+
+export const CAPABILITY_SUPPORT: CapabilityRow[] = [
+  {
+    id: "claude.hooks",
+    detect: (c) => Object.keys(c.config.claude?.hooks ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Org-authored PreToolUse/PostToolUse gates produce no file. Nothing runs.",
+    warrant: "scripts/compile.ts:1742",
+  },
+  {
+    id: "claude.permissions.deny",
+    detect: (c) => (c.config.claude?.permissions?.deny?.length ?? 0) > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "The deny list is applied on no target.",
+    warrant: "scripts/compile.ts:1742",
+  },
+  {
+    id: "claude.permissions.allow",
+    // WARN, not ERROR, and the asymmetry with `deny` is deliberate: `deny` is
+    // the control (its absence means a forbidden action is permitted); `allow`
+    // is a pre-approval convenience (its absence means the developer gets
+    // prompted). Failing a build over lost friction-reduction is the
+    // over-gating that gets a gate switched off. `hasHardPolicy` in doctor
+    // already draws this exact line.
+    detect: (c) => (c.config.claude?.permissions?.allow?.length ?? 0) > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Pre-approvals are not applied; developers get prompted where they would have been auto-approved.",
+    warrant: "scripts/compile.ts:1742",
+  },
+  {
+    id: "claude.mcpServers",
+    detect: (c) => Object.keys(c.config.claude?.mcpServers ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "The org's MCP servers reach no runtime.",
+    warrant: "scripts/compile.ts:1799",
+  },
+  {
+    id: "claude.settings",
+    detect: (c) => Object.keys(c.config.claude?.settings ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Pass-through settings are written to no managed fragment.",
+    warrant: "scripts/compile.ts:3421",
+  },
+  /**
+   * R2-3: the GROUP-scope twins of the four `claude.*` rows above.
+   *
+   * `groups[name].permissions`, `.mcpServers` and `.enabledPlugins` are the
+   * documented way an org expresses per-group managed settings
+   * (docs/configuration.md:81). They are emitted by ONE block —
+   * `if (outputFormats.includes("claude"))` at compile.ts:4327 — and had no row
+   * here at all, so the whole group tier was invisible to the gate whose entire
+   * job is "configured, but no configured platform can honour it".
+   *
+   * Observed on a scratch hub (`groups.platform.permissions.deny`,
+   * `.mcpServers`, `.enabledPlugins`, outputFormats `["cursor","copilot"]`):
+   *
+   *     BUILD_EXIT=0
+   *     grep -rl 'rm -rf' dist   → (nothing)
+   *     doctor Coverage          → silent on all three
+   *
+   * Two org-wide deny rules gone, green build, nothing said — while the
+   * org-level `claude.permissions.deny` row would have failed the build for the
+   * identical control written one scope up.
+   *
+   * SEVERITY RULE, so it is not a judgement call per row: a group-scope key
+   * takes the SAME severity as its org-level twin. `deny` is the control (its
+   * absence permits a forbidden action) so it is `error`; `allow`, `mcpServers`
+   * and `enabledPlugins` follow their twins at `warn`. Inventing a different
+   * ladder for the same key at a different scope is how two tables that must
+   * agree start to drift.
+   */
+  {
+    id: "groups[].permissions.deny",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some((g) => (g?.permissions?.deny?.length ?? 0) > 0),
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Group-scope deny lists are applied on no target; the group's forbidden tools run.",
+    warrant: "scripts/compile.ts:4346",
+  },
+  {
+    id: "groups[].permissions.allow",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some((g) => (g?.permissions?.allow?.length ?? 0) > 0),
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Group-scope pre-approvals are not applied; the group's developers get prompted.",
+    warrant: "scripts/compile.ts:4346",
+  },
+  {
+    id: "groups[].mcpServers",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some(
+        (g) => Object.keys(g?.mcpServers ?? {}).length > 0,
+      ),
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "The group's MCP servers reach no runtime.",
+    warrant: "scripts/compile.ts:4347",
+  },
+  {
+    id: "groups[].enabledPlugins",
+    detect: (c) =>
+      Object.values(c.config.groups ?? {}).some((g) => (g?.enabledPlugins?.length ?? 0) > 0),
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "Plugins the org force-enables for the group are enabled nowhere.",
+    warrant: "scripts/compile.ts:4348",
+  },
+  {
+    id: "mcp.enforceApproved",
+    detect: (c) => c.config.mcp?.enforceApproved === true && (c.config.mcp?.approved?.length ?? 0) > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Approved-server filtering never executes; mcp-pins.json is a manifest nothing reads.",
+    warrant: "scripts/compile.ts:1799",
+  },
+  {
+    id: "ab.modelOverrides",
+    detect: (c) => Object.keys(c.config.ab?.modelOverrides ?? {}).length > 0,
+    emittedBy: ["claude"],
+    severity: "warn",
+    consequence: "/ab subagents use built-in model defaults.",
+    warrant: "scripts/compile.ts:3471",
+  },
+  {
+    id: "managed.guardrails.disableBypassPermissions",
+    detect: (c) => Boolean(c.config.managed?.guardrails?.disableBypassPermissions),
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence: "Developers can still bypass permission prompts.",
+    warrant: "scripts/compile.ts:3433",
+  },
+  {
+    id: "compliance.inputScan.scannerCommand",
+    detect: (c) => Boolean(c.config.compliance?.inputScan?.scannerCommand),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "error",
+    consequence: 'The DLP scanner is never invoked. Prompts are unscanned, failMode "closed" notwithstanding.',
+    warrant: "scripts/compile.ts:2424",
+  },
+  {
+    id: "compliance.outputScan.blocking",
+    detect: (c) => c.config.compliance?.outputScan?.blocking === true,
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "error",
+    consequence: "Nothing scans or blocks model output.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  /**
+   * NF3-9 — the two compliance keys that had no row.
+   *
+   * The table covered `compliance.inputScan.scannerCommand` and
+   * `compliance.outputScan.blocking` and stopped there, so an org configuring an
+   * OUTPUT scanner without `blocking: true` — a perfectly ordinary
+   * warn-only DLP posture — got no Coverage finding at all on a hub with no
+   * hook-capable platform. Same for `inputScan.failMode: "closed"`, which is the
+   * key that turns a scanner failure into a refusal: on a cursor-only hub it
+   * means nothing, and nothing said so.
+   *
+   * This is the enumerate-the-config-surface gap that left the group tier
+   * invisible (R2-3) and the persona scope invisible (R2-9), one key over each
+   * time. The completeness invariant added with CONFIG_SHAPE catches the
+   * converse direction (a typed key with no row is now visible); these two are
+   * the rows themselves.
+   *
+   * Severity mirrors the sibling each key modifies: a scanner that never runs is
+   * an `error`, a failMode that cannot be honoured is a `warn` because the scan
+   * itself is the control and the mode is how strictly it is applied.
+   */
+  {
+    id: "compliance.outputScan.scannerCommand",
+    detect: (c) => Boolean(c.config.compliance?.outputScan?.scannerCommand),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "error",
+    consequence:
+      "The org's output scanner is never invoked. Model output is unscanned — with or " +
+      "without outputScan.blocking, which was the only outputScan key with a row.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "compliance.inputScan.failMode",
+    detect: (c) => Boolean(c.config.compliance?.inputScan?.failMode),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "warn",
+    consequence:
+      "No hook exists to apply the fail mode to, so `closed` does not make anything fail closed.",
+    warrant: "scripts/compile.ts:2424",
+  },
+  {
+    id: "compliance.outputScan.failMode",
+    detect: (c) => Boolean(c.config.compliance?.outputScan?.failMode),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "warn",
+    consequence:
+      "No hook exists to apply the fail mode to, so `closed` does not make anything fail closed.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "managed.guardrails.denyTools",
+    detect: (c) => (c.config.managed?.guardrails?.denyTools?.length ?? 0) > 0,
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "error",
+    consequence: "The PreToolUse deny hook is emitted nowhere; denied tools run.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "managed.guardrails.requireAuditLog",
+    detect: (c) => Boolean(c.config.managed?.guardrails?.requireAuditLog),
+    emittedBy: ["claude", "codex", "copilot", "plugin"],
+    // The plugin tree is assembled FROM dist/claude/; its emitters run only when
+    // `claude` is also built. Declared once in PLATFORM_REQUIRES.
+    conditionalOn: { plugin: PLATFORM_REQUIRES["plugin"]! },
+    severity: "error",
+    consequence: "The telemetry hook is emitted nowhere; nothing is audit-logged.",
+    warrant: "scripts/compile.ts:2410",
+  },
+  {
+    id: "managed.guardrails.forcePlugins",
+    // The special case, and the point of the whole table: emittedBy is EMPTY, so
+    // the intersection is empty for EVERY configuration and this fires whenever
+    // the key is set. It is typed, documented, accepted — and read by no code
+    // path in AgentBoot. Do not leave a governance knob wired to nothing.
+    detect: (c) => (c.config.managed?.guardrails?.forcePlugins?.length ?? 0) > 0,
+    emittedBy: [],
+    severity: "error",
+    consequence: "This key is accepted, typed and documented, and read by no code path in AgentBoot.",
+    warrant: "NOT IMPLEMENTED — scripts/lib/config.ts type + docs/configuration.md only",
+  },
+  /**
+   * R2-9 / NF3-5 — the PERSONA-scope twins.
+   *
+   * `personas[*].disallowedTools` and `personas[*].hooks` are emitted only
+   * inside `if (outputFormats.includes("claude"))` (compile.ts:1174 and the
+   * generatePersonaHooks call), and had no row here, so the persona scope was
+   * invisible to a gate whose whole job is "configured, but no configured
+   * platform can honour it". Same shape as R2-3's group tier, one scope over.
+   *
+   * Severity `error` for both, matching `claude.hooks` and
+   * `claude.permissions.deny`: these are restrictions, and losing a restriction
+   * WIDENS what the agent may do. `tools` is the allow-list form of the same
+   * thing — a persona restricted to three tools that ships with no restriction
+   * gets all of them — so it is an error too, and NOT the
+   * `claude.permissions.allow` case, which is a pre-approval convenience whose
+   * loss only costs a prompt.
+   */
+  {
+    id: "personas[*].disallowedTools",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
+    detect: (c) => c.personaControls.disallowedTools > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence:
+      "A persona's tool DENY list is applied on no target — and dist/copilot ships the " +
+      "list verbatim into persona.config.json on a platform that cannot enforce it, so " +
+      "the restriction reads as delivered while nothing enforces it.",
+    warrant: "scripts/compile.ts:1174",
+  },
+  {
+    id: "personas[*].hooks",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
+    detect: (c) => c.personaControls.hooks > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence:
+      "A persona-declared PreToolUse/PostToolUse gate produces no file. Nothing runs — " +
+      "the same loss as claude.hooks, declared one scope down.",
+    warrant: "scripts/compile.ts:4795",
+  },
+  {
+    id: "personas[*].tools",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
+    detect: (c) => c.personaControls.tools > 0,
+    emittedBy: ["claude"],
+    severity: "error",
+    consequence:
+      "A persona restricted to an allow-list of tools ships with no restriction, so it " +
+      "may use every tool.",
+    warrant: "scripts/compile.ts:1180",
+  },
+  {
+    id: "personas[*].mcpServers",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
+    /**
+     * NF3-4: the `managed.guardrails.forcePlugins` shape, in persona scope.
+     *
+     * Typed (config.ts, "Per-persona MCP servers"), documented, accepted, and
+     * copied verbatim into dist/skill/core/<persona>/persona.config.json and
+     * dist/copilot/.../persona.config.json — and read by NO code path:
+     * `grep -rn '\.mcpServers' scripts/ | grep 'pc\.\|personaConfig\.'` → 0 hits.
+     * No .mcp.json entry is written for it anywhere.
+     *
+     * emittedBy is EMPTY, so the intersection is empty for every configuration
+     * and this fires whenever the key is set — which is the point. Whether the
+     * resolution is to implement it or to delete it is a product call; leaving a
+     * governance knob wired to nothing while saying nothing is not.
+     */
+    detect: (c) => c.personaControls.mcpServers > 0,
+    emittedBy: [],
+    severity: "error",
+    consequence:
+      "This key is accepted, typed, documented and copied into dist, and read by no code " +
+      "path in AgentBoot. No MCP server is registered for it on any platform.",
+    warrant: "NOT IMPLEMENTED — scripts/lib/config.ts:628 type + copied-through dist only",
+  },
+  {
+    id: "instructions[].applyTo",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
+    // Fires only on a NARROWING glob. The shipped baseline.instructions.md
+    // carries applyTo: "**", which is universal — losing that scope is a no-op,
+    // and firing on it would make every default install warn, which is how a
+    // check becomes noise inside a week.
+    detect: (c) => c.narrowlyScopedInstructions > 0,
+    emittedBy: SCOPE_EMITTERS,
+    severity: "warn",
+    consequence: "Narrowly-scoped instructions ship unscoped.",
+    warrant: "scripts/compile.ts:1196",
+  },
+  {
+    id: "gotchas[].paths",
+    configPath: null, // frontmatter / persona.config.json, not the hub config
+    detect: (c) => c.scopedGotchas > 0,
+    emittedBy: SCOPE_EMITTERS,
+    severity: "warn",
+    consequence: "Path-scoped gotchas ship unscoped.",
+    warrant: "scripts/compile.ts:1265",
+  },
+];
+
+/**
+ * The platforms that will ACTUALLY emit this capability for a given build.
+ *
+ * The single place `conditionalOn` is applied. Every consumer (the build gate,
+ * doctor's Coverage block, the reporting label) goes through here, because a
+ * second copy of this filter is precisely how `plugin` ended up claimed by four
+ * rows and emitted by none.
+ *
+ * R1-6 — WHERE THIS ACTUALLY BITES, stated so it is not mistaken for
+ * defence-in-depth. In the BUILD path it is provably a no-op: H1's
+ * `PLATFORM_REQUIRES` gate hard-exits any build where `plugin` is in
+ * outputFormats without `claude` (compile.ts, ~line 3595), and the capability
+ * gate runs ~500 lines later — so by the time this is consulted, `plugin`
+ * implies `claude` and `effectiveEmitters(row, outputFormats) === row.emittedBy`
+ * for every row whose only `conditionalOn` key is `plugin`, which is all four
+ * that carry one. Deleting every `conditionalOn` block would leave compile-path
+ * behaviour identical.
+ *
+ * It has effect in `doctor`, `capabilityShortfalls` and the evidence surfaces,
+ * which read DECLARED formats without the build gate in front of them — i.e.
+ * exactly the paths an operator uses to ask "what would happen", and the paths
+ * that can be handed a config the build has not accepted. That is why it stays,
+ * and why it is not a second line of defence for the build.
+ */
+export function effectiveEmitters(row: CapabilityRow, outputFormats: readonly string[]): string[] {
+  return row.emittedBy.filter((platform) => {
+    const deps = row.conditionalOn?.[platform];
+    if (!deps) return true;
+    return deps.every((d) => outputFormats.includes(d));
+  });
+}
 
 /** Where a platform's executable hooks live inside dist/, or null when the
  * platform has no hook mechanism at all. */
@@ -61,13 +645,150 @@ export function hookDirForPlatform(distPath: string, platform: string): string |
   }
 }
 
+/**
+ * Q73: where a platform's hook scripts are BOUND to events, or null when the
+ * platform has no binding artifact.
+ *
+ * The scripts are the mechanism; the binding is what makes the mechanism run.
+ * `dist/plugin/hooks/agentboot-pretooluse.sh` on its own is an inert file — it
+ * only ever executes because `hooks.json` names it against `PreToolUse`. Delete
+ * the binding and every probe still passes, because the harness executes the
+ * script directly and never asks the one question that matters: is anything
+ * going to call it?
+ *
+ * Verified at d9de530 on a `["claude","plugin"]` hub with `denyTools`
+ * configured: `rm dist/plugin/hooks/hooks.json` and BOTH honesty surfaces stayed
+ * green — `conformance` printed four `✓ pass` rows for plugin under
+ * "✓ All 8 probed control(s) behave as declared" and exited 0, and `doctor`
+ * printed "✓ plugin: org policy is enforceable" and exited 0. The enforcement
+ * had been removed and the product reported it was in force.
+ *
+ * Every hook-bearing platform emits its binding unconditionally when the
+ * platform is built (checked against a hub with no `managed`/`compliance` block
+ * at all), so an absent binding is always a defect and never a legitimate
+ * configuration.
+ */
+export function hookBindingForPlatform(distPath: string, platform: string): string | null {
+  switch (platform) {
+    case "claude": return path.join(distPath, "claude", "core", "settings.json");
+    case "codex": return path.join(distPath, "codex", "core", ".codex", "hooks.json");
+    case "copilot": return path.join(distPath, "copilot", "core", ".github", "hooks", "agentboot.json");
+    case "plugin": return path.join(distPath, "plugin", "hooks", "hooks.json");
+    default: return null;
+  }
+}
+
+export type HookBinding =
+  /** The platform has no binding artifact — advisory targets, and anything new. */
+  | { state: "none" }
+  /** No dist/<platform>/ tree at all: this platform was not built. Distinct from
+   *  a built tree with the binding removed, because the remedies differ. */
+  | { state: "not-built"; file: string }
+  | { state: "missing"; file: string }
+  | { state: "unreadable"; file: string; detail: string }
+  | { state: "present"; file: string; boundScripts: string[] };
+
+/**
+ * Read a platform's hook binding and extract the script filenames it references.
+ *
+ * The extraction is deliberately shape-agnostic: it walks every string in the
+ * document and collects `agentboot-*.sh` basenames. The four emitters produce
+ * four different JSON shapes (Claude settings `hooks`, Codex `hooks.json`,
+ * Copilot `agentboot.json`, plugin `hooks.json`), and re-implementing each shape
+ * here would create a second copy of the emitter that drifts silently — exactly
+ * the two-lists-that-must-agree failure this module keeps correcting. A binding
+ * that names the script is what we can honestly assert; how it names it is the
+ * emitter's business.
+ */
+export function readHookBinding(distPath: string, platform: string): HookBinding {
+  const file = hookBindingForPlatform(distPath, platform);
+  if (!file) return { state: "none" };
+  if (!fs.existsSync(path.join(distPath, platform))) return { state: "not-built", file };
+  if (!fs.existsSync(file)) return { state: "missing", file };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch (e) {
+    return { state: "unreadable", file, detail: e instanceof Error ? e.message : String(e) };
+  }
+  const bound = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      for (const m of node.matchAll(/agentboot-[A-Za-z0-9._-]+\.sh/g)) bound.add(m[0]!);
+      return;
+    }
+    if (Array.isArray(node)) { for (const v of node) walk(v); return; }
+    if (node && typeof node === "object") { for (const v of Object.values(node)) walk(v); }
+  };
+  walk(parsed);
+  return { state: "present", file, boundScripts: [...bound].sort() };
+}
+
+/** Does this binding actually wire `scriptName` to an event? */
+export function isScriptBound(binding: HookBinding, scriptName: string): boolean {
+  return binding.state === "present" && binding.boundScripts.includes(scriptName);
+}
+
 // ---------------------------------------------------------------------------
 // Probe runner
 // ---------------------------------------------------------------------------
 
+/**
+ * Every bash this machine might have, in precedence order — derived ENTIRELY
+ * from the environment.
+ *
+ * The Windows leg was the single literal `C:\Program Files\Git\bin\bash.exe`,
+ * which is wrong in two directions:
+ *
+ *  - **False untested.** Git for Windows installed anywhere else was invisible:
+ *    the per-user (non-admin) installer defaults to
+ *    `%LOCALAPPDATA%\Programs\Git`, the 32-bit build lands under
+ *    `%ProgramFiles(x86)%`, and a `D:`-drive install is ordinary. Those
+ *    operators were told their hooks were UNTESTED while a perfectly good bash
+ *    sat on disk — the harness under-reporting its own reach.
+ *  - **Unfalsifiable.** A hardcoded absolute path means NO environment can
+ *    express "this machine has no bash", so the honesty gate that fires on an
+ *    untested run could not be exercised on Windows at all. The negative tests
+ *    that assert "a run which measured nothing prints no green claim" therefore
+ *    could not be made to fail there — and a gate nobody can make fire is
+ *    indistinguishable from a gate that does not work. That is this product's
+ *    own green-surface-over-nothing class, sitting in the probe.
+ *
+ * `AGENTBOOT_BASH`, when set, is the ONLY candidate. An operator who names a
+ * bash and silently gets a different one has been handed exactly the
+ * substitution this command exists to detect; if the named one does not run,
+ * the honest answer is "untested", not "here is another one".
+ *
+ * `platform`/`env` are parameters so the Windows candidate set is assertable
+ * from any host — the resolver is the thing most likely to drift, and it is not
+ * testable on the platform it matters on.
+ */
+export function bashCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const explicit = env["AGENTBOOT_BASH"]?.trim();
+  if (explicit) return [explicit];
+
+  const out = ["bash"];
+  if (platform === "win32") {
+    const roots = [
+      env["ProgramFiles"],
+      env["ProgramW6432"],
+      env["ProgramFiles(x86)"],
+      env["LOCALAPPDATA"] ? path.join(env["LOCALAPPDATA"], "Programs") : undefined,
+    ];
+    for (const root of roots) {
+      if (!root) continue;
+      out.push(path.join(root, "Git", "bin", "bash.exe"));
+    }
+  }
+  return [...new Set(out)];
+}
+
 /** Locate a bash usable for executing hook scripts (Git Bash on Windows). */
 export function probeBash(): string | null {
-  for (const candidate of ["bash", "C:\\Program Files\\Git\\bin\\bash.exe"]) {
+  for (const candidate of bashCandidates()) {
     try {
       const r = spawnSync(candidate, ["--version"], { stdio: "pipe", timeout: PROBE_TIMEOUT_MS });
       if (r.status === 0) return candidate;
@@ -275,7 +996,12 @@ export interface EnforcementManifest {
   platform: string;
   agentboot_version: string;
   generated_at: string;
-  declared: PlatformEnforcement;
+  /**
+   * R1-H: the RESOLVED enforcement for this platform in THIS hub's
+   * configuration, not the raw table row. `unmetRequires` travels with it, so a
+   * consumer reading `level: "advisory"` can see WHY it is not `enforced`.
+   */
+  declared: EnforcementResolution;
   controls: ControlResult[];
 }
 
@@ -292,13 +1018,25 @@ export function runPlatformConformance(
   agentbootVersion: string,
   bashPath: string | null,
 ): EnforcementManifest {
-  const declared = PLATFORM_ENFORCEMENT[platform] ?? { level: "advisory" as const, detail: "unknown platform — treated as advisory" };
+  // R1-H: RESOLVED, not raw. `PLATFORM_ENFORCEMENT.plugin` says `enforced`
+  // unconditionally, but plugin's enforcement is conditional on `claude` being
+  // built — that is what `requires` means and what `resolveEnforcement` applies.
+  // Stamping the raw row into dist/<platform>/enforcement-manifest.json wrote an
+  // unconditional claim into the artifact `baseline` archives and
+  // `evidence-pack` signs. doctor and guardrail-scan both resolve; these were
+  // the leftovers of the same `plugin` class this branch has now fixed three
+  // times.
+  const declared = resolveEnforcement(platform, configuredPlatforms(config));
   const controls: ControlResult[] = [];
   const hookDir = hookDirForPlatform(distPath, platform);
   // Output-match blocking is governed by compliance.outputScan.blocking
   // (failMode only governs scanner-failure behavior — see compile.ts B2/B3).
   const failMode: "open" | "closed" = config.compliance?.outputScan?.blocking === true ? "closed" : "open";
   const denyTools = config.managed?.guardrails?.denyTools ?? [];
+
+  // Q73: read once per platform — the binding is a property of the tree, not of
+  // the individual control.
+  const binding = readHookBinding(distPath, platform);
 
   const hookControl = (
     control: string,
@@ -314,6 +1052,42 @@ export function runPlatformConformance(
     if (!fs.existsSync(script)) {
       return { ...base, status: "untested", probes: [],
         reason: `${scriptName} not present in dist — run agentboot build first` };
+    }
+    // Q73: an UNBOUND script is not a weaker control, it is an absent one — and
+    // it is a determination, not a measurement gap, so it is `fail` and not
+    // `untested`. This runs BEFORE the bash check on purpose: whether anything
+    // will ever invoke the script does not depend on this machine having a bash
+    // to invoke it with.
+    const bindingFile = hookBindingForPlatform(distPath, platform);
+    const bindingFailure = (observed: string, reason: string): ControlResult => ({
+      ...base,
+      status: "fail",
+      probes: [{
+        probe: "hook-binding",
+        expected: `${scriptName} bound to an event by ${bindingFile ? path.basename(bindingFile) : "the platform binding"}`,
+        observed,
+        pass: false,
+      }],
+      reason,
+    });
+    if (binding.state === "missing") {
+      return bindingFailure(
+        `${binding.file} is ABSENT`,
+        `the hook binding is missing from dist — ${scriptName} is on disk but wired to no event, ` +
+        `so it never executes and this control is not enforced. Run \`agentboot build\`.`,
+      );
+    }
+    if (binding.state === "unreadable") {
+      return bindingFailure(
+        `${binding.file} is not parseable JSON (${binding.detail})`,
+        `the hook binding cannot be read, so no hook is registered and this control is not enforced`,
+      );
+    }
+    if (binding.state === "present" && !isScriptBound(binding, scriptName)) {
+      return bindingFailure(
+        `${path.basename(binding.file)} binds ${binding.boundScripts.length > 0 ? binding.boundScripts.join(", ") : "nothing"}`,
+        `${scriptName} is present in dist but no event binds it, so it never executes`,
+      );
     }
     if (!bashPath) {
       return { ...base, status: "untested", probes: [],
@@ -355,10 +1129,27 @@ export function runPlatformConformance(
 
 export interface ConformanceRun {
   manifests: EnforcementManifest[];
+  /**
+   * Path of the manifest ACTUALLY written, per platform. A platform absent from
+   * this map had no dist/ tree, so no manifest exists — the report must not name
+   * a file the run did not produce.
+   */
+  manifestPaths: Record<string, string>;
   /** Platforms whose manifest contains at least one FAILED control. */
   failedPlatforms: string[];
+  /**
+   * Platforms carrying at least one control that declares a mechanism but could
+   * NOT be probed (no bash, script absent from dist/). Separate from
+   * `failedPlatforms` because the remedy differs — but equally non-green.
+   */
+  untestedPlatforms: string[];
+  /** Controls that actually executed a probe. Zero means nothing was measured. */
+  probedControls: number;
   bashAvailable: boolean;
 }
+
+/** A control that declares a mechanism and could not be exercised. */
+export const isUntested = (c: ControlResult): boolean => c.status === "untested";
 
 /**
  * Run the harness for every requested platform and write each
@@ -373,6 +1164,10 @@ export function runConformance(
   const bashPath = probeBash();
   const manifests: EnforcementManifest[] = [];
   const failedPlatforms: string[] = [];
+  const untestedPlatforms: string[] = [];
+  /** Written manifests only, keyed by platform. Absent means nothing was written. */
+  const manifestPaths: Record<string, string> = {};
+  let probedControls = 0;
 
   for (const platform of platforms) {
     const manifest = runPlatformConformance(distPath, platform, config, agentbootVersion, bashPath);
@@ -380,15 +1175,30 @@ export function runConformance(
     if (manifest.controls.some((c) => c.status === "fail")) {
       failedPlatforms.push(platform);
     }
+    if (manifest.controls.some(isUntested)) {
+      untestedPlatforms.push(platform);
+    }
+    probedControls += manifest.controls.filter((c) => c.status === "pass" || c.status === "fail").length;
+    // Report the path only when the file was actually written. The CLI used to
+    // print `manifest: dist/<platform>/enforcement-manifest.json` unconditionally
+    // while this write was guarded by `fs.existsSync(platformDir)` with no else
+    // branch — so with the platform trees deleted, conformance named two files
+    // that did not exist. 1feb969 fixed the exit code (untested is no longer a
+    // pass) and left the phantom path in the report.
     const platformDir = path.join(distPath, platform);
     if (fs.existsSync(platformDir)) {
-      fs.writeFileSync(
-        path.join(platformDir, "enforcement-manifest.json"),
-        JSON.stringify(manifest, null, 2) + "\n",
-        "utf-8",
-      );
+      const manifestPath = path.join(platformDir, "enforcement-manifest.json");
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+      manifestPaths[platform] = path.relative(path.dirname(distPath), manifestPath);
     }
   }
 
-  return { manifests, failedPlatforms, bashAvailable: bashPath !== null };
+  return {
+    manifests,
+    failedPlatforms,
+    untestedPlatforms,
+    probedControls,
+    manifestPaths,
+    bashAvailable: bashPath !== null,
+  };
 }

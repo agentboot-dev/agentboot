@@ -1,3 +1,9 @@
+---
+id: 01KZH2S4N8XF69A19BDVQHK3B7
+slug: structured-output
+hash: sha256:dc197f19f82f48a0
+---
+
 # Trait: Structured Output
 
 **ID:** `structured-output`

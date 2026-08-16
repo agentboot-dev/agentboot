@@ -1,0 +1,216 @@
+# K1 / XP4 — start the platform-behaviour clock.
+#
+# `agentboot baseline` shipped and NOTHING ever ran it. That is the one defect in
+# this class that cannot be fixed later: platforms change their semantics
+# silently — a Tuesday release with no changelog — and the corpus's text does not
+# move, so drift-check reports green while the governance quietly stops working.
+# Detecting that needs a baseline, and a baseline cannot be backfilled. Probes
+# that begin at 1.4 cannot say how the platforms behaved at 1.0.
+#
+# Archive only. No analysis, no comparison, no alerting on drift — that is the
+# Continental Drift epic and it is post-GA. The point here is that the clock is
+# running before the 1.0 tag.
+#
+# L43 — WHERE THE SNAPSHOT LIVES. This job's only sink used to be an
+# Actions artifact with `retention-days: 90` (the free-tier cap). A baseline
+# whose whole rationale is "a clock you cannot restart" would therefore have
+# DELETED the v1.0 snapshot roughly three months after the tag, and the first
+# question it exists to answer — "how did the platforms behave at 1.0?" —
+# becomes unanswerable at exactly the moment anyone thinks to ask it. Retention
+# is not storage policy here, it is the erasure of the evidence.
+#
+# So every snapshot is now committed to the `conformance-baseline` data branch,
+# which has no expiry. The artifact upload is kept for convenient short-term
+# access, but it is no longer the record.
+#
+# A data branch rather than the default branch on purpose: these are machine
+# writes on a schedule, and they must not touch the source history, race a
+# release, or need an exception to whatever branch protection main carries.
+#
+# STILL OUTSTANDING, AND NOT FIXABLE HERE: GitHub fires `schedule` only from a
+# workflow present on the DEFAULT branch. This file is not on main yet — `gh run
+# list --workflow=conformance-baseline.yml` returns 404, and
+# `git ls-tree --name-only origin/main .github/workflows/` lists six workflows,
+# not this one — so no scheduled run has EVER happened and none will until this
+# lands there. That is a push, which arrives with the cut PR.
+#
+# AND THE MANUAL ESCAPE HATCH DOES NOT EXIST EITHER. An earlier note here said
+# `workflow_dispatch` was "the only way to bank a snapshot" in the meantime.
+# That is false, and falsely reassuring: `workflow_dispatch` carries the SAME
+# default-branch requirement as `schedule` — a workflow absent from the default
+# branch is not offered by the API or the UI, so it cannot be dispatched at all.
+# The honest statement is the harder one: **nothing can bank a snapshot today,
+# by any trigger.** Zero conformance baselines exist, and none can exist until
+# the cut PR merges this file to the default branch. The trigger below is still
+# worth keeping — once the file is on the default branch, dispatch is what lets
+# a snapshot be taken from an arbitrary ref without waiting for Monday — but it
+# is not a workaround for the thing that is actually blocking.
+
+name: Conformance baseline
+
+on:
+  schedule:
+    # Weekly, Mondays 04:17 UTC. Off the hour on purpose: the top of the hour is
+    # the most contended slot on GitHub's scheduler and the least reliable.
+    - cron: "17 4 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  # `write` so the snapshot can be committed to the data branch. Scoped to
+  # contents and nothing else.
+  contents: write
+
+jobs:
+  baseline:
+    name: Capture conformance baseline
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # `baseline` archives dist/<platform>/enforcement-manifest.json, which only
+      # exists after a conformance run. Without this step the archive would be
+      # empty every week — and `baseline` would (correctly) exit 1 rather than
+      # bank a snapshot of nothing.
+      - name: Run conformance probes
+        run: npx tsx scripts/cli.ts conformance
+
+      - name: Archive baseline snapshot
+        run: npx tsx scripts/cli.ts baseline --dir "$GITHUB_WORKSPACE/.agentboot/baseline"
+
+      # Silence Is Not Success. A scheduled job whose only output is a workflow
+      # log nobody opens is a job that can stop working unnoticed for a year —
+      # which, for a baseline, means losing exactly the history it exists to
+      # accumulate. The artifact IS the durable trace: if it is absent, the run
+      # did not do its work, and that is visible without reading a log.
+      # SHA resolved empirically, not recalled:
+      #   gh api repos/actions/upload-artifact/git/ref/tags/v4.6.2 --jq .object.sha
+      #   → ea165f8d65b6e75b540449e92b4886f43607fa02
+      # (cross-checked against the full tag listing; v4 and v4.6.2 point at the
+      # same object). The previous author left this on `@v4` rather than ship a
+      # SHA recalled from memory, which was the right call — a plausible-looking
+      # wrong SHA in a supply-chain position is worse than an obvious tag. It is
+      # now resolved from the API, and tests/workflow-pinning.test.ts asserts the
+      # invariant so the next unpinned action goes red instead of shipping behind
+      # a comment.
+      - name: Upload snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conformance-baseline-${{ github.run_id }}
+          path: .agentboot/baseline/
+          if-no-files-found: error
+          # 90 days is the free-tier cap. The snapshots are small JSON; if the
+          # Continental Drift epic needs a longer horizon it should push them to
+          # a durable store rather than lengthen this retention.
+          retention-days: 90
+
+      # A skip must alarm as loudly as a failure. If the archive step produced
+      # nothing, the two steps above already failed non-zero — this makes the
+      # empty case impossible to mistake for a quiet success in the summary.
+      #
+      # A FILE COUNT IS NOT A MEASUREMENT. The original assertion counted
+      # snapshot files, which a snapshot of entirely `untested` controls
+      # satisfies — the runner could lose bash and this job would stay green
+      # while banking nothing but "we did not look". Count observed probes.
+      - name: Assert the snapshot records observed behaviour
+        run: |
+          count=$(find .agentboot/baseline -name 'conformance-*.json' | wc -l | tr -d ' ')
+          echo "snapshots on record in this run: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::conformance baseline produced no snapshot — the clock did not advance this week"
+            exit 1
+          fi
+          probes=$(node -e '
+            const fs=require("fs"),path=require("path");
+            const dir=".agentboot/baseline";
+            let n=0;
+            for (const f of fs.readdirSync(dir).filter(f=>f.startsWith("conformance-"))) {
+              const s=JSON.parse(fs.readFileSync(path.join(dir,f),"utf-8"));
+              for (const m of Object.values(s.platforms||{}))
+                for (const c of (m.controls||[]))
+                  if (c.status==="pass"||c.status==="fail") n++;
+            }
+            process.stdout.write(String(n));
+          ')
+          echo "observed probes across the archive: $probes"
+          if [ "$probes" -eq 0 ]; then
+            echo "::error::every archived control is untested — the baseline banked no observation of platform behaviour"
+            exit 1
+          fi
+          echo "## Conformance baseline" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Captured $count snapshot file(s), $probes observed probe(s)." >> "$GITHUB_STEP_SUMMARY"
+
+      # L43 — the durable sink. Everything above this step expires in 90 days.
+      #
+      # Committed to a data branch rather than uploaded, because the baseline's
+      # value is monotonic: its worth is the LENGTH of the series, and a store
+      # that silently drops the oldest entries inverts that exactly.
+      - name: Commit snapshot to the conformance-baseline data branch
+        env:
+          BASELINE_BRANCH: conformance-baseline
+        run: |
+          set -euo pipefail
+
+          # Copy out first: the checkout dance below rewrites the working tree,
+          # and .agentboot/ is untracked on every branch involved.
+          staged="$(mktemp -d)"
+          cp -R .agentboot/baseline/. "$staged/"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin "$BASELINE_BRANCH" >/dev/null 2>&1; then
+            git fetch --depth=1 origin "$BASELINE_BRANCH"
+            git checkout -B "$BASELINE_BRANCH" "origin/$BASELINE_BRANCH"
+          else
+            # First run: an ORPHAN branch, so the archive carries no source
+            # history and cannot be mistaken for a fork of the code.
+            echo "::notice::creating the $BASELINE_BRANCH data branch"
+            git checkout --orphan "$BASELINE_BRANCH"
+            git rm -rf --cached . >/dev/null 2>&1 || true
+            find . -maxdepth 1 -mindepth 1 ! -name '.git' ! -name '.agentboot' -exec rm -rf {} +
+            printf '%s\n' \
+              '# Conformance baseline archive' \
+              '' \
+              'Machine-written by .github/workflows/conformance-baseline.yml.' \
+              'Point-in-time records of how each platform actually enforced, one' \
+              'file per run. Append-only: never rewrite or prune these — the' \
+              'value of the series is its length, and it cannot be backfilled.' \
+              > README.md
+            git add README.md
+          fi
+
+          mkdir -p snapshots
+          cp -R "$staged/." snapshots/
+          git add snapshots README.md
+
+          # Snapshot filenames are timestamped, so a successful run ALWAYS adds a
+          # file. Nothing staged means this run banked nothing while reporting
+          # success — the precise failure this workflow exists to make visible.
+          if git diff --cached --quiet; then
+            echo "::error::nothing to commit — the run produced no new snapshot, so the clock did not advance"
+            exit 1
+          fi
+
+          git commit -m "conformance baseline: run ${GITHUB_RUN_ID} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git push origin "$BASELINE_BRANCH"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Committed to \`$BASELINE_BRANCH\` — durable, no retention window." >> "$GITHUB_STEP_SUMMARY"

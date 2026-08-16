@@ -1,3 +1,9 @@
+---
+id: 01KZRG8RTFE4J96C7C75CG33PQ
+slug: faq
+hash: sha256:24201b0fc1ab7d28
+---
+
 # AgentBoot FAQ
 
 ## What is the difference between a trait and a persona?
@@ -82,8 +88,9 @@ AgentBoot has a 6-layer test pyramid:
 2. **Integration tests** (free, every commit): Full build pipeline, plugin export,
    sync, uninstall. Run with `npx vitest run`.
 
-3. **Behavioral tests** (~$5/PR): Use `claude -p` with known-buggy code and assert
-   on findings. Run with `npx agentboot test --behavioral`.
+3. **Behavioral tests**: withdrawn from the v1.0 surface. Persona behaviour is
+   covered by snapshot and regression testing (`npx agentboot test`); there is
+   no supported command that runs a model against your personas.
 
 4. **Snapshot/Regression tests** (~$5, on persona changes): Compare output across
    versions. Run with `npx agentboot test --snapshot`.
@@ -139,10 +146,11 @@ At build time, gotchas compile into `.claude/rules/` files. When a developer ope
 file matching the path pattern, the rule activates automatically — no manual
 invocation needed.
 
-Gotchas encode battle-tested operational knowledge: "this API has a quirk," "never
+Gotchas encode hard-won operational knowledge: "this API has a quirk," "never
 do X in this directory because of Y incident," "files here must pass compliance
-review." They are technology-specific rather than org-specific, making them
-shareable across organizations via the marketplace.
+review." They are technology-specific rather than org-specific, so a gotcha
+written in one hub is usually portable to another: copy the file into the other
+hub's `core/gotchas/` and rebuild.
 
 ---
 

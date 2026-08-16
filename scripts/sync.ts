@@ -30,13 +30,20 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import {
   type AgentBootConfig,
-  resolveConfigPath,
-  loadConfig,
+  resolveHubConfigOrExit,
+  loadConfigOrExit,
   agentbootNpxSpec,
+  DEFAULT_OUTPUT_FORMATS,
+  SYNCABLE_OUTPUT_FORMATS,
+  PLATFORM_ALIASES,
+  resolveRepoPlatforms,
+  resolveSyncSigning,
 } from "./lib/config.js";
+import { checkDistFreshness, staleDistMessage } from "./lib/dist-stamp.js";
 import { childScopeNames } from "./lib/scope-layout.js";
 import { detectGitignoreConflicts } from "./lib/gitignore.js";
 import { hasBeenImported } from "./lib/import.js";
+import { planOrphanRemoval, pruneEmptyDirs, InvalidRetainPatternError } from "./lib/prune.js";
 import {
   collectHubProvenance,
   buildSyncPrBody,
@@ -94,6 +101,11 @@ interface RepoEntry {
   // When specified, each package path (relative to repo root) gets its own persona deployment.
   // e.g., ["packages/api", "packages/web"]
   packages?: string[];
+  // F-1: regex sources for revoked artifacts this spoke is allowed to keep.
+  // A match is never unlinked and downgrades the "could not withdraw" error to
+  // a warning that still prints on every sync — it silences the error, never
+  // the fact.
+  retain?: string[];
 }
 
 /**
@@ -101,11 +113,9 @@ interface RepoEntry {
  * ("claude-code") where the canonical id is expected ("claude") — accept the
  * alias instead of failing their first sync.
  */
-const PLATFORM_ALIASES: Record<string, string> = {
-  "claude-code": "claude",
-  "github-copilot": "copilot",
-  "openai-codex": "codex",
-};
+// A4: moved to lib/config.ts so `status` and `doctor` compare the SAME
+// normalized ids sync does. Keeping this private to sync is why the two other
+// consumers were comparing raw strings.
 
 /**
  * Normalize platform(s) for a repo entry. Handles both the old singular
@@ -113,10 +123,7 @@ const PLATFORM_ALIASES: Record<string, string> = {
  * aliases to canonical platform ids. Returns an array.
  */
 function getRepoPlatforms(entry: RepoEntry): string[] {
-  const raw = entry.platforms && entry.platforms.length > 0
-    ? entry.platforms
-    : [entry.platform ?? "claude"];
-  return raw.map((p) => PLATFORM_ALIASES[p] ?? p);
+  return resolveRepoPlatforms(entry);
 }
 
 interface SyncResult {
@@ -127,6 +134,13 @@ interface SyncResult {
   team?: string;
   filesWritten: string[];
   filesSkipped: string[];  // unchanged files (same content)
+  /** F-1: files the hub stopped producing, unlinked from the spoke. */
+  filesRemoved: string[];
+  /** F-1: revoked files sync could NOT withdraw because the spoke edited them.
+   *  An unremediated revocation — reported, never silently dropped. */
+  removalBlocked: Array<{ path: string; reason: "modified-locally" }>;
+  /** F-1: revoked files left in place by an explicit `retain` pattern. */
+  removalRetained: string[];
   errors: string[];
   dryRun: boolean;
   prUrl?: string;
@@ -501,7 +515,10 @@ function detectDrift(
     return { drifted: [], clean: true };
   }
 
-  let manifest: { files?: Array<{ path: string; hash: string }> };
+  let manifest: {
+    files?: Array<{ path: string; hash: string }>;
+    retired?: Array<{ path: string; reason: string }>;
+  };
   try {
     manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
   } catch {
@@ -524,6 +541,19 @@ function detectDrift(
     const currentHash = createHash("sha256").update(content).digest("hex");
     if (currentHash !== entry.hash) {
       drifted.push(entry.path);
+    }
+  }
+
+  // F-1 / §2D: a revoked artifact sync could not withdraw is drift. Without
+  // this pass drift-check reported the repo clean precisely BECAUSE the file
+  // had dropped out of `files` — a revoked control still live on a spoke is not
+  // a clean repo. High-precision by construction: only files AgentBoot itself
+  // previously delivered and has since been unable to remove are listed, so no
+  // hand-written .claude/ content is ever flagged.
+  for (const entry of manifest.retired ?? []) {
+    const fullPath = path.resolve(repoPath, entry.path);
+    if (fs.existsSync(fullPath)) {
+      drifted.push(`${entry.path} (retired — revoked at the hub, still present here)`);
     }
   }
 
@@ -572,21 +602,113 @@ function loadManifestHashes(
   repoPath: string,
   targetDir: string
 ): Map<string, string> | null {
-  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
-  if (!fs.existsSync(manifestPath)) return null;
+  return readSpokeManifest(repoPath, targetDir).hashes;
+}
 
+/**
+ * R2-5: an UNREADABLE spoke manifest is not an ABSENT spoke manifest.
+ *
+ * Every reader here collapsed a parse failure into the same value as "no
+ * manifest, first sync" — `loadManifestHashes` returned `null` under the comment
+ * *"Corrupt manifest — sync as normal"*, `loadManifestMeta` returned
+ * `{platform: null, retired: []}`, `loadManagedMcpServers` returned `[]`. The
+ * manifest is the ONLY record of what AgentBoot previously delivered, so losing
+ * it silently does not degrade sync to "write everything again" — it degrades
+ * sync to **write everything again and delete nothing**, which is revocation
+ * turned off.
+ *
+ * Reproduced end to end on two scaffolded spokes, same hub, same revocation
+ * (drop `security.instructions` from `instructions.enabled`):
+ *
+ *   spokeY, manifest intact
+ *     ✓ spokeY (claude) — 3 written, 27 unchanged, 1 removed
+ *     spokeY/.claude/rules/ → baseline.instructions.md
+ *
+ *   spokeX, manifest replaced with `{ "files": [ ,,,`
+ *     SYNC_FORCE_EXIT=0
+ *     ✓ spokeX (claude) — 3 written, 27 unchanged          ← no "removed"
+ *     spokeX/.claude/rules/ → baseline.instructions.md  security.instructions.md
+ *     drift-check EXIT 0  "1/1 clean, 0 drifted, 0 UNCHECKED"
+ *
+ * The revoked control is still live, and because sync rewrote the manifest it is
+ * now RE-ADOPTED as a legitimately managed artifact and signed — so drift-check
+ * reports clean precisely because the evidence of the revocation was destroyed.
+ * Corrupting one JSON file in a spoke is the cheapest possible way to make a
+ * control permanently un-revokable, and nothing said a word.
+ *
+ * The path is fully documented, too: B9's import-first guard fires (a manifest
+ * with no hashes makes every file look locally modified) and tells the operator
+ * *"To override: agentboot sync --force"* — and `--force` is what completes the
+ * hole.
+ *
+ * The `prunable` guard below already prints a loud skip line for the
+ * platform-mismatch case. It was written `if (prevManifest !== null && !prunable)`,
+ * so the corrupt case — the one where `prevManifest` IS null — fell into the
+ * silent branch. A skip must alarm as loudly as a failure.
+ */
+export interface SpokeManifestRead {
+  /** null when absent OR unreadable — callers must consult `parseError`. */
+  hashes: Map<string, string> | null;
+  platform: string | null;
+  retired: Array<{ path: string; reason: string; hash_expected: string | null }>;
+  managedMcpServers: string[];
+  /** File exists on disk. */
+  present: boolean;
+  /** Set when the file exists but could not be parsed. */
+  parseError?: string;
+}
+
+function readSpokeManifest(repoPath: string, targetDir: string): SpokeManifestRead {
+  const manifestPath = path.join(repoPath, targetDir, ".agentboot-manifest.json");
+  const empty: SpokeManifestRead = {
+    hashes: null, platform: null, retired: [], managedMcpServers: [], present: false,
+  };
+  if (!fs.existsSync(manifestPath)) return empty;
   try {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const m = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as {
+      files?: Array<{ path?: string; hash?: string }>;
+      platform?: string;
+      retired?: Array<{ path: string; reason: string; hash_expected: string | null }>;
+      mcp_managed_servers?: unknown;
+    };
     const hashes = new Map<string, string>();
-    for (const entry of manifest.files ?? []) {
-      if (entry.path && entry.hash) {
-        hashes.set(entry.path, entry.hash);
-      }
+    for (const entry of m.files ?? []) {
+      if (entry.path && entry.hash) hashes.set(entry.path, entry.hash);
     }
-    return hashes;
-  } catch {
-    return null; // Corrupt manifest — sync as normal
+    return {
+      hashes,
+      platform: m.platform ?? null,
+      retired: m.retired ?? [],
+      managedMcpServers: Array.isArray(m.mcp_managed_servers)
+        ? m.mcp_managed_servers.filter((x): x is string => typeof x === "string")
+        : [],
+      present: true,
+    };
+  } catch (e: unknown) {
+    return {
+      ...empty,
+      present: true,
+      parseError: e instanceof Error ? e.message : String(e),
+    };
   }
+}
+
+/**
+ * F-1: metadata the orphan-removal pass needs from the previous manifest.
+ *
+ * `platform` exists because several platforms share a targetDir (copilot,
+ * codex-as-claude and claude all land under `.claude` by default). Two
+ * platforms syncing to one repo therefore overwrite each other's manifest —
+ * which was harmless while sync only ever wrote, and is catastrophic now that
+ * it deletes: platform B would read platform A's manifest and see every one of
+ * A's files as an orphan.
+ */
+function loadManifestMeta(
+  repoPath: string,
+  targetDir: string,
+): { platform: string | null; retired: Array<{ path: string; reason: string; hash_expected: string | null }> } {
+  const m = readSpokeManifest(repoPath, targetDir);
+  return { platform: m.platform, retired: m.retired };
 }
 
 /**
@@ -597,16 +719,23 @@ function loadManifestHashes(
 function buildMcpContent(
   mergedFiles: Map<string, ScopedFile>,
   existingMcpPath: string,
+  /** F1: server names AgentBoot delivered on the PREVIOUS sync, from the
+   *  manifest. Anything here that is no longer in dist has been REVOKED. */
+  previouslyManaged: string[] = [],
 ): string {
   const agentbootEntry = { command: "npx", args: [agentbootNpxSpec(), "mcp-server"] };
   let mcpServers: Record<string, unknown> = {};
+  const distServerNames = new Set<string>();
   const mcpDistFile = mergedFiles.get(".mcp.json");
   if (mcpDistFile) {
     try {
       const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
         mcpServers?: Record<string, unknown>;
       };
-      if (distContent.mcpServers) mcpServers = { ...distContent.mcpServers };
+      if (distContent.mcpServers) {
+        mcpServers = { ...distContent.mcpServers };
+        for (const k of Object.keys(distContent.mcpServers)) distServerNames.add(k);
+      }
     } catch { /* ignore */ }
   }
   if (fs.existsSync(existingMcpPath)) {
@@ -614,11 +743,45 @@ function buildMcpContent(
       const existing = JSON.parse(fs.readFileSync(existingMcpPath, "utf-8")) as {
         mcpServers?: Record<string, unknown>;
       };
-      if (existing.mcpServers) mcpServers = { ...existing.mcpServers, ...mcpServers };
+      if (existing.mcpServers) {
+        // F1: the spoke's own entries survive — that is the point of merging
+        // rather than overwriting. But an entry AGENTBOOT PUT THERE and has
+        // since withdrawn from the hub config is not the spoke's; it is a
+        // revoked control. `{ ...existing, ...dist }` kept it forever, and
+        // because .mcp.json is rewritten every sync it is never an orphan, so
+        // the file-granular prune cannot see inside it — and the manifest then
+        // SIGNS the file containing the withdrawn server.
+        const carried: Record<string, unknown> = {};
+        for (const [name, value] of Object.entries(existing.mcpServers)) {
+          if (previouslyManaged.includes(name) && !distServerNames.has(name)) continue; // revoked
+          carried[name] = value;
+        }
+        mcpServers = { ...carried, ...mcpServers };
+      }
     } catch { /* ignore */ }
   }
   mcpServers["agentboot"] = agentbootEntry;
   return JSON.stringify({ mcpServers }, null, 2) + "\n";
+}
+
+/** F1: the AgentBoot-delivered server names to record in this sync's manifest. */
+function managedMcpServerNames(mergedFiles: Map<string, ScopedFile>): string[] {
+  const names = new Set<string>(["agentboot"]);
+  const mcpDistFile = mergedFiles.get(".mcp.json");
+  if (mcpDistFile) {
+    try {
+      const distContent = JSON.parse(fs.readFileSync(mcpDistFile.absolutePath, "utf-8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      for (const k of Object.keys(distContent.mcpServers ?? {})) names.add(k);
+    } catch { /* ignore */ }
+  }
+  return [...names].sort();
+}
+
+/** F1: server names the PREVIOUS manifest recorded as AgentBoot-delivered. */
+function loadManagedMcpServers(repoPath: string, targetDir: string): string[] {
+  return readSpokeManifest(repoPath, targetDir).managedMcpServers;
 }
 
 /**
@@ -680,7 +843,9 @@ function isRepoUpToDate(
     // .mcp.json: hash the merged content (dist + existing spoke + agentboot entry)
     // because that's what sync writes and what the manifest recorded.
     const mcpDestPath = path.join(repoPath, ".mcp.json");
-    const mcpContent = buildMcpContent(mergedFiles, mcpDestPath);
+    const mcpContent = buildMcpContent(
+      mergedFiles, mcpDestPath, loadManagedMcpServers(repoPath, targetDir),
+    );
     wouldWrite.set(".mcp.json", createHash("sha256").update(mcpContent).digest("hex"));
 
     // CLAUDE.md: plain file, hash the dist source directly.
@@ -773,12 +938,36 @@ function syncRepoTarget(
     ...(entry.team != null ? { team: entry.team } : {}),
     filesWritten: [],
     filesSkipped: [],
+    filesRemoved: [],
+    removalBlocked: [],
+    removalRetained: [],
     errors: [],
     dryRun,
   };
 
   if (!fs.existsSync(effectivePath)) {
     result.errors.push(`${packagePath ? "Package" : "Repo"} path does not exist: ${effectivePath}`);
+    return result;
+  }
+
+  // F-1 / §2C: refuse to ship a platform the hub does not build.
+  //
+  // The gate is the FILESYSTEM, not the config: since compile prunes dist/, a
+  // retired platform's tree genuinely does not exist, and a filesystem check
+  // cannot drift from the emitters the way a config-derived list can. The
+  // config is read only to make the message name both sides.
+  //
+  // Before this check, repos.json and personas.outputFormats could contradict
+  // each other and the contradiction was resolved silently in favour of the
+  // stale tree — i.e. in favour of the RETIRED policy.
+  if (!fs.existsSync(path.join(distPath, platform))) {
+    const declared = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+    result.errors.push(
+      `hub does not build for this platform\n` +
+      `      repos.json targets \`${platform}\`, but personas.outputFormats = [${declared.join(", ")}],\n` +
+      `      so dist/${platform}/ was not produced by the last build.\n` +
+      `      Fix: add "${platform}" to personas.outputFormats, or change/remove this repo entry.`,
+    );
     return result;
   }
 
@@ -1176,7 +1365,9 @@ function syncRepoTarget(
     // from ~/.agentboot/config.json (written by `agentboot install`). This makes
     // /ab available in every spoke repo without hardcoding a machine-specific path.
     const mcpDestPath = path.join(effectivePath, ".mcp.json");
-    const mcpContent = buildMcpContent(merged, mcpDestPath);
+    const mcpContent = buildMcpContent(
+      merged, mcpDestPath, loadManagedMcpServers(effectivePath, targetDir),
+    );
     const mcpStatus = writeFile(mcpDestPath, mcpContent, dryRun);
     if (mcpStatus === "written") result.filesWritten.push(".mcp.json");
     else result.filesSkipped.push(".mcp.json");
@@ -1240,13 +1431,123 @@ function syncRepoTarget(
   // filesWritten alone meant a re-sync over an up-to-date repo (e.g. --force)
   // regenerated a near-empty manifest and silently gutted drift coverage.
   const managedFiles = [...new Set([...result.filesWritten, ...result.filesSkipped])];
+
+  // F-1 / §2B: propagate deletions. Ordering is load-bearing — the orphans must
+  // be unlinked BEFORE the new manifest is written, because the manifest is
+  // regenerated from managedFiles and would otherwise de-list the revoked file
+  // without removing it. That is strictly worse than leaving it tracked-and-
+  // stale: it converts a governed artifact into an untracked one, and
+  // drift-check then reports "clean" precisely BECAUSE it stopped being tracked.
+  const toPosixPath = (p: string) => p.replace(/\\/g, "/");
+  const prevManifest = loadManifestHashes(effectivePath, targetDir);
+  const prevMeta = loadManifestMeta(effectivePath, targetDir);
+  const keptPaths = new Set(managedFiles.map(toPosixPath));
+  const retainPatterns = [...(config.sync?.retain ?? []), ...(entry.retain ?? [])];
+
+  // Only prune against a manifest THIS platform wrote. A manifest with no
+  // `platform` field predates platform tagging, and one written by a different
+  // platform belongs to a sibling target sharing this targetDir — in both cases
+  // its file list is not a truthful record of what this sync delivers, so
+  // treating its entries as orphans would delete live artifacts. Skip the pass
+  // for one run (the manifest is retagged below) and SAY SO rather than
+  // silently doing nothing.
+  const prunable = prevManifest !== null && prevMeta.platform === platform;
+  if (prevManifest !== null && !prunable) {
+    console.log(
+      chalk.yellow(
+        `    ⚠ Revocation propagation skipped for ${path.basename(effectivePath)} (${platform}): ` +
+        (prevMeta.platform === null
+          ? "the existing manifest predates platform tagging."
+          : `the existing ${targetDir}/ manifest was written by \`${prevMeta.platform}\`.`) +
+        ` Re-run sync to prune revoked artifacts.`,
+      ),
+    );
+  }
+  // R2-5: the corrupt case. `prevManifest` is null here, so it fell through the
+  // branch above in SILENCE — and the pass it silently skipped is the one that
+  // deletes revoked controls. This is an ERROR, not a warning: unlike the
+  // platform-retag case (a state sync itself creates when two platforms share a
+  // targetDir), an unparseable manifest is damage or tampering, and it is
+  // exactly the file someone would corrupt to make a control un-revokable.
+  // Recorded on `result.errors` so the run keeps going for the other repos and
+  // still exits non-zero — keep-going and fail-loudly are not in tension.
+  const prevRead = readSpokeManifest(effectivePath, targetDir);
+  if (prevRead.parseError) {
+    result.errors.push(
+      `${targetDir}/.agentboot-manifest.json could not be parsed (${prevRead.parseError}). ` +
+      "Revocation propagation was SKIPPED for this repo: the manifest is the only record of " +
+      "what was previously delivered, so nothing can be identified as revoked and any control " +
+      "the org has withdrawn REMAINS LIVE in this repo. Restore the manifest from version " +
+      "control, or delete the managed directory and re-sync from scratch.",
+    );
+  }
+  let orphanPlan;
+  try {
+    orphanPlan = planOrphanRemoval(
+      prunable ? prevManifest : null,
+      keptPaths,
+      (rel) => {
+        const abs = path.resolve(effectivePath, rel);
+        if (!fs.existsSync(abs)) return null;
+        return createHash("sha256").update(fs.readFileSync(abs)).digest("hex");
+      },
+      retainPatterns,
+    );
+  } catch (err: unknown) {
+    // G1: refuse to prune AT ALL against a retain list we could not compile.
+    // Falling through with the valid patterns only would delete exactly the
+    // files the broken pattern was written to protect.
+    if (err instanceof InvalidRetainPatternError) {
+      result.errors.push(err.message);
+      return result;
+    }
+    throw err;
+  }
+  result.removalBlocked = orphanPlan.blocked;
+  result.removalRetained = orphanPlan.retained;
+  if (!dryRun) {
+    for (const rel of orphanPlan.remove) {
+      try {
+        fs.unlinkSync(path.resolve(effectivePath, rel));
+        result.filesRemoved.push(rel);
+      } catch (err: unknown) {
+        result.errors.push(
+          `Could not remove revoked artifact ${rel}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    pruneEmptyDirs(effectivePath, result.filesRemoved);
+  } else {
+    result.filesRemoved = [...orphanPlan.remove];
+  }
+  if (orphanPlan.blocked.length > 0) {
+    result.errors.push(
+      `${orphanPlan.blocked.length} revoked artifact(s) could NOT be withdrawn — modified locally:\n` +
+      orphanPlan.blocked.map((b) => `        ${b.path}`).join("\n") + "\n" +
+      `      The org withdrew these controls at the hub; this repo still has them.\n` +
+      `      Fix: revert the local edit so AgentBoot can remove the file, or add a\n` +
+      `      "retain" regex to this repos.json entry to accept the gap deliberately.`,
+    );
+  }
+
   const manifestOut = generateManifest(
     effectivePath,
     targetDir,
     managedFiles,
     entry.group,
     entry.team,
-    dryRun
+    dryRun,
+    // Carry forward any previously-recorded retired entries when this run could
+    // not run the pass — dropping them would re-green drift-check on a
+    // revocation nobody has remediated.
+    prunable
+      ? [...orphanPlan.blocked.map((b) => ({ path: b.path, reason: b.reason, hash_expected: prevManifest?.get(b.path) ?? null })),
+         ...orphanPlan.retained.map((p) => ({ path: p, reason: "retained", hash_expected: prevManifest?.get(p) ?? null }))]
+      : prevMeta.retired,
+    platform,
+    // F1: record what AgentBoot delivered, so the NEXT sync can tell a
+    // spoke-owned server from one we withdrew.
+    managedMcpServerNames(merged),
   );
   if (!dryRun) {
     result.filesWritten.push(manifestOut.relPath);
@@ -1314,6 +1615,9 @@ function syncRepo(
             platform,
             filesWritten: [],
             filesSkipped: [],
+            filesRemoved: [],
+            removalBlocked: [],
+            removalRetained: [],
             errors: [`Package path does not exist: ${pkgPath}`],
             dryRun,
           };
@@ -1391,7 +1695,10 @@ function validateRepoEntry(entry: RepoEntry, config: AgentBootConfig): string[] 
   }
 
   // Validate platform(s)
-  const validPlatforms = ["skill", "claude", "copilot", "cursor", "agents", "windsurf", "gemini", "jetbrains", "codex"];
+  // A5: derived from VALID_OUTPUT_FORMATS (minus `plugin`, which installs as a
+  // plugin rather than syncing into a spoke) instead of re-typed. The re-typed
+  // copy had already drifted from compile's list.
+  const validPlatforms = [...SYNCABLE_OUTPUT_FORMATS];
   const platforms = getRepoPlatforms(entry);
   for (const platform of platforms) {
     if (!validPlatforms.includes(platform)) {
@@ -1448,7 +1755,19 @@ function generateManifest(
   filesWritten: string[],
   group?: string,
   team?: string,
-  dryRun?: boolean
+  dryRun?: boolean,
+  /** F-1: revoked artifacts sync could not withdraw. Recorded IN the manifest
+   *  (and therefore inside the digest) so drift-check can see them — a file
+   *  that is neither delivered nor removable is otherwise invisible to every
+   *  honesty surface the product has. */
+  retired?: Array<{ path: string; reason: string; hash_expected: string | null }>,
+  /** F-1: which platform's delivery this manifest records. Several platforms
+   *  share a targetDir, so an untagged manifest cannot be safely pruned against. */
+  platform?: string,
+  /** F1: MCP server names AgentBoot delivered this sync. `.mcp.json` is merged
+   *  rather than replaced, so file-granular pruning cannot see inside it — this
+   *  is what lets the NEXT sync tell a spoke-owned entry from a revoked one. */
+  mcpManagedServers?: string[],
 ): { relPath: string; signed: boolean; signingError: string | null } {
   // Read version from package.json
   const pkgJsonPath = path.join(ROOT, "package.json");
@@ -1484,7 +1803,10 @@ function generateManifest(
     version: pkg.version,
     synced_at: new Date().toISOString(),
     scope: { group: group ?? null, team: team ?? null },
+    platform: platform ?? null,
     files: fileEntries,
+    retired: retired ?? [],
+    mcp_managed_servers: mcpManagedServers ?? [],
     provenance,
   };
 
@@ -1564,8 +1886,11 @@ function createSyncPR(
   // with targetDir hardcoded to .claude — so PR mode created NO PR at all for
   // cursor/gemini/windsurf/jetbrains/codex repos and always dropped root AGENTS.md.
   const writtenPaths = result.filesWritten.filter((f) => fs.existsSync(path.join(repoPath, f)));
-  if (writtenPaths.length === 0) {
-    return; // nothing written — no PR
+  // F-1: a sync that only REVOKED artifacts writes nothing but still has a
+  // change to propose. Returning early here would have made PR mode silently
+  // drop deletions — the same defect class, one layer up.
+  if (writtenPaths.length === 0 && result.filesRemoved.length === 0) {
+    return; // nothing written and nothing removed — no PR
   }
 
   // Assert the preconditions BEFORE branching and committing. Previously the first
@@ -1620,7 +1945,12 @@ function createSyncPR(
 
     originalBranch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
     run("git", ["checkout", "-b", branch]);
-    run("git", ["add", "--", ...writtenPaths]);
+    if (writtenPaths.length > 0) run("git", ["add", "--", ...writtenPaths]);
+    // Stage the revocations too. Best-effort: a path that was never committed
+    // has nothing to stage, and that is not an error.
+    if (result.filesRemoved.length > 0) {
+      spawnSync("git", ["add", "-A", "--", ...result.filesRemoved], { cwd: repoPath, stdio: "pipe" });
+    }
 
     // If staging produced no actual change (files identical to what's committed),
     // there is nothing to PR — abort cleanly (the finally restores the branch).
@@ -1645,7 +1975,12 @@ function createSyncPR(
           signed: syncRunContext.signingKeyPath !== null,
         })
       : "Automated AgentBoot sync";
-    const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", prBody]);
+    // F-1: a PR that deletes files must SAY so in its own description.
+    const removalNote = result.filesRemoved.length > 0
+      ? `\n\n## Revoked at the hub — removed here\n\n` +
+        result.filesRemoved.map((f) => `- \`${f}\``).join("\n") + "\n"
+      : "";
+    const prOutput = run("gh", ["pr", "create", "--title", titleTemplate, "--body", prBody + removalNote]);
     result.prUrl = prOutput;
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -1688,13 +2023,31 @@ function printSyncResult(result: SyncResult): void {
 
   const written = result.filesWritten.length;
   const skipped = result.filesSkipped.length;
+  const removed = result.filesRemoved.length;
   const parts: string[] = [];
   if (written > 0) parts.push(`${written} written`);
   if (skipped > 0) parts.push(chalk.gray(`${skipped} unchanged`));
+  if (removed > 0) parts.push(chalk.yellow(`${removed} removed`));
 
   console.log(
     `  ${chalk.green("✓")} ${repoLabel}${chalk.gray(` (${scope})`)} — ${parts.join(", ")}${dryRunTag}`
   );
+
+  // F-1: a sync that DELETED files must say which. A removal mentioned only in
+  // a count is the same failure class one layer up.
+  for (const f of result.filesRemoved) {
+    console.log(chalk.yellow(`      ${result.dryRun ? "− would remove" : "−"} ${f}`));
+  }
+  if (result.removalRetained.length > 0) {
+    console.log(
+      chalk.yellow(
+        `      ⚠ ${result.removalRetained.length} revoked artifact(s) retained by an explicit \`retain\` rule — the control is withdrawn at the hub but still live here:`,
+      ),
+    );
+    for (const f of result.removalRetained) {
+      console.log(chalk.yellow(`          ${f}`));
+    }
+  }
 
   if (written > 0 && written <= 10) {
     for (const f of result.filesWritten) {
@@ -1738,7 +2091,7 @@ function printSyncResult(result: SyncResult): void {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv, ROOT);
+  const configPath = resolveHubConfigOrExit(argv, "sync");
   const isDryRun =
     argv.includes("--dry-run") || argv.includes("--dryRun");
   const isForce = argv.includes("--force");
@@ -1752,6 +2105,28 @@ async function main(): Promise<void> {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--repo" && argv[i + 1]) repoFilter.push(argv[i + 1]!);
   }
+  // AB-DEF-9: `--repos <path>` — the target LIST, distinct from `--repo <name>`
+  // which filters within it.
+  //
+  // `agentboot sync --repos-file <path>` has been documented since before this
+  // branch (docs/cli-reference.md, and core/skills/learn/quick-ref.md, which
+  // packs into the published tarball). cli.ts declared the option and forwarded
+  // it here as `--repos` — and nothing here parsed it. The `--repo` loop above
+  // uses strict equality, so `--repos` did not match that either; the pair was
+  // dropped silently and the target list came from `config.sync.repos` below.
+  //
+  // The operator's experience: scope a sync to one spoke, sync the ENTIRE
+  // configured fleet, write and sign a manifest on every unintended spoke, exit
+  // 0 with a success report. `--dry-run` inherited the same hole, so the
+  // rehearsal that exists to catch this previewed the wrong fleet. A
+  // blast-radius control that silently widens blast radius is worse than no
+  // control, because the operator stops watching.
+  const reposIdx = argv.indexOf("--repos");
+  const reposOverride = reposIdx !== -1 ? argv[reposIdx + 1] : undefined;
+  if (reposIdx !== -1 && !reposOverride) {
+    console.error(chalk.red("✗ --repos requires a path (e.g. --repos ./repos.one.json)"));
+    process.exit(1);
+  }
 
   console.log(chalk.bold("\nAgentBoot — sync"));
   console.log(chalk.gray(`Config: ${configPath}`));
@@ -1762,7 +2137,7 @@ async function main(): Promise<void> {
     console.log("");
   }
 
-  const config = loadConfig(configPath);
+  const config = loadConfigOrExit(configPath, "sync");
   const configDir = path.dirname(configPath);
   const dryRun = isDryRun || (config.sync?.dryRun ?? false);
 
@@ -1772,21 +2147,49 @@ async function main(): Promise<void> {
     fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
   ) as { version: string }).version;
   const signingCfg = config.sync?.signing;
+  // D17 (ruled 2026-08-11): signing is ON by default as of 1.0. The default
+  // reaches here on its own — `loadConfig` materialises `enabled` — so a hub
+  // with a key and no explicit `enabled` now signs without any change here.
+  //
+  // What did NOT reach here was the DIAGNOSTIC, and that is the half that
+  // matters. The old ternary resolved `enabled && !sshKeyPath` to `null` and
+  // the sync shipped UNSIGNED IN SILENCE — so flipping the default on would
+  // have converted "signing is off, and you know it" into "signing is on, and
+  // it isn't working, and nothing says so." A security default that silently
+  // no-ops is worse than one that is honestly off; that is the exact
+  // green-surface-over-nothing class this release spent its effort killing.
+  //
+  // `resolveSyncSigning` already carries the named error. Use it rather than
+  // restating the precedence here — two copies of one rule is the reader/writer
+  // split that produced eight instances on this branch.
+  const signing = resolveSyncSigning(config, configDir);
   syncRunContext = {
     provenance: collectHubProvenance(configDir, pkgVersion),
-    signingKeyPath: signingCfg?.enabled && signingCfg.sshKeyPath
-      ? path.resolve(configDir, signingCfg.sshKeyPath)
-      : null,
+    signingKeyPath: signing.keyPath,
     emitInToto: signingCfg?.enabled === true && signingCfg.emitInToto === true,
     configDir,
   };
+  if (signing.error) {
+    console.log(chalk.yellow(`  ⚠ ${signing.error}`));
+  }
   if (syncRunContext.provenance.hub_dirty) {
     console.log(chalk.yellow(
       "  ⚠ Hub working tree is DIRTY — artifacts may not match the recorded hub commit. Commit hub changes before syncing for clean provenance.",
     ));
   }
 
-  const reposPath = config.sync?.repos ?? "./repos.json";
+  // A CLI-supplied path is relative to where the operator typed it; a
+  // config-supplied one is relative to the hub. Resolving both against the hub
+  // would silently retarget `--repos ./repos.one.json` at a file the operator
+  // was not looking at — the same class of quiet substitution as the defect
+  // above. `loadRepos` exits non-zero on a missing file, so a typo'd override
+  // fails loudly instead of falling through to the config default.
+  const reposPath = reposOverride
+    ? path.resolve(process.cwd(), reposOverride)
+    : (config.sync?.repos ?? "./repos.json");
+  if (reposOverride) {
+    console.log(chalk.gray(`Repos:  ${reposPath} (--repos override)`));
+  }
   const distPath = path.resolve(
     configDir,
     config.output?.distPath ?? "./dist"
@@ -1799,6 +2202,22 @@ async function main(): Promise<void> {
         `✗ dist/ not found at ${distPath}\n  Run \`npm run build\` before syncing.`
       )
     );
+    process.exit(1);
+  }
+
+  // A2 / N1: existence is not freshness.
+  //
+  // The pre-existing check above asks "is there a dist?" — which is exactly the
+  // question that returned yes in the N1 repro, because a failed build leaves
+  // the previous tree byte-identical. Shipping from it ships the policy the
+  // operator just revoked, and signs it. Refuse, named, non-zero. This runs
+  // before the dry-run branch too: a plan derived from a stale tree is a plan
+  // for the wrong policy, and printing it as if it were current is the same lie.
+  // A1/A2-residual: pass the hub root so the ARTIFACT sources are covered too,
+  // not just the config JSON.
+  const freshness = checkDistFreshness(distPath, config, configDir);
+  if (!freshness.fresh) {
+    console.error(chalk.red(staleDistMessage(freshness, "sync")));
     process.exit(1);
   }
 
@@ -1877,6 +2296,9 @@ async function main(): Promise<void> {
         platform: successResults[0]!.platform ?? "claude",
         filesWritten: successResults.flatMap(r => r.filesWritten),
         filesSkipped: successResults.flatMap(r => r.filesSkipped),
+        filesRemoved: successResults.flatMap(r => r.filesRemoved),
+        removalBlocked: successResults.flatMap(r => r.removalBlocked),
+        removalRetained: successResults.flatMap(r => r.removalRetained),
         errors: [],
         dryRun,
       };
@@ -1892,6 +2314,7 @@ async function main(): Promise<void> {
   // Summary.
   const totalWritten = results.reduce((acc, r) => acc + r.filesWritten.length, 0);
   const totalSkipped = results.reduce((acc, r) => acc + r.filesSkipped.length, 0);
+  const totalRemoved = results.reduce((acc, r) => acc + r.filesRemoved.length, 0);
   const failedRepos = results.filter((r) => r.errors.length > 0);
   const skippedRepos = results.filter((r) => r.skippedNoChanges);
   const syncedRepos = results.filter((r) => !r.skippedNoChanges && r.errors.length === 0);
@@ -1920,6 +2343,7 @@ async function main(): Promise<void> {
         ` Synced ${syncedRepos.length} of ${results.length} repo${results.length > 1 ? "s" : ""}` +
         ` — ${totalWritten} file${totalWritten !== 1 ? "s" : ""} written, ` +
         `${totalSkipped} unchanged` +
+        (totalRemoved > 0 ? `, ${totalRemoved} removed` : "") +
         skippedNote +
         dryRunNote
     )

@@ -15,7 +15,7 @@ import {
 
 export interface DriftEntry {
   file: string;
-  status: "clean" | "modified" | "missing" | "unmanaged" | "excepted";
+  status: "clean" | "modified" | "missing" | "unmanaged" | "excepted" | "retired";
   expectedHash?: string | undefined;
   actualHash?: string | undefined;
   /** B7: id of the active policy exception covering this drift, when status is "excepted". */
@@ -24,6 +24,12 @@ export interface DriftEntry {
 
 export interface DriftReport {
   repoPath: string;
+  /**
+   * Does the repo exist on disk at all? "Unreachable" and "synced but the
+   * manifest was deleted" are different remediations and used to print the same
+   * `? (no manifest)` line, so neither could be acted on.
+   */
+  pathExists: boolean;
   manifestFound: boolean;
   entries: DriftEntry[];
   clean: boolean;
@@ -34,9 +40,30 @@ export interface DriftReport {
     unmanagedCount: number;
     /** B7: drifted files covered by an unexpired policy exception. */
     exceptedCount: number;
+    /** F-1: artifacts revoked at the hub that sync could NOT withdraw from this
+     *  repo and that are still present on disk. An unremediated revocation. */
+    retiredCount: number;
   };
   /** B7: problems with the repo's exceptions file (expired entries etc.). */
   exceptionIssues?: string[];
+  /**
+   * NF4-4: manifests found in this repo that could NOT be read.
+   *
+   * 235cf70 fixed the ENUMERATION inside selectManifest — it collects every
+   * unparseable candidate into `corrupt` — and then both internal callers
+   * dropped the field on the floor: `findManifestPath` returns `.path`,
+   * `findManifest` returns `.manifest`. So `ManifestSelection.corrupt` had no
+   * production consumer at all, and grep showed its only readers were tests.
+   *
+   * Measured: a spoke with a valid .claude manifest and
+   * `printf '{ this is not json' > .cursor/.agentboot-manifest.json` gave
+   * `✓ spokeA — clean` / `Summary: 1/1 clean, 0 drifted, 0 UNCHECKED` at exit 0,
+   * with the word "cursor" appearing nowhere in the output.
+   *
+   * selectManifest's own docstring states the contract — "there is a manifest
+   * here and it is unreadable is a finding" — and it was unmet end to end.
+   */
+  manifestIssues?: string[];
 }
 
 export interface ComplianceReport {
@@ -46,7 +73,10 @@ export interface ComplianceReport {
     totalRepos: number;
     cleanRepos: number;
     driftedRepos: number;
+    /** Repos with no readable manifest — UNCHECKED, not clean. */
     noManifestRepos: number;
+    /** Repos whose path does not exist locally — also unchecked. */
+    unreachableRepos: number;
   };
 }
 
@@ -55,14 +85,21 @@ interface ManifestFile {
   hash: string;
 }
 
+interface RetiredFile {
+  path: string;
+  reason: string;
+}
+
 interface Manifest {
   managed_by: string;
   version: string;
   synced_at: string;
   files: ManifestFile[];
+  /** F-1: revoked-but-not-removable artifacts recorded by the last sync. */
+  retired?: RetiredFile[];
 }
 
-function sha256(content: string): string {
+function sha256(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
@@ -84,28 +121,83 @@ function manifestCandidates(repoPath: string): string[] {
 }
 
 /**
- * Return the path to the repo's AgentBoot manifest (first existing candidate), or
- * null if unsynced. Exposed so callers can stat the real manifest (e.g. for a
- * last-synced timestamp) instead of guessing a single location.
+ * R1-I: ONE selection rule for "the manifest".
+ *
+ * `findManifestPath` returned the first EXISTING candidate; `findManifest`
+ * returned the first PARSEABLE one (`catch { continue }`). With a corrupt
+ * `.claude/.agentboot-manifest.json` and a valid `.cursor/` one,
+ * `verify-manifest` and evidence-pack's `manifestVerification` described the
+ * corrupt file while `checkDrift` silently reported on a different one — two
+ * answers about "the manifest" from one repo, out of one file, with no
+ * indication that they disagreed.
+ *
+ * The rule is now: the first candidate that exists AND parses. A candidate that
+ * exists and does NOT parse is recorded, because "there is a manifest here and
+ * it is unreadable" is a finding, not a reason to look elsewhere quietly.
  */
-export function findManifestPath(repoPath: string): string | null {
-  for (const candidate of manifestCandidates(repoPath)) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
+export interface ManifestSelection {
+  /** The chosen manifest — first candidate that exists and parses. */
+  path: string | null;
+  manifest: Manifest | null;
+  /** Candidates that exist but could not be parsed, in candidate order. */
+  corrupt: string[];
 }
 
-function findManifest(repoPath: string): Manifest | null {
+export function selectManifest(repoPath: string): ManifestSelection {
+  const corrupt: string[] = [];
+  let selected: { path: string; manifest: Manifest } | null = null;
+  // NF2-4: EVERY candidate is examined, not just those preceding the selected
+  // one. The old loop `return`ed from inside itself on the first parseable
+  // candidate, so a corrupt manifest in a LOWER-priority location was never
+  // stat'd — and the docstring's contract ("a candidate that exists and does NOT
+  // parse is recorded, because 'there is a manifest here and it is unreadable'
+  // is a finding") held only for the one candidate order it happens to cite.
+  //
+  // Measured before this fix, with a VALID .claude/ and a corrupt .cursor/:
+  //   selected: <repo>/.claude/.agentboot-manifest.json
+  //   corrupt reported: []
+  // Reverse the two files and the same repo reports the corruption. Whether an
+  // unreadable manifest is a finding must not depend on which directory it is
+  // in.
   for (const candidate of manifestCandidates(repoPath)) {
-    if (fs.existsSync(candidate)) {
-      try {
-        return JSON.parse(fs.readFileSync(candidate, "utf-8")) as Manifest;
-      } catch {
-        continue;
-      }
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(candidate, "utf-8")) as Manifest;
+      if (!selected) selected = { path: candidate, manifest };
+    } catch {
+      corrupt.push(candidate);
     }
   }
-  return null;
+  return selected
+    ? { path: selected.path, manifest: selected.manifest, corrupt }
+    : { path: null, manifest: null, corrupt };
+}
+
+/**
+ * Return the path to the repo's AgentBoot manifest, or null if unsynced.
+ * Exposed so callers can stat the real manifest (e.g. for a last-synced
+ * timestamp) instead of guessing a single location.
+ *
+ * Same selection as `checkDrift` uses — that is the point of R1-I.
+ */
+export function findManifestPath(repoPath: string): string | null {
+  return selectManifest(repoPath).path;
+}
+
+/**
+ * NF4-4: the operator-facing wording for an unreadable manifest.
+ *
+ * A manifest that cannot be parsed is not "no manifest": AgentBoot wrote it, so
+ * something is present and claiming to describe managed files, and nothing can
+ * say whether those files still match. That is UNCHECKED, which is the state
+ * this whole report exists to distinguish from clean.
+ */
+function manifestCorruptionIssues(corrupt: string[], repoPath: string): string[] {
+  return corrupt.map(
+    (c) =>
+      `${path.relative(repoPath, c) || c}: manifest present but UNREADABLE — ` +
+      `the files it covers were not checked. Re-run \`agentboot sync\` for this repo.`,
+  );
 }
 
 /**
@@ -113,15 +205,21 @@ function findManifest(repoPath: string): Manifest | null {
  */
 export function checkDrift(repoPath: string): DriftReport {
   const absPath = path.resolve(repoPath);
-  const manifest = findManifest(absPath);
+  // NF4-4: take the whole SELECTION, not just the manifest. The corrupt list is
+  // the half both internal callers used to drop.
+  const selection = selectManifest(absPath);
+  const manifest = selection.manifest;
+  const manifestIssues = manifestCorruptionIssues(selection.corrupt, absPath);
 
   if (!manifest) {
     return {
       repoPath: absPath,
+      pathExists: fs.existsSync(absPath),
       manifestFound: false,
       entries: [],
       clean: false,
-      summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0 },
+      summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0, retiredCount: 0 },
+      ...(manifestIssues.length > 0 ? { manifestIssues } : {}),
     };
   }
 
@@ -160,13 +258,28 @@ export function checkDrift(repoPath: string): DriftReport {
     if (!fs.existsSync(absFilePath)) {
       pushDrift("missing");
     } else {
-      const content = fs.readFileSync(absFilePath, "utf-8");
-      const actualHash = sha256(content);
+      // R1-I: hash BYTES. Reading as utf-8 round-trips a binary managed artifact
+      // through lossy decoding (invalid sequences become U+FFFD), so two
+      // different binaries can hash the same and a tampered one can drift-check
+      // clean. Text files are unaffected — the same bytes hash the same either
+      // way — so this is strictly a widening of what the check can see.
+      const actualHash = sha256(fs.readFileSync(absFilePath));
       if (actualHash === file.hash) {
         entries.push({ file: file.path, status: "clean", expectedHash: file.hash, actualHash });
       } else {
         pushDrift("modified", actualHash);
       }
+    }
+  }
+
+  // F-1: a control the org withdrew that is still live here. These files are
+  // deliberately absent from manifest.files (sync no longer delivers them), so
+  // the loop above cannot see them — which is exactly how drift-check used to
+  // report "clean" BECAUSE the artifact had stopped being tracked.
+  for (const retired of manifest.retired ?? []) {
+    managedPaths.add(retired.path);
+    if (fs.existsSync(path.join(absPath, retired.path))) {
+      entries.push({ file: retired.path, status: "retired" });
     }
   }
 
@@ -192,10 +305,12 @@ export function checkDrift(repoPath: string): DriftReport {
     missingCount: entries.filter(e => e.status === "missing").length,
     unmanagedCount: entries.filter(e => e.status === "unmanaged").length,
     exceptedCount: entries.filter(e => e.status === "excepted").length,
+    retiredCount: entries.filter(e => e.status === "retired").length,
   };
 
   return {
     repoPath: absPath,
+    pathExists: true,
     manifestFound: true,
     entries,
     // "clean" = AgentBoot-managed content is intact (nothing modified or missing).
@@ -205,9 +320,18 @@ export function checkDrift(repoPath: string): DriftReport {
     // every real repo. Callers that care about unmanaged files read summary.unmanagedCount.
     // Excepted entries are approved drift — visible in the report, but they do
     // not fail the repo. Unauthorized drift (modified/missing) still does.
-    clean: summary.modifiedCount === 0 && summary.missingCount === 0,
+    // F-1: a revoked control still live on a spoke is NOT a clean repo.
+    // NF4-4: an unreadable manifest beside a readable one means part of this
+    // repo went unchecked, and "I could not check" must not report as "clean".
+    // Same rule the report already applies to a missing manifest one branch up.
+    clean:
+      summary.modifiedCount === 0 &&
+      summary.missingCount === 0 &&
+      summary.retiredCount === 0 &&
+      manifestIssues.length === 0,
     summary,
     ...(exceptionIssues.length > 0 ? { exceptionIssues } : {}),
+    ...(manifestIssues.length > 0 ? { manifestIssues } : {}),
   };
 }
 
@@ -238,10 +362,11 @@ export function generateComplianceReport(
       // Skip remote/missing repos with a stub report
       reports.push({
         repoPath,
+        pathExists: false,
         manifestFound: false,
         entries: [],
         clean: false,
-        summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0 },
+        summary: { cleanCount: 0, modifiedCount: 0, missingCount: 0, unmanagedCount: 0, exceptedCount: 0, retiredCount: 0 },
       });
       continue;
     }
@@ -255,7 +380,11 @@ export function generateComplianceReport(
       totalRepos: reports.length,
       cleanRepos: reports.filter(r => r.clean).length,
       driftedRepos: reports.filter(r => r.manifestFound && !r.clean).length,
+      // A repo whose manifest is absent was NOT checked. It is not clean and it
+      // is not drifted — it is unknown, and the caller must be able to tell the
+      // difference, because "unknown" was previously folded into the exit-0 path.
       noManifestRepos: reports.filter(r => !r.manifestFound).length,
+      unreachableRepos: reports.filter(r => !r.pathExists).length,
     },
   };
 }

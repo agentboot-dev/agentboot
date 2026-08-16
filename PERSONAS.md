@@ -7,7 +7,7 @@
 | Persona | Invocation | Description |
 |---|---|---|
 | **ai-security-reviewer** | `/review-ai-security` | Reviews AI-workflow security — prompt injection, tool/MCP escalation, excessive agency, and unsafe model-output handling |
-| **code-reviewer** | `/review-code` | Senior code reviewer — finds real bugs, not style nits |
+| **code-reviewer** | `/review-code` | Senior code reviewer — correctness, security, and maintainability |
 | **security-reviewer** | `/review-security` | Adversarial security reviewer — finds vulns before attackers do |
 | **test-data-expert** | `/gen-testdata` | Data engineer specializing in synthetic, constraint-respecting test data |
 | **test-generator** | `/gen-tests` | Top QA engineer — writes tests, audits coverage, finds gaps, manages test plans |

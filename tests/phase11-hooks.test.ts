@@ -10,18 +10,15 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { ensureRootDist } from "./setup.js";
+
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
 
+// R4-6: existence read as freshness. tests/setup.ts::ensureRootDist() asks the
+// build stamp instead — the whole reason it exists.
 beforeAll(() => {
-  const hooksDir = path.join(ROOT, "dist", "claude", "core", "hooks");
-  if (!fs.existsSync(hooksDir)) {
-    execSync(`${TSX} scripts/compile.ts`, {
-      cwd: ROOT,
-      env: { ...process.env, NODE_NO_WARNINGS: "1" },
-      timeout: 30_000,
-    });
-  }
+  ensureRootDist();
 });
 
 describe("A2: jq replaced with node -e in all hooks", () => {

@@ -1,6 +1,10 @@
 ---
 description: AgentBoot hub authoring conventions — how to create and edit personas, traits, gotchas, and lexicons
 applyTo: "core/**"
+scope-unsupported: acknowledged
+id: 01KZH2QM0CCJRF0EMPBHPBH8DA
+slug: agentboot-authoring
+hash: sha256:bc7915123fc102e4
 ---
 
 # AgentBoot Hub Authoring Instructions
@@ -22,7 +26,7 @@ calibration is meaningful (HIGH/MEDIUM/LOW/MAX/OFF), and the instruction is cont
 (not scoped to specific file paths). Traits modulate how an agent thinks or communicates.
 They are not checklists, domain rules, or persona definitions.
 
-**Gotcha** (`core/gotchas/`) — a path-scoped knowledge rule encoding battle-tested
+**Gotcha** (`core/gotchas/`) — a path-scoped knowledge rule encoding hard-won
 operational knowledge. Use when: advice applies only when working in specific file paths
 or file types. Must have `paths:` frontmatter. Compiles into `.claude/rules/` and
 activates contextually. Without `paths:` frontmatter, a gotcha will not activate on
@@ -84,7 +88,7 @@ activate contextually and will not be compiled into `.claude/rules/`.
 ```yaml
 ---
 name: Code Reviewer
-description: Senior code reviewer — finds real bugs, not style nits
+description: Senior code reviewer — correctness, security, and maintainability
 invocation: /review-code
 ---
 ```
@@ -95,6 +99,7 @@ invocation: /review-code
 ---
 description: One-line summary of what this instruction enforces
 applyTo: "**"  # glob pattern for activation scope
+scope-unsupported: acknowledged
 ---
 ```
 

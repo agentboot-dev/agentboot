@@ -224,6 +224,63 @@ attributed to you.
 
 ---
 
+## Proving a guard: mutation testing on a frozen snapshot
+
+A check that cannot fail is not a check. Every new guard in this repo is proven
+by breaking it on purpose and watching a specific test go red — a green result on
+an untested harness is indistinguishable from a vacuous one.
+
+**Never mutate the working tree to do this.** Run every mutation in a snapshot:
+
+```bash
+S=/tmp/ab-mut-$$            # anywhere outside the checkout
+mkdir -p "$S"
+git archive HEAD | tar -x -C "$S"          # or: tar --exclude=node_modules --exclude=.git \
+                                           #        --exclude=dist -cf - . | (cd "$S" && tar -xf -)
+                                           #      to include uncommitted work
+ln -s "$PWD/node_modules" "$S/node_modules"
+
+# edit the guard in $S, then:
+( cd "$S" && npx vitest run tests/<the-test>.test.ts )
+```
+
+Then state in the commit message which mutation turned which test red, and how
+many. If the count is zero, the guard is unasserted and the commit is not
+finished.
+
+### Why the snapshot is mandatory
+
+2026-08-09: a mutation experiment left `if (false) {` in
+`scripts/lib/scope-projection.ts` in a SHARED checkout. A concurrent session ran
+`git add -A` and swept it into a commit; `applyTo: |` frontmatter then returned
+the header character itself as the glob list, so a block-scalar scope became one
+glob matching nothing. It took a second commit to revert, and the window it
+existed in is permanently in the history.
+
+Two agents or two terminals in one checkout corrupt each other by construction —
+`tests/cli.test.ts` writes fixtures into `ROOT/core` and builds, so a concurrent
+build can read another session's half-written fixture. Treat a shared checkout as
+a defect-injection vector, not a theoretical risk:
+
+- Mutations go in a snapshot. Always. There is no "just this once" — the
+  incident above was a one-line experiment reverted within a minute.
+- If you must work concurrently, use `git worktree add` so each session has its
+  own tree and its own `dist/`.
+- Before committing, `git status --porcelain` and read the whole diff. `git add
+  -A` in a shared checkout stages whatever the other session left behind.
+
+### Two directions, always
+
+Assert what the guard REFUSES and what it still ALLOWS. A gate that refuses
+everything passes a one-directional test and is an outage; a gate that fires on
+the wrong evidence gets switched off, and then protects nothing.
+
+### Measure exit codes without a pipe
+
+`cmd | head` takes `head`'s status. Write `cmd >/dev/null 2>&1; echo $?`.
+
+---
+
 ## PR checklist
 
 Before opening a PR, verify:
@@ -237,6 +294,10 @@ Before opening a PR, verify:
 - [ ] An example is included if you added a new persona
 - [ ] The trait design principles are satisfied if you added a new trait
 - [ ] The persona quality bar is met if you added a new persona
+- [ ] Any new guard is proven by a mutation on a **snapshot** (see above), and the commit
+      message names which test went red and how many
+- [ ] `git status --porcelain` is clean of anything you did not intend — including
+      leftovers from another session in the same checkout
 - [ ] The issue number is referenced in the PR description
 - [ ] For a **release PR** (bumping `package.json`): every tracked version string is bumped and `npm run check:versions` passes (see below)
 

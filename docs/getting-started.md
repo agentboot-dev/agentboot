@@ -18,7 +18,7 @@ Windsurf, and JetBrains on a community-supported basis.
 By the end of this guide you will have a personas hub deployed and `/ab` running in
 Claude Code — ready to answer questions, manage your setup, and deploy changes.
 
-> **Beta notice:** AgentBoot **v0.20.2 is a public Beta**. It's usable end to end, but
+> **Beta notice:** AgentBoot **v0.21.0 is a public Beta**. It's usable end to end, but
 > breaking changes may occur without deprecation warnings before **v1.0 GA**. Release
 > notes document all changes, and we do our best to minimize disruption — but stability
 > is not guaranteed until v1.0. If you hit a rough edge,
@@ -213,6 +213,25 @@ applyTo: "**"
 `applyTo` is a comma-separated glob list — `"**"` is always-on, `"src/api/**"` scopes it
 to a subtree. Keep the body short: it loads on every session and competes for context.
 
+**Scoping is not expressible everywhere.** Cursor, Windsurf and JetBrains receive the exact
+scope (translated to their native `globs:` / `trigger: glob` keys), and Copilot reads
+`applyTo` directly. Claude Code, Skill, plugin, AGENTS.md, Codex and Gemini have no scoping
+mechanism at all — a rule reaches them always-on. Because that is the *opposite* of what a
+narrow `applyTo` asks for, **the build fails** when a narrowly-scoped instruction targets one
+of those platforms. If always-on delivery is genuinely what you want, say so on the artifact:
+
+```markdown
+---
+description: "API layer rules"
+applyTo: "src/api/**"
+scope-unsupported: acknowledged
+---
+```
+
+The acknowledgement is not silence: the emitted file gains a `Scope:` preamble telling the
+agent which paths the rule is meant for, and every build reports the artifact. See
+[the platform capability matrix](/docs/platform-capability-matrix) for the per-platform table.
+
 ### Making it non-overridable
 
 By default an instruction is a **soft preference** — a team may adapt it. To make it a
@@ -233,7 +252,9 @@ agentboot validate --strict
 > `build` will compile a guardrail violation and ship it.
 
 On Claude Code, Codex CLI and Copilot CLI a HARD guardrail compiles to a **blocking
-hook**. On `AGENTS.md` and the community-tier platforms it is delivered as instruction
+hook** — with Copilot's ceiling stated: its exit-2 blocking is documented platform
+behaviour we have not yet verified end to end, and its command-hook timeouts fail open.
+On `AGENTS.md` and the community-tier platforms it is delivered as instruction
 text with no blocking mechanism — see [Guardrails](guardrails.md) for the full picture
 and how to verify enforcement rather than assume it.
 

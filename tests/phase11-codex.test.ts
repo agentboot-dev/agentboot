@@ -11,6 +11,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
+import { ensureRootDist } from "./setup.js";
+
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
 
@@ -23,10 +25,10 @@ function run(script: string, cwd = ROOT): string {
 }
 
 beforeAll(() => {
-  const codexDist = path.join(ROOT, "dist", "codex");
-  if (!fs.existsSync(codexDist)) {
-    run("scripts/compile.ts");
-  }
+  // R4-6: existence read as freshness — and worse here, `dist/codex` is absent
+  // whenever another file built a codex-less config, so this rebuilt on a tree
+  // that was current and skipped on one that was not.
+  ensureRootDist();
 });
 
 // ---------------------------------------------------------------------------

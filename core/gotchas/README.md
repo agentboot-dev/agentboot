@@ -1,6 +1,6 @@
 # Gotchas
 
-Gotchas are path-scoped rules that encode battle-tested operational knowledge.
+Gotchas are path-scoped rules that encode hard-won operational knowledge.
 They activate automatically when developers work on files matching specific paths.
 
 ## File Format

@@ -6,7 +6,11 @@
  */
 
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { handleToolCall, handleMessage, isContainedIn } from "../scripts/mcp-server.js";
+
+const REPO_ROOT = path.resolve(__dirname, "..");
 
 // ---------------------------------------------------------------------------
 // Tool handler tests
@@ -139,6 +143,16 @@ describe("MCP tool handlers", () => {
       expect(data.hub).toBeDefined();
       expect(data.hub.org).toBeDefined();
       expect(data.hub.version).toBeDefined();
+      // R2-8: the two versions are different facts. `agentbootVersion` is the
+      // TOOL, read from its install dir — it used to be read from the HUB's
+      // package.json, so a scaffolded hub reported `hub.version: "0.0.0"` while
+      // the CLI was 0.20.2. This surface is read by an agent and feeds the
+      // evidence pack as provenance.
+      expect(data.agentbootVersion).toBe(
+        JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf-8")).version,
+      );
+      expect(data.agentbootVersion).not.toBe("0.0.0");
+      expect(data.agentbootVersion).not.toBe("unknown");
       expect(Array.isArray(data.personas)).toBe(true);
       expect(Array.isArray(data.repos)).toBe(true);
     });

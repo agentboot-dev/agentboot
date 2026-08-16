@@ -67,30 +67,36 @@ within 14 days produce warnings. See
 
 ## `agentboot test`
 
-Run behavioral and snapshot tests for personas.
+Snapshot and regression testing over the compiled `dist/` tree. Deterministic:
+no LLM call, no cost, no login, safe to run in CI.
 
 ```
-agentboot test --behavioral              # Run YAML behavioral tests (LLM-powered)
 agentboot test --snapshot                 # Create/update snapshot baseline from dist/
 agentboot test --regression               # Compare dist/ against saved snapshot
-agentboot test --behavioral --test-dir tests/behavioral
 agentboot test --regression --snapshot-file .agentboot-snapshot.json
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--behavioral` | Run behavioral tests (requires LLM, costs money) |
 | `--snapshot` | Create or update snapshot baseline from current `dist/` |
 | `--regression` | Compare current `dist/` against saved snapshot |
-| `--test-dir <dir>` | Directory with behavioral test YAML files (default: `tests/behavioral`) |
 | `--snapshot-file <path>` | Path to snapshot baseline file (default: `.agentboot-snapshot.json`) |
 
-> **`--behavioral` is experimental.** The scenario YAML schema is still in flux,
-> and the runner does not yet parse the scenario set that ships with the repo —
-> expect to write scenarios against the current runner rather than reuse the
-> shipped ones. Do not wire it up as a supported CI gate yet; the
-> [roadmap](roadmap.md) tracks maturing the behavioral evaluation harness.
-> `--snapshot` / `--regression` are deterministic and CI-safe.
+Both compare SHA-256 hashes of the files under `dist/`: `--snapshot` writes the
+baseline, `--regression` diffs against it and reports added, removed and changed
+files. Exit non-zero on a difference, so a prompt change that alters compiled
+output cannot land unnoticed.
+
+> **Behavioral evaluation is NOT part of the v1.0 surface.** There is no
+> supported command or flag for "given this input, does the persona actually
+> behave this way" — v1.0 ships the deterministic half only. Ruled 2026-08-11:
+> the scenario runner parses and executes cases, but the large majority of the
+> expectations in the shipped scenario set are judgement calls with no
+> mechanical evaluator, so a green run would not have meant what a reader would
+> reasonably take it to mean, and shipping the flag at 1.0 would have frozen
+> that reading into the tag. Tracked as **behavioral evaluation** on the
+> [roadmap](roadmap.md). For static persona checks that DO ship, use
+> [`agentboot lint`](#agentboot-lint) and [`agentboot validate`](#agentboot-validate).
 
 ---
 
@@ -337,6 +343,7 @@ manager. Controlled by `userLevel.mode` in `agentboot.config.json` (see [Configu
 agentboot install-user
 agentboot install-user --dry-run
 agentboot install-user --mode manifest
+AGENTBOOT_USER_LEVEL_MODE=manifest agentboot install-user
 ```
 
 | Flag | Description |
@@ -344,9 +351,24 @@ agentboot install-user --mode manifest
 | `--dry-run` | Show what would be written/staged without changing anything |
 | `--mode <mode>` | Override the write mode: `auto` (default), `direct`, or `manifest` |
 
+| Env var | Description |
+|---------|-------------|
+| `AGENTBOOT_USER_LEVEL_MODE` | Same three values. For callers that can set an environment variable but cannot edit the hub config or reach the flag (CI jobs, wrapped installers). **Lower precedence than `userLevel.mode` and `--mode`** — including an explicitly passed `--mode auto`, which suppresses it. |
+
 `auto` writes `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns
-the slot (then it stages a handoff manifest); `direct` always writes; `manifest` never writes and only
-stages the resolved content plus a manifest for an external provider to apply.
+the slot (then it stages a handoff manifest); `manifest` never writes and only stages the resolved
+content plus a manifest for an external provider to apply.
+
+`direct` writes `~/.claude` — **except when the sentinel is present, where it is refused rather than
+honoured.** The sentinel is the only signal from the side of the boundary AgentBoot cannot see, so no
+config key or flag may override it. On refusal: `~/.claude` is untouched, the content is staged for
+handoff anyway, the refusal is printed naming the source that asked for `direct`, and the command
+**exits `1`**. A silent downgrade to manifest mode under a green success line would be the same
+green-over-a-refusal failure the exit code exists to prevent. To resolve it, remove
+`~/.claude/.managed` if AgentBoot owns the slot, or stop requesting `direct`.
+
+A mode value that is not `auto`/`direct`/`manifest`, from either the config or the env var, is
+likewise refused — it stages, reports, and exits `1` rather than falling back to `auto`.
 
 ---
 
@@ -527,6 +549,73 @@ classification this harness tests.
 
 ---
 
+## `agentboot baseline`
+
+Archive a dated conformance snapshot. Platforms change their enforcement semantics
+without announcing it, and when they do your corpus text does not move — so
+`drift-check` keeps reporting clean while the governance quietly stops working.
+Detecting that needs a record of how the platforms behaved *before*, and a baseline
+cannot be backfilled: probes that start next year cannot say how a platform behaved
+at your 1.0.
+
+```
+agentboot baseline
+agentboot baseline --dir .agentboot/baseline
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Path to `agentboot.config.json` (the hub is its directory) |
+| `--dir <path>` | Archive directory (default: `.agentboot/baseline`) |
+
+Reads the enforcement manifests `agentboot conformance` writes into `dist/<platform>/`
+and stores a timestamped `conformance-<stamp>.json` snapshot: the AgentBoot version,
+the capture time, and each platform's per-probe results.
+
+**This command is the archive only.** It performs no comparison and produces no
+report — reading these snapshots against each other is post-GA work. The point is to
+start a clock that cannot be restarted, so run it on a schedule from now on.
+
+Two states are refusals rather than empty snapshots, because a baseline that
+silently accumulates nothing looks healthy for a year:
+
+- **No enforcement manifests in `dist/`** — exits non-zero and points at
+  `agentboot conformance`. Nothing is archived.
+- **Manifests present but zero probes observed** (every control untested or
+  not-applicable) — exits non-zero. A file count is not a measurement, and banking
+  an unmeasured snapshot as history is worse than banking none, because later it
+  reads as history.
+
+---
+
+## `agentboot identity`
+
+Stamp permanent identifiers onto governed artifacts: mints an `id` for any artifact
+that lacks one and refreshes the content `hash` on any whose body has changed.
+Covers `core/instructions/`, `core/traits/` and `core/gotchas/`.
+
+```
+agentboot identity --dry-run
+agentboot identity
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | Path to `agentboot.config.json` (the hub is its directory) |
+| `--dry-run` | Report what would change without writing |
+
+Identity is what lets an artifact be traced across renames, scope moves and spoke
+syncs. It cannot be applied retroactively — an artifact left unstamped can only ever
+date from whenever it is finally stamped — which is why the backfill exists as its
+own command rather than as a build step.
+
+Traits and gotchas carry no frontmatter by convention; `identity` creates a minimal
+block for them. Navigational files (`README.md`, `index.md`) are never stamped: a
+README is not a governed artifact. A duplicate `id` across two files is a hard error
+— it would silently merge two artifacts' histories forever.
+
+---
+
 ## `agentboot status`
 
 Show deployment status: org info, enabled personas, traits, output formats, registered
@@ -645,9 +734,9 @@ AgentBoot keeps a global registry of hubs (`~/.agentboot/config.json`) so `/ab` 
 resolve a hub from any repo. Override the registry location with the `AGENTBOOT_HOME` environment
 variable (its `.agentboot` directory is used; handy for isolation or a non-default location).
 
-### Hub resolution order (uniform across commands)
+### Hub resolution order (CLI commands)
 
-Every hub-reading command resolves its hub the same way (UI-14 — previously
+Every hub-reading **CLI** command resolves its hub the same way (UI-14 — previously
 `mcp-server`/`doctor` honored `AGENTBOOT_HUB` while `status`/`drift-check` ignored it):
 
 1. **`--config <path>`** — explicit flag always wins.
@@ -656,6 +745,40 @@ Every hub-reading command resolves its hub the same way (UI-14 — previously
 4. **Fallback** — build scripts fall back to the package root; read-only commands
    (`status`) consult the hub **registry** only to *suggest* a hub, never to silently
    act on one.
+
+### Hub resolution order (`agentboot mcp-server`)
+
+**The MCP server's ladder is different, and it is different in a way that matters.**
+It takes no `--config` flag, and its last two rungs *act* where the CLI only suggests:
+
+1. **`AGENTBOOT_HUB`** — session-scoped hub override. If a registry default also
+   exists and differs, the env var wins and the difference is reported.
+2. **Current directory** — the server was started in a directory containing
+   `agentboot.config.json`.
+3. **Global registry** — the registry's **default hub** is used, not merely
+   suggested. An MCP client has no prompt to answer, so there is nothing to suggest
+   *to*; the server picks one and reports which.
+4. **Package root** — no hub resolved anywhere. The server still starts, serving
+   **AgentBoot's own bundled personas and traits**. Every answer it then gives
+   describes the package, not your organization.
+
+Rung 4 is a real failure mode for a misconfigured spoke, so it is reported on the
+channel you actually read. `agentboot_status` returns a **`hubResolution`** object:
+
+```json
+"hubResolution": {
+  "source": "package-fallback",
+  "path": "/usr/local/lib/node_modules/agentboot",
+  "fallback": true,
+  "note": "No hub resolved from AGENTBOOT_HUB, the current directory, or the global registry — these answers describe AgentBoot's OWN bundled content, not your organization's. …"
+}
+```
+
+`source` is one of `env`, `cwd`, `registry`, `package-fallback`; `fallback` is true
+only on the last. The same condition is also written to **stderr** — but on a stdio
+MCP server stderr goes to the *client's log file*, not to you, which is why the
+resolution is a returned value and not only a diagnostic. If an agent reports your
+org's governance and `hubResolution.fallback` is true, it is describing ours.
 
 ### `agentboot hubs`
 
@@ -770,6 +893,12 @@ Maintainer-profile tools:
 - `agentboot_propose_change` — branch + commit + push + open a PR (never pushes to main)
 
 Reads from compiled `dist/skill/core/` when available, falls back to `core/` source files.
+
+**Which hub is it serving?** The server's hub-resolution ladder differs from the CLI's
+— see [Hub resolution order (`agentboot mcp-server`)](#hub-resolution-order-agentboot-mcp-server).
+Check `hubResolution` on `agentboot_status` before trusting an answer about your org;
+if `hubResolution.fallback` is true, no hub was found and the server is serving
+AgentBoot's bundled content.
 
 ---
 

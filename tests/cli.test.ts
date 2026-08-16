@@ -12,6 +12,20 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { ensureRootDist } from "./setup.js";
+import { beforeEach as _beforeEach } from "vitest";
+
+// NF-1: several cases below run `agentboot doctor|status|export` in the repo
+// ROOT, which reads ROOT/dist — the shared, gitignored tree that other test
+// files (and cases in this one) rebuild, prune, and build against temporary
+// fixtures placed in ROOT/core. A case that adds a gotcha to ROOT/core, builds,
+// and removes it again leaves a stamp describing sources that no longer exist.
+//
+// `beforeEach`, not `beforeAll`, for exactly that reason: freshness has to hold
+// at the moment the CLI runs, not at the moment the file loaded. It costs one
+// digest of the hub sources when nothing moved, and a rebuild when something
+// did — which is the correct price for the result meaning anything.
+_beforeEach(() => { ensureRootDist(); }, 300_000);
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
@@ -255,7 +269,12 @@ describe("AB-130: copilot scoped instructions", () => {
     fs.unlinkSync(instrPath);
   });
 
-  it("does not generate scoped instruction for gotchas without paths:", () => {
+  it("H3: an UNSCOPED gotcha still REACHES copilot, with the universal applyTo", () => {
+    // Was: asserted the file must NOT exist. That codified H3 — an unscoped
+    // gotcha was emitted to NOTHING on copilot while claude and skill both
+    // received it. Silently dropping an artifact on one configured platform is
+    // the same class as delivering it unscoped: the operator is not told either
+    // way. Copilot's universal scope is `**`.
     fs.writeFileSync(
       gotchaPath,
       '---\ndescription: General rule without paths\n---\n\n# General Gotcha\n\n- General advice\n',
@@ -267,8 +286,11 @@ describe("AB-130: copilot scoped instructions", () => {
     const instrPath = path.join(instrDir, "test-copilot-gotcha.instructions.md");
     expect(
       fs.existsSync(instrPath),
-      "gotcha without paths: should not get scoped instruction"
-    ).toBe(false);
+      "gotcha without paths: must still be delivered to copilot"
+    ).toBe(true);
+    const body = fs.readFileSync(instrPath, "utf-8");
+    expect(body).toContain('applyTo: "**"');
+    expect(body).toContain("General advice");
   });
 });
 
@@ -1854,10 +1876,7 @@ describe("dev-sync script", () => {
   it("syncs dist/ to local repo directories", () => {
     // dev-sync requires dist/ to exist (from prior build)
     const distPath = path.join(ROOT, "dist");
-    if (!fs.existsSync(distPath)) {
-      // Build first if dist/ missing
-      execSync(`${TSX} ${path.join(ROOT, "scripts", "compile.ts")}`, { cwd: ROOT, stdio: "pipe" });
-    }
+    ensureRootDist();
 
     const output = execSync(`${TSX} ${path.join(ROOT, "scripts", "dev-sync.ts")}`, {
       cwd: ROOT,

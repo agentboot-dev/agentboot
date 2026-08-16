@@ -19,7 +19,7 @@ Key terms used throughout AgentBoot documentation.
 
 **agentskills.io** — An open standard for AI agent skill definitions using SKILL.md format (Markdown with YAML frontmatter). Supported by 26+ agent platforms. AgentBoot uses agentskills.io as its cross-platform persona format.
 
-**Always-On Instructions** — Universal guardrails distributed to every repo regardless of persona configuration. These load at session start and remain active throughout, enforcing org-wide rules like security baselines and compliance requirements.
+**Always-On Instructions** — Universal guidance distributed to every repo regardless of persona configuration. These load at session start and remain active throughout, stating org-wide rules like security baselines and compliance requirements. They are instructions, not hooks — they do not block; pair them with compiled hooks where a rule must be mechanically enforced.
 
 **Autonomy Progression** — A three-phase model for persona independence: Advisory (persona produces findings, human decides), Auto-approve (low-risk fixes applied automatically), and Autonomous (persona operates independently, human reviews post-hoc).
 
@@ -47,9 +47,9 @@ Key terms used throughout AgentBoot documentation.
 
 **GELF (Graylog Extended Log Format)** — A structured log format referenced in AgentBoot's telemetry design discussion as a possible aggregation-friendly format. The shipped telemetry output is NDJSON only.
 
-**Gotcha (Gotchas Rule)** — A path-scoped instruction encoding hard-won operational knowledge. Activated only when a developer works on files matching the glob pattern, invisible otherwise. In Claude Code, gotchas compile to `.claude/rules/` files which are re-injected into the agent's context every time a matching file is accessed — making them the highest-impact artifact AgentBoot produces.
+**Gotcha (Gotchas Rule)** — An instruction encoding hard-won operational knowledge, carrying a `paths:` glob in its frontmatter. **Whether that glob actually activates the rule depends on the target.** Copilot expresses it natively, and Cursor, Windsurf and JetBrains receive it translated — on those, the gotcha loads only for matching files and costs nothing otherwise. Claude Code, Codex, Gemini, plugin and `SKILL.md` output have no scoping mechanism, so the gotcha is delivered **always-on**: Claude Code writes it to `.claude/rules/` and restates the glob as an `Applies to:` line, which *tells* the agent the scope rather than enforcing it. See the [platform capability matrix](platform-capability-matrix.md).
 
-**HARD Guardrail** — A non-overridable compliance rule deployed via MDM or marked `required: true` in the org config. Cannot be elevated, overridden, or disabled at any scope level. Used for rules where violation is a compliance incident.
+**HARD Guardrail** — A compliance rule a lower scope may not weaken: shadowing it, downgrading it to soft, or zeroing its trait weight are all errors under `validate --strict`. That is a *composition* property, enforced at compile time. Whether it is also a *mechanical* control at runtime depends on the target — blocking hooks on the three official CLI surfaces, advisory text everywhere else (including the officially supported `AGENTS.md` output). The three are not equal: Claude Code is hard-enforced; Codex blocks with known bypasses (hooks need a trust review unless deployed as managed, and tool coverage is partial); Copilot's command-hook timeouts **fail open** and its exit-2 blocking is documented platform behaviour not yet verified end to end. See the [platform capability matrix](platform-capability-matrix.md). Used for rules where violation is a compliance incident.
 
 **Harness Engineering** — The discipline of designing the infrastructure that wraps around an AI model to make it reliable: system prompts, tool definitions, permission boundaries, feedback loops, validation gates, and context retrieval. AgentBoot is a harness engineering build tool. The term was formalized by Birgitta Bockeler (Thoughtworks) and operationalized by OpenAI in 2026.
 
@@ -61,11 +61,11 @@ Key terms used throughout AgentBoot documentation.
 
 **JSONC** — JSON with Comments. The format used by `agentboot.config.json`, allowing inline comments for documentation within configuration files.
 
-**Managed Settings** — Claude Code configuration files deployed to OS-level paths via MDM. Cannot be overridden by any user or project setting. Used for HARD guardrails and forced plugin installation.
+**Managed Settings** — Claude Code configuration files deployed to OS-level paths via MDM; they override user and project settings. **Claude Code only** — no other supported platform has a non-overridable settings layer, so on Codex and Copilot a HARD guardrail rides in the compiled hooks instead (see the [platform capability matrix](platform-capability-matrix.md)). Used for HARD guardrails. Not for plugin installation: `managed.guardrails.forcePlugins` is typed and accepted but read by no code path on any platform, and setting it fails the build.
 
 **MCP (Model Context Protocol)** — A protocol for AI agents to interact with external tools and data sources. MCP servers expose tools and resources that agents can consume. AgentBoot uses MCP for cross-platform persona serving.
 
-**MDM (Mobile Device Management)** — Enterprise device management tooling (e.g., Jamf, Intune) used to deploy managed settings files to developer machines. The enforcement channel for HARD guardrails.
+**MDM (Mobile Device Management)** — Enterprise device management tooling (e.g., Jamf, Intune) used to deploy managed settings files to developer machines. The enforcement channel for HARD guardrails **on Claude Code**; Codex and Copilot have no managed-settings layer and carry guardrails in their compiled hooks, and the community tier carries them as advisory text only.
 
 **NDJSON (Newline-Delimited JSON)** — A format where each line is a valid JSON object, used for structured telemetry output. Human-queryable with tools like `jq`.
 
@@ -97,6 +97,6 @@ Key terms used throughout AgentBoot documentation.
 
 **Trait Weight** — A calibration system for traits supporting variable intensity. Named weights (OFF/LOW/MEDIUM/HIGH/MAX) map to numeric values (0.0 / 0.3 / 0.5 / 0.7 / 1.0). The weight adjusts the threshold for action, not the type of action.
 
-**Two-Channel MDM Distribution** — Enterprise distribution model separating non-negotiable enforcement (Channel 1: MDM-deployed managed settings for HARD guardrails) from team-customizable configuration (Channel 2: Git-based hub-and-spoke for everything else).
+**Two-Channel MDM Distribution** — Enterprise distribution model separating non-negotiable enforcement (Channel 1: MDM-deployed managed settings for HARD guardrails — Claude Code only) from team-customizable configuration (Channel 2: Git-based hub-and-spoke for everything else, which is the only channel that reaches Codex, Copilot and the community tier).
 
 **Verify-Manifest (`agentboot verify-manifest`)** — Verification of a synced `.agentboot-manifest.json`: the manifest's content digest, every listed file's hash, and the SSH signature when present. Exits non-zero on any mismatch — suitable as a CI step in spoke repos. Signature validity proves the digest was signed; pinning *who* may sign is done by checking the signer's public key against an `allowed_signers` trust root.

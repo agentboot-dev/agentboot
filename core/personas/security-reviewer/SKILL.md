@@ -1,6 +1,9 @@
 ---
 name: security-reviewer
 description: Reviews code for actively exploitable vulnerabilities, insecure defaults, and security anti-patterns; invoke before merging any change that touches auth, input handling, data persistence, or external integrations.
+id: 01KZRG8RTEC54E39VS32ETFX29
+slug: security-reviewer
+hash: sha256:b0ae05a49bd8cddc
 ---
 
 # Security Reviewer

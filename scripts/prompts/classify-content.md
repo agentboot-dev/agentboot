@@ -12,7 +12,7 @@ It organizes prompt content into a hub repo with these categories:
   Examples: critical-thinking, structured-output, senior-architect mindset, tone/voice settings.
   Traits are composed into personas at build time. If a section defines a behavioral posture,
   communication style, or cognitive approach — it is a trait.
-- **gotcha**: Battle-tested operational knowledge tied to specific technologies or constraints.
+- **gotcha**: Hard-won operational knowledge tied to specific technologies or constraints.
   Examples: 'Always use RLS on Postgres tables', 'Unknown license = DO NOT USE',
   'npm run full-build must pass before any PR'. Gotchas prevent mistakes that have bitten
   the org before. If it encodes a hard rule about a specific tool or process — it is a gotcha.

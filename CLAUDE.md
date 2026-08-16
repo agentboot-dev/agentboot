@@ -61,7 +61,7 @@ AgentBoot is a **harness engineering build tool** that compiles agentic personas
 
 **Always-on Instructions** (`core/instructions/`) are universal guardrails distributed to every repo regardless of persona configuration.
 
-**Gotchas** (`core/gotchas/`) are path-scoped knowledge rules that encode battle-tested operational knowledge. They use `paths:` frontmatter to activate only for matching files and are compiled into `.claude/rules/` during build.
+**Gotchas** (`core/gotchas/`) are path-scoped knowledge rules that encode hard-won operational knowledge. They use `paths:` frontmatter to activate only for matching files and are compiled into `.claude/rules/` during build.
 
 ### Build Pipeline
 
@@ -117,7 +117,7 @@ All design ideas are documented in `docs/concepts.md`:
 
 **Core (Tier 1):** agentskills.io format, build-time trait composition, scope hierarchy, hub-and-spoke distribution, multi-format output, trait weight system (HIGH/MEDIUM/LOW with compile-time calibration preambles).
 
-**High Value (Tier 2):** per-persona extensions, gotchas rules (path-scoped battle-tested knowledge), compliance hooks (3-layer defense-in-depth), ADR governance (permanent exception lifecycle), behavioral tests, self-improvement reflections (A→B→C), reviewer selection config.
+**High Value (Tier 2):** per-persona extensions, gotchas rules (path-scoped hard-won knowledge), compliance hooks (3-layer defense-in-depth), ADR governance (permanent exception lifecycle), behavioral tests, self-improvement reflections (A→B→C), reviewer selection config.
 
 **V2+ (Tier 3):** HARD/SOFT guardrail elevation, team champions, SME discoverability fragment, MCP-first integrations, structured telemetry (GELF/NDJSON), persona arbitrator, autonomy progression (Advisory→Auto-approve→Autonomous), two-channel MDM distribution.
 

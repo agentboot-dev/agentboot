@@ -6,6 +6,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+// L3: the pre-publish scan uses the BUILD-TIME set, not a copy of it. See the
+// note above scanComponentForSecrets.
+import { DEFAULT_SECRET_PATTERNS } from "./frontmatter.js";
+
 // ---------------------------------------------------------------------------
 // Org-Specificity Detection
 // ---------------------------------------------------------------------------
@@ -89,24 +93,36 @@ export function validateContribution(
     : [];
   checks.push({ name: "content-exists", passed: contentFiles.length > 0, message: contentFiles.length > 0 ? `${contentFiles.length} content file(s)` : "No content files" });
 
-  let manifest: Record<string, unknown> = {};
-  if (hasManifest) { try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")); } catch {} }
+  const read = readComponentManifest(manifestPath);
+  const manifest: Record<string, unknown> = read.manifest;
+  if (read.error) {
+    // "Could not read it" must not be reported as "the field is missing".
+    checks.push({ name: "manifest-readable", passed: false, message: read.error });
+  }
   const hasLicense = !!manifest["license"];
   const licenseRejected = hasLicense && /GPL|AGPL/i.test(manifest["license"] as string);
   checks.push({ name: "license-valid", passed: hasLicense && !licenseRejected, message: licenseRejected ? `License ${manifest["license"]} rejected` : hasLicense ? `License: ${manifest["license"]}` : "No license" });
 
-  let secretsFound = false;
-  const secretPatterns = [/AKIA[A-Z0-9]{16}/, /sk-[a-zA-Z0-9]{20,}/, /ghp_[a-zA-Z0-9]{36}/, /xox[bp]-[a-zA-Z0-9-]+/];
   let orgPassed = true;
   const fileContents = new Map<string, string>();
   for (const file of contentFiles) {
     const content = fs.readFileSync(path.join(componentDir, file), "utf-8");
     fileContents.set(file, content);
   }
-  for (const [, content] of fileContents) {
-    for (const p of secretPatterns) { if (p.test(content)) { secretsFound = true; break; } }
-  }
-  checks.push({ name: "no-secrets", passed: !secretsFound, message: secretsFound ? "Secrets detected" : "No secrets" });
+  // R2-6 sibling: the shared, recursive, all-files scanner. This used to be its
+  // own `.md`-only copy with four of the seven patterns.
+  const scan = scanComponentForSecrets(componentDir);
+  checks.push({
+    name: "no-secrets",
+    // Zero files scanned is not "no secrets" — it is "nothing was checked".
+    passed: scan.hits.length === 0 && scan.scanned.length > 0,
+    message:
+      scan.hits.length > 0
+        ? `Secrets detected in: ${scan.hits.join(", ")}`
+        : scan.scanned.length === 0
+          ? "No files could be scanned — not evidence the component is clean"
+          : `No secrets (${scan.scanned.length} file(s) scanned, recursively)`,
+  });
 
   for (const [, content] of fileContents) {
     if (!checkOrgSpecificity(content).passed) orgPassed = false;
@@ -137,4 +153,102 @@ export interface ContributorAttribution {
 
 export function generateAttribution(handle: string, org?: string): ContributorAttribution {
   return { handle, org, profileUrl: `https://agentboot.dev/u/${handle}`, contributedAt: new Date().toISOString() };
+}
+
+/**
+ * R2-6 (sibling): ONE pre-publish secret scanner, for both submission paths.
+ *
+ * `marketplace publish` (cli.ts) and `checkContribution` (here) each carried
+ * their own copy, and the two had already drifted: different pattern sets — this
+ * one had no PEM-private-key or Stripe-key pattern — and different scopes. Both
+ * read `readdirSync(dir)` filtered to `.md`, NON-RECURSIVE, while submission
+ * ships the whole component directory. So the two files most likely to carry a
+ * credential, a config and anything one directory down, were invisible to both.
+ *
+ * Two lists that must agree will drift, and these did. One scanner.
+ *
+ * L3: unifying the two publish copies WITH EACH OTHER left them unified on the
+ * weaker of two answers. The seven patterns here were a subset of the build-time
+ * set (DEFAULT_SECRET_PATTERNS), missing twelve classes: the label forms
+ * (password / api_key / secret / token with a quoted value), the AWS key NAMES,
+ * four of the five GitHub token prefixes, three of the five Slack prefixes,
+ * Anthropic keys, Google keys, DB URLs with inline credentials, `Bearer`, Azure
+ * `AccountKey=`, npm tokens and GitLab PATs.
+ *
+ * That ordering is backwards. Build time catches a credential inside a repo that
+ * already holds it; PUBLISH is the last gate before the same credential is
+ * handed to everyone, and it was the weakest gate in the product. There is no
+ * second list to keep in step now — the publish path scans with the canonical
+ * set, so parity is structural rather than maintained, and
+ * tests/secret-parity.test.ts holds a per-pattern canary on both sides so a drop
+ * from EITHER one goes red.
+ *
+ * The earlier note here said the `password[:=]` family was deliberately absent
+ * because a persona ABOUT credential handling legitimately contains the word.
+ * That risk is real and is already handled in the canonical set, which requires
+ * a QUOTED value for the label forms — `password: <your-password>` and prose
+ * mentioning api_key stay clean. The rationale did not justify dropping the
+ * eleven other classes it was attached to.
+ */
+
+export interface SecretScanResult {
+  /** Absolute paths actually read. Zero is a FAILURE, not a pass. */
+  scanned: string[];
+  /** Component-relative paths that matched, or that could not be read. */
+  hits: string[];
+}
+
+/** Scan every file under `componentDir`, recursively. */
+export function scanComponentForSecrets(componentDir: string): SecretScanResult {
+  const scanned: string[] = [];
+  const hits: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) { walk(abs); continue; }
+      if (!e.isFile()) continue;
+      let content: string;
+      try {
+        content = fs.readFileSync(abs, "utf-8");
+      } catch {
+        // Unreadable is not clean. A file that ships and could not be scanned is
+        // exactly the state this check exists to refuse.
+        hits.push(`${path.relative(componentDir, abs)} (UNREADABLE — not scanned)`);
+        continue;
+      }
+      scanned.push(abs);
+      for (const p of DEFAULT_SECRET_PATTERNS) {
+        if (p.test(content)) { hits.push(path.relative(componentDir, abs)); break; }
+      }
+    }
+  };
+  if (fs.existsSync(componentDir)) walk(componentDir);
+  return { scanned, hits };
+}
+
+/**
+ * Read a component manifest, distinguishing ABSENT from UNREADABLE.
+ *
+ * Both submission paths did `try { JSON.parse(...) } catch {}` and then reported
+ * "No license in manifest" — which sends the contributor to add a field that is
+ * already there, instead of to the syntax error one line above it. Same
+ * could-not-read-reported-as-not-present class as the persona config and the
+ * MDM fragment.
+ */
+export function readComponentManifest(
+  manifestPath: string,
+): { manifest: Record<string, unknown>; error: string | null } {
+  if (!fs.existsSync(manifestPath)) return { manifest: {}, error: null };
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { manifest: {}, error: "manifest.json is not a JSON object" };
+    }
+    return { manifest: parsed as Record<string, unknown>, error: null };
+  } catch (err: unknown) {
+    return {
+      manifest: {},
+      error: `manifest.json is present but unreadable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }

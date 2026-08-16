@@ -2,6 +2,9 @@
 name: learn
 description: Contextual help and onboarding for AgentBoot users
 version: 1.0.0
+id: 01KZRG8RTFV0R1Q7KB63NVMRJQ
+slug: learn
+hash: sha256:4844232cca8d4f01
 ---
 
 # AgentBoot Learn
@@ -203,7 +206,7 @@ Each persona has a `persona.config.json` that lists the traits it uses:
 ```json
 {
   "name": "Code Reviewer",
-  "description": "Senior code reviewer — finds real bugs, not style nits",
+  "description": "Senior code reviewer — correctness, security, and maintainability",
   "invocation": "/review-code",
   "traits": [
     "critical-thinking",
@@ -225,7 +228,7 @@ implemented. Currently, traits are fully included or not included.
 
 ### Gotchas and Rules
 
-Gotchas are path-scoped knowledge rules that encode battle-tested operational
+Gotchas are path-scoped knowledge rules that encode hard-won operational
 knowledge. They activate only when the user is working on files that match the
 gotcha's `paths:` frontmatter.
 
@@ -318,15 +321,27 @@ validate → compile → sync
 5. Composition consistency — no conflicts across scopes
 6. Rule override detection — warns when a more specific scope overrides a general one
 
-**Output structure:**
+**Output structure:** one directory per format in `personas.outputFormats`. All ten
+emitters below ship today; the default set when the key is absent is `skill`, `claude`,
+`copilot`, `agents`.
+
 ```
 dist/
   skill/       — cross-platform SKILL.md (agentskills.io format)
   claude/      — Claude Code native (.claude/ format)
   copilot/     — GitHub Copilot (.github/ format)
-  cursor/      — Cursor rules (planned)
-  agents/      — AGENTS.md universal standard (planned)
+  codex/       — OpenAI Codex CLI (AGENTS.md + .codex/)
+  agents/      — AGENTS.md universal standard
+  cursor/      — Cursor rules (.cursor/rules/)
+  windsurf/    — Windsurf rules (.windsurf/rules/)
+  gemini/      — Gemini (GEMINI.md)
+  jetbrains/   — JetBrains AI Assistant (.aiassistant/rules/)
+  plugin/      — Claude Code plugin bundle (not syncable into a spoke)
 ```
+
+Emitting a format is not the same as enforcing in it. Blocking hooks exist only on the
+Claude Code, Codex and Copilot CLI surfaces; every other tree above is advisory —
+see `docs/platform-capability-matrix.md`.
 
 ---
 

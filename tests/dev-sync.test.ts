@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { ensureRootDist } from "./setup.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
@@ -40,9 +41,7 @@ describe("dev-sync: script execution and output", () => {
     // Ensure dist/ is present. If it already exists this is fast (no-op compile).
     // If it is absent, compile to build it first.
     const distPath = path.join(ROOT, "dist");
-    if (!fs.existsSync(distPath)) {
-      runScript(COMPILE);
-    }
+    ensureRootDist();
     syncOutput = runScript(DEV_SYNC);
   });
 

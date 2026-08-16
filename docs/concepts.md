@@ -29,8 +29,8 @@ always inconsistently. When you wanted to improve how all your personas handle u
 you had to touch every file.
 
 Traits solve this. You write `critical-thinking` once. Every persona that needs skeptical
-review simply composes it with a weight. Improve the trait definition, and all composing
-personas improve automatically.
+review simply composes it with a weight. Change the trait definition, and every persona
+that composes it picks the change up on the next build.
 
 A trait is not:
 - A checklist of domain rules. "Verify that GDPR consent is captured" is not a trait;
@@ -208,8 +208,8 @@ on every matching file access, lifecycle hooks, managed settings, and MCP server
 
 Key architectural insight: CLAUDE.md content is injected as `<system-reminder>` tags
 (not in the cached system prompt). Rules in `.claude/rules/` are re-injected every
-time a matching file is touched. This makes gotchas (path-scoped rules) the
-highest-impact artifact AgentBoot produces.
+time a matching file is touched. So a gotcha stays in context for the work it applies
+to and costs nothing for the work it doesn't.
 
 ### What Claude Code reads natively (no build step required)
 
@@ -627,19 +627,26 @@ They never call an LLM, never cost money, and never require a login beyond npm:
 
 `install`, `uninstall`, `build`, `validate`, `sync`, `doctor`, `add`, `lint`, `status`,
 `config`, `export`, `cost-estimate` (pricing arithmetic over published rates — no LLM
-call), `conformance`, `verify-manifest`, `drift-check`, `telemetry-inspect`,
-`telemetry-ship`, `telemetry-verify`, `evidence-pack`, `audit`
+call), `test` (SHA-256 snapshot/regression comparison over `dist/`), `conformance`,
+`verify-manifest`, `drift-check`, `telemetry-inspect`, `telemetry-ship`,
+`telemetry-verify`, `evidence-pack`, `audit`
 
 **LLM-powered commands** use `claude -p` (Claude Code's non-interactive mode) to invoke
 the user's existing Claude Code session. They cost money (billed to the user's Claude
 subscription), produce non-deterministic output, and require an active Claude Code login:
 
-`import`, `test --behavioral`
+`import`
 
-The same features are also available as **interactive skills** (`/ab import`,
-`/ab test`) inside Claude Code sessions, using AgentBoot's MCP server as a bridge.
-The CLI versions are batch-oriented; the skill versions are conversational. Both use the
-same personas repo and the same non-destructive guarantees.
+That is the whole list at v1.0 — exactly one command can cost you money. Behavioral
+(LLM-judged) persona evaluation was the second candidate and is **not part of the v1.0
+surface**; see [prompt-guide § 6](prompt-guide.md#6-prompt-testing-agentboot-test) for
+what `agentboot test` does instead, and the [roadmap](roadmap.md) for where behavioral
+evaluation is tracked.
+
+Import is also available **conversationally** through the `/ab` skills inside a Claude
+Code session, using AgentBoot's MCP server as a bridge. The CLI version is
+batch-oriented; the skill version is conversational. Both use the same personas repo and
+the same non-destructive guarantees.
 
 This separation is a deliberate architectural decision. A user running `agentboot build`
 should never be surprised by an LLM call, a cost, or a login prompt. LLM features are
@@ -758,10 +765,57 @@ configurable per organization through the domain layer.
 
 **Honest limitation:** Hook support varies by platform. AgentBoot emits compliance hooks
 for Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), and GitHub Copilot
-(`.github/hooks/agentboot.json`), all of which block on exit code 2. IDE-based
+(`.github/hooks/agentboot.json`), all of which block on exit code 2 — with Copilot's
+ceiling stated: its exit-2 blocking is documented platform behaviour we have not yet
+verified end to end, and its command-hook timeouts fail open. IDE-based
 community-tier platforms (Cursor, JetBrains) generally have no hook mechanism, so
 enforcement there is advisory only. AgentBoot documents these gaps per platform rather
-than promising universal enforcement.
+than promising universal enforcement — see the
+[platform capability matrix](platform-capability-matrix.md).
+
+---
+
+## The capability gate: a control that reaches nothing FAILS the build
+
+**Ruled 2026-08-11, and this is the v1.0 contract: RAISE, not warn.** When a control is
+configured and **no** configured output format can carry it, `agentboot build` exits
+non-zero and names the capability, the formats you configured, and the formats that could
+have carried it. The alternative — emit a warning and build anyway — was considered and
+rejected.
+
+The defect this closes is the product's own signature class. Emission was decided by a
+scattered set of independent "is this format configured" tests, each with an empty `else`,
+so a capability whose test came out false produced no file, no log line and no record that
+it had ever been asked for. Eight of them were found on a real hub — an org `PreToolUse`
+gate, a fail-closed DLP scanner, a digest-pinned MCP allowlist,
+`disableBypassPermissionsMode`, model overrides and more — and all eight passed `build`,
+`validate --strict` **and** `doctor` with zero mention. The configuration said the control
+was on. Nothing anywhere said it was reaching nobody.
+
+Why RAISE rather than warn, stated once so it does not get relitigated at every adopter
+complaint:
+
+- **The direction of the mistake is asymmetric.** Shipping permissive and tightening later
+  breaks builds that had been passing for a whole major version; shipping strict and
+  loosening later breaks nobody. Only one of those two choices is available after the 1.0
+  tag.
+- **A warning on a governance control is a warning nobody reads.** The population that
+  hits this gate is, by construction, the population that believed a control was in force.
+  Telling them in yellow is how the original defect got its eight instances.
+- **It is a build-time refusal, not a runtime one.** Nothing an adopter has already
+  deployed stops working; the next build tells them the truth about what it emits.
+
+**This is a BREAKING change and hubs will meet it on upgrade** — see the CHANGELOG. Two
+exits, both explicit: add an output format that can express the control, or waive the gap
+with a `capability:<id>` entry in `agentboot-exceptions.json`. A waiver requires an owner
+and an approver, **expires**, and still prints on every build — see
+[Exception governance](#exception-governance) below and
+[configuration.md § Capability coverage](configuration.md#capability-coverage--a-configured-control-must-reach-some-platform)
+for the per-capability table of which platforms emit what.
+
+A capability whose severity is `warn` rather than `error` still exists — the gate is not
+uniformly fatal, it is fatal for controls whose whole purpose is enforcement. What changed
+is that no gap is silent.
 
 ---
 
@@ -897,11 +951,26 @@ senior engineer may need to temporarily override for debugging or experimentatio
 
 AgentBoot distinguishes two tiers:
 
-**HARD guardrails** are deployed via MDM (managed device management) or marked
-`required: true` in the org config. They cannot be elevated, overridden, or disabled at
-any scope level. The build system enforces this — a team-level config that attempts to
-disable a HARD guardrail causes a build failure. HARD guardrails are for rules where
-violation is a compliance incident, not a judgment call.
+**HARD guardrails** are marked `required: true` in the org config. What that buys you is
+a *composition* property, enforced at compile time: a lower scope may not weaken one —
+shadowing it, downgrading it to soft, or zeroing its trait weight are all errors under
+`validate --strict`, and a team-level config that attempts to disable a HARD guardrail
+causes a build failure. HARD guardrails are for rules where violation is a compliance
+incident, not a judgment call.
+
+Whether a HARD guardrail is also a *mechanical* control at runtime depends on the
+target. It is a hard **policy** everywhere and a hard **control** only on the three
+officially supported CLI surfaces, and those three are not equal:
+
+| Target | What a HARD guardrail actually does at runtime |
+|---|---|
+| Claude Code | **Hard-enforced** — blocking hooks, plus `managed-settings.json`, the only non-overridable settings layer any supported platform has (MDM-deployable, Claude Code only) |
+| OpenAI Codex CLI | **Enforced, known bypasses** — blocking hooks, but they require a trust review unless deployed as managed, and tool coverage is partial (shell/patch/MCP, not WebSearch) |
+| GitHub Copilot CLI | **Blocking hooks with a lower ceiling** — command-hook timeouts **fail open**, and exit-2 blocking is documented platform behaviour not yet verified end to end |
+| `AGENTS.md` and the community tier (Cursor, Gemini, Windsurf, JetBrains, `SKILL.md`) | **Advisory** — the content is delivered, nothing blocks |
+
+See the [platform capability matrix](platform-capability-matrix.md) for the full
+classification, and [guardrails.md](guardrails.md) for the compiled-hook mechanics.
 
 **SOFT guardrails** are deployed via the shared repo and can be temporarily elevated.
 The elevation mechanism:
@@ -1382,34 +1451,53 @@ personas share behavior, that behavior belongs in a trait that both compose.
 
 ## Monorepo support
 
-AgentBoot supports monorepos through per-package deployment. A single repo entry in
-`repos.json` can declare a `packages[]` array, and sync writes a scoped `.claude/`
-directory into each listed package path in addition to (or instead of) the repo root.
+A monorepo is one git repo containing several packages, and `.claude/` at the repo root
+is not always where the agent looks — an agent invoked inside `packages/api-service/`
+reads that directory's config. A single repo entry in `repos.json` can therefore declare
+a `packages[]` array, and sync writes into each listed package path instead of the repo
+root.
 
 ```
 monorepo/                  ← single .git/
 ├── packages/
-│   ├── api-service/       ← gets API-specific personas
-│   ├── web-app/           ← gets frontend-specific personas
-│   └── shared-lib/        ← gets library-specific personas
+│   ├── api-service/       ← .claude/ written here
+│   ├── web-app/           ← .claude/ written here
+│   └── shared-lib/        ← .claude/ written here
 ```
 
-In this layout there is one repo but multiple teams with different persona needs. Each
-package maps to a node in the scope hierarchy, so a package can receive its own persona
-set and trait composition layered on top of the org defaults.
+**`packages[]` selects WRITE TARGETS, not scope.** It answers *where* the compiled
+output lands, not *what* lands there. Content is resolved from the repo entry's
+`group`/`team` — one entry has exactly one scope — so every package listed under a
+single entry receives **identical content**: the same personas, skills, traits and
+instructions, written to several directories and differing only in the generation
+timestamp stamped into the output. The `[pkg]` suffix in sync output labels the
+destination, not a distinct build.
 
-Two patterns are available, and they can be combined:
+To get genuinely different rules per package:
 
-- **Per-package personas** — declare `packages[]` in the repo's `repos.json` entry to
-  give each package directory its own scoped `.claude/` output. This lets the API team
-  get `api-contract-reviewer` while the web team does not.
 - **Path-scoped gotchas** — gotchas with `paths:` frontmatter (e.g.,
   `paths: ["packages/api-service/**"]`) activate only for matching files, giving
-  per-package rules without per-package personas. This is the lightest-weight approach
-  and is often sufficient on its own.
+  per-package rules from a single entry. This is the lightest-weight approach, it is
+  the one that works today, and it is usually sufficient on its own.
+- **Separate repo entries** — list the same `path` twice with different `packages[]`
+  and different `group`/`team`. Each entry is validated and resolved independently, and
+  each package's manifest records its own entry's scope, so wherever scope-level content
+  exists the packages receive different content. The cost is two entries in `repos.json`
+  instead of one.
 
-The gotchas-based approach covers many monorepo needs without per-package configuration;
-`packages[]` is there when a monorepo genuinely needs distinct persona sets per package.
+**Acknowledged design residual (post-GA).** Packages are not nodes in the scope
+hierarchy. There is no way for one repo entry to give each of its packages its own
+persona set or trait composition; scope resolution stops at the repo entry. Making a
+package a first-class scope node — so `packages[]` could carry per-package
+`group`/`team` — is a design change to the scope model, not a sync change, and it is
+deliberately deferred past GA rather than approximated.
+
+A second, narrower limit bounds the separate-entries pattern above: per-scope
+**personas** are declared under `nodes`, but a `repos.json` entry's `group` is validated
+against the legacy `groups` map only, so a `nodes`-only config rejects the entry with
+`Group "<name>" is not defined in agentboot.config.json`. Until those two are joined up,
+the separate-entries pattern buys independent scope resolution rather than per-package
+persona sets — so read `packages[]` as fan-out, and reach for path-scoped gotchas first.
 
 ---
 

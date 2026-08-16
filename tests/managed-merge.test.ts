@@ -1,0 +1,434 @@
+/**
+ * Unit guards for F-5 — the managed scope merge.
+ *
+ * `dist/managed/scopes/<scope>/managed-settings.json` is the file an MDM
+ * operator deploys and a developer cannot override. The merge discarded `hooks`
+ * wholesale (a shallow `merged[k] = v`, with a union path for `permissions`
+ * only), so an org's PreToolUse gate survived in the developer-overridable
+ * project settings and vanished from the non-overridable channel.
+ *
+ * These are unit tests on purpose: they make the mutation proof a one-second
+ * loop instead of a full build per mutation.
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { mergeHooks, mergeManagedFragments, readManagedFragment } from "../scripts/lib/managed-merge.js";
+
+const orgHooks = {
+  PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/opt/org/block.sh" }] }],
+  SubagentStart: [{ matcher: "", hooks: [{ type: "command", command: "/opt/org/audit.sh" }] }],
+};
+const guardrailHooks = {
+  SubagentStart: [{ matcher: "", hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh" }] }],
+  SubagentStop: [{ matcher: "", hooks: [{ type: "command", command: ".claude/hooks/agentboot-telemetry.sh" }] }],
+};
+
+const cmds = (h: Record<string, unknown[]> | undefined, event: string): string[] =>
+  ((h?.[event] ?? []) as any[]).flatMap((g) => (g.hooks ?? []).map((x: any) => x.command)).sort();
+
+describe("mergeHooks — union per event, over the entry arrays", () => {
+  it("keeps every event from both sides", () => {
+    const { hooks: h } = mergeHooks([{ hooks: guardrailHooks }, { hooks: orgHooks }]);
+    expect(Object.keys(h!).sort()).toEqual(["PreToolUse", "SubagentStart", "SubagentStop"]);
+  });
+
+  it("keeps BOTH entries when the same event is declared on both sides", () => {
+    // The escalation the original report missed. An event-level spread
+    // (`{...a.hooks, ...b.hooks}`) passes the previous test and fails this one.
+    const { hooks: h } = mergeHooks([{ hooks: guardrailHooks }, { hooks: orgHooks }]);
+    expect(h!.SubagentStart).toHaveLength(2);
+    expect(cmds(h, "SubagentStart")).toEqual([
+      ".claude/hooks/agentboot-telemetry.sh", "/opt/org/audit.sh",
+    ]);
+  });
+
+  it("orders lowest-precedence first, matching generateComplianceSettingsJson", () => {
+    // Deterministic order matters: the artifact is hashed into the signed manifest.
+    const { hooks: h } = mergeHooks([{ hooks: guardrailHooks }, { hooks: orgHooks }]);
+    expect(cmds({ SubagentStart: [h!.SubagentStart![0]] } as any, "SubagentStart"))
+      .toEqual(["/opt/org/audit.sh"]);
+  });
+
+  it("dedupes an identical entry declared on both sides", () => {
+    const dup = { SubagentStart: [{ matcher: "", hooks: [{ type: "command", command: "/same.sh" }] }] };
+    const { hooks: h } = mergeHooks([{ hooks: dup }, { hooks: structuredClone(dup) }]);
+    expect(h!.SubagentStart).toHaveLength(1);
+  });
+
+  it("dedupes regardless of key ORDER inside the entry object", () => {
+    const a = { X: [{ matcher: "", hooks: [{ type: "command", command: "/s.sh" }] }] };
+    const b = { X: [{ hooks: [{ command: "/s.sh", type: "command" }], matcher: "" }] };
+    expect(mergeHooks([{ hooks: a }, { hooks: b }]).hooks!.X).toHaveLength(1);
+  });
+
+  it("NEGATIVE: no fragment declares hooks → undefined, so the key is omitted", () => {
+    expect(mergeHooks([{ cleanupPeriodDays: 7 }, {}]).hooks).toBeUndefined();
+  });
+
+  it("a whole-`hooks` value that is not an object contributes nothing", () => {
+    // `hooks: "nope"` is not a hook declaration in any reading — there is no
+    // event named, so there is no control to lose. Skipping it is correct.
+    const r = mergeHooks([{ hooks: "nope" }, { hooks: null }]);
+    expect(r.hooks).toBeUndefined();
+    expect(r.malformed).toEqual([]);
+  });
+
+  it("D1: a non-array EVENT value is reported as malformed, not silently emptied", () => {
+    // This test previously asserted `toEqual({ X: [] })` — it PINNED the
+    // fail-open as intended behaviour, under the title "…is ignored, not thrown
+    // on". That is the most durable form of the defect: it survives review,
+    // because challenging it means challenging a green test.
+    //
+    // `{ X: [] }` is not a conservative default on this channel. It is the
+    // ABSENCE of a control, written into the file a developer cannot override,
+    // for an org that asked for the opposite — and the build log then named `X`
+    // in "hooks unioned across 1 event(s)", because the empty bucket created the
+    // key. A false-positive Silence-Is-Not-Success report.
+    const r = mergeHooks([{ hooks: { X: "nope" } }], ["00-org"]);
+    expect(r.hooks).toBeUndefined();
+    expect(r.malformed).toEqual([{ event: "X", source: "00-org", found: "string" }]);
+  });
+
+  it("D1: null and object event values are reported too, and named by type", () => {
+    const r = mergeHooks([{ hooks: { A: null, B: { matcher: "" } } }], ["10-group"]);
+    expect(r.malformed.map((m) => `${m.event}:${m.found}`).sort()).toEqual(["A:null", "B:object"]);
+  });
+
+  it("D1: a malformed event does NOT suppress the well-formed ones alongside it", () => {
+    // Fail-closed must not also be fail-everything: the operator needs to see
+    // that the rest merged, or the diagnostic looks like a total outage.
+    const r = mergeHooks([{ hooks: { Good: [{ matcher: "", hooks: [] }], Bad: 7 } }], ["00-org"]);
+    expect(Object.keys(r.hooks ?? {})).toEqual(["Good"]);
+    expect(r.malformed.map((m) => m.event)).toEqual(["Bad"]);
+  });
+
+  it("D1 NEGATIVE: a well-formed merge reports NO malformed events", () => {
+    expect(mergeHooks([{ hooks: guardrailHooks }, { hooks: orgHooks }]).malformed).toEqual([]);
+    expect(mergeManagedFragments([{ hooks: orgHooks }], ["00-org"]).malformedHooks).toEqual([]);
+  });
+
+  it("D1: mergeManagedFragments surfaces it, with the fragment named", () => {
+    const r = mergeManagedFragments(
+      [{ hooks: { PreToolUse: "nope" } }, { hooks: orgHooks }],
+      ["guardrails", "00-org"],
+    );
+    expect(r.malformedHooks).toEqual([{ event: "PreToolUse", source: "guardrails", found: "string" }]);
+  });
+});
+
+describe("mergeManagedFragments — scalars, unions, and the residual collision", () => {
+  it("unions hooks and permissions, and reports what it unioned", () => {
+    const r = mergeManagedFragments(
+      [{ hooks: guardrailHooks, permissions: { deny: ["curl*"] } },
+       { hooks: orgHooks, permissions: { deny: ["WebFetch"], allow: ["Read"] } }],
+      ["guardrails", "00-org"],
+    );
+    expect(Object.keys(r.merged.hooks as object).sort())
+      .toEqual(["PreToolUse", "SubagentStart", "SubagentStop"]);
+    expect((r.merged.permissions as any).deny.sort()).toEqual(["WebFetch", "curl*"]);
+    expect(r.unionedHookEvents).toEqual(["PreToolUse", "SubagentStart", "SubagentStop"]);
+    expect(r.permissionCounts).toEqual({ deny: 2, allow: 1 });
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("NEGATIVE: one hooks contributor reports no union — the line would be noise", () => {
+    const r = mergeManagedFragments([{ hooks: orgHooks }, {}], ["guardrails", "00-org"]);
+    expect(r.unionedHookEvents).toEqual([]);
+    expect(Object.keys(r.merged.hooks as object).sort()).toEqual(["PreToolUse", "SubagentStart"]);
+  });
+
+  it("NEGATIVE: an IDENTICAL scalar in two fragments is not a conflict", () => {
+    // claude.settings is copied into BOTH the guardrail base and 00-org, so
+    // identical-value collisions are the normal case. Reporting them would make
+    // every hub with claude.settings fail.
+    const r = mergeManagedFragments(
+      [{ cleanupPeriodDays: 30 }, { cleanupPeriodDays: 30 }], ["guardrails", "00-org"],
+    );
+    expect(r.conflicts).toEqual([]);
+    expect(r.merged.cleanupPeriodDays).toBe(30);
+  });
+
+  it("NEGATIVE: deep-equal objects that differ only in key order are not a conflict", () => {
+    const r = mergeManagedFragments(
+      [{ env: { A: "1", B: "2" } }, { env: { B: "2", A: "1" } }], ["guardrails", "00-org"],
+    );
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("reports a differing scalar once, naming winner, loser and both sources", () => {
+    const r = mergeManagedFragments(
+      [{ cleanupPeriodDays: 30 }, { cleanupPeriodDays: 7 }], ["guardrails", "00-org"],
+    );
+    expect(r.conflicts).toHaveLength(1);
+    expect(r.conflicts[0]).toMatchObject({
+      key: "cleanupPeriodDays", keptValue: 30, keptSource: "guardrails",
+      discarded: [{ value: 7, source: "00-org" }],
+    });
+    expect(r.merged.cleanupPeriodDays).toBe(30); // higher precedence still wins
+  });
+
+  it("with three fragments reports ONE conflict listing every loser", () => {
+    // Pairwise reporting would name an intermediate "winner" that does not win.
+    const r = mergeManagedFragments(
+      [{ k: 1 }, { k: 2 }, { k: 3 }], ["guardrails", "00-org", "10-group(platform)"],
+    );
+    expect(r.conflicts).toHaveLength(1);
+    expect(r.conflicts[0]!.keptValue).toBe(1);
+    expect(r.conflicts[0]!.discarded.map((d) => d.value)).toEqual([2, 3]);
+    expect(r.merged.k).toBe(1);
+  });
+
+  it("NEGATIVE: permissions and hooks are never reported as conflicts — they are unioned", () => {
+    const r = mergeManagedFragments(
+      [{ hooks: guardrailHooks, permissions: { deny: ["a"] } },
+       { hooks: orgHooks, permissions: { deny: ["b"] } }],
+      ["guardrails", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key)).toEqual([]);
+  });
+
+  it("`//` comment keys never reach the deployable", () => {
+    const r = mergeManagedFragments([{ "// source": "x", k: 1 }, {}], ["a", "b"]);
+    expect(Object.keys(r.merged)).toEqual(["k"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D1 integration — the build must refuse to write the artifact
+// ---------------------------------------------------------------------------
+
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+const D1_ROOT = path.resolve(__dirname, "..");
+const D1_CLI = path.join(D1_ROOT, "bin", "agentboot.js");
+
+function d1Ab(args: string[], cwd: string): { status: number; out: string } {
+  const r = spawnSync("node", [D1_CLI, ...args], {
+    cwd, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 180_000,
+  });
+  return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+describe("D1 integration — a malformed hook event fails the build", () => {
+  it("D1-I1: exits non-zero, names the scope/event/fragment, writes no merged artifact", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-d1-"));
+    const hub = path.join(base, "hub");
+    const install = spawnSync("node",
+      [D1_CLI, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+      { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 });
+    if (install.status !== 0) throw new Error(`scaffold failed: ${install.stdout}${install.stderr}`);
+
+    const cfgPath = path.join(hub, "agentboot.config.json");
+    const edit = (fn: (c: any) => void) => {
+      const c = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+      fn(c);
+      fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2));
+    };
+
+    // Well-formed first: the same config shape must BUILD, or the assertion
+    // below cannot distinguish the guard from an unrelated breakage.
+    edit((c) => {
+      c.managed = { ...(c.managed ?? {}), enabled: true };
+      c.claude = { ...(c.claude ?? {}), hooks: { PreToolUse: [{ matcher: "", hooks: [{ type: "command", command: "/opt/org/gate.sh" }] }] } };
+    });
+    expect(d1Ab(["build"], hub).status).toBe(0);
+
+    edit((c) => { c.claude.hooks = { PreToolUse: "nope" }; });
+    const bad = d1Ab(["build"], hub);
+    expect(bad.status).toBe(1);
+    expect(bad.out).toContain("hooks.PreToolUse is string, expected an array");
+    expect(bad.out).toContain("scopes/core");
+    // ...and it must NOT have claimed a union it did not perform.
+    expect(bad.out).not.toMatch(/hooks unioned across \d+ event\(s\): .*PreToolUse/);
+  }, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// D3 — the permissions exemption was wider than the union
+// ---------------------------------------------------------------------------
+
+describe("D3 — only the UNIONED permissions sub-keys are exempt from conflicts", () => {
+  it("D3-1: a non-unioned sub-key collision is reported, not silently overwritten", () => {
+    // Only `deny` and `allow` are unioned. The whole `permissions` object was
+    // exempted from conflict detection anyway, so a team fragment setting
+    // `defaultMode` replaced the org's and the build reassured the operator that
+    // nothing had been discarded.
+    const r = mergeManagedFragments(
+      [{ permissions: { defaultMode: "acceptEdits" } },
+       { permissions: { defaultMode: "plan" } }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key)).toEqual(["permissions.defaultMode"]);
+    expect(r.conflicts[0]!.keptSource).toBe("20-team");
+    expect(r.conflicts[0]!.discarded).toEqual([{ value: "plan", source: "00-org" }]);
+  });
+
+  it("D3-2 (NEGATIVE): deny/allow collisions are STILL not conflicts — they union", () => {
+    // The exemption must survive: reporting a union as a loss would be noise on
+    // the normal path and would train the report away.
+    const r = mergeManagedFragments(
+      [{ permissions: { deny: ["WebFetch"] } }, { permissions: { deny: ["curl*"], allow: ["Read"] } }],
+      ["00-org", "guardrails"],
+    );
+    expect(r.conflicts).toEqual([]);
+    expect(r.permissionCounts).toEqual({ deny: 2, allow: 1 });
+  });
+
+  it("D3-3 (NEGATIVE): an identical non-unioned sub-key in both scopes is not a conflict", () => {
+    const r = mergeManagedFragments(
+      [{ permissions: { defaultMode: "plan" } }, { permissions: { defaultMode: "plan" } }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("D3-4: additionalDirectories and bypassPermissions are covered too", () => {
+    const r = mergeManagedFragments(
+      [{ permissions: { additionalDirectories: ["/a"], bypassPermissions: false } },
+       { permissions: { additionalDirectories: ["/b"], bypassPermissions: true } }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key).sort())
+      .toEqual(["permissions.additionalDirectories", "permissions.bypassPermissions"]);
+  });
+
+  it("D3-5: `hooks` remains fully exempt — it really is unioned wholesale", () => {
+    const r = mergeManagedFragments(
+      [{ hooks: guardrailHooks }, { hooks: orgHooks }],
+      ["guardrails", "00-org"],
+    );
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("D3-6: a top-level scalar collision still reports, unchanged", () => {
+    const r = mergeManagedFragments(
+      [{ cleanupPeriodDays: 7 }, { cleanupPeriodDays: 30 }],
+      ["20-team", "00-org"],
+    );
+    expect(r.conflicts.map((c) => c.key)).toEqual(["cleanupPeriodDays"]);
+  });
+});
+
+/**
+ * V4 — D3 hardened `permissions` CONFLICT detection and left its SHAPE unchecked.
+ *
+ * `"claude": {"permissions": "deny-everything"}` reached `{...lower, ...higher}`
+ * and was spread CHARACTER BY CHARACTER into
+ * dist/managed/scopes/core/managed-settings.json as `{"0":"d","1":"e",…}`, at
+ * BUILD_EXIT 0, with conflicts=[] and malformedHooks=[], and `validate --strict`
+ * silent. `valueAt()` returned `has:false` for a non-object, so the key never
+ * entered conflict detection either.
+ *
+ * That is D1's failure class — a malformed value silently coerced — in the
+ * sibling key D3 was written to harden, and worse than D1 because the output is
+ * CORRUPT rather than merely empty, in the file a developer cannot override.
+ */
+describe("V4 — a malformed permissions value is refused, not spread", () => {
+  it("V4-1: a string permissions is reported malformed and never reaches the merged object", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments(
+      [{ permissions: "deny-everything" }, { permissions: { deny: ["Bash(rm:*)"] } }],
+      ["00-org", "guardrails"],
+    );
+    expect(r.malformedValues).toHaveLength(1);
+    expect(r.malformedValues[0]!.key).toBe("permissions");
+    expect(r.malformedValues[0]!.found).toBe("string");
+    expect(r.malformedValues[0]!.source).toBe("00-org");
+    // The character spread, gone. The well-formed fragment still merges.
+    expect(JSON.stringify(r.merged)).not.toContain('"0":"d"');
+    expect((r.merged["permissions"] as { deny: string[] }).deny).toEqual(["Bash(rm:*)"]);
+  });
+
+  it("V4-2: an ARRAY permissions is malformed too — it spreads by index", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments([{ permissions: ["Bash(rm:*)"] }], ["00-org"]);
+    expect(r.malformedValues.map((m) => m.found)).toEqual(["array"]);
+    expect(r.merged["permissions"]).toBeUndefined();
+  });
+
+  it("V4-3: null is malformed, not 'absent'", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments([{ permissions: null }], ["00-org"]);
+    expect(r.malformedValues.map((m) => m.found)).toEqual(["null"]);
+  });
+
+  it("V4-4 (NEGATIVE): well-formed permissions merge exactly as before", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments(
+      [{ permissions: { deny: ["A"], defaultMode: "ask" } }, { permissions: { deny: ["B"] } }],
+      ["high", "low"],
+    );
+    expect(r.malformedValues).toEqual([]);
+    expect((r.merged["permissions"] as { deny: string[] }).deny.sort()).toEqual(["A", "B"]);
+    expect(r.permissionCounts.deny).toBe(2);
+  });
+
+  it("V4-5 (NEGATIVE): absent permissions is not malformed", async () => {
+    const { mergeManagedFragments } = await import("../scripts/lib/managed-merge.js");
+    const r = mergeManagedFragments([{ env: { X: "1" } }], ["00-org"]);
+    expect(r.malformedValues).toEqual([]);
+  });
+});
+
+/**
+ * NF3-8 — a corrupt managed fragment was indistinguishable from an absent one.
+ *
+ * generateMergedManagedArtifacts' inline reader was
+ * `try { JSON.parse(...) } catch { return null }`, and BOTH consumers treat null
+ * as "nothing here":
+ *
+ *   * `readFragment(...) ?? {}` for guardrailBase / orgFragment — the org's
+ *     permissions and hooks vanish from
+ *     dist/managed/scopes/core/managed-settings.json.
+ *   * `if (frag)` for a node scope — if that was the only extra fragment,
+ *     `fragments.length > 2` is false and NO artifact is written for that node,
+ *     with no diagnostic anywhere.
+ *
+ * compile writes these fragments itself earlier in the same run, so the corrupt
+ * path is unreachable from any CLI invocation — which is exactly why it stayed
+ * wrong and why nothing could test it. It requires external tampering, and that
+ * is precisely the MDM channel's threat model: the surface where policy is
+ * delivered NON-OVERRIDABLY. 82fbd15 fixed this same shape on the sync side.
+ *
+ * The reader lives in the lib now so the guard is testable at all.
+ */
+describe("NF3-8 — an unreadable managed fragment is not an absent one", () => {
+  let dir = "";
+  beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "ab-nf38-")); });
+  afterAll(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
+
+  const write = (name: string, body: string) => {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, body);
+    return p;
+  };
+
+  it("ABSENT is null — the legitimate, common case stays legitimate", () => {
+    expect(readManagedFragment(path.join(dir, "nope.json"))).toBeNull();
+  });
+
+  it("PRESENT and unparseable THROWS — it must not read as absent", () => {
+    const p = write("corrupt.json", '{ "permissions": { "deny": ["Bash(rm -rf *)"]');
+    expect(() => readManagedFragment(p)).toThrow(/not readable JSON/);
+  });
+
+  it("PRESENT but not an OBJECT throws too — every setting would read as absent", () => {
+    for (const [name, body] of [["scalar.json", "42"], ["arr.json", "[]"], ["null.json", "null"]]) {
+      const p = write(name!, body!);
+      expect(() => readManagedFragment(p), body).toThrow();
+    }
+  });
+
+  it("NEGATIVE: a well-formed fragment is returned unchanged", () => {
+    // Without this the fix could be "throw always" and still look green.
+    const p = write("ok.json", JSON.stringify({ permissions: { deny: ["Bash(rm -rf *)"] } }));
+    expect(readManagedFragment(p)).toEqual({ permissions: { deny: ["Bash(rm -rf *)"] } });
+  });
+
+  it("NEGATIVE: an EMPTY object is a valid fragment, not a corrupt one", () => {
+    expect(readManagedFragment(write("empty.json", "{}"))).toEqual({});
+  });
+});

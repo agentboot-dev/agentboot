@@ -7,6 +7,148 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
+// Output formats — ONE definition, asserted, not eight literals
+// ---------------------------------------------------------------------------
+
+/**
+ * A5: every output format AgentBoot knows how to emit.
+ *
+ * This used to be spelled out at two call sites (compile's `validFormats`,
+ * sync's `validPlatforms`) that had already drifted from each other. Two lists
+ * that must agree will drift; the fix is one list plus an asserted derivation
+ * for the places that legitimately differ.
+ */
+export const VALID_OUTPUT_FORMATS: readonly string[] = [
+  "skill", "claude", "copilot", "cursor", "agents",
+  "plugin", "windsurf", "gemini", "jetbrains", "codex",
+];
+
+/**
+ * The formats a hub builds when `personas.outputFormats` is absent.
+ *
+ * Before this constant there were FOUR different answers to "what is the
+ * default?" across eight sites — `["skill","claude","copilot","agents"]`,
+ * `["skill","claude","copilot"]`, `["claude"]`, and `[]`. The `[]` variants
+ * were the dangerous ones: in `doctor`'s Coverage and Enforcement blocks an
+ * unspecified config produced an EMPTY format list, so every capability and
+ * enforcement check iterated over nothing and reported clean. A gate that
+ * evaluates zero platforms is not a passing gate, it is an absent one.
+ *
+ * R1-5: `agents` is in the list. Unifying the four answers resolved the drift by
+ * silently picking the SHORTEST of them, which dropped `agents` from
+ * compilePersona's fallback — where an in-code comment specifically asserted it
+ * had to be there ("agents is a first-class official output — the fallback must
+ * agree with the install/export defaults, which always include it"). The
+ * consequence was not cosmetic: a hub whose config omits
+ * `personas.outputFormats` stopped emitting `dist/agents/` entirely, and because
+ * sync prunes against the previous manifest, the next sync would then WITHDRAW
+ * AGENTS.md artifacts already delivered to spokes. `scaffoldConfig` in
+ * install.ts still writes `agents` into every hub it creates, so the two agree
+ * again; unification is supposed to remove a contradiction, not resolve it by
+ * quietly deleting an output surface.
+ */
+export const DEFAULT_OUTPUT_FORMATS: readonly string[] = ["skill", "claude", "copilot", "agents"];
+
+/**
+ * Formats that can be SYNCED into a spoke repo.
+ *
+ * `plugin` is deliberately excluded: a Claude Code plugin is installed as a
+ * plugin, not copied into a target repository, so `dist/plugin/` is not a sync
+ * target. Derived-and-asserted rather than re-typed, so adding a format to
+ * `VALID_OUTPUT_FORMATS` cannot silently leave sync behind.
+ */
+export const SYNCABLE_OUTPUT_FORMATS: readonly string[] =
+  VALID_OUTPUT_FORMATS.filter((f) => f !== "plugin");
+
+/**
+ * The invariant, checked at module load rather than trusted.
+ *
+ * A default the build would then reject as unknown is not a hypothetical: it is
+ * exactly the shape of the `plugin` fail-open (a name present in one list and
+ * absent from its partner). This throws at import time, so it cannot be
+ * introduced and shipped.
+ */
+{
+  const unknownDefaults = DEFAULT_OUTPUT_FORMATS.filter((f) => !VALID_OUTPUT_FORMATS.includes(f));
+  if (unknownDefaults.length > 0) {
+    throw new Error(
+      `DEFAULT_OUTPUT_FORMATS contains format(s) missing from VALID_OUTPUT_FORMATS: ${unknownDefaults.join(", ")}`,
+    );
+  }
+  const dupes = VALID_OUTPUT_FORMATS.filter((f, i) => VALID_OUTPUT_FORMATS.indexOf(f) !== i);
+  if (dupes.length > 0) {
+    throw new Error(`VALID_OUTPUT_FORMATS contains duplicate(s): ${dupes.join(", ")}`);
+  }
+}
+
+/**
+ * H1: output formats whose emitters DEPEND on another format being built.
+ *
+ * `plugin` is the only one today. The plugin tree is assembled by copying
+ * artifacts out of `dist/claude/`, and both `generatePluginOutput` and
+ * `generateComplianceHooks` sit inside `if (outputFormats.includes("claude"))`.
+ * A `plugin`-only build therefore produced a near-empty `dist/plugin/` and
+ * reported `✓ Compiled 4 persona(s) × 1 platform(s)`.
+ *
+ * ONE declaration of that fact, consumed by three gates that would otherwise
+ * each re-state it: the build precondition (compile), the enforcement resolver
+ * (PLATFORM_ENFORCEMENT.requires) and the capability table
+ * (CAPABILITY_SUPPORT.conditionalOn). Three copies of one dependency is how the
+ * `plugin` fail-open happened three separate times.
+ */
+export const PLATFORM_REQUIRES: Record<string, string[]> = {
+  plugin: ["claude"],
+};
+
+/**
+ * Aliases operators actually type. Historically local to sync.ts, which meant
+ * every OTHER consumer of a repos.json platform compared un-normalized strings.
+ */
+export const PLATFORM_ALIASES: Record<string, string> = {
+  "claude-code": "claude",
+  "github-copilot": "copilot",
+  "openai-codex": "codex",
+};
+
+/** Canonical platform ids for a repos.json entry (singular or array form). */
+export function resolveRepoPlatforms(entry: { platform?: string; platforms?: string[] }): string[] {
+  const raw = entry.platforms && entry.platforms.length > 0
+    ? entry.platforms
+    : [entry.platform ?? "claude"];
+  return raw.map((p) => PLATFORM_ALIASES[p] ?? p);
+}
+
+/**
+ * A4: platforms that repos.json TARGETS but the hub does not BUILD.
+ *
+ * `status` printed `Platforms:` and `Repos (N)` four lines apart and never
+ * compared them, so the single most common misconfiguration in the product —
+ * a repo pointed at a platform that was never added to personas.outputFormats —
+ * was displayed, in full, on one screen, to an operator with no reason to
+ * cross-reference two lists by eye. sync catches it, but only at ship time and
+ * only for the repos it reaches.
+ */
+export function unbuiltRepoPlatforms(
+  repos: Array<{ label?: string; path?: string; platform?: string; platforms?: string[] }>,
+  outputFormats: readonly string[],
+): Array<{ platform: string; repos: string[] }> {
+  const built = new Set(outputFormats.map((f) => PLATFORM_ALIASES[f] ?? f));
+  const byPlatform = new Map<string, string[]>();
+  for (const entry of repos) {
+    for (const p of resolveRepoPlatforms(entry)) {
+      if (built.has(p)) continue;
+      const label = entry.label ?? entry.path ?? "(unnamed repo)";
+      const list = byPlatform.get(p) ?? [];
+      if (!list.includes(label)) list.push(label);
+      byPlatform.set(p, list);
+    }
+  }
+  return [...byPlatform.entries()]
+    .map(([platform, r]) => ({ platform, repos: r }))
+    .sort((a, b) => a.platform.localeCompare(b.platform));
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -48,6 +190,14 @@ export interface AgentBootConfig {
     targetDir?: string;
     writePersonasIndex?: boolean;
     dryRun?: boolean;
+    /**
+     * F-1 escape hatch, hub-wide. Regex sources matched against repo-relative
+     * POSIX paths. A revoked artifact whose path matches is never unlinked from
+     * a spoke, and the resulting unremediated revocation is reported at WARN
+     * instead of failing the sync. Set per-repo via `retain` in repos.json for
+     * the usual case — ownership is a property of the spoke, not of the hub.
+     */
+    retain?: string[];
     pr?: {
       enabled?: boolean;
       branchPrefix?: string;
@@ -348,9 +498,29 @@ export interface ManagedConfig {
   platform?: "jamf" | "intune" | "jumpcloud" | "kandji" | "other";
   /** Custom output path for managed settings */
   outputPath?: string;
+  /**
+   * F-5: scope-merge overrides the operator has reviewed and accepted.
+   *
+   * When two managed-settings fragments declare the same key with DIFFERENT
+   * values, the higher scope wins and the lower value is discarded. On the MDM
+   * channel — the non-overridable one — a silently discarded control is a
+   * compliance hole with a green build and a signed manifest, so the build
+   * fails. Listing the key here says "I know, that override is intended."
+   *
+   * Keys are top-level managed-settings key names (e.g. "cleanupPeriodDays").
+   * `permissions` and `hooks` never appear here: both are UNIONED, so nothing
+   * is discarded and there is nothing to acknowledge. `"*"` is rejected — the
+   * point is that each accepted loss is enumerated.
+   */
+  scopeMerge?: { acknowledgedOverrides?: string[] };
   /** HARD guardrails to enforce via managed settings */
   guardrails?: {
-    /** Force-install specific plugins */
+    /**
+     * NOT IMPLEMENTED. Typed, documented, and read by no code path on any
+     * platform — see CAPABILITY_SUPPORT row `managed.guardrails.forcePlugins`,
+     * which fails the build when this is set. Kept only so that failure is
+     * explicable; implement it or delete it.
+     */
     forcePlugins?: string[];
     /** Deny these tool patterns */
     denyTools?: string[];
@@ -697,6 +867,56 @@ export function envHubConfig(): string | null {
   return fs.existsSync(p) ? p : null;
 }
 
+/**
+ * R1-4 residual: resolve a HUB config, or nothing.
+ *
+ * `resolveConfigPath`'s last fallback is `path.join(<packageRoot>,
+ * "agentboot.config.json")`, which is right for a caller whose `root` argument
+ * IS a hub (import.ts passes the hub path) and catastrophic for `validate`,
+ * `build` and `sync`, which pass the PACKAGE root:
+ *
+ *   * In the dev checkout that file exists, so `agentboot validate` in an empty
+ *     directory silently validated the AGENTBOOT REPO'S OWN hub and printed
+ *     "Config: /…/agentboot/agentboot.config.json" + "✓ All 12 checks passed",
+ *     exit 0. A false green in a directory with no hub — and it is what kept
+ *     R1-4's own enumeration test green, because that test asserts only "no
+ *     stack frame" and "status !== 7", both of which a false green satisfies.
+ *   * `npm pack` does NOT ship agentboot.config.json (89 files, confirmed with
+ *     `npm pack --dry-run --json`), so for a REAL install the same path throws
+ *     out of `loadConfig` with no handler: extracted tarball + empty cwd ->
+ *     `agentboot validate` and `agentboot build` both print
+ *     `at loadConfig (…/scripts/lib/config.ts:894:11)`.
+ *
+ * One defect, two faces, and the dev-checkout face is what hid the shipped one.
+ * These three commands take flag -> env -> cwd and then STOP; "I am not in a
+ * hub" is a fact to report, not a cue to adopt somebody else's hub.
+ */
+export function resolveHubConfigPath(argv: string[], cwd?: string): string | null {
+  const idx = argv.indexOf("--config");
+  if (idx !== -1 && argv[idx + 1]) return path.resolve(argv[idx + 1]!);
+  const fromEnv = envHubConfig();
+  if (fromEnv) return fromEnv;
+  const cwdConfig = path.join(cwd ?? process.cwd(), "agentboot.config.json");
+  return fs.existsSync(cwdConfig) ? cwdConfig : null;
+}
+
+/**
+ * `resolveHubConfigPath`, with the "not a hub" refusal in ONE place.
+ *
+ * Three scripts needed this and giving each its own wording is how the
+ * enumeration test ended up asserting a property ("no stack frame") that a
+ * false green also satisfies.
+ */
+export function resolveHubConfigOrExit(argv: string[], command: string, cwd?: string): string {
+  const p = resolveHubConfigPath(argv, cwd);
+  if (p) return p;
+  console.error(`✗ No agentboot.config.json found — \`${command}\` needs a hub.`);
+  console.error(`    Looked in: ${cwd ?? process.cwd()}`);
+  console.error("    Run it from a hub directory, pass --config <path>, or set AGENTBOOT_HUB.");
+  console.error("    To create one: agentboot install --hub");
+  process.exit(1);
+}
+
 export function resolveConfigPath(argv: string[], root: string, cwd?: string): string {
   const idx = argv.indexOf("--config");
   if (idx !== -1 && argv[idx + 1]) {
@@ -719,6 +939,237 @@ export function resolveConfigPath(argv: string[], root: string, cwd?: string): s
   return path.join(root, "agentboot.config.json");
 }
 
+/**
+ * NF2-3: policy-bearing config keys, and the SHAPE each must have.
+ *
+ * `managed.guardrails.denyTools: "WebFetch"` (a string where an array belongs)
+ * crashed the build with `TypeError: denyTools.map is not a function` and a raw
+ * stack trace at scripts/compile.ts:2858 — AFTER most of dist/ had been written.
+ * That is V4's malformed-policy-value class in a sibling key, and outside R1-4's
+ * probe because that probe only tests the no-hub case.
+ *
+ * The comparison that makes it a defect rather than a rough edge: the adjacent
+ * `permissions` key, with the same mistake, produces
+ * `✗ scopes/core: permissions is string, expected an object — from 00-org`.
+ * One key names itself and its expected type; its neighbour prints a stack
+ * frame. The operator cannot tell which of their keys is wrong from a stack
+ * frame in the compiler.
+ *
+ * A table, not a check per key, for the standing reason: per-key checks are how
+ * `permissions` got one and `denyTools` did not.
+ *
+ * TYPES ONLY. This deliberately does not validate VALUES (is this glob legal,
+ * is this persona known) — those are validate.ts's job and have their own
+ * verdicts. A type error makes the compiler crash; a value error does not.
+ */
+export interface ConfigShapeRule {
+  /** Dotted path. `*` matches any key of a record — `groups.*.permissions`. */
+  path: string;
+  kind: "string" | "boolean" | "number" | "string[]" | "object" | "array";
+}
+
+export const CONFIG_SHAPE: ConfigShapeRule[] = [
+  { path: "org", kind: "string" },
+  { path: "orgDisplayName", kind: "string" },
+  { path: "personas", kind: "object" },
+  { path: "personas.enabled", kind: "string[]" },
+  { path: "personas.outputFormats", kind: "string[]" },
+  { path: "personas.customDir", kind: "string" },
+  { path: "traits", kind: "object" },
+  { path: "traits.enabled", kind: "string[]" },
+  { path: "instructions", kind: "object" },
+  { path: "instructions.enabled", kind: "string[]" },
+  { path: "gotchas", kind: "object" },
+  { path: "gotchas.enabled", kind: "string[]" },
+  { path: "domains", kind: "array" },
+  { path: "output", kind: "object" },
+  { path: "output.distPath", kind: "string" },
+  // R4-1: the OPT-IN BUILD GATE, and the only policy-bearing key in the table
+  // whose completeness the CAPABILITY_SUPPORT-derived invariant cannot see.
+  //
+  // `output.tokenBudget.failAt` is the CI gate an org sets to make a prompt-size
+  // regression fail the build. It was untyped, and the comparison that enforces
+  // it is `estimatedTokens > tokenFailAt` — so a value that is not a number
+  // yields NaN, the comparison is false for every persona, and the gate is
+  // silently OFF. Measured on a scratch hub whose four personas are 7.6k–11.2k
+  // tokens, unpiped:
+  //
+  //     failAt: 200            -> BUILD_EXIT=1, all four named
+  //     failAt: "200 tokens"   -> BUILD_EXIT=0, zero mentions of failAt
+  //     failAt: {"nope":1}     -> BUILD_EXIT=0, zero mentions of failAt
+  //     tokenBudget: 200       -> BUILD_EXIT=0, and warnAt silently reverts to
+  //                               the 8000 default
+  //     warnAt: "tiny"         -> not one warning, on four over-budget personas
+  //
+  // `validate --strict` and `doctor` say nothing either. The sibling
+  // `managed.guardrails.denyTools: "WebFetch"` — the key this table was written
+  // for — gives a named refusal. Same file, same table, opposite verdict,
+  // decided only by which key the operator got wrong.
+  { path: "output.tokenBudget", kind: "object" },
+  { path: "output.tokenBudget.warnAt", kind: "number" },
+  { path: "output.tokenBudget.failAt", kind: "number" },
+  { path: "sync", kind: "object" },
+  { path: "sync.retain", kind: "string[]" },
+  { path: "claude", kind: "object" },
+  { path: "claude.permissions", kind: "object" },
+  { path: "claude.permissions.allow", kind: "string[]" },
+  { path: "claude.permissions.deny", kind: "string[]" },
+  { path: "claude.hooks", kind: "object" },
+  { path: "claude.mcpServers", kind: "object" },
+  { path: "claude.settings", kind: "object" },
+  { path: "managed", kind: "object" },
+  { path: "managed.enabled", kind: "boolean" },
+  { path: "managed.guardrails", kind: "object" },
+  // The key that crashed the build.
+  { path: "managed.guardrails.denyTools", kind: "string[]" },
+  { path: "managed.guardrails.forcePlugins", kind: "string[]" },
+  { path: "managed.guardrails.requireAuditLog", kind: "boolean" },
+  { path: "managed.guardrails.disableBypassPermissions", kind: "boolean" },
+  { path: "mcp", kind: "object" },
+  { path: "mcp.approved", kind: "array" },
+  { path: "mcp.required", kind: "string[]" },
+  { path: "mcp.enforceApproved", kind: "boolean" },
+  { path: "compliance", kind: "object" },
+  // NEW-3: the LEAVES, not just the containers.
+  //
+  // This table listed policy-bearing leaves for managed.guardrails.* and
+  // claude.permissions.* and only the CONTAINERS for compliance.*, so the exact
+  // defect the table was written to close was still live one key over, inside
+  // the table itself. `compliance.inputScan.scannerCommand: ["/bin/scan"]`
+  // reached the operator as a raw Node stack trace out of
+  // buildComplianceHookScripts — `TypeError: cmd.trim is not a function` at
+  // sanitizeScanner — while the sibling `managed.guardrails.denyTools: "WebFetch"`
+  // gave a named refusal naming the key and the expected type.
+  //
+  // The commit that added this table argued "a table, not a check per key, for
+  // the standing reason: per-key checks are how permissions got one and
+  // denyTools did not". That argument only holds if the table is COMPLETE, which
+  // is now asserted (tests/config-shape.test.ts, against CAPABILITY_SUPPORT)
+  // rather than maintained by hand.
+  { path: "compliance.inputScan", kind: "object" },
+  { path: "compliance.inputScan.scannerCommand", kind: "string" },
+  { path: "compliance.inputScan.failMode", kind: "string" },
+  { path: "compliance.outputScan", kind: "object" },
+  { path: "compliance.outputScan.scannerCommand", kind: "string" },
+  { path: "compliance.outputScan.failMode", kind: "string" },
+  { path: "compliance.outputScan.blocking", kind: "boolean" },
+  // L47d: the user-level slot. `userLevel.mode` decides whether AgentBoot writes
+  // ~/.claude on a developer's machine or stands off and stages for the tool that
+  // owns it — the one key in this table whose wrong value writes OUTSIDE the repo.
+  // It was untyped, so `userLevel: "manifest"` (the object flattened to the string
+  // the operator meant) read as `config.userLevel?.mode === undefined` and resolved
+  // to auto: an instruction to never touch ~/.claude became a direct write, with
+  // nothing printed. CAPABILITY_SUPPORT-derived completeness cannot see this key —
+  // it is not platform-emitted — which is the same blind spot R4-1 documents for
+  // output.tokenBudget one entry up.
+  { path: "userLevel", kind: "object" },
+  { path: "userLevel.mode", kind: "string" },
+  { path: "ab", kind: "object" },
+  { path: "ab.modelOverrides", kind: "object" },
+  { path: "groups", kind: "object" },
+  { path: "groups.*", kind: "object" },
+  { path: "groups.*.teams", kind: "string[]" },
+  { path: "groups.*.permissions", kind: "object" },
+  { path: "groups.*.permissions.allow", kind: "string[]" },
+  { path: "groups.*.permissions.deny", kind: "string[]" },
+  { path: "groups.*.mcpServers", kind: "object" },
+  { path: "groups.*.enabledPlugins", kind: "array" },
+  { path: "nodes", kind: "object" },
+];
+
+function describeType(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "an array";
+  return `a ${typeof v}`;
+}
+
+function shapeMatches(v: unknown, kind: ConfigShapeRule["kind"]): boolean {
+  switch (kind) {
+    case "string": return typeof v === "string";
+    case "boolean": return typeof v === "boolean";
+    case "number": return typeof v === "number";
+    case "array": return Array.isArray(v);
+    case "string[]": return Array.isArray(v) && v.every((x) => typeof x === "string");
+    case "object": return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+}
+
+const EXPECTED: Record<ConfigShapeRule["kind"], string> = {
+  string: "a string",
+  boolean: "a boolean",
+  number: "a number",
+  array: "an array",
+  "string[]": "an array of strings",
+  object: "an object",
+};
+
+/** Every value in `parsed` whose type does not match CONFIG_SHAPE, named. */
+export function configShapeErrors(parsed: unknown): string[] {
+  const errors: string[] = [];
+  const visit = (node: unknown, segs: string[], display: string[]): void => {
+    if (segs.length === 0) return;
+    const [head, ...rest] = segs;
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return;
+    const rec = node as Record<string, unknown>;
+    const keys = head === "*" ? Object.keys(rec) : [head!];
+    for (const k of keys) {
+      if (!(k in rec) || rec[k] === undefined) continue;
+      if (rest.length === 0) return; // handled by the caller
+      visit(rec[k], rest, [...display, k]);
+    }
+  };
+  for (const rule of CONFIG_SHAPE) {
+    const segs = rule.path.split(".");
+    const parents = segs.slice(0, -1);
+    const leaf = segs[segs.length - 1]!;
+    // Collect every container the rule's parent path resolves to (wildcards can
+    // produce several).
+    const containers: { node: Record<string, unknown>; label: string }[] = [];
+    const walk = (node: unknown, remaining: string[], label: string): void => {
+      if (typeof node !== "object" || node === null || Array.isArray(node)) return;
+      const rec = node as Record<string, unknown>;
+      if (remaining.length === 0) { containers.push({ node: rec, label }); return; }
+      const [head, ...rest] = remaining;
+      const keys = head === "*" ? Object.keys(rec) : [head!];
+      for (const k of keys) {
+        if (!(k in rec)) continue;
+        walk(rec[k], rest, label ? `${label}.${k}` : k);
+      }
+    };
+    walk(parsed, parents, "");
+    for (const { node, label } of containers) {
+      if (!(leaf in node) || node[leaf] === undefined) continue;
+      if (!shapeMatches(node[leaf], rule.kind)) {
+        const full = label ? `${label}.${leaf}` : leaf;
+        errors.push(`"${full}" is ${describeType(node[leaf])}, expected ${EXPECTED[rule.kind]}`);
+      }
+    }
+  }
+  void visit;
+  return errors;
+}
+
+/**
+ * `loadConfig`, with the operator-facing refusal in ONE place.
+ *
+ * `loadConfig` THROWS, and validate.ts / compile.ts / sync.ts called it with no
+ * handler — so EVERY config error, including the ones loadConfig already
+ * checked for ("Config requires a non-empty \"org\" field"), reached the
+ * operator as a raw Node stack trace. Measured before this: deleting `org` from
+ * a hub config produced `at main (…/scripts/compile.ts:3536:18)`.
+ */
+export function loadConfigOrExit(configPath: string, command: string): AgentBootConfig {
+  try {
+    return loadConfig(configPath);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`✗ \`${command}\` cannot read the hub config.`);
+    console.error(`    ${configPath}`);
+    for (const line of msg.split("\n")) console.error(`    ${line}`);
+    process.exit(1);
+  }
+}
+
 export function loadConfig(configPath: string): AgentBootConfig {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -731,6 +1182,7 @@ export function loadConfig(configPath: string): AgentBootConfig {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Config must be a JSON object");
   }
+
   if (typeof parsed.org !== "string" || parsed.org.length === 0) {
     throw new Error('Config requires a non-empty "org" field (string)');
   }
@@ -793,7 +1245,105 @@ export function loadConfig(configPath: string): AgentBootConfig {
     }
   }
 
+  // NF2-3: type-check every remaining policy-bearing key, before any emitter
+  // reads them. A wrong type used to surface as a TypeError inside the compiler
+  // AFTER most of dist/ had been written (`denyTools.map is not a function`).
+  //
+  // Runs LAST so the bespoke checks above keep their more specific wording for
+  // the keys they already cover; this catches everything they do not, which was
+  // most of the config.
+  const shape = configShapeErrors(parsed);
+  if (shape.length > 0) {
+    throw new Error(
+      `${shape.length} config value(s) have the wrong type:\n` +
+        shape.map((e) => `  - ${e}`).join("\n"),
+    );
+  }
+
+  // D17: materialise the default HERE, at the one place every consumer reads
+  // the config through, rather than as `?? true` at each read site. Every
+  // "default" spelled out at N call sites is N chances to drift, and this
+  // codebase has already paid for that twice (VALID_OUTPUT_FORMATS,
+  // DEFAULT_OUTPUT_FORMATS).
+  applySyncSigningDefault(parsed as AgentBootConfig);
+
   return parsed as AgentBootConfig;
+}
+
+// ---------------------------------------------------------------------------
+// D17 — sync manifest signing is ON by default at 1.0
+// ---------------------------------------------------------------------------
+
+/**
+ * D17 (ruled 2026-08-11): `sync.signing.enabled` defaults to TRUE.
+ *
+ * Same irreversible-at-tag shape as the capability gate. Tightening a security
+ * default AFTER 1.0 breaks hubs that used to sync clean, so the choice is
+ * now-or-never; the safe side has to be the one that ships. Until this, the
+ * default was `false`, which landed every adopter on the caveated side of both
+ * headline tamper-evidence claims in docs/assurance-claims.md (claims 3 and 14
+ * both read "ONLY with `sync.signing` enabled").
+ */
+export const SYNC_SIGNING_DEFAULT_ENABLED = true;
+
+/** Fill in the 1.0 default for a config that does not mention signing. */
+export function applySyncSigningDefault(config: AgentBootConfig): void {
+  if (!config.sync) config.sync = {};
+  if (!config.sync.signing) config.sync.signing = {};
+  if (config.sync.signing.enabled === undefined) {
+    config.sync.signing.enabled = SYNC_SIGNING_DEFAULT_ENABLED;
+  }
+}
+
+export interface SyncSigningResolution {
+  /** Is signing meant to happen for this hub? */
+  enabled: boolean;
+  /** Absolute path to the signing key, or null when there is none. */
+  keyPath: string | null;
+  /**
+   * The NAMED reason signing will not happen despite being enabled. Null when
+   * signing is off (nothing to explain) or fully configured (nothing wrong).
+   */
+  error: string | null;
+}
+
+/**
+ * Resolve "will this hub sign, and if not, exactly why not".
+ *
+ * The `error` field is the entire point. Before D17 the read site was
+ * `signingCfg?.enabled && signingCfg.sshKeyPath ? resolve(...) : null` — a
+ * single expression in which "signing is off" and "signing is on but there is
+ * no key" collapse into the same `null`, and the caller then ships unsigned
+ * without a word. With the default flipped on, that silence would become the
+ * behaviour EVERY adopter gets: a security default that quietly no-ops, which
+ * is strictly worse than one that is off, because the operator now believes
+ * they are covered. It is this product's signature failure class — a green
+ * surface over a control that is not running — and shipping the flip without
+ * the diagnostic would have manufactured a fresh instance of it at 1.0.
+ *
+ * So the two states are distinguishable by construction, and the caller cannot
+ * accidentally treat them alike.
+ */
+export function resolveSyncSigning(
+  config: AgentBootConfig,
+  configDir: string,
+): SyncSigningResolution {
+  const signing = config.sync?.signing;
+  const enabled = signing?.enabled ?? SYNC_SIGNING_DEFAULT_ENABLED;
+  if (!enabled) return { enabled: false, keyPath: null, error: null };
+  if (!signing?.sshKeyPath) {
+    return {
+      enabled: true,
+      keyPath: null,
+      error:
+        "sync.signing is enabled (the default since 1.0) but sync.signing.sshKeyPath is not set — " +
+        "nothing can be signed, so manifests, evidence packs and telemetry batches ship " +
+        "digest-only and are NOT tamper-evident against a determined editor. " +
+        "Set sync.signing.sshKeyPath to an SSH private key, or set sync.signing.enabled to false " +
+        "to state on the record that this hub does not sign.",
+    };
+  }
+  return { enabled: true, keyPath: path.resolve(configDir, signing.sshKeyPath), error: null };
 }
 
 // ---------------------------------------------------------------------------

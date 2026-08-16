@@ -1,3 +1,9 @@
+---
+id: 01KZH2S4N8H1AEPFCWPJRBHTA5
+slug: critical-thinking
+hash: sha256:cd755de2ce41abd0
+---
+
 # Trait: Critical Thinking
 
 **ID:** `critical-thinking`

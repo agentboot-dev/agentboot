@@ -27,9 +27,11 @@ import os from "node:os";
 import { createInterface } from "node:readline";
 import { execSync, spawnSync } from "node:child_process";
 import { stripJsoncComments, type PersonaConfig, type AgentBootConfig, loadConfig } from "./lib/config.js";
+import { frontmatterBlock } from "./lib/frontmatter.js";
 import { scanParentForContent } from "./lib/import.js";
 import { getDefaultHub } from "./lib/registry.js";
 import { checkDrift, findManifestPath } from "./lib/drift.js";
+import { checkDistFreshness, readDistStamp } from "./lib/dist-stamp.js";
 import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -38,13 +40,51 @@ import { fileURLToPath } from "node:url";
 //   2. process.cwd()               — user is in their hub directory
 //   3. ~/.agentboot/config.json    — global registry (default hub, works from any repo)
 //   4. Package install dir          — fallback for running the build tool itself
+//
+// This ladder is NOT the CLI's. There is no `--config` rung (the server takes no
+// such flag), and rungs 3 and 4 ACT where the CLI's read-only commands only
+// suggest. `docs/cli-reference.md § Hub resolution order` documents both ladders
+// and the difference between them; keep the two in step.
 // ---------------------------------------------------------------------------
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_ROOT = path.resolve(__dirname, "..");
 
-function resolveHubRoot(): string {
+/** Which rung of the ladder produced HUB_ROOT. */
+export type HubResolutionSource = "env" | "cwd" | "registry" | "package-fallback";
+
+export interface HubResolution {
+  /** The rung that won. */
+  source: HubResolutionSource;
+  /** The resolved hub root. */
+  path: string;
+  /**
+   * True when NO hub was resolved and AgentBoot's own bundled content is being
+   * served in place of the org's. Every answer this server gives in that state
+   * describes the package, not the organization.
+   */
+  fallback: boolean;
+  /** Operator-facing explanation, present whenever the resolution needs one. */
+  note?: string;
+}
+
+/**
+ * H.1 — THE FALLBACK WAS ONLY EVER ANNOUNCED ON A CHANNEL NOBODY READS.
+ *
+ * When nothing resolves, this server serves AgentBoot's own bundled personas
+ * and traits as though they were the organization's. That was reported by a
+ * single `console.error` — and on an MCP **stdio** server stderr is captured by
+ * the CLIENT, into a log file the user has to know exists and go looking for.
+ * The user's channel is the tool result. So the diagnostic was, in practice,
+ * invisible: a misconfigured spoke got a confident, well-formed, entirely wrong
+ * answer about its org's governance, with no indication anything was wrong.
+ *
+ * The stderr line stays (it is right for the client log). What changes is that
+ * the resolution is now a VALUE, returned on `agentboot_status`, so the surface
+ * the user actually reads can say which rung won and whether it is the fallback.
+ */
+function resolveHubRoot(): HubResolution {
   // Diagnostics go to stderr only — stdout is the JSON-RPC channel and must not
   // be polluted, or the MCP handshake breaks.
   // 1. Explicit env var
@@ -53,28 +93,39 @@ function resolveHubRoot(): string {
     const resolved = path.resolve(envHub);
     // Dual-source clarity: if a registry default also exists and differs, the
     // env var wins — surface that so the operator isn't confused about which SSOT applies.
+    let note: string | undefined;
     try {
       const regDefault = getDefaultHub();
       if (regDefault && path.resolve(regDefault) !== resolved) {
-        console.error(
-          `[agentboot] AGENTBOOT_HUB (${resolved}) overrides the registry default hub (${regDefault}).`
-        );
+        note =
+          `AGENTBOOT_HUB (${resolved}) overrides the registry default hub (${regDefault}).`;
+        console.error(`[agentboot] ${note}`);
       }
     } catch {
       // registry unavailable — nothing to compare against
     }
-    return resolved;
+    return { source: "env", path: resolved, fallback: false, ...(note ? { note } : {}) };
   }
   // 2. cwd is a hub
   const cwdConfig = path.join(process.cwd(), "agentboot.config.json");
   if (fs.existsSync(cwdConfig)) {
-    return process.cwd();
+    return { source: "cwd", path: process.cwd(), fallback: false };
   }
   // 3. Global registry (Phase 11 A3): default hub, or the only hub for single-hub orgs
   try {
     const candidate = getDefaultHub();
     if (candidate && fs.existsSync(path.join(candidate, "agentboot.config.json"))) {
-      return candidate;
+      return {
+        source: "registry",
+        path: candidate,
+        fallback: false,
+        // The CLI's read-only commands only ever *suggest* a registered hub.
+        // This server acts on one, because an MCP client has no prompt to answer
+        // — so say which hub was chosen and on whose authority.
+        note:
+          `No AGENTBOOT_HUB and the current directory is not a hub — served from the ` +
+          `global registry's default hub (${candidate}).`,
+      };
     }
   } catch {
     // Registry file missing/corrupt — fall through (getDefaultHub self-heals a corrupt file)
@@ -83,16 +134,20 @@ function resolveHubRoot(): string {
   //    to AgentBoot's own bundled content so the server still starts, but make the
   //    fallback VISIBLE: a spoke that silently serves the package's demo personas is
   //    the confusing failure mode the registry was built to prevent.
-  console.error(
-    "[agentboot] No hub resolved from AGENTBOOT_HUB, the current directory, or the " +
-      "global registry — falling back to AgentBoot's bundled content. Run " +
-      "'agentboot connect <hub-path>' to register your hub, or set AGENTBOOT_HUB."
-  );
-  return DEFAULT_ROOT;
+  const fallbackNote =
+    "No hub resolved from AGENTBOOT_HUB, the current directory, or the global " +
+    "registry — these answers describe AgentBoot's OWN bundled content, not your " +
+    "organization's. Run 'agentboot connect <hub-path>' to register your hub, or " +
+    "set AGENTBOOT_HUB.";
+  console.error(`[agentboot] ${fallbackNote}`);
+  return { source: "package-fallback", path: DEFAULT_ROOT, fallback: true, note: fallbackNote };
 }
 
+/** How the hub root was resolved — reported on `agentboot_status`. */
+export const HUB_RESOLUTION: HubResolution = resolveHubRoot();
+
 /** Hub root path resolved from env var, cwd, global registry, or package root. */
-export const HUB_ROOT = resolveHubRoot();
+export const HUB_ROOT = HUB_RESOLUTION.path;
 
 /** Sanitize error messages by replacing absolute paths with relative ones. */
 function sanitizeErrorOutput(msg: string): string {
@@ -109,16 +164,128 @@ const CORE_GOTCHAS = path.join(HUB_ROOT, "core", "gotchas");
 // ---------------------------------------------------------------------------
 
 const SERVER_NAME = "agentboot";
+/**
+ * R2-8: AgentBoot's OWN version, read from the INSTALL directory.
+ *
+ * This read `path.join(HUB_ROOT, "package.json")` — the operator's hub — so on a
+ * scaffolded hub `agentboot_status` reported `hub.version: "0.0.0"` while the
+ * CLI was 0.20.2: either the hub repo's unrelated package version, or a silent
+ * "0.0.0" from a bare catch. This surface is read by an AGENT, and it feeds the
+ * evidence pack, where it is taken as provenance — so a wrong or invented
+ * version is a provenance error, not a cosmetic one.
+ *
+ * DEFAULT_ROOT is the package directory (resolved from import.meta.url), which
+ * is where AgentBoot's own package.json always is, hub or no hub. A failure to
+ * read it is reported rather than smoothed to "0.0.0", because "I do not know
+ * what version I am" and "I am version 0.0.0" are different facts.
+ */
 const SERVER_VERSION = (() => {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(HUB_ROOT, "package.json"), "utf-8"));
-    return pkg.version ?? "0.0.0";
+    const pkg = JSON.parse(fs.readFileSync(path.join(DEFAULT_ROOT, "package.json"), "utf-8"));
+    return typeof pkg.version === "string" && pkg.version ? pkg.version : "unknown";
   } catch {
-    return "0.0.0";
+    return "unknown";
   }
 })();
 
 const PROTOCOL_VERSION = "2024-11-05";
+
+// ---------------------------------------------------------------------------
+// N1 on the MCP surface — dist/ freshness
+// ---------------------------------------------------------------------------
+
+/**
+ * R2-1: the MCP server is the SECOND-largest consumer of dist/, and it was
+ * outside the N1 freshness gate entirely.
+ *
+ * `scripts/lib/dist-consumers.ts` records a posture for every CLI command that
+ * reads dist/, and `tests/dist-consumer-invariant.test.ts` derives the consumer
+ * set by parsing scripts/cli.ts. The `mcp-server` command block spawns
+ * `mcp-server.ts` as a subprocess, so its dist/ reads are in another file and
+ * the derivation could not see them. The invariant that exists because "two
+ * lists that must agree will drift" was itself derived from one file.
+ *
+ * Measured on a scratch hub whose build had just FAILED (stamp
+ * `status: "failed"`), same hub, same moment:
+ *
+ *   agentboot status        EXIT 1  "Last build: … — FAILED"
+ *   agentboot audit         EXIT 1  refuses
+ *   MCP agentboot_status            {"lastBuiltAt":"<PREVIOUS SUCCESSFUL BUILD>"}
+ *   MCP agentboot_doctor            {"issues":[],"allClear":true}
+ *   MCP agentboot_list_personas     {"source":"dist"}
+ *
+ * `lastBuiltAt` came from `fs.statSync(dist/).mtime`, which is the timestamp of
+ * the last SUCCESSFUL build and is printed unchanged after a failed one — the
+ * exact thing DIST_CONSUMERS.status's `reports` posture forbids in words. And
+ * the consumer here is not a human squinting at a terminal: it is an agent,
+ * which is told `source: "dist"` and reasonably reads that as "the compiled,
+ * current policy."
+ *
+ * Posture is `reports`, matching CLI status/doctor: the MCP tools exist to
+ * describe hub state, so refusing to answer would withhold the diagnosis.
+ * Silence is what is forbidden, not continuing.
+ */
+const DIST_DIR = path.join(HUB_ROOT, "dist");
+
+export interface McpDistFreshness {
+  /** Does dist/ exist at all? Unbuilt is a legitimate state, distinct from stale. */
+  distExists: boolean;
+  /** True ONLY when a stamp exists and matches the current config and sources. */
+  fresh: boolean;
+  /** "missing" | "failed" | "config-stale" | "sources-stale", absent when fresh. */
+  reason?: string;
+  /** Operator/agent-facing explanation including the remedy. */
+  detail?: string;
+  /** Build outcome as stamped — NOT dist/'s directory mtime. */
+  lastBuiltAt: string | null;
+  lastBuildStatus: "success" | "failed" | "unstamped" | null;
+}
+
+/**
+ * The one place the MCP surface asks "can dist/ be trusted".
+ *
+ * FAILS CLOSED on every unknown, for the same reason the CLI gate does: an
+ * unreadable config or an absent stamp is "we could not verify", and "we could
+ * not verify" must never resolve upward to "current".
+ */
+function distFreshness(): McpDistFreshness {
+  const distExists = fs.existsSync(DIST_DIR);
+  if (!distExists) {
+    return {
+      distExists: false,
+      fresh: false,
+      reason: "unbuilt",
+      detail: "dist/ has never been built — run `agentboot build`.",
+      lastBuiltAt: null,
+      lastBuildStatus: null,
+    };
+  }
+  const stamp = readDistStamp(DIST_DIR);
+  const lastBuiltAt = stamp?.builtAt ?? null;
+  const lastBuildStatus = stamp ? stamp.status : "unstamped";
+  const config = loadHubConfig();
+  if (!config) {
+    return {
+      distExists: true,
+      fresh: false,
+      reason: "missing",
+      detail:
+        "the hub config could not be read, so dist/ cannot be checked against it — " +
+        "treat this tree as untrusted.",
+      lastBuiltAt,
+      lastBuildStatus,
+    };
+  }
+  const check = checkDistFreshness(DIST_DIR, config, HUB_ROOT);
+  return {
+    distExists: true,
+    fresh: check.fresh,
+    ...(check.reason ? { reason: check.reason } : {}),
+    ...(check.detail ? { detail: check.detail } : {}),
+    lastBuiltAt,
+    lastBuildStatus,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Data Access Layer
@@ -127,6 +294,30 @@ const PROTOCOL_VERSION = "2024-11-05";
 /** Check whether compiled dist exists. */
 function hasCompiledDist(): boolean {
   return fs.existsSync(DIST_SKILL_CORE);
+}
+
+/**
+ * The provenance block every content-serving tool attaches to its answer.
+ *
+ * `source: "dist"` on its own was a claim the server could not back: it means
+ * "these bytes came out of the compiled tree", and the consumer hears "this is
+ * the org's current policy". When the tree is superseded those are different
+ * statements, so the second one has to be said explicitly or not at all.
+ */
+export function sourceProvenance(): Record<string, unknown> {
+  if (!hasCompiledDist()) return { source: "core", dist_stale: false };
+  const f = distFreshness();
+  if (f.fresh) return { source: "dist", dist_stale: false };
+  return {
+    source: "dist",
+    dist_stale: true,
+    dist_stale_reason: f.reason ?? "missing",
+    warning:
+      "This content came out of dist/, and dist/ does NOT correspond to the hub's " +
+      "current config and artifacts — it is the policy that was in force before the " +
+      `latest edit (${f.reason ?? "missing"}). Do not treat it as the org's current ` +
+      "policy. Run `agentboot build` and let it succeed.",
+  };
 }
 
 /** List persona directories from dist or core. */
@@ -248,11 +439,13 @@ function listGotchaFiles(): Array<{ name: string; description: string; paths: st
 
 /** Parse YAML-like frontmatter (simple key-value extraction). */
 function parseFrontmatter(content: string): Record<string, unknown> {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
+  // C1: tolerant of BOM/CRLF — a Windows checkout previously reported an
+  // artifact as having no frontmatter at all.
+  const block = frontmatterBlock(content);
+  if (block === null) return {};
 
   const result: Record<string, unknown> = {};
-  const lines = match[1]!.split("\n");
+  const lines = block.split("\n");
   let currentKey = "";
 
   for (const line of lines) {
@@ -303,20 +496,61 @@ interface RepoEntry {
   packages?: string[];
 }
 
-/** Load repos.json from the hub. */
-function loadReposJson(): RepoEntry[] {
+/**
+ * R2-2: an unreadable repos.json is NOT an empty repos.json.
+ *
+ * `47ef85c`'s sibling fix (`337e012`) named this exact case on the CLI —
+ * "corrupt repos.json → Summary: 0/0 clean, 0 drifted, 0 no manifest, EXIT=0 …
+ * a bad merge in repos.json turns the nightly compliance job into a check of
+ * nothing that reads as a check of everything" — and fixed it in scripts/cli.ts
+ * only. The MCP surface kept degrading to `[]`. Measured on the same corrupt
+ * file:
+ *
+ *     agentboot drift-check     EXIT 1  names the file and the parse error
+ *     MCP agentboot_status              {"repos":[],"platforms":[]}
+ *     MCP agentboot_doctor              {"issues":[],"allClear":true}
+ *
+ * "I could not read the roster" and "the roster is empty" must not answer alike,
+ * because an agent asking `agentboot_status` for the org's repo posture gets a
+ * confident, complete-looking, empty answer.
+ */
+interface ReposLoad {
+  repos: RepoEntry[];
+  /** Present when the file exists but could not be read/parsed. */
+  error?: string;
+  /** Where we looked — part of the diagnostic, not a secret. */
+  reposPath: string;
+}
+
+function loadReposJsonChecked(): ReposLoad {
   const config = loadHubConfig();
   const reposFile = config?.sync?.repos ?? "./repos.json";
   const reposPath = path.resolve(HUB_ROOT, reposFile);
-  if (!fs.existsSync(reposPath)) return [];
+  if (!fs.existsSync(reposPath)) return { repos: [], reposPath };
   try {
     const raw = fs.readFileSync(reposPath, "utf-8");
     const parsed = JSON.parse(stripJsoncComments(raw));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+    if (!Array.isArray(parsed)) {
+      return { repos: [], reposPath, error: "repos.json is not a JSON array" };
+    }
+    return { repos: parsed, reposPath };
+  } catch (e: unknown) {
+    return {
+      repos: [],
+      reposPath,
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
 }
+
+/**
+ * Deliberately NOT re-added as a convenience wrapper.
+ *
+ * The old `loadReposJson(): RepoEntry[]` was the defect: its return type could
+ * not express "unreadable", so every caller silently took `[]`. Every consumer
+ * goes through `loadReposJsonChecked` and must decide what to say about
+ * `error` — which is the point.
+ */
 
 // ---------------------------------------------------------------------------
 // Tool Definitions
@@ -434,7 +668,10 @@ const TOOLS: McpTool[] = [
   {
     name: "agentboot_status",
     description:
-      "Get the full status of the AgentBoot hub: org info, build state, personas, repos, and platforms.",
+      "Get the full status of the AgentBoot hub: org info, build state, personas, repos, and platforms. " +
+      "Also reports `hubResolution` — how the hub root was resolved (env / cwd / registry / package-fallback). " +
+      "When `hubResolution.fallback` is true no hub was found and every answer below describes AgentBoot's " +
+      "own bundled content rather than this organization's; say so rather than reporting it as the org's state.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -630,7 +867,11 @@ export function handleToolCall(
         content: [
           {
             type: "text",
-            text: JSON.stringify({ personas, source: hasCompiledDist() ? "dist" : "core" }, null, 2),
+            text: JSON.stringify(
+              { personas, ...sourceProvenance() },
+              null,
+              2,
+            ),
           },
         ],
       };
@@ -662,7 +903,7 @@ export function handleToolCall(
                 description: config?.description ?? "",
                 invocation: config?.invocation ?? `/${name}`,
                 skill_content: skill,
-                source: hasCompiledDist() ? "dist" : "core",
+                ...sourceProvenance(),
               },
               null,
               2,
@@ -765,6 +1006,13 @@ export function computeRepoDrift(repoPath: string): {
   hasDrift: boolean;
   driftCount: number;
   lastSyncAt: string | null;
+  /**
+   * R2-2: did the drift check actually RUN? A repo we could not check is not a
+   * repo we checked and found clean.
+   */
+  checked: boolean;
+  /** Why it could not be checked — absent when `checked`. */
+  uncheckedReason?: string;
 } {
   const manifestPath = findManifestPath(repoPath);
   let lastSyncAt: string | null = null;
@@ -773,31 +1021,65 @@ export function computeRepoDrift(repoPath: string): {
       lastSyncAt = fs.statSync(manifestPath).mtime.toISOString();
     } catch { /* ignore */ }
   }
-  let synced = false;
-  let hasDrift = false;
-  let driftCount = 0;
+  // R2-2: this used to be `catch { /* best-effort */ }` over defaults of
+  // synced:false, hasDrift:false — so a drift check that THREW (repo absent
+  // from this machine, unreadable manifest, permissions) reported the repo as
+  // not-drifted, which is the reading an agent turns into "compliant". Commit
+  // 337e012 established the rule for the CLI: a missing manifest is not
+  // evidence of compliance, and every way of NOT checking must be distinct from
+  // a pass. Same rule here.
+  if (!fs.existsSync(repoPath)) {
+    return {
+      synced: false,
+      hasDrift: false,
+      driftCount: 0,
+      lastSyncAt,
+      checked: false,
+      uncheckedReason: "repo path does not exist on this machine",
+    };
+  }
   try {
     const report = checkDrift(repoPath);
-    synced = report.manifestFound;
-    driftCount = report.summary.modifiedCount + report.summary.missingCount;
-    hasDrift = report.manifestFound && driftCount > 0;
-  } catch { /* drift check is best-effort for status; keep defaults */ }
-  return { synced, hasDrift, driftCount, lastSyncAt };
+    if (!report.manifestFound) {
+      return {
+        synced: false,
+        hasDrift: false,
+        driftCount: 0,
+        lastSyncAt,
+        checked: false,
+        uncheckedReason: "no .agentboot-manifest.json — never synced, or the manifest was deleted",
+      };
+    }
+    const driftCount = report.summary.modifiedCount + report.summary.missingCount;
+    return {
+      synced: true,
+      hasDrift: driftCount > 0,
+      driftCount,
+      lastSyncAt,
+      checked: true,
+    };
+  } catch (e: unknown) {
+    return {
+      synced: false,
+      hasDrift: false,
+      driftCount: 0,
+      lastSyncAt,
+      checked: false,
+      uncheckedReason: `drift check failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 }
 
 function handleStatus(): ToolResult {
   const config = loadHubConfig();
 
-  // Build info
-  const distDir = path.join(HUB_ROOT, "dist");
-  const distExists = fs.existsSync(distDir);
-  let lastBuiltAt: string | null = null;
-  if (distExists) {
-    try {
-      const stat = fs.statSync(distDir);
-      lastBuiltAt = stat.mtime.toISOString();
-    } catch { /* ignore */ }
-  }
+  // Build info — from the STAMP, never dist/'s directory mtime. The mtime is
+  // the timestamp of the last SUCCESSFUL build and is printed unchanged after a
+  // failed one, so it reported a hub as freshly built at the exact moment its
+  // build had just failed.
+  const freshness = distFreshness();
+  const distExists = freshness.distExists;
+  const lastBuiltAt = freshness.lastBuiltAt;
 
   // Personas
   const dirs = listPersonaDirs();
@@ -811,10 +1093,12 @@ function handleStatus(): ToolResult {
   });
 
   // Repos
-  const repoEntries = loadReposJson();
+  const reposLoad = loadReposJsonChecked();
+  const repoEntries = reposLoad.repos;
   const repos = repoEntries.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
+    const { synced, hasDrift, driftCount, lastSyncAt, checked, uncheckedReason } =
+      computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
@@ -823,8 +1107,11 @@ function handleStatus(): ToolResult {
       synced,
       hasDrift,
       driftCount,
+      checked,
+      ...(uncheckedReason ? { uncheckedReason } : {}),
     };
   });
+  const uncheckedRepos = repos.filter((r) => !r.checked).length;
 
   // Platforms
   const platformSet = new Set<string>();
@@ -889,19 +1176,50 @@ function handleStatus(): ToolResult {
   // Maturity label
   const maturityLabel = computeMaturityLabel(orgSpecificPersonas, orgSpecificTraits, coreGotchaCount, repos.length, lastBuiltAt);
 
+  // R2-8: `version` here was SERVER_VERSION read from the HUB's package.json,
+  // so this field answered neither question honestly: an agent reading
+  // `hub.version` got AgentBoot's label on the hub repo's version number, or a
+  // silent "0.0.0". They are two different facts and now have two fields.
+  let hubVersion: string | null = null;
+  try {
+    const hubPkg = JSON.parse(fs.readFileSync(path.join(HUB_ROOT, "package.json"), "utf-8"));
+    hubVersion = typeof hubPkg.version === "string" ? hubPkg.version : null;
+  } catch {
+    hubVersion = null; // no hub package.json is normal; null says so, "0.0.0" lies
+  }
+
   return toolOk({
+    agentbootVersion: SERVER_VERSION,
     hub: {
       path: HUB_ROOT,
       org: config?.org ?? "unknown",
       displayName: config?.orgDisplayName ?? config?.org ?? "unknown",
-      version: SERVER_VERSION,
+      version: hubVersion,
     },
+    // H.1: which rung of the ladder produced that path, and whether it is the
+    // no-hub fallback. Reported here because this is the channel the user reads
+    // — the stderr diagnostic goes to the MCP client's log file, which is where
+    // a silently-wrong answer had been hiding.
+    hubResolution: HUB_RESOLUTION,
     build: {
       lastBuiltAt,
       distExists,
+      lastBuildStatus: freshness.lastBuildStatus,
+      distFresh: freshness.fresh,
+      ...(freshness.fresh ? {} : { distStaleReason: freshness.reason ?? "missing" }),
+      ...(freshness.fresh || !freshness.detail ? {} : { distStaleDetail: freshness.detail }),
     },
     personas,
     repos,
+    // "I could not read the roster" and "the roster is empty" must not answer
+    // alike — an empty `repos` with no error reads as "this org has no repos".
+    ...(reposLoad.error
+      ? {
+          reposError: `repos.json could not be read (${reposLoad.reposPath}): ${reposLoad.error}. ` +
+            "The repo list below is EMPTY because nothing could be parsed, not because the org has no repos.",
+        }
+      : {}),
+    uncheckedRepos,
     platforms: [...platformSet],
     artifactCounts: {
       personas: { core: packagePersonaCount, orgSpecific: orgSpecificPersonas },
@@ -934,10 +1252,11 @@ function computeMaturityLabel(
 }
 
 function handleListRepos(): ToolResult {
-  const repoEntries = loadReposJson();
-  const repos = repoEntries.map((r) => {
+  const reposLoad = loadReposJsonChecked();
+  const repos = reposLoad.repos.map((r) => {
     const repoPath = path.resolve(HUB_ROOT, r.path);
-    const { synced, hasDrift, driftCount, lastSyncAt } = computeRepoDrift(repoPath);
+    const { synced, hasDrift, driftCount, lastSyncAt, checked, uncheckedReason } =
+      computeRepoDrift(repoPath);
     return {
       name: r.label ?? path.basename(r.path),
       path: repoPath,
@@ -946,9 +1265,20 @@ function handleListRepos(): ToolResult {
       synced,
       hasDrift,
       driftCount,
+      checked,
+      ...(uncheckedReason ? { uncheckedReason } : {}),
     };
   });
-  return toolOk({ repos });
+  return toolOk({
+    repos,
+    uncheckedRepos: repos.filter((r) => !r.checked).length,
+    ...(reposLoad.error
+      ? {
+          reposError: `repos.json could not be read (${reposLoad.reposPath}): ${reposLoad.error}. ` +
+            "This list is EMPTY because nothing could be parsed, not because the org has no repos.",
+        }
+      : {}),
+  });
 }
 
 function handleCostEstimate(args: Record<string, unknown>): ToolResult {
@@ -1297,27 +1627,52 @@ function handleDoctor(): ToolResult {
     }
   }
 
-  // Check dist/ exists
-  const distDir = path.join(HUB_ROOT, "dist");
-  if (!fs.existsSync(distDir)) {
+  // Check dist/ — EXISTENCE IS NOT FRESHNESS. A failed build leaves the
+  // previous dist/ byte-identical, so `fs.existsSync` returning true was
+  // reporting `allClear: true` on a hub whose build had just failed and whose
+  // compiled tree carried the policy the operator had already revoked.
+  const dist = distFreshness();
+  if (!dist.distExists) {
     issues.push({
       severity: "warn",
       description: "dist/ not found — run agentboot build",
       fixable: true,
       fixCommand: "agentboot build",
     });
+  } else if (!dist.fresh) {
+    issues.push({
+      severity: "error",
+      description:
+        `dist/ is STALE (${dist.reason}) — it does not correspond to the hub's current ` +
+        `config and artifacts, so every answer derived from it describes the policy it ` +
+        `REPLACED. ${dist.detail ?? ""}`.trim(),
+      fixable: true,
+      fixCommand: "agentboot build",
+    });
   }
 
-  // Check repos.json exists
-  const config = loadHubConfig();
-  const reposFile = config?.sync?.repos ?? "./repos.json";
-  const reposPath = path.resolve(HUB_ROOT, reposFile);
-  if (!fs.existsSync(reposPath)) {
+  // Check repos.json — EXISTS is not READABLE. A corrupt repos.json passed this
+  // check (the file is right there) while every repo-derived answer degraded to
+  // an empty list, so doctor reported allClear on a hub whose entire spoke
+  // roster was unreadable. `agentboot drift-check` exits 1 naming the parse
+  // error; these two must not disagree about the same file.
+  const reposLoad = loadReposJsonChecked();
+  if (!fs.existsSync(reposLoad.reposPath)) {
     issues.push({
       severity: "warn",
-      description: `repos.json not found at ${reposPath}`,
+      description: `repos.json not found at ${reposLoad.reposPath}`,
       fixable: true,
       fixCommand: "echo '[]' > repos.json",
+    });
+  } else if (reposLoad.error) {
+    issues.push({
+      severity: "error",
+      description:
+        `repos.json at ${reposLoad.reposPath} could not be parsed: ${reposLoad.error}. ` +
+        "Every repo-derived answer is empty because nothing could be read, not because " +
+        "the org has no repos.",
+      fixable: false,
+      fixCommand: null,
     });
   }
 

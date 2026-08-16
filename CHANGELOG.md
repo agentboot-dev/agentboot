@@ -9,6 +9,550 @@ full PR-level detail; this file is the curated, human-readable summary.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-15
+
+### Deferred to v1.1 — ruled 2026-08-11
+
+Four capabilities were on the v1.0 list and are not in it. None was built, no public surface
+promises any of them, and the ruling costs nothing but this paragraph — which is the reason to write
+it down: an undecided item and a decided-against item are indistinguishable in silence, and only one
+of them is finished.
+
+- **SessionStart runtime drift-detection hook** — hash managed files at session start, warn or block
+  on drift. Unbuilt.
+- **`/ab explain`** — the active-session verify primitive (`--all-scopes`, `--json`). Unbuilt.
+- **User-level MCP writes** — MCP config writes at install (`~/.cursor/mcp.json`, `~/.codex/config.toml`).
+  Unbuilt; repo-level `.mcp.json` and `.codex/config.toml` emission is unaffected and ships.
+- **The conversational import specialist** (`/ab-import`) and its LLM few-shot classifier. Unbuilt;
+  `agentboot import` itself ships and is unaffected.
+
+**Behavioral persona testing is withdrawn from the v1.0 surface.** `agentboot test --behavioral`,
+`--test-dir` and `--allow-unevaluated` are gone. The runner parsed 0 of 7 scenario files until this
+release cycle. Three defects in it were repaired here — every scenario had been running against the
+BARE MODEL with no persona context, a wholly-malformed file was waived as if it were merely
+unevaluable, and a persona-context failure passed silently — and after all three were fixed, 52 of
+its expectations still had no mechanical evaluator. Those repairs are the evidence FOR the
+withdrawal, not features of a shipping command — so
+the flag advertised a capability that did not exist on three of the four surfaces that named it.
+Snapshot and regression testing are unaffected. The `behavioral` input on the published reusable CI
+workflow is **kept and inert**: removing it would fail every adopter already passing it with an
+"unexpected input" error, so it now emits a warning annotation instead, because someone who asked
+for behavioral tests must not silently believe they ran.
+
+### Release mechanics — ruled 2026-08-11
+
+- **npm dist-tag: `latest`.** `release.yml` already publishes with no `--tag`, so the recommendation
+  and the shipped mechanic agree; this is a record, not a change. `^1.0.0` consumers therefore
+  receive v1.0.x GA patches automatically. A `beta` alias may be added post-publish for
+  explicitness without changing what `latest` points at.
+
+### BREAKING — configurations that used to build green now refuse
+Every item here converts a silent loss into a refusal, so each one can turn a currently-passing hub
+red on upgrade. Read this section before bumping AgentBoot in CI. The companion list of *new* gates
+is under **Added — new build-FAILING gates** below; these are the ones that change the verdict on a
+config you already have.
+
+- **A configured control that can be honoured by NO configured platform now FAILS the build.** This
+  is the 1.0.0 capability-gate contract, and it is a deliberate RAISE over the previous
+  build-anyway-and-say-nothing posture: `10c4921` ("a configured control that reaches no platform
+  must fail the build") and `a451277` ("the capability gate failed open on unknown platforms").
+  Before: eight capabilities — an org `PreToolUse` gate, a fail-closed DLP scanner, a digest-pinned
+  approved-MCP allowlist, `disableBypassPermissionsMode`, model overrides and more — could produce
+  zero bytes while `build`, `validate --strict` and `doctor` all reported green, and an unknown
+  platform name made the gate itself fail open. After: the build exits non-zero and names the
+  capability, the configured formats, and the formats that could carry it. **Builds that used to
+  succeed now fail**, which is the point — the previous green was the defect. Two exits: add a
+  platform that can express the control, or waive the gap with a `capability:<id>` policy exception
+  in `agentboot-exceptions.json`, which requires an owner and an approver, **expires**, and still
+  prints on every build. Warn-instead-of-fail was considered and rejected: tightening this after 1.0
+  would break hubs that had been shipping unenforced policy for a whole major version.
+- **`output.tokenBudget.failAt` actually fires now.** It is the only config key whose purpose is to
+  fail a build, and it was the one key with no `CONFIG_SHAPE` rule — the enforcement is
+  `estimatedTokens > tokenFailAt`, which is `false` for every persona when the value is not a number,
+  so the gate was silently OFF for any non-numeric value. A wrong-typed value is now a named refusal
+  rather than a stack trace or a shrug. A hub that set `failAt: "200 tokens"` and has been passing
+  will now either fail or reject the value.
+- **`agentboot lint` exits 1 when a COMPOSED persona exceeds `failAt`.** lint measured the
+  pre-composition source — `core/personas/<n>/SKILL.md` — while the persona a model loads is that
+  file plus its traits, gotchas and group/team overlays. The largest source in this repo is ~3,331
+  estimated tokens against the 8,000 default, so the `prompt-too-long` branch could not fire at any
+  input the repo contains, while three composed personas were 27-49% over. lint now scores
+  `dist/persona-sizes.json`, so lint and the build agree; `warnAt` stays advisory and exit 0.
+- **`agentboot cost-estimate` exits non-zero on a persona it cannot size.** It read
+  `dist/skill/core/<persona>/SKILL.md` behind an `existsSync` with an empty else, and `skill` is one
+  of ten output formats — so a hub that does not build `skill` measured every persona at 0 tokens and
+  printed `Total $0.00`, with `--json` reporting `"totalMonthlyCostUsd": 0` and no marker. "We could
+  not look" and "this persona is free" were the same value on the one command whose product claim is
+  stating what the deployed prompt costs.
+- **`agentboot export --format agentskills` exits 1 over an empty index.** On a hub that does not
+  build `skill` it printed wrong advice, then a green `✓ Exported 0 skill(s)`, then an instruction to
+  submit the file to a public directory — and wrote a well-formed index carrying `"skills": []`.
+- **`--allow-unevaluated` no longer waives a scenario file that could not be READ.** The
+  file-granularity path downgraded every no-cases file to a warning on the flag alone, so a file in
+  which every entry was structurally broken passed under the exact invocation the published reusable
+  workflow uses. Structural breakage stays fatal; a genuinely all-unevaluable file still downgrades.
+- **A `~/.claude/.managed` sentinel now beats an explicit `userLevel.mode: "direct"`.**
+  `install-user` used to write into a directory another tool had claimed and print
+  `✓ Wrote 5 skill file(s) …`, exit 0. It now refuses: `~/.claude` untouched, content still staged
+  for handoff, the refusal on stderr, exit non-zero. The sentinel is the only signal that comes from
+  the side owning the directory, so a key in a hub config that provider cannot read must not
+  overrule it. A new `AGENTBOOT_USER_LEVEL_MODE` env override exists for CI (config still wins over
+  env); an unrecognised value from either source is refused rather than read as "auto".
+  `userLevel.applyCommand` is **struck, not deferred** — the provider contract is data, and shipping
+  an execution surface at 1.0 is not removable later.
+- **`agentboot validate` now refuses what the build refuses.** Two build gates had no pre-flight
+  equivalent, so `validate` printed "All 12 checks passed" and exited 0 on hubs `build` then
+  rejected: an unreadable path scope, and a path scope whose first segment escapes the output root.
+  A CI that runs `validate` on a PR will now go red where it used to pass — on hubs whose `build`
+  was already failing.
+- **An INDENTED `applyTo:` / `paths:` key is a malformed scope and fails closed.** It used to return
+  "no scope declared", which means ALWAYS-ON — a narrowing directive delivered as its exact opposite
+  at exit 0 with no diagnostic. The check now lives in the shared reader, so it covers `paths:` on
+  all five platform emitters and both `malformed` gates, not just `applyTo:`.
+- **A governed artifact with no `id:` is now a finding.** Error in AgentBoot's own packaged corpus
+  (whose lineage the release tag freezes), warning in an adopting hub, escalated by `--strict`.
+  Malformed and duplicate ids are errors everywhere — that is corruption, not absence.
+- **`agentboot sync --repos-file <path>` is honoured.** It was declared by the CLI, forwarded as
+  `--repos`, and parsed by nothing, so a sync scoped to ONE spoke wrote to the entire configured
+  fleet, produced and signed a manifest on every unintended spoke, and exited 0 with a success
+  report; `--dry-run` inherited the same hole, so the rehearsal that exists to catch this previewed
+  the wrong fleet. The path resolves against CWD, not the hub, and a missing file now fails loudly.
+- **MDM administrators must redeploy: the managed-settings path was wrong on macOS and Windows.**
+  The emitter named `/Library/Application Support/Claude/` and `C:\ProgramData\Claude\`; Claude Code
+  reads `/Library/Application Support/ClaudeCode/` and `C:\Program Files\ClaudeCode\` (Linux was
+  already correct). A profile deployed to the printed path installs cleanly, drift-checks clean, and
+  **enforces nothing** — every HARD guardrail absent on every machine in the fleet. Settled against
+  the shipping Claude Code binary (v2.1.226), not against either of the two docs that disagreed.
+- **`agentboot audit` exits non-zero on an unreadable repo registry or config.** A corrupt
+  `repos.json` used to produce the same `info` line as a hub with no registered repos — "detection
+  skipped" — while a registry that parsed to an object rather than an array escaped as an uncaught
+  `repos.map is not a function` and took the whole audit down. Absence stays quiet and `info`;
+  present-but-unreadable is an `error` naming the file and the parser's message.
+- **The `validate` secret scan now covers `domains/*/instructions/`.** A credential there did not
+  merely go unscanned — it drew `✓ Secret scan — no credentials or keys anywhere in the hub content
+  surface`, exit 0, and synced to every spoke in cleartext.
+- **The shipped `templates/ci/drift-check.yml` now runs `drift-check --repo .`** and fails on exit 2
+  ("no manifest") and on any unrecognised exit code. As shipped it ran the HUB branch inside a spoke
+  and exited 1 with "needs a hub" before comparing a single file — so the gate we ship to prove
+  managed files are intact never checked anything anywhere it was installed.
+- **`sync.signing.enabled` now defaults to `true`.** It defaulted to `false`, which put every adopter
+  on the caveated side of both headline tamper-evidence claims in `docs/assurance-claims.md` (claims
+  3 and 14 each read "ONLY with `sync.signing` enabled"). Tightening a security default *after* 1.0
+  breaks hubs that had been syncing clean for a whole major version, so this is a now-or-never
+  change, the same shape as the capability-gate RAISE above. **What actually changes for you:** a hub
+  that already set `sync.signing.sshKeyPath` but never wrote `enabled: true` now signs its manifests
+  — that is the flip, and it is the case to check before upgrading, because a spoke-side
+  `verify-manifest --require-signed --allowed-signers` will start seeing signatures from a key it may
+  not yet allow. A hub with **no** key configured signs nothing, exactly as before, but no longer
+  does so silently: `resolveSyncSigning` returns a NAMED error saying what is unsigned, what that
+  costs, and the two ways out. A security default that quietly no-ops is worse than one that is off,
+  because the operator believes they are covered — it is the same green-surface-over-nothing class
+  this release is largely about, and shipping the flip without the diagnostic would have manufactured
+  a fresh instance of it. To state on the record that this hub does not sign, set
+  `sync.signing.enabled: false`; an explicit `false` is honoured and stays silent.
+- **`agentboot test --behavioral` is REMOVED**, along with `--test-dir` and `--allow-unevaluated`,
+  which existed only to configure it. The flag was advertised on four surfaces while only one carried
+  the experimental caveat, and 52 of the scenario expectations it runs still have no mechanical
+  evaluator — an advertised capability with no mechanism behind it, which is precisely what this
+  product exists to refuse. Passing any of the three is now an error rather than a silent no-op: an
+  ignored flag would leave you believing a behavioral run had happened. The runner itself is kept in
+  `scripts/lib/test-runner.ts` and remains reachable through the library API; the flag returns to the
+  CLI when the evaluators exist.
+
+### Security
+- **A gotcha's `paths:` frontmatter could write outside the hub.** The Gemini emitter derived a
+  directory name from the operator-authored `paths:` value and joined it to `dist/`, so
+  `paths: "../../../../victim-repo/**"` wrote a `GEMINI.md` at that resolved location — arbitrary
+  file write from an artifact source, on `agentboot build`. Every emitted path is now containment-
+  checked against the output root and the build FAILS on an escape, naming the artifact.
+- **Blocking hooks no longer fail open on a payload they cannot read, measure, or parse.** Three
+  independent routes each turned the DLP input scan and the PreToolUse deny gate into exit 0 with
+  nothing on stdout or stderr: an out-of-range `AGENTBOOT_MAX_HOOK_INPUT_BYTES`, a failing
+  `wc`/`tr` in the size measurement, and any payload that is not a JSON object (including valid
+  JSON scalars like `42`). All three now refuse, name the cause on stderr, and emit a block
+  decision. The Stop-hook output scan still exits 0 by design — a Stop hook that blocks strands the
+  session — but says `output scan SKIPPED, this response was NOT scanned`, and the telemetry hook
+  says `telemetry event NOT recorded` instead of swallowing the error.
+- **…and no longer fail open on a payload that is an object but carries no `prompt`.** The
+  object-shape guard above correctly rejected `42`, `"x"`, `null` and `[]` — and `{}` is an object.
+  `process.stdout.write(j.prompt||'')` never throws, so a misspelled or renamed field was scanned as
+  an EMPTY STRING and exited 0: `{"promt":"password: hunter2"}` passed cleanly through a blocking
+  DLP gate. The distinction is now explicit and cuts both ways — an ABSENT field is a payload we do
+  not understand and blocks (exit 2); an EMPTY STRING is a genuinely empty prompt and passes.
+  `tool_name` is stricter: absent OR empty is unreadable there, because an empty tool name matches no
+  deny pattern and would let every deny rule silently pass.
+- **Persona-declared hooks are scanned for dangerous shell patterns.** The gate read
+  `config.claude.hooks` only, while `persona.config.json` hooks are merged into
+  `dist/claude/core/settings.json` and synced to every spoke. A persona hook piping a network
+  download into a shell built green.
+- **`mcp.enforceApproved: true` with no `mcp.approved` list now enforces.** Both the validator and
+  the emitter gated the filter on the approved list being PRESENT, so the maximum-shortfall state —
+  nothing approved — was the one state that produced no finding and shipped every configured server.
+- **A credential in `domains/*/instructions/` rode a green secret scan to every spoke.**
+  `hubContentRoots` — the SSOT for "which directories make up the hub's content surface" — named two
+  of a domain's three content dirs, omitting the one `compileDomains()` reads and ships. The
+  enumeration now derives from one exported constant that names what the compiler reads. The
+  message was as much the defect as the omission: an incomplete scan that says so is a gap, one that
+  asserts full coverage is a false green.
+- **The pre-publish secret scan is now the build-time scanner, not a weaker copy of it.** Three
+  defects, fixed in sequence: it read `.md` files in ONE directory, non-recursively, while `publish`
+  ships the whole component tree (so a credential in `persona.config.json` or one directory down was
+  invisible); `validateContribution` carried a *second* copy that had already drifted to four of
+  seven patterns; and even unified, that list was seven patterns against the build-time set's
+  nineteen — twelve classes invisible at the last gate before a credential goes public, including
+  AWS key names, four of five GitHub token prefixes, Anthropic and Google keys, DB URLs with inline
+  credentials, `Bearer`, Azure `AccountKey=`, npm tokens and GitLab PATs. There is now one scanner
+  and one pattern set, shared with the build; a per-pattern canary in `tests/secret-parity.test.ts`
+  goes dark if either side drops one. A scan covering **zero** files is a failure on both paths, not
+  a green tick, and an unreadable file counts as a hit — "unreadable" is not "clean".
+- **`--config <path>` named the hub, then every command read the tree beside you.** `install-user`,
+  `test`, `status`, `export`, `cost-estimate`, `doctor` and `lint` loaded the named hub's config and
+  then resolved `output.distPath`, the snapshot baseline, the behavioral test dir and the source
+  `core/` tree against `process.cwd()`. Reproduced live: `install-user --config <hub>` from a foreign
+  directory read the hub's `userLevel` policy and staged SIX skill files into `~/.claude` out of the
+  foreign tree, where the hub yields five — org policy from one hub, artifacts from another, exit 0,
+  two green ticks, on the delivery channel that writes onto a developer's machine. Everything a
+  command READS now resolves against `path.dirname(configPath)`; where a command WRITES stays
+  cwd-relative on purpose.
+- **`installUserLevel({ claudeDir })` decided WHETHER to write from the injected directory and then
+  wrote somewhere else.** `writeDirectly()` called `getClaudeDir()` itself, so the parameter chose
+  the mode and had no say in the target. Beyond the false assurance that gave every test using it,
+  the SPI's own suite therefore installed a live skill and an `.agentboot-user-manifest.json` into
+  the real `~/.claude` of whoever ran it, and ran the orphan prune against that manifest — so a
+  developer who had also run a genuine `install-user` could have had tracked artifacts unlinked by a
+  test run. Running the suite is not consent to write outside the repo.
+- **The tracked `repos.json` carried a developer's machine-local absolute path.** A stray test entry
+  (`/var/folders/…/T/agentboot-chmod-rerun-…`) was swept into the tracked blob by a `git add -A`. It
+  is excluded from the npm tarball, so every packaging check stayed green — and it would still have
+  disclosed a username, a machine and a directory layout the moment the branch was pushed. The
+  registry is restored to `[]` and a guard now reads the INDEX and HEAD blobs (not the working tree,
+  where every real operator legitimately lists their own repos by absolute path).
+
+### Fixed
+- **`applyTo` path scope is no longer INVERTED into always-on on Cursor and Windsurf.**
+  `compileInstructions` never parsed the source frontmatter: it stripped it, then hardcoded
+  `alwaysApply: true` and the literal string `trigger: always_on`. A rule authored
+  `applyTo: "src/api/**"` was delivered as *always on, every file* — not dropped, inverted — with
+  exit 0 and zero diagnostics. It happened by default to AgentBoot's own shipped
+  `security.instructions.md`. Cursor, Windsurf and JetBrains now receive the operator's exact
+  scope, using the same emitters `compileGotchas` already used ten lines away.
+- **JetBrains instructions carried an inert `applyTo:` key.** JetBrains reads `globs:` — which is
+  what `compileGotchas` emitted for the same platform, so instructions and gotchas disagreed about
+  one platform's frontmatter contract. The line is now rewritten in place, leaving the
+  `id`/`slug`/`hash` identity stamp untouched.
+- **The build now FAILS when a narrowly-scoped instruction targets a platform that cannot express
+  scope** (claude, skill, plugin, agents, codex, gemini). Acknowledge it on the artifact with
+  `scope-unsupported: acknowledged`; the emitted file then carries a `Scope:` preamble naming the
+  intended paths, so acknowledging opts into a documented degraded delivery rather than into
+  silence. The shipped `security` and `agentboot-authoring` instructions carry the
+  acknowledgement, so an operator meets the error only on their own narrow rule.
+- **Org-declared `claude.hooks` no longer vanish from the MDM deployable.** When
+  `managed.guardrails.requireAuditLog` was also set, `mergeScopes` overwrote the whole `hooks`
+  object, so `dist/managed/scopes/*/managed-settings.json` — the file an MDM deploys and a developer
+  cannot override — lost every event the org declared. The control survived in
+  `dist/claude/core/settings.json`, the project-level file a developer *can* override: present
+  exactly where it can be bypassed, absent where it cannot. `hooks` is now unioned per event over the
+  entry arrays, so an event declared by BOTH sides (`SubagentStart`: the org's audit hook and the
+  generated telemetry hook) keeps both. Identical entries are deduplicated.
+- **A differing-value collision in the managed scope merge now FAILS the build.** Unioning `hooks`
+  fixed the one key where losing data was never intended; it did not fix the shallow overwrite as a
+  class. Acknowledge an intended override with `managed.scopeMerge.acknowledgedOverrides` — the loss
+  is then reported as a warning naming winner, loser and both sources, because an acknowledged loss
+  is still a loss.
+- **Configured capabilities no longer vanish silently.** `compile` decided emission with eleven
+  independent `outputFormats.includes(...)` tests scattered across 3,000 lines; each `if` was
+  defensible and the `else` was empty everywhere. Eight capabilities — an org `PreToolUse` gate, a
+  fail-closed DLP scanner, a digest-pinned approved-MCP allowlist, `disableBypassPermissionsMode`,
+  model overrides and more — produced zero bytes while `build`, `validate --strict` AND `doctor` all
+  reported green. The build now **fails** when a configured capability can be honoured by none of the
+  configured output formats, and `doctor` gains a **Coverage** section printed before Enforcement.
+  (See the BREAKING section for the 1.0.0 contract this sets.)
+- **`managed.guardrails.forcePlugins` is reported as not implemented.** It was typed, documented and
+  accepted, and read by no code path on any platform. Setting it now fails the build. Whether to
+  implement it or delete the key is a product decision, flagged rather than made here.
+- **`doctor` no longer prints "no hard org policy configured" against a fail-closed DLP scanner.**
+  `hasHardPolicy` omitted `compliance.inputScan`, so a hub declaring one was classified as having no
+  hard policy. That was a false statement, not a hedge.
+- **`doctor` no longer drops an unclassified platform from the Enforcement report with `continue`** —
+  a silent skip in a function whose entire job is honesty. It now says so.
+- **A wrapped flow sequence is a legal path scope again.** The reader handled `paths: [...]` only
+  when it opened and closed on ONE line, so the form the product's own docs teach, merely wrapped
+  across lines, hit the unterminated branch and failed the build. The posture was right and the
+  parse was wrong, which is the worst combination available — a well-worded refusal of valid input
+  teaches the operator the gate is broken, and a gate the operator works around protects nothing.
+  Continuation lines are now gathered until the brackets balance, skipping quoted spans and trailing
+  comments so a character-class glob (`src/**/*.[jt]s`) still parses; genuinely unterminated input
+  still fails closed, because widening a parser must never widen it into ACCEPTING a scope it cannot
+  read.
+- **…and the frontmatter WRITER now consumes exactly the span the reader read.** Rewriting a key
+  whose wrapped flow sequence closes at the key's own indent left an orphaned `]` behind — invalid
+  YAML emitted for Copilot and JetBrains, both v1.0 GA targets. This was the fifth instance on this
+  branch of one half of a reader/writer pair learning something the other half did not, so the fix
+  ships with the invariant rather than the patch: a property test round-trips 16 value forms through
+  read→write→read on both scope keys, re-parsing with a real YAML parser and comparing the whole key
+  set. Consume less and residue survives; consume more and an adjacent key is silently eaten — both
+  directions are asserted. It went red on first run and found instance seven (an indented `paths:`,
+  see BREAKING).
+- **A hub AgentBoot had just created failed its own health check.**
+  `install --hub && build` exited 0, then `doctor` on the same hub exited 1 with ten
+  "Persona not found" / "Trait not found" findings. `compile` merges the package bundle with the hub
+  (hub winning on name) precisely so a hub can enable a shipped default without copying it; `doctor`
+  looked only in the hub. `doctor --fix` made it worse — it "fixed" the false finding by
+  materialising local copies, changing real behaviour (a local copy stops tracking package updates)
+  to satisfy a check that was wrong. `doctor` now resolves personas and traits hub-first,
+  package-second, exactly as the compiler does.
+- **`install` read `dist/`'s EXISTENCE as its freshness, in six places.** Existence proves a build
+  happened once, not that the tree reflects current policy — a failed build leaves the previous
+  `dist/` byte-identical, which is why the build-stamp subsystem exists. `install` is now a *gated*
+  dist consumer (it acts: it offers to deploy and shells out to sync), and it reports that the sync
+  did not complete instead of printing "Done" over a refusal. The derivation that finds these
+  consumers now follows a body-less command block through both hops — action identifier to
+  definition, definition to its dynamically imported module — which is the blind spot that hid this.
+- **`countNarrowlyScopedInstructions` could not see `domains/*/instructions`.** Its three call sites
+  — the build's capability gate and `doctor`'s Coverage and Scoping blocks — each hand-built the same
+  literal directory list, while `compileDomains()` pushes domain instructions through the same
+  emitters. Measured on a hub whose only narrow rule lived in a domain: `build` exited 1 with "Path
+  scoping cannot be expressed on: skill, claude" while `doctor` exited 0 saying scoping was
+  expressible on every configured target and there was nothing to check — two positive false claims
+  about the file the build had just refused. Move the same bytes into `core/instructions` and
+  `doctor` reverses itself. The directory set is now derived once in `scope-layout.ts`, and the
+  load-bearing test is structural: no call site may pass a hand-built array.
+- **`mcp-server`'s no-hub fallback was announced only where the user cannot see it.** When it
+  resolves no hub it serves AgentBoot's OWN bundled personas, traits and gotchas as though they were
+  the organization's — the handshake succeeds and every tool answers about the wrong corpus. That was
+  reported by a single `console.error`, which on a stdio server goes to the client's log file rather
+  than to the channel the user reads. `agentboot_status` now returns `hubResolution`: which rung won
+  (env / cwd / registry / package-fallback), the path it produced, whether it is the fallback, and a
+  note saying what is actually wrong.
+- **Scoped personas never reached `.agents/skills/`, and the tick said otherwise.** Cross-tool skills
+  were emitted at `core` scope only — both call sites passed the literal `"core"` — while
+  `AGENTS.md` and `dist/skill/<scopePath>/` are written per scope, so every persona an org scoped to
+  a group or team was absent from the cross-tool surface below the root. The success line ran
+  unconditionally, including on the early return that writes nothing. Emission is now wired into the
+  per-scope loop, and the caller reports the number of files actually written, or a warning naming
+  the cause.
+- **A hook `matcher` is a REGEX, and two comments said otherwise.** The canonical compliance-hook
+  header — the block every platform emitter is pointed at — asserted "matcher is EXACT-match (no
+  substring)" 25 lines above a field docstring that had already been corrected, and a third site
+  repeated it 550 lines down. If the comment had been true, the shipped `Edit|Write|Bash` telemetry
+  binding would have matched no tool and logged nothing, silently, forever. Re-derived from the
+  shipping Claude Code binary: the matcher is compiled with `new RegExp(...)` and `.test()`ed against
+  the tool name. The real hazard runs the opposite way to the warning — a matcher is silently
+  PERMISSIVE, since `Edit` also matches `NotebookEdit`. Every matcher is now asserted to compile, to
+  name only real tools, and to match the tools it names.
+
+### Added — new build-FAILING gates (adopters WILL meet these on upgrade)
+Each of these turns a previously-silent loss into a refusal. All are reachable from an existing
+config, so read this section before upgrading a hub in CI.
+
+- **An unreadable path scope stops the build.** A malformed `applyTo:`/`paths:` used to be read as
+  "no scope", i.e. delivered ALWAYS-ON. Covers `core/instructions`, `core/gotchas` and
+  `domains/*/instructions`. Fix the YAML, or write `applyTo: "**"` if the rule really is universal.
+- **A wrong-typed config value is a named refusal, not a stack trace.** `CONFIG_SHAPE` types every
+  policy-bearing key including the `compliance.*` leaves; a capability row with no type rule is now
+  a test failure, so the table cannot fall behind the config surface again. `output.tokenBudget.*`
+  and `userLevel` are now typed too — both are platform-independent, so the completeness invariant
+  derived from `CAPABILITY_SUPPORT` could never have required them, and both are enumerated by hand
+  with that blind spot recorded at the line.
+- **Persona-scope controls are capability-gated.** `personas[*].disallowedTools`, `.hooks` and
+  `.tools` are emitted only for `claude`; on a hub without `claude` they used to vanish silently
+  while `doctor` asserted full coverage. `personas[*].mcpServers` fires on ANY hub — it is typed,
+  documented, copied into `dist/`, and read by no code path (same posture as
+  `managed.guardrails.forcePlugins`).
+- **`compliance.outputScan.scannerCommand` and both `failMode` keys are capability-gated** — an
+  output scanner configured without `blocking: true` previously produced no coverage finding at all.
+- **An unreadable `persona.config.json` is fatal**, rather than a yellow warning followed by a
+  persona shipping with its tool restrictions silently absent. Same for an unreadable
+  managed-settings fragment.
+- **`output.tokenBudget.failAt` fires on every hub**, not only hubs building the `skill` format.
+- **A governed artifact with no `id:`, or with a malformed or duplicate one, is a validate finding.**
+  Reader and writer now share one exported definition of "governed artifact" so they cannot drift,
+  and duplicates are caught at rest — `identity` refused to MINT a duplicate, but copy-pasting an
+  already-stamped file walked straight past that.
+
+### Added
+- `CAPABILITY_SUPPORT` (`scripts/lib/conformance.ts`) — which platforms emit which capability, a
+  separate axis from `PLATFORM_ENFORCEMENT`'s "how strongly does it enforce". Every row was verified
+  against real `dist/` output and carries a `file:line` warrant. A startup assertion pins every
+  `emittedBy` entry to a real output format, so the two tables cannot drift the way `validFormats`
+  and `PLATFORM_ENFORCEMENT` already did.
+- Policy-exception key `capability:<id>` in `agentboot-exceptions.json` waives a capability gap. It
+  requires an owner and an approver and it **expires** — a waived gap still prints on every build.
+- **Revocation now works. `dist/` was never pruned.** `compile` only ever wrote into `dist/`, so an
+  artifact an operator removed from `instructions.enabled` — or an entire platform removed from
+  `personas.outputFormats` — kept shipping to every spoke indefinitely, with `build`, `sync`,
+  `status`, `drift-check` and `audit` all reporting green and the manifest attesting the delivered
+  bytes as correct. Builds now compile into a staging directory and swap it into place, and report
+  what was pruned (including `0 stale artifact(s), 0 retired platform tree(s)` when nothing went
+  stale). A failed build leaves the previous `dist/` byte-identical instead of half-overwritten.
+- **`sync` now propagates deletions to spokes.** Pruning `dist/` alone did not fix revocation:
+  `syncRepoTarget` never unlinked anything, and `generateManifest` regenerated the manifest *without*
+  the revoked file — de-listing a governed artifact into an untracked one, so `drift-check` reported
+  "clean" precisely BECAUSE it had stopped being tracked. Removal is confined to paths in the spoke's
+  previous manifest, so sync can only delete files it wrote.
+- **A revoked artifact the spoke edited is an ERROR, not a silent skip.** It is recorded in the
+  manifest's new `retired[]` array, `sync` exits non-zero, and `drift-check` reports it and exits
+  non-zero. Escape hatch: a `retain` regex on the repos.json entry (or hub-wide `sync.retain`)
+  downgrades it to a warning that still prints on every sync.
+- **`sync` refuses to ship a platform the hub does not build.** `repos.json` and
+  `personas.outputFormats` could contradict each other and the contradiction was resolved silently in
+  favour of the stale tree — i.e. in favour of the retired policy. Other repos still sync; the run
+  exits non-zero at the end.
+- **JetBrains/Windsurf concat files no longer accumulate duplicates in non-`core` scopes.** The old
+  append-without-clear guard iterated `["core"]` only; a staging build cannot append to a previous
+  build's file at all.
+- **Artifact identity is stamped across the whole governed corpus.** Nine of eighteen tracked
+  `core/**/*.md` artifacts carried no `id:`, because the backfill walked three hard-coded flat
+  directories and reported "N artifact(s) scanned" over exactly the ones it happened to find — never
+  mentioning that `core/personas/` and `core/skills/` exist. The five persona `SKILL.md` files and
+  the three learn-skill artifacts are now stamped (a `SKILL.md` slugs to its PARENT directory, since
+  slugging by filename would label all five personas "skill"). Identity cannot be minted into the
+  past: an artifact stamped after the tag can only claim to date from then.
+- **`source:` is reserved in artifact frontmatter beside the existing inert `tier:`.** It names an
+  upstream authority (a URL, a repo path, an internal SSOT id) and is open-valued; nothing reads it
+  yet. A slot not reserved before the frontmatter contract freezes is realistically a slot that
+  never exists.
+- **The CI workflows AgentBoot ships take an `os` matrix.** Both adopter-facing surfaces — the
+  reusable workflow and `templates/ci/drift-check.yml` — hardcoded `ubuntu-latest`, so a team whose
+  developers work on Windows could only validate their governance artifacts on a platform none of
+  them run. Default is unchanged; a Windows leg is one line. The `shell: bash` default ships with it
+  rather than after it: GitHub defaults `run:` to PowerShell on Windows runners, and several blocks
+  in these files are bash, so shipping the `os` input alone would have handed adopters a red leg
+  that says nothing about their repo.
+- **Conformance baselines are committed to a `conformance-baseline` data branch.** The baseline's
+  stated rationale is "a clock you cannot restart", and its only sink was an Actions artifact with
+  `retention-days: 90` — so the v1.0 snapshot would have been deleted about three months after the
+  tag, roughly when someone first thought to ask how the platforms behaved at 1.0. That was not a
+  storage detail; it was scheduled destruction of the evidence.
+- **A docs↔CLI parity gate that actually exists.** A v0.20.0 entry claimed the CLI reference was
+  covered by one; there was no gate, only a one-time manual sweep, and it had already leaked —
+  `agentboot baseline` and `agentboot identity` are both advertised by `--help` and neither had a
+  reference section, while `migration.md` stopped at v0.19 with the train at 0.20.2. The command list
+  is now DERIVED from `cli.ts` and both directions fail `npm test`: a non-hidden command with no
+  section, and a section for a command `cli.ts` no longer declares (a false statement is worse than
+  an omission). `migration.md` must reach the version in `package.json` with no hole in the chain, so
+  bumping the version past the guide goes red *before* a release. The extractor is asserted on before
+  it is used, because a source-parsing test's characteristic failure is that its regex stops matching
+  and every assertion passes over an empty set.
+- **A flag-consumption invariant.** If `cli.ts` forwards a flag into a script's argv, that script —
+  or a lib it imports — must reference it, with comments stripped first, because a comment
+  describing a parser that never existed is exactly what the `--repos-file` defect had.
+
+### Changed — upgrade notes
+- **`agentboot test`, `baseline`, `drift-check`, `conformance`, `install-user`, `publish` and
+  `connect` now refuse to act on a `dist/` whose own build stamp says `failed`**, including when no
+  `agentboot.config.json` sits beside the tree. In particular `agentboot test --snapshot` no longer
+  banks a superseded tree as the baseline that every later `--regression` is compared against.
+  `install` joins them as a gated consumer.
+- **`hub.version` is `null` when absent** rather than being omitted, on the MCP agent surface.
+- **Copilot instruction frontmatter is re-serialized rather than passed through**, and a `key:`
+  appearing inside another key's block scalar is no longer mistaken for that key. A
+  `description: |` whose prose mentioned `applyTo:` previously produced unparseable YAML and a glob
+  taken from the prose.
+- **`drift-check` reports a manifest that is present but UNREADABLE** as `UNCHECKED` /
+  `PARTIALLY CHECKED` rather than as `clean`. A repo with one corrupt manifest beside a valid one
+  used to report `1/1 clean`.
+- **The `audit` staleness check compares the artifact-source DIGEST**, not file mtimes, so an edit
+  with a rewound mtime and a deleted artifact are both caught, and `nodes/`, `groups/`, `teams/` and
+  configured domains are covered. A hand-written `dist/` with no build stamp is now reported as
+  "no source digest, so the comparison did not run" rather than as drift or as clean.
+- **Stale-ADR detection is recorded as ACCEPTED, not merely absent.** It is dependency-blocked
+  rather than deferred for cost: ADRs are not a shipped concept — the glossary and concepts docs both
+  say so — so a stale-ADR check today would report success over an empty deliverable. The note names
+  its revisit trigger (an ADR store the build reads), sits beside the finding-type union where a
+  reader asks the question, and is pinned to the docs it leans on so the acceptance expires
+  mechanically rather than by memory. No doc claims the check exists; that stays true deliberately.
+- `dist/*/mcp-governance.json` carries a `note` field stating it is an evidence record read by no
+  command; the enforcement it documents is the `.mcp.json` filtering beside it.
+
+### Changed
+- `output.failOnDirtyDist` is **deprecated and ignored** (warns when set). It was an opt-in,
+  default-off, all-or-nothing guard that only advised `rm -rf`; staging makes a dirty `dist/`
+  structurally impossible.
+- Sync manifests gain `platform` and `retired[]` fields. **`manifest_digest` changes for every
+  spoke**, so the first sync after upgrading reports every repo as changed; signed hubs re-sign. Any
+  spoke carrying stale artifacts accumulated before this release has them removed at once — run
+  `agentboot sync --dry-run` first to see the list. Because several platforms share a `targetDir`,
+  revocation propagation is skipped (loudly) for one run against an untagged manifest.
+
+### Documentation
+- **`ab.modelOverrides` shipped a validator nobody could satisfy.** Two lines of prose named no key,
+  no default and no legal value, while the compiler validates the value and silently falls back on
+  anything it does not recognise. Now published: the five valid agent keys, the per-agent default
+  table (the read-only query agent runs on Haiku and everything else on Sonnet — the whole cost
+  story, previously unpublished), the accepted value forms, that agent's unconditional read-only deny
+  list (`Bash`, `Write`, `Edit`, `NotebookEdit` — a security property of the shipped artifact that
+  appeared in no doc), and the honest failure posture: an invalid override does NOT fail the build,
+  so a mistyped cost knob silently loses the saving it was meant to make.
+- **The user-scope handoff contract is published.** `manifest` mode exists so a tool that owns
+  `~/.claude` can apply AgentBoot's content itself, and that manifest is by design the only coupling
+  between the two — yet the staging path, both manifest filenames, the JSON shape, the digest and the
+  path convention had zero hits across docs, README and the website. An external implementer had the
+  source or nothing. Two silences mattered more than the schema: the deliberate exclusion of
+  `CLAUDE.md` and `settings.json` (composing them safely is the provider's job — an unexplained
+  absence on one side of a membrane reads as a delivery failure on the other), and the withdrawal
+  semantics a provider has to mirror.
+- **The 1 MiB hook stdin cap was told to the user by the hook alone.** The emitted input-scan hook
+  blocks an oversized prompt with a message telling the developer to raise
+  `AGENTBOOT_MAX_HOOK_INPUT_BYTES` — a variable that appeared nowhere in docs, README or the website.
+  Now documented beside the compliance block, with the four over-cap postures as a table because they
+  differ on purpose: the input scan and the deny gate BLOCK, the Stop-hook output scan SKIPS loudly
+  rather than stranding the session, and the audit trail DEGRADES loudly. A reader told only "there
+  is a cap" would assume truncate-and-scan.
+- **`packages[]` is a write target, not a scope.** The monorepo section said each package "maps to a
+  node in the scope hierarchy" and that declaring `packages[]` lets one team get a persona another
+  does not. Neither is true: the parameter sets where output is written and the result label, while
+  content resolves from the repo entry's group/team, so every package under one entry receives
+  identical bytes in several directories. An adopter acting on the old text would have configured it
+  expecting per-package personas and received fan-out, which looks exactly like divergence until you
+  diff the trees. The replacement is pinned by measurement — a two-package monorepo is synced and the
+  trees asserted identical — and the per-package-scope gap is restated as an acknowledged post-GA
+  residual rather than deleted.
+- **Troubleshooting no longer tells adopters to install jq.** Hooks have not used jq since the
+  Windows/git-bash portability pass — compiled hooks parse input with `node -e` — and `doctor`
+  inspects the hub, not the developer machine's shell utilities. So the reader most likely to hit
+  that page (a git-bash adopter whose hooks are silently doing nothing) was sent to install a tool
+  that cannot help and told a command would diagnose it that does not look. The actual cause is the
+  opposite one: hooks require `node` on PATH, and the shell an agent launches hooks from often has a
+  different PATH than the terminal.
+- **We misstated the AGENTS.md scoping model on the comparison page** — found during an external
+  technical evaluation. The page said "nearest-wins replacement"; the v1.1 proposal says guidance
+  *accumulates* down the tree, with local files taking precedence only where instructions conflict.
+  Verified against the primary source rather than taken on report, and the correction carries two
+  caveats: the proposal is not accepted or merged, and individual tools decide what they do with the
+  files they find — so the honest statement is that behaviour is per-tool and unverified. Being wrong
+  about a competitor is bad anywhere; on the page that opens with "where something else wins, we say
+  so" it is the one place we cannot afford it. The composition argument does not need the
+  overstatement and is now made without it.
+- **Reference sections for `agentboot baseline` and `agentboot identity`**, and the v0.19 → v0.20 and
+  v0.20 → v1.0 migration sections, including the build-failing gates an adopter meets on the 1.0
+  upgrade and the first sync that deletes.
+- **CONTRIBUTING documents the frozen-snapshot procedure for proving a guard.** Mutating a shared
+  checkout to prove a test goes red is how a concurrent session's `git add -A` swept `if (false) {`
+  into a commit on this branch — reinstating a scope inversion for the window it took a second commit
+  to revert. `git archive HEAD` into a directory outside the checkout, symlink `node_modules`, mutate
+  there. It is filed under a heading about proving a guard rather than one about concurrency, because
+  that is when a contributor reaches for a mutation, and it carries the two adjacent rules the same
+  reader needs: assert both directions (a gate that refuses everything is an outage), and measure
+  exit codes without a pipe.
+
+### Internal — test-suite integrity
+These change no shipped behaviour, but each closes a way the suite could report green over nothing.
+- **The POSIX-test guard is re-established as a property, not a one-time cleanup.** Nine unguarded
+  POSIX-only sites had accumulated since the 2026-07-16 pass, three in files added after it. The
+  worst was a directory symlink in a module-level `beforeEach`, which on Windows needs a privilege a
+  default runner does not grant — it would have failed every test in that file, including the ones
+  touching nothing platform-specific. Treatment differs by site on purpose: the marketplace
+  secret-scan scaffolding is made portable (skipping a security test to keep a platform leg green is
+  the trade this product exists to refuse), genuinely POSIX-semantic assertions are guarded and each
+  guard states what it costs — on Windows those behaviours are UNVERIFIED, not verified-and-passing —
+  and two `mode: 0o755` cases are deliberately left running with a comment saying why.
+- **The capability-landing fixture table covers `CAPABILITY_SUPPORT` exactly again**, after seven
+  rows were added without one. The anti-drift assertion caught it in the full suite. The
+  `personas[*].mcpServers` fixture deliberately asserts an `.mcp.json` registration rather than the
+  copied `persona.config.json` in `dist/` — the copy is not emission, and a fixture matching it would
+  assert the key works, which is the opposite of what that row claims.
+
 ## [0.20.2] — 2026-08-03
 
 Fixes from an assistant-driven beta evaluation that ran AgentBoot end to end

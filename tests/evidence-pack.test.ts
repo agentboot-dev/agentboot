@@ -155,3 +155,124 @@ describe("evidence pack", () => {
     }
   });
 });
+
+/**
+ * R1-G — the pack's platform set and conformance's platform set disagreed.
+ *
+ * `evidence-pack` derived it from `fs.readdirSync(distPath)`; `conformance`
+ * derives it from `personas.outputFormats`. `dist/plugin/` is emitted whenever
+ * `claude` is built (generatePluginOutput sits inside
+ * `if (outputFormats.includes("claude"))`) even though `plugin` is not a
+ * configured format. Verified on a claude-only hub: the pack printed
+ * `UNPROBED: plugin (run agentboot conformance)` and `agentboot conformance`
+ * would never probe plugin, because it iterates the config.
+ *
+ * The remedy the pack printed could not resolve the state the pack reported —
+ * permanently, on every pack an auditor ever received.
+ */
+describe("R1-G — one platform-set resolver, and the pack names the set it used", () => {
+  function packFor(distDirs: string[], outputFormats: string[]) {
+    const hub = fs.mkdtempSync(path.join(os.tmpdir(), "ab-r1g-"));
+    const dist = path.join(hub, "dist");
+    for (const d of distDirs) fs.mkdirSync(path.join(dist, d), { recursive: true });
+    const config = { org: "acme", personas: { outputFormats } } as unknown as AgentBootConfig;
+    return buildEvidencePack({
+      hubPath: hub, config, agentbootVersion: "0.0.0", repos: [], distPath: dist,
+    }).pack;
+  }
+
+  it("R1-G-1: a derived plugin tree is NOT reported as unprobed", () => {
+    const pack = packFor(["claude", "plugin"], ["claude"]);
+    expect(pack.enforcement.unprobed_platforms).toEqual(["claude"]);
+    expect(pack.enforcement.unprobed_platforms).not.toContain("plugin");
+    expect(pack.enforcement.derived_platforms).toEqual(["plugin"]);
+  });
+
+  it("R1-G-2: the pack states WHICH set it was computed over and where it came from", () => {
+    // "2 platforms with enforcement manifests" is not a claim until the
+    // denominator is stated.
+    const pack = packFor(["claude", "cursor", "plugin"], ["claude", "cursor"]);
+    expect(pack.enforcement.platform_set.platforms).toEqual(["claude", "cursor"]);
+    expect(pack.enforcement.platform_set.source).toBe("personas.outputFormats");
+  });
+
+  it("R1-G-3: a CONFIGURED platform with no manifest is still unprobed — the gate is not weakened", () => {
+    const pack = packFor(["claude"], ["claude", "cursor"]);
+    expect(pack.enforcement.unprobed_platforms.sort()).toEqual(["claude", "cursor"]);
+  });
+
+  it("R1-G-4: the resolver is literally shared with conformance", async () => {
+    // The fix is only worth having if there is ONE list. Assert that, rather
+    // than that two lists currently happen to match.
+    const { configuredPlatforms } = await import("../scripts/lib/conformance.js");
+    const cfg = { personas: { outputFormats: ["claude", "gemini"] } };
+    expect(configuredPlatforms(cfg)).toEqual(["claude", "gemini"]);
+    const cli = fs.readFileSync(path.join(ROOT, "scripts", "cli.ts"), "utf-8");
+    const pack = fs.readFileSync(path.join(ROOT, "scripts", "lib", "evidence-pack.ts"), "utf-8");
+    expect(pack, "evidence-pack still derives its platform set from readdirSync")
+      .toContain("configuredPlatforms(config)");
+    expect(cli).toContain("platform_set");
+  });
+});
+
+/**
+ * R1-H — two raw `PLATFORM_ENFORCEMENT` consumers bypassed `resolveEnforcement`.
+ *
+ * `evidence-pack` shipped the WHOLE table verbatim as `enforcement.declared`,
+ * and `conformance` stamped the unresolved row into each
+ * `dist/<platform>/enforcement-manifest.json`. Verified on a claude-only hub:
+ * the auditor-facing pack carried all ten rows including
+ * `plugin: {level: "enforced"}` unqualified, for nine platforms the org does not
+ * build. `plugin`'s enforcement is CONDITIONAL on `claude` being in
+ * outputFormats — that is what its `requires` says and what `resolveEnforcement`
+ * applies. `cli.ts` (doctor) and `guardrail-scan.ts` both resolve; these two
+ * were the leftovers of the same `plugin` class the branch has now fixed three
+ * separate times.
+ */
+describe("R1-H — the declared level is resolved, and scoped to what the org builds", () => {
+  function packFor(outputFormats: string[]) {
+    const hub = fs.mkdtempSync(path.join(os.tmpdir(), "ab-r1h-"));
+    fs.mkdirSync(path.join(hub, "dist"), { recursive: true });
+    const config = { org: "acme", personas: { outputFormats } } as unknown as AgentBootConfig;
+    return buildEvidencePack({
+      hubPath: hub, config, agentbootVersion: "0.0.0", repos: [], distPath: path.join(hub, "dist"),
+    }).pack;
+  }
+
+  it("R1-H-1: the pack declares only the platforms the org builds", () => {
+    const pack = packFor(["claude"]);
+    expect(Object.keys(pack.enforcement.declared)).toEqual(["claude"]);
+    expect(Object.keys(pack.enforcement.declared)).not.toContain("plugin");
+  });
+
+  it("R1-H-2: an unmet `requires` downgrades the declared level and SAYS what is missing", () => {
+    // The state the raw table could not express. A build gate makes this
+    // unreachable from a fresh build today; a stale or hand-assembled dist
+    // still reaches this code, and "currently unreachable" is not "asserted".
+    const pack = packFor(["plugin"]);
+    const plugin = pack.enforcement.declared["plugin"]!;
+    expect(plugin.level).toBe("advisory");
+    expect(plugin.unmetRequires).toEqual(["claude"]);
+    expect(plugin.detail).toContain("not in personas.outputFormats");
+  });
+
+  it("R1-H-3 (NEGATIVE): with its requirement met, plugin is enforced again", () => {
+    const plugin = packFor(["claude", "plugin"]).enforcement.declared["plugin"]!;
+    expect(plugin.level).toBe("enforced");
+    expect(plugin.unmetRequires).toEqual([]);
+  });
+
+  it("R1-H-4: the conformance manifest stamps the RESOLVED row too", async () => {
+    // This is the one that matters most: the manifest is what `baseline`
+    // archives and `evidence-pack` signs, so an unqualified claim there
+    // propagates into the undatable historical record.
+    const { runPlatformConformance } = await import("../scripts/lib/conformance.js");
+    const hub = fs.mkdtempSync(path.join(os.tmpdir(), "ab-r1h2-"));
+    const dist = path.join(hub, "dist");
+    fs.mkdirSync(path.join(dist, "plugin"), { recursive: true });
+    const config = { org: "acme", personas: { outputFormats: ["plugin"] } } as unknown as AgentBootConfig;
+    const m = runPlatformConformance(dist, "plugin", config, "0.0.0", null);
+    expect(m.declared.level).toBe("advisory");
+    expect(m.declared.unmetRequires).toEqual(["claude"]);
+  });
+});

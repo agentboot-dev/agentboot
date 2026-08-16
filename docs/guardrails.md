@@ -18,6 +18,13 @@ AgentBoot calls the second kind a **HARD guardrail**. This page is how to author
 
 Add `guardrail: hard` to the frontmatter of an instruction or trait:
 
+> **A note on `applyTo`.** `"**"` above is always-on, which every platform can honour. A
+> *narrowing* glob (`"src/api/**"`) is only expressible on Copilot (natively) and Cursor,
+> Windsurf and JetBrains (translated). Claude Code, Skill, plugin, AGENTS.md, Codex and
+> Gemini have no scoping mechanism, so the rule reaches them always-on — the build fails
+> unless the artifact carries `scope-unsupported: acknowledged`. See
+> [the platform capability matrix](/docs/platform-capability-matrix).
+
 ```markdown
 ---
 description: "Secrets are never read directly by an agent"
@@ -109,13 +116,21 @@ This is the part to read before promising anything to a security reviewer.
 
 | Surface | What a guardrail does |
 |---|---|
-| Claude Code, Codex CLI, GitHub Copilot CLI | Compiled to **blocking hooks** — the action is denied (exit code 2) |
-| `AGENTS.md` | **Advisory.** No hook mechanism exists in the standard |
-| Cursor, Gemini, Windsurf, JetBrains | **Advisory.** Community tier; content is delivered, nothing blocks |
+| Claude Code | Compiled to **blocking hooks** — the action is denied (exit code 2). The only surface that also has a non-overridable managed-settings layer, so it is the only one the matrix classes **hard-enforced** |
+| OpenAI Codex CLI | Compiled to **blocking hooks** (exit code 2), with two documented gaps that make it **enforced-with-known-bypasses** rather than hard-enforced: hooks require a trust review unless deployed as managed, and tool coverage is partial — shell/patch/MCP, **not** WebSearch, and `SessionEnd` is unsupported |
+| GitHub Copilot CLI | Compiled to **blocking hooks** in Copilot's native mechanism, but two ceilings: command-hooks **fail open on timeout**, and exit-2 blocking is **documented platform behaviour we have not yet verified end to end** |
+| `AGENTS.md` | **Advisory.** No hook mechanism exists in the standard — support tier is not enforcement tier |
+| Cursor, Gemini, Windsurf, JetBrains, `SKILL.md` | **Advisory.** Community tier; content is delivered, nothing blocks |
 
 So a HARD guardrail is a hard *policy* everywhere and a hard *control* only on the three
-officially supported CLI surfaces. Everywhere else it is instruction text the agent is
-asked to follow.
+officially supported CLI surfaces — and only Claude Code's is unqualified. Everywhere else
+it is instruction text the agent is asked to follow.
+
+`agentboot conformance` is what backs the first three rows, and it probes the **compiled
+hook scripts**: platform-side event delivery is asserted from each platform's documentation,
+not observed in a live session. That distinction is the difference between the three
+enforcement classes above and is stated the same way on
+[the platform capability matrix](/docs/platform-capability-matrix).
 
 Verify rather than assume — the conformance harness executes the compiled hooks with
 crafted inputs and reports what actually happened:
@@ -130,6 +145,14 @@ A control it cannot probe is reported `untested`, never as passing.
 
 - **Hooks bind the tool, not the machine.** Someone who uninstalls the agent tooling is
   outside their reach. Branch protection and CI are what cover that.
+- **A hook reads at most 1 MiB from stdin.** A prompt or tool payload larger than that is
+  **blocked outright** by the blocking gates rather than truncated and scanned in part — an
+  unscannable payload is an unscanned payload. The output scan skips (loudly) and the audit
+  trail degrades (loudly) instead, because a Stop hook that blocked on its own failure would
+  strand the session. The limit is an operator-side runtime knob,
+  `AGENTBOOT_MAX_HOOK_INPUT_BYTES`, not org policy, and a value outside its accepted range
+  makes the blocking gates refuse to run rather than run unbounded. See
+  [Hook input limit](./configuration.md#hook-input-limit--agentboot_max_hook_input_bytes).
 - **Scope-level instruction *content* does not compile yet.** Persona definitions and
   trait weights do. Authoring guardrail content at team scope produces a loud build
   warning rather than silent no-op output — put org-wide guardrails in
@@ -142,3 +165,83 @@ A control it cannot probe is reported `untested`, never as passing.
 - [Configuration](./configuration.md) — the full `managed` and `claude` blocks
 - [Platform capability matrix](./platform-capability-matrix.md) — what each platform enforces
 - [Assurance claims](./assurance-claims.md) — every claim on this page and the probe backing it
+
+## Targets that cannot enforce
+
+`guardrail: hard` is a claim that a control is **mechanically enforced**. Not every platform can make
+that true — see [the platform capability matrix](platform-capability-matrix.md). Cursor, **Gemini**,
+Windsurf, JetBrains, `AGENTS.md` and `SKILL.md` output are **instructions only**: nothing binds a
+hook, so nothing blocks. That list is not maintained here — the build reads it from
+`PLATFORM_ENFORCEMENT` in `scripts/lib/conformance.ts`, the same table the conformance harness and
+`doctor` report from, so a target added to the product cannot be missing from the gate.
+
+**Building a HARD artifact for one of those targets fails the build.** A directive the target cannot
+enforce, silently emitted as ordinary prose, is a compliance hole with a green build and a signed
+manifest — the artifact would be byte-indistinguishable from a soft preference while the manifest
+attested it arrived intact.
+
+Two ways to resolve it:
+
+1. **Remove the unenforceable target** from `personas.outputFormats`, or
+2. **Acknowledge advisory delivery** on the artifact, when reaching those agents with guidance is
+   genuinely the intent:
+
+```markdown
+---
+description: Never log PHI to any sink
+applyTo: "**/*"
+guardrail: hard
+advisory-on-unenforceable: acknowledged
+---
+```
+
+The artifact still ships; the build warns instead of failing, and names the advisory targets. The
+acknowledgement is per-artifact on purpose — a global switch would let one decision quietly cover
+future artifacts nobody reconsidered.
+
+`agentboot doctor` reports the same thing from the other direction: it now counts artifacts declaring
+`guardrail: hard`, not just `managed` config keys, and warns per target that cannot enforce them.
+
+## Artifact identity
+
+Every governance artifact carries a permanent identifier in its frontmatter:
+
+```yaml
+id: 01KZH2S4N8H1AEPFCWPJRBHTA5   # opaque, permanent — survives rename/split/merge
+slug: critical-thinking           # human-readable, free to change
+hash: sha256:9a520ca580354ef6     # integrity for THIS revision
+```
+
+Three fields with three jobs, deliberately separate. **The `id` is the identity** — it never changes
+once minted, which is what lets an artifact's history survive renames and scope moves. The `slug` is
+for humans and may be edited freely. The `hash` describes the current revision and moves on every
+edit, so it is integrity, not identity. Conflating the two is the usual mistake: a content hash
+identifies a *version*, and lineage dies at the first edit.
+
+`agentboot add` mints an id at creation. `agentboot identity` backfills existing artifacts and
+refreshes hashes — it is **idempotent and never regenerates an existing id.** Use `--dry-run` first.
+
+Identity is stamped **before v1.0.0** on purpose: it cannot be applied retroactively. An id minted
+later can only date from later, and after the GA tag adding the field is a breaking change for every
+consumer plus a re-sync of every spoke.
+
+**Reserved, not yet active:** `tier:` (`constitutional` / `statutory` / `ephemeral`) declares an
+artifact's intended change-rate. The slot exists so the schema is stable at GA; nothing consumes it
+yet, and untagged artifacts are deliberately **not** assigned a default.
+
+## Waiving a capability gap
+
+When a configured capability can be honoured by none of your configured output formats, the build
+fails. The sanctioned waiver is a policy exception in `agentboot-exceptions.json` with the key
+`capability:<id>`:
+
+```json
+[{ "id": "EX-2026-014", "policy": "capability:compliance.inputScan.scannerCommand",
+   "reason": "cursor-only pilot; Claude Code lands next quarter",
+   "approver": "…", "owner": "…", "created": "2026-08-08", "expires": "2026-11-08" }]
+```
+
+It is deliberately not a config boolean. A boolean can be pasted once and never revisited; an owned,
+expiring record cannot — the day after `expires`, the build fails again. The waiver silences the
+error, never the fact: an accepted gap prints on every build, naming its owner and expiry, and appears
+in generated evidence packs.

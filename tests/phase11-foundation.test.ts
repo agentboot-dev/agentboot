@@ -10,6 +10,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { ensureRootDist } from "./setup.js";
 
 const ROOT = path.resolve(__dirname, "..");
 const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
@@ -25,9 +26,7 @@ function run(script: string, cwd = ROOT): string {
 // Ensure dist/ is built before these tests run
 beforeAll(() => {
   const distPath = path.join(ROOT, "dist");
-  if (!fs.existsSync(distPath) || !fs.existsSync(path.join(distPath, "claude"))) {
-    run("scripts/compile.ts");
-  }
+  ensureRootDist();
 });
 
 // ---------------------------------------------------------------------------

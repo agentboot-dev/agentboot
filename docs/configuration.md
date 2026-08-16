@@ -190,12 +190,92 @@ gotchas, and instructions). Scaffold one with `agentboot add domain <name>`.
 |---|---|---|---|
 | `output.distPath` | string | `./dist` | Where compiled output is written before syncing. |
 | `output.provenanceHeaders` | boolean | `true` | Add source-file + timestamp provenance headers to output. |
-| `output.failOnDirtyDist` | boolean | `false` | Fail the build if `dist/` already contains prior output (CI staleness guard). |
+| `output.failOnDirtyDist` | boolean | `false` | **Deprecated, ignored.** `dist/` is now rebuilt from empty on every build and pruned, so a dirty `dist/` is structurally impossible. Setting the key prints a deprecation warning; the build no longer fails. |
 | `output.tokenBudget.warnAt` | number | `8000` | Per-persona estimated-token warning threshold (informational — warns, never blocks). |
 | `output.tokenBudget.failAt` | number | — | Opt-in hard ceiling: the build **fails** when a compiled persona's estimated size exceeds it — the CI gate for prompt-size regressions. The build also writes `dist/persona-sizes.json` so hub PRs show size changes as a reviewable diff. Estimates use a chars/4 heuristic — a stable relative measure, not an exact tokenizer count. |
 
 > Which **platforms** to emit is controlled by `personas.outputFormats`, not `output`. There is no
 > `output.format`, `output.hooks`, `output.mcp`, `output.managed`, or `output.dir` key.
+
+### Capability coverage — a configured control must reach some platform
+
+`personas.outputFormats` selects platforms; the `claude.*`, `compliance.*`, `mcp.*`, `ab.*` and
+`managed.*` blocks configure capabilities. Nothing used to compare the two, so a capability whose
+emitter was gated off produced no file, no log line, and no record that it had ever been requested.
+
+The build now fails when a configured capability can be honoured by **none** of the configured output
+formats. Which platforms emit which capability is declared in `CAPABILITY_SUPPORT`
+(`scripts/lib/conformance.ts`) — a separate axis from `PLATFORM_ENFORCEMENT`, which states how
+*strongly* a platform enforces:
+
+| Capability | Emitted by | Severity if no configured target emits it |
+|---|---|---|
+| `claude.hooks`, `claude.permissions.deny`, `mcp.enforceApproved`, `managed.guardrails.disableBypassPermissions` | claude | **error** |
+| `compliance.inputScan.scannerCommand`, `compliance.outputScan.blocking`, `managed.guardrails.denyTools`, `managed.guardrails.requireAuditLog` | claude, codex, copilot, plugin | **error** |
+| `claude.permissions.allow`, `claude.mcpServers`, `claude.settings`, `ab.modelOverrides` | claude | warn |
+| `instructions[].applyTo` (narrowing only) | copilot | warn |
+| `gotchas[].paths` | copilot, cursor, windsurf, jetbrains | warn |
+| `managed.guardrails.forcePlugins` | **nothing** | **error, always** |
+
+**One honouring target is enough** — partial coverage is the enforcement axis's concern, not this one.
+
+Severity is assigned by *what the operator loses*, not by importance. **Error** means the operator
+believes a control is active and it is not. **Warn** means a convenience is lost and nothing is
+falsely believed to be enforced. `permissions.deny` and `permissions.allow` look symmetric and are
+not: `deny` is the control, `allow` is a pre-approval convenience — failing a build over lost
+friction-reduction is the over-gating that gets a gate switched off.
+
+**A narrowing `applyTo` only.** `applyTo: "**"` is the documented always-on sentinel; losing a
+universal scope is a no-op, so it never fires.
+
+#### Accepting a gap
+
+Errors are waived through the policy-exception register (`agentboot-exceptions.json`) with the policy
+key `capability:<id>` — not a config boolean, because the register requires an owner and an approver
+and it **expires**:
+
+```json
+[{ "id": "EX-2026-014", "policy": "capability:claude.hooks",
+   "reason": "cursor-only pilot; hooks land when Claude Code is added",
+   "approver": "…", "owner": "…", "created": "2026-08-08", "expires": "2026-11-08" }]
+```
+
+A waived gap still prints on every build, naming the owner and the expiry. The day after it expires
+the build fails again. Warn-level rows need no waiver — they do not block.
+
+`agentboot doctor` reports the same information under a **Coverage** section, printed *before*
+Enforcement: coverage answers "was it emitted at all?", enforcement answers "how strongly?" — and
+coverage is the prior question.
+
+### Revocation — `dist/` is generated output, not a cache
+
+Every build compiles into a staging directory and swaps it into place, so `dist/` is a faithful
+projection of hub config rather than an append-only cache. Removing an artifact from
+`instructions.enabled`, or a platform from `personas.outputFormats`, therefore **removes it from
+`dist/`** — and the build reports what it pruned, including the zero case:
+
+```
+  Pruned 4 stale artifact(s) from dist/:
+    − dist/claude/core/rules/security.instructions.md
+  Pruned 5 retired platform tree(s): agents, claude, copilot, plugin, skill
+```
+
+`sync` then propagates the deletion to each spoke. Removal is confined to paths listed in that
+spoke's previous manifest — sync can only delete files it wrote — which is why it is on by default
+with no flag. Two cases do not delete:
+
+| Case | Behaviour |
+|---|---|
+| The spoke **edited** the file since delivery | Never deleted. Sync **exits non-zero**: the org withdrew a control and one repo still has it. Fix the local edit, or add a `retain` regex to the repo entry. |
+| A `retain` regex matches (repos.json entry, or hub-wide `sync.retain`) | Never deleted. Reported as a **warning on every sync** — the hatch silences the error, never the fact. |
+
+A revoked artifact sync could not withdraw is recorded in the spoke manifest's `retired[]` array, and
+`drift-check` reports it as drift and **exits non-zero**. A withdrawn control still live on a spoke
+is not a clean repo.
+
+`sync` also refuses to ship a platform the hub does not build: if `repos.json` names `claude` but
+`personas.outputFormats` does not, `dist/claude/` does not exist and that repo entry fails with a
+message naming both sides. Other repos still sync; the run exits non-zero at the end.
 
 ---
 
@@ -218,7 +298,143 @@ Controls `agentboot install-user` (writing compiled skills/rules to `~/.claude`)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `userLevel.mode` | `"auto" \| "direct" \| "manifest"` | `auto` | `auto`: write `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns the slot (then stage for handoff). `direct`: always write. `manifest`: never write — stage resolved content + a handoff manifest for an external provider. |
+| `userLevel.mode` | `"auto" \| "direct" \| "manifest"` | `auto` | `auto`: write `~/.claude` directly unless a `~/.claude/.managed` sentinel indicates another tool owns the slot (then stage for handoff). `direct`: write `~/.claude` — **unless the sentinel is present, in which case the write is refused** (see below). `manifest`: never write — stage resolved content + a handoff manifest for an external provider. |
+
+`agentboot install-user --mode <auto\|direct\|manifest>` overrides the configured value for one run;
+`--dry-run` reports what either mode would do without touching anything.
+
+**Env override — `AGENTBOOT_USER_LEVEL_MODE`.** Accepts the same three values. It exists for
+callers who can set an environment variable but cannot edit a hub config they do not own and
+cannot always reach the flag — CI jobs, and non-interactive installers wrapping an
+`install-user` they did not write.
+
+```bash
+AGENTBOOT_USER_LEVEL_MODE=manifest agentboot install-user
+```
+
+#### Precedence, and where it refuses
+
+Highest first:
+
+1. **The `~/.claude/.managed` sentinel**, for `direct` only.
+2. **`userLevel.mode` in the config.** `--mode` arrives here too — the CLI injects the flag as
+   config — which is why config beats env rather than the reverse: an inherited environment
+   variable must not quietly beat the most explicit signal a caller has. One consequence worth
+   knowing: passing `--mode auto` explicitly is *not* the same as passing nothing. It counts as
+   a config-level request and therefore **suppresses `AGENTBOOT_USER_LEVEL_MODE`**.
+3. **`AGENTBOOT_USER_LEVEL_MODE`.**
+4. Default `auto` → manifest if the slot is externally managed, else direct.
+
+**The sentinel beats an explicit `direct`, and beating it is a refusal — not a downgrade.** A
+present `~/.claude/.managed` means some other tool has claimed that slot; it is the only signal
+that comes from the side of the boundary AgentBoot cannot see. A hub config key is not allowed
+to override it, because a claim that a config file the claimant cannot read could revoke is not
+a claim at all. So when `direct` meets a sentinel:
+
+- `~/.claude` is **not written** — nothing is touched;
+- the content is still staged for handoff, so the run is not wasted;
+- the refusal is printed, naming which source asked for `direct`;
+- **`install-user` exits non-zero (`1`).**
+
+The non-zero exit is the point. The operator's explicit instruction was not carried out, and
+silently downgrading to manifest mode under a success line is exactly the green-over-a-refusal
+this product refuses to ship. The escape hatch is the honest one: delete
+`~/.claude/.managed` if AgentBoot really does own the slot, or stop asking for `direct`.
+
+**An unrecognized mode is also a refusal.** A value from either config or the env var that is
+not `auto`/`direct`/`manifest` — `"manifest-only"`, `"Direct"`, a typo — does **not** fall back
+to `auto`. It fails toward the safe side (stages, leaves `~/.claude` alone), reports, and exits
+non-zero. Reinterpreting an unreadable instruction is how a request *not* to touch `~/.claude`
+becomes a write.
+
+#### What is written, and what is deliberately not
+
+Both modes carry exactly two slots, taken from `dist/claude/core/`:
+
+| Slot | Source | Destination (direct mode) |
+|---|---|---|
+| `skills/` | `dist/claude/core/skills/` | `~/.claude/skills/` |
+| `rules/` | `dist/claude/core/rules/` | `~/.claude/rules/` |
+
+**`CLAUDE.md` and `settings.json` are never written or staged, in either mode.** They are *composed*
+files — one needs a safe append between an external provider's markers, the other a deep merge — and
+AgentBoot has no way to perform either without clobbering another tool's content. Direct writes are
+additive into directory slots only: no hooks, no `permissions.deny`. `install-user` prints both
+exclusions on every run so the omission is never mistaken for a failure.
+
+Content is refused rather than delivered if it still contains an unresolved `{{ template_var }}`.
+A user-level config manager typically resolves templates all-or-nothing, so one unresolved variable
+from AgentBoot would fail *every other tool's* content in the same pass. The check runs in dry-run
+too, so it surfaces before it can matter.
+
+#### The handoff contract (`manifest` mode)
+
+This manifest is the **only coupling between AgentBoot and an external user-scope provider**. It is
+what a provider implements against, so it is specified here rather than left to the source.
+
+Nothing under `~/.claude` is touched. The resolved slot content is staged and a manifest is written
+beside it:
+
+```
+<distPath>/claude-user/            # default staging root — dist/claude-user
+├── .agentboot-handoff.json        # the manifest the provider reads
+├── skills/…                       # resolved, ready to copy
+└── rules/…
+```
+
+```jsonc
+// dist/claude-user/.agentboot-handoff.json
+{
+  "managed_by": "agentboot",       // constant — identifies the producer
+  "scope": "user",                 // constant
+  "mode": "manifest",              // constant; present only in the handoff manifest
+  "apply_target": "~/.claude",     // where the provider is asked to apply `files`
+  "written_at": "2026-08-11T09:00:00.000Z",   // ISO 8601, UTC
+  "files": [
+    { "path": "skills/ab/SKILL.md", "hash": "9a52…" },
+    { "path": "rules/baseline.md",  "hash": "1c7f…" }
+  ]
+}
+```
+
+| Field | Contract |
+|---|---|
+| `files[].path` | **POSIX-relative to the staging root**, always `/`-separated even on Windows, and never absolute or `..`-bearing. Join it to `apply_target` to get the destination. |
+| `files[].hash` | Hex-encoded **SHA-256 over the file's contents**. Verify before applying; a mismatch means the staged tree was modified after the build. |
+| `written_at` | Build time, not apply time. |
+
+**The provider's side of the contract:** apply every `files[]` entry under `apply_target`, verify the
+hash first, and treat the manifest as the complete inventory — AgentBoot stages nothing that is not
+listed. AgentBoot does not read this file back; once staged, the slot belongs to the provider.
+
+#### The install manifest (`direct` mode)
+
+Direct writes record what they delivered in `~/.claude/.agentboot-user-manifest.json` — the same
+shape minus `mode` and `apply_target`, with `files[].path` POSIX-relative to `~/.claude`:
+
+```jsonc
+{ "managed_by": "agentboot", "scope": "user", "written_at": "…",
+  "files": [{ "path": "skills/ab/SKILL.md", "hash": "9a52…" }] }
+```
+
+It exists so revocation works, and its semantics are deliberately conservative:
+
+- **Withdrawal is confined to the previous manifest.** The next `install-user` removes what the last
+  one delivered and this one did not. Because the manifest lists only files AgentBoot wrote, it can
+  never delete a file it did not create.
+- **A locally edited artifact is `blocked`, not removed** — its hash no longer matches, so it is left
+  on disk, reported in yellow as *revoked at the hub and still active on this machine*, and **kept in
+  the manifest** so `agentboot uninstall --user` can still reach it. Silently discarding a local edit,
+  or dropping it from tracking, both produce content no command can account for.
+- **"0 revoked" and "pruning never ran" print differently.** An equivalence there is how a withdrawn
+  artifact sits on disk indefinitely while the run looks clean.
+- **An unreadable manifest prunes nothing** and is treated as "no previous install" — guessing would
+  delete files AgentBoot cannot prove it wrote.
+- **Path traversal is refused on read.** `uninstall --user` skips any manifest entry that resolves
+  outside `~/.claude/` and says so, so a tampered manifest cannot aim the uninstaller at the rest of
+  the home directory.
+- Manifests written by older builds may contain `\`-separated paths; both manifests are normalised on
+  read, so an upgrade does not read every legacy entry as an orphan.
 
 ### `agents` — tools & LLM provider
 
@@ -230,10 +446,58 @@ Controls `agentboot install-user` (writing compiled skills/rules to `~/.claude`)
 | `agents.llmModel` | string \| null | Model override for API providers. |
 | `agents.billingAcknowledged` | boolean | Whether the user acknowledged that LLM-powered commands cost money. |
 
-### `ab.modelOverrides`
+### `ab.modelOverrides` — per-agent model assignment for `/ab`
 
-`ab.modelOverrides` (`Record<string,string>`) overrides the model used by individual `/ab` skill
-agents.
+The `/ab` skill compiles to five agent files, and each is stamped with a **default model chosen
+for cost**: the read-only query agent runs on Haiku, everything else on Sonnet.
+`ab.modelOverrides` (`Record<string, string>`) replaces the default for one agent. The key is the
+agent name; an unknown key matches no agent and is silently inert.
+
+| Key | Default | Agent |
+|---|---|---|
+| `ab.modelOverrides.ab` | `sonnet` | The `/ab` entry point; routes to the four below. |
+| `ab.modelOverrides["ab-query"]` | `haiku` | Read-only status and lookup. **This is the cost story the feature exists for** — the highest-volume agent runs on the cheapest model. |
+| `ab.modelOverrides["ab-author"]` | `sonnet` | Authors personas, traits and instructions. |
+| `ab.modelOverrides["ab-diagnose"]` | `sonnet` | Diagnoses build / sync / drift failures. |
+| `ab.modelOverrides["ab-manage"]` | `sonnet` | Hub and spoke management operations. |
+
+**Legal values** — anything else is not a model this build understands:
+
+| Value | Meaning |
+|---|---|
+| `opus` \| `sonnet` \| `haiku` | Agent SDK model aliases. |
+| `inherit` | Run on whatever model the parent session is using. |
+| `claude-<id>` | An explicit model id matching `^claude-[a-z0-9.-]+$` — e.g. `claude-sonnet-4-5`. |
+
+Values are trimmed and lower-cased before matching, so `" Haiku "` is accepted.
+
+```jsonc
+{
+  "ab": {
+    "modelOverrides": {
+      "ab-query": "claude-haiku-4-5",   // pin the cheap agent to an exact id
+      "ab-author": "opus"               // author with the strongest model
+    }
+  }
+}
+```
+
+**An invalid value does not fail the build. It is ignored, with a warning, and the default is
+used:**
+
+```
+⚠ Ignoring invalid ab.modelOverrides["ab-query"] = "sonet" — expected opus | sonnet |
+  haiku | inherit or a claude-* model id; using default "haiku".
+```
+
+That is deliberate — a typo in a cost knob should not stop a governance build — but it means a
+**mistyped override silently loses the saving it was meant to make**. The warning is the only
+signal; read the build log.
+
+**`ab-query` is compiled read-only and that is not configurable.** Its agent frontmatter is
+stamped with `disallowedTools: ["Bash", "Write", "Edit", "NotebookEdit"]`, so the query agent
+cannot run commands or write files whatever model it is pointed at. Read-only is the agent's
+contract, not a preference, and there is no config key that relaxes it.
 
 ---
 
@@ -255,7 +519,8 @@ Generates a managed-settings artifact (Claude Code only) for MDM distribution.
 | `managed.enabled` | boolean | Enable managed-settings generation. |
 | `managed.platform` | `"jamf"\|"intune"\|"jumpcloud"\|"kandji"\|"other"` | MDM target. |
 | `managed.outputPath` | string | Custom output path. |
-| `managed.guardrails.forcePlugins` | string[] | Plugins to force-install. |
+| `managed.scopeMerge.acknowledgedOverrides` | string[] | Top-level managed-settings keys whose cross-scope override is intended. Without this the build fails on a differing-value collision. `permissions`/`hooks` are unioned and never belong here; `"*"` is rejected. |
+| `managed.guardrails.forcePlugins` | string[] | **NOT IMPLEMENTED — accepted, typed, and read by no code path on any platform.** Setting it now FAILS the build (see the capability gate below); this row is retained only so the failure is explicable. Flagged for a product decision: implement it, or delete the key and the type. |
 | `managed.guardrails.denyTools` | string[] | Tool patterns to deny. |
 | `managed.guardrails.requireAuditLog` | boolean | Require audit logging. |
 | `managed.guardrails.disableBypassPermissions` | boolean | Disallow bypassing permissions. |
@@ -272,17 +537,71 @@ The build writes managed artifacts to **two places with two different jobs**:
 Deployment flow:
 
 1. **Single org-wide policy:** deploy `dist/managed/managed-settings.json` to the managed
-   path for your MDM (the build prints the target path — e.g.
-   `/Library/Application Support/Claude/` for Jamf/Kandji, `/etc/claude-code/` for Linux
-   MDM, `C:\ProgramData\Claude\` for Intune).
+   path for your MDM. The build prints the target path for the configured
+   `managed.platform`; the full table is:
+
+   | `managed.platform` | OS | Managed-settings root Claude Code reads |
+   |---|---|---|
+   | `jamf`, `kandji` | macOS | `/Library/Application Support/ClaudeCode/` |
+   | `intune` | Windows | `C:\Program Files\ClaudeCode\` |
+   | `jumpcloud` | Linux | `/etc/claude-code/` |
+   | `other` | — | The build prints `./managed-output/`, which is a **placeholder, not a destination.** Target the row above matching the OS your fleet runs, using your MDM's managed-config mechanism. |
+
+   **These strings are a control surface, not a hint, and two of them were wrong before
+   v1.0.** On macOS the leaf directory is `ClaudeCode`, **not** `Claude` — the shorter name
+   is the Claude *Desktop* support directory, a different product. On Windows the root is
+   under `Program Files`, **not** the machine-wide program-data directory, and the leaf is
+   again `ClaudeCode`, not `Claude`. Both errors are silent and total: a profile delivered
+   to a directory Claude Code does not read installs cleanly, reports success, drift-checks
+   clean and enforces **nothing** — every HARD guardrail absent on every machine, behind a
+   green build. If your fleet was targeted at either of the old locations, treat it as
+   unguarded until you re-target and re-run step 3.
+
+   The canonical values live in one place in the code — `MANAGED_SETTINGS_ROOTS` in
+   `scripts/compile.ts` — and the suite pins them as literals. If a future Claude Code
+   moves them, re-derive from the shipping binary rather than from any doc page (this one
+   included) that may have copied the table.
+
+   **Drop-in directory.** Claude Code also reads a `managed-settings.d/` directory *inside*
+   that same root — `<root>/managed-settings.d/`, e.g.
+   `/Library/Application Support/ClaudeCode/managed-settings.d/`. AgentBoot does **not**
+   target it: step 2's merged file is the recommended deployable, because a merge performed
+   at build time resolves collisions where they can be *reported and reviewed* in the hub PR,
+   rather than on each machine where a dropped key is invisible. If you deploy fragments
+   there anyway, verify the resulting precedence on a real managed machine (step 3) before
+   relying on it — AgentBoot has confirmed the directory Claude Code reads, not the order in
+   which it applies what it finds there.
 2. **Per-team policy:** the build performs the merge for you — every scope with policy
    gets a single deployable file at `dist/managed/scopes/<scope>/managed-settings.json`
    (e.g. `scopes/core/` for the org-wide fleet, `scopes/nodes/platform/api/` for a team
-   segment). Merge semantics: `permissions.deny` and `permissions.allow` are the UNION
-   across scopes (a team can add denies, never remove the org's), and every other key is
-   won by the higher scope (org over group over team). Deploy the merged file for each
-   fleet segment; the `managed-settings.d/` fragments remain available as the reviewable
-   composition inputs.
+   segment). Merge semantics:
+
+   - **`permissions.deny` / `permissions.allow` — UNION across scopes.** A team can add
+     denies, never remove the org's.
+   - **`hooks` — UNION across scopes, per event, over the entry arrays.** Both authors'
+     hooks run. There is no such thing as "overriding" a hook downward: a higher scope
+     declaring its own hook does not contradict a lower scope's, and union is the only
+     semantics under which both survive. Identical entries are deduplicated, so
+     hand-declaring the telemetry hook alongside `requireAuditLog` does not double-fire it.
+   - **Every other key is won by the higher scope** (org over group over team) — but a
+     collision on **differing values now FAILS the build**. This file is the channel a
+     developer cannot override; a value silently dropped here is a control that was
+     authored, validated and signed, and enforces nothing. Identical values in two
+     fragments are normal (`claude.settings` is copied into both) and are never reported.
+
+   If the override is intended, enumerate it:
+
+   ```json
+   "managed": { "scopeMerge": { "acknowledgedOverrides": ["cleanupPeriodDays"] } }
+   ```
+
+   The loss is then reported as a warning naming the winner, the loser and both sources —
+   an acknowledged loss is still a loss. `"*"` is rejected; the point is that each accepted
+   loss is enumerated and reviewable in the hub PR diff. `permissions` and `hooks` never
+   appear here, because nothing is discarded for them.
+
+   Deploy the merged file for each fleet segment; the `managed-settings.d/` fragments
+   remain available as the reviewable composition inputs.
 3. **Verify after deployment** on one managed machine: start a Claude Code session and
    confirm (a) a denied tool from `guardrails.denyTools` is actually blocked, and
    (b) `--dangerously-skip-permissions` is rejected if `disableBypassPermissions` is set.
@@ -339,6 +658,52 @@ AgentBoot does not become a DLP engine; it gives your scanner a reliable integra
 
 Scanner content never leaves the machine through AgentBoot: the hook pipes content to your
 command locally and surfaces its stdout/stderr to the developer only.
+
+#### Hook input limit — `AGENTBOOT_MAX_HOOK_INPUT_BYTES`
+
+Every generated hook reads a **bounded** amount from stdin. A hook runs on the developer's critical
+path for every prompt and every tool call, so an unbounded read is a memory and latency problem; and
+a payload that cannot be read in full cannot be scanned in full.
+
+| | Value |
+|---|---|
+| Default cap | **1 MiB — `1048576` bytes.** Deliberately larger than any legitimate prompt or tool payload. |
+| Environment override | `AGENTBOOT_MAX_HOOK_INPUT_BYTES` — read by the hook at run time, not baked in at build time. |
+| Accepted range | **`1` … `2147483647`** (2 GiB − 1), written in **plain decimal digits with no leading zero, sign, whitespace, or unit suffix**. `1048576` is valid; `0x100000`, `1MB`, `01048576` and `-1` are not. |
+| Not configurable from | `agentboot.config.json`. This is an operator-side runtime knob, not org policy. |
+
+**There is no "unlimited".** A value outside the accepted range is not silently clamped and not
+silently accepted — it is treated as an **unusable limit**, and what happens next follows the hook's
+own posture:
+
+| Hook posture | Unusable `AGENTBOOT_MAX_HOOK_INPUT_BYTES` |
+|---|---|
+| Blocking (input scan, deny-tools) | **Refuses to run.** Exits `2` with a block reason naming the variable and the accepted range. A gate will not run unbounded. |
+| Non-blocking (output scan, telemetry) | Falls back to the `1048576` default, and says so on stderr. A working scan beats a skipped one. |
+
+**Over-cap behaviour — a prompt larger than the cap is not truncated and quietly scanned.** Each hook
+takes the posture it already takes on every other failure:
+
+| Hook | Event | Over-cap posture | What the developer sees |
+|---|---|---|---|
+| Input scan | `UserPromptSubmit` | **block** | Exit `2`. *"prompt exceeds the hook input limit and could not be scanned. Split it, or raise `AGENTBOOT_MAX_HOOK_INPUT_BYTES` deliberately."* The prompt does not reach the model. |
+| Deny-tools gate | `PreToolUse` | **block** | Exit `2`. *"tool-use payload exceeds the hook input limit and could not be inspected."* |
+| Output scan | `Stop` | **skip** | Exit `0`, with *"output scan SKIPPED for this turn"* on stderr. A Stop hook that blocked on its own failure would strand the session — but an unscanned response must never look like a clean one. |
+| Audit trail | `SubagentStart`, `SubagentStop`, `PostToolUse`, `SessionEnd` | **degrade** | Records the event anyway and warns on stderr that fields may be incomplete. |
+
+So on a `>1 MiB` prompt the DLP gate **blocks outright** rather than scanning a truncated copy. If
+your team legitimately submits payloads that large, raise the variable deliberately — do not read the
+block as a bug.
+
+The same three postures apply when a hook cannot read stdin at all, or cannot measure what it read.
+An unreadable or unmeasurable payload is an unscanned payload and is treated exactly like an over-cap
+one, rather than falling through to exit `0`.
+
+> **This is not `compliance.inputScan.failMode`, and not the platform hook timeout.** `failMode`
+> governs what a *scanner process failure* does once the payload has been read; the Copilot ceiling
+> in [the platform capability matrix](platform-capability-matrix.md) is about hooks that *time out*.
+> The input cap is a third, separate mechanism, and it is the only one of the three that fails closed
+> on the blocking hooks by default.
 
 ### Policy exceptions — owners and expiration dates
 

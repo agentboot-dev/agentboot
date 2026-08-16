@@ -196,7 +196,7 @@ function RecognitionRow() {
   const cards = [
     {
       quote: '“My AI tools write plausible code that’s wrong about our codebase.”',
-      lead: 'Make your tools sharper', accent: C.primary,
+      lead: 'Stop re-explaining your codebase', accent: C.primary,
       body: 'Teach every assistant your conventions, your gotchas, your review bar — once — and stop re-explaining them in every prompt.',
       cta: { label: 'For engineers →', to: '/docs/concepts' },
     },
@@ -310,7 +310,7 @@ function TwoAudience() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
           <AudienceCard title="For engineers" accent={C.primary}
             tagline="Your rig stays yours."
-            body="AgentBoot is what your team runs — your personal AI setup is untouched. Battle-tested personas for code review, security analysis, tests, and data. Ask /ab in natural language; it scans before it changes anything."
+            body="AgentBoot is what your team runs — your personal AI setup is untouched. Ready-made personas for code review, security analysis, tests, and data. Ask /ab in natural language; it scans before it changes anything."
             bullets={[
               'Your personal config is never overwritten',
               '/ab — natural-language interface, scan-first',
@@ -364,7 +364,7 @@ function AudienceCard({ title, accent, tagline, body, bullets, cta }: {
 function Governance() {
   const phases = [
     { k: 'Set', color: C.primary, body: 'Author behavior and policy once, in one hub repo — versioned and reviewable like any other code.' },
-    { k: 'Enforce', color: C.purple, body: 'Emit blocking pre-tool-use hooks and managed settings to the CLIs that support them — a control an agent can’t ignore.' },
+    { k: 'Enforce', color: C.purple, body: 'Emit blocking pre-tool-use hooks and managed settings to the CLIs that support them — the rule fires at the tool boundary rather than asking the agent to comply. Depth varies by platform; the matrix below says where.' },
     { k: 'Verify', color: C.green, body: 'Drift detection compares each repo against what you shipped and flags what no longer matches. Every delivery is a reviewable PR.' },
   ];
   const rows = [

@@ -1,0 +1,487 @@
+/**
+ * R1-E — three more consumers trusted a stale `dist/`.
+ *
+ * N1 established the rule: a failed build leaves the previous `dist/`
+ * byte-identical, so the presence of files is not evidence that they reflect
+ * current policy. `sync`, `drift-check` and `audit` were taught to refuse.
+ * `conformance`, `baseline` and `evidence-pack` were not — and they are the
+ * three that turn `dist/` into an EVIDENCE CLAIM.
+ *
+ * Reproduced on a scaffolded hub: build with `managed.guardrails.denyTools`,
+ * probe it green, then revoke denyTools and add a narrow `applyTo` instruction
+ * so the rebuild fails at the scope gate.
+ *
+ *     BUILD2   = 1        dist/.agentboot-build.json → status "failed"
+ *     conformance  EXIT=0   "deny-tools not-applicable"  ← NEW config, OLD tree
+ *     baseline     EXIT=0   archived that as the platform-behaviour record
+ *     evidence-pack EXIT=0  wrote the auditor bundle from it
+ *     sync         EXIT=1   ← the only one that noticed
+ *
+ * conformance is the worst of the three because it WRITES its reading back into
+ * `dist/<platform>/enforcement-manifest.json`, which is what `baseline` archives
+ * and `evidence-pack` hands to the auditor. One stale probe contaminates the
+ * whole evidence chain.
+ */
+
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+const ROOT = path.resolve(__dirname, "..");
+const CLI = path.join(ROOT, "bin", "agentboot.js");
+
+/** Status read WITHOUT a pipe — a piped $? is the pipe's. */
+function ab(args: string[], cwd: string): { status: number; out: string } {
+  const r = spawnSync(process.execPath, [CLI, ...args], {
+    cwd,
+    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    encoding: "utf-8",
+    timeout: 300_000,
+  });
+  return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+let base: string;
+let hub: string;
+
+beforeAll(() => {
+  base = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-fresh-consumers-"));
+  hub = path.join(base, "hub");
+  const inst = spawnSync(
+    process.execPath,
+    [CLI, "install", "--hub", "--org", "acme", "--path", hub, "--non-interactive", "--skip-sync"],
+    { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+  );
+  if (inst.status !== 0) throw new Error(`hub scaffold failed: ${inst.stdout}${inst.stderr}`);
+
+  const cfgPath = path.join(hub, "agentboot.config.json");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  cfg.personas = { ...(cfg.personas ?? {}), outputFormats: ["claude"] };
+  cfg.managed = { ...(cfg.managed ?? {}), enabled: true, guardrails: { denyTools: ["Bash"] } };
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  if (ab(["build"], hub).status !== 0) throw new Error("initial build failed");
+}, 900_000);
+
+afterAll(() => {
+  if (base) fs.rmSync(base, { recursive: true, force: true });
+});
+
+const stampStatusOf = (h: string): string =>
+  JSON.parse(fs.readFileSync(path.join(h, "dist", ".agentboot-build.json"), "utf-8")).status;
+const stampStatus = (): string => stampStatusOf(hub);
+
+/** Revoke a control AND trip a build gate, so the rebuild fails and dist/ ages. */
+function makeDistStale(): void {
+  const cfgPath = path.join(hub, "agentboot.config.json");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  cfg.managed.guardrails.denyTools = [];
+  cfg.instructions = { ...(cfg.instructions ?? {}) };
+  cfg.instructions.enabled = [...(cfg.instructions.enabled ?? []), "narrow.instructions"];
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  fs.writeFileSync(
+    path.join(hub, "core", "instructions", "narrow.instructions.md"),
+    '---\ndescription: narrow\napplyTo: "src/api/**"\n---\n# narrow\nAPI only.\n',
+  );
+}
+
+function makeDistFresh(): void {
+  const cfgPath = path.join(hub, "agentboot.config.json");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+  cfg.instructions.enabled = (cfg.instructions.enabled ?? []).filter((n: string) => n !== "narrow.instructions");
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+  fs.rmSync(path.join(hub, "core", "instructions", "narrow.instructions.md"), { force: true });
+}
+
+describe("stale dist/ — the evidence-producing commands must refuse", () => {
+  it("POSITIVE: all three run against a fresh dist/", () => {
+    expect(ab(["conformance"], hub).status).toBe(0);
+    expect(ab(["baseline"], hub).status).toBe(0);
+    expect(ab(["evidence-pack", "--out", "ep.json"], hub).status).toBe(0);
+  }, 600_000);
+
+  it("a failed rebuild stamps dist/ failed — the precondition for the rest", () => {
+    makeDistStale();
+    const b = ab(["build"], hub);
+    expect(b.status, b.out).toBe(1);
+    expect(stampStatus()).toBe("failed");
+  }, 300_000);
+
+  it("NEGATIVE: conformance refuses — it would write a stale reading INTO dist/", () => {
+    const r = ab(["conformance"], hub);
+    expect(r.out).toMatch(/refusing to run `conformance` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("NEGATIVE: baseline refuses — a stale snapshot is worse than a missing week", () => {
+    const r = ab(["baseline"], hub);
+    expect(r.out).toMatch(/refusing to run `baseline` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("NEGATIVE: evidence-pack refuses — the auditor bundle must not describe replaced policy", () => {
+    const r = ab(["evidence-pack", "--out", "ep-stale.json"], hub);
+    expect(r.out).toMatch(/refusing to run `evidence-pack` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+    expect(fs.existsSync(path.join(hub, "ep-stale.json"))).toBe(false);
+  }, 300_000);
+
+  it("POSITIVE: a successful rebuild restores all three — the gate is not an outage", () => {
+    makeDistFresh();
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(stampStatus()).toBe("success");
+    expect(ab(["conformance"], hub).status).toBe(0);
+    expect(ab(["baseline"], hub).status).toBe(0);
+    expect(ab(["evidence-pack", "--out", "ep2.json"], hub).status).toBe(0);
+  }, 600_000);
+});
+
+/**
+ * A-class — and then there were nine more.
+ *
+ * R1-E fixed three consumers. It did not ask how many there were. The answer
+ * was that `install-user`, `export`, `publish`, `test` and `cost-estimate` were
+ * still acting on a stale tree at exit 0, and `doctor`, `status` and `lint`
+ * were still describing one as healthy — because the gated set and the
+ * consumer set were two hand-maintained lists.
+ *
+ * tests/dist-consumer-invariant.test.ts asserts that no command can read dist/
+ * without declaring a posture. This block asserts the postures are real: the
+ * gated ones refuse, and the reporting ones say what is wrong.
+ */
+describe("A-class — the remaining dist/ consumers", () => {
+  it("precondition: a failed rebuild stamps dist/ failed", () => {
+    makeDistStale();
+    expect(ab(["build"], hub).status).toBe(1);
+    expect(stampStatus()).toBe("failed");
+  }, 300_000);
+
+  it("A2-residual: install-user refuses — it delivers org policy to a developer's machine", () => {
+    // Measured pre-fix: EXIT 0, "✓ Would write 5 skill file(s) + 2 rule file(s)
+    // to ~/.claude/" and "✓ Would withdraw 1 revoked artifact(s)". Two green
+    // ticks installing a revoked control from a platform the org had retired.
+    // Its only precondition was fs.existsSync(distCore) — existence read as
+    // freshness, the pattern the sync gate was written to kill.
+    const r = ab(["install-user", "--dry-run"], hub);
+    expect(r.out).toMatch(/refusing to run `install-user` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("A3-residual: export refuses for BOTH formats — it packages a distributable", () => {
+    const plugin = ab(["export", "--format", "plugin", "--output", "zz-plugin"], hub);
+    expect(plugin.out).toMatch(/refusing to run `export` against a stale dist\//);
+    expect(plugin.status, plugin.out).toBe(1);
+    expect(fs.existsSync(path.join(hub, "zz-plugin"))).toBe(false);
+
+    // The agentskills path ended with "Submit this file to agentskills.io for
+    // directory listing." — publishing superseded policy to a public directory.
+    const skills = ab(["export", "--format", "agentskills"], hub);
+    expect(skills.out).toMatch(/refusing to run `export` against a stale dist\//);
+    expect(skills.status, skills.out).toBe(1);
+  }, 300_000);
+
+  it("A-class: test refuses — a green run against a superseded tree is a false pass", () => {
+    const r = ab(["test", "--snapshot"], hub);
+    expect(r.out).toMatch(/refusing to run `test` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("A-class: cost-estimate refuses — a stale tree gives a wrong number stated as fact", () => {
+    const r = ab(["cost-estimate"], hub);
+    expect(r.out).toMatch(/refusing to run `cost-estimate` against a stale dist\//);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("A4-residual: status reads the STAMP, not dist/'s directory mtime", () => {
+    // Pre-fix, cli.ts was literally commented `// Check dist/ freshness` and
+    // then did fs.statSync(distPath).mtime — printing the timestamp of the
+    // EARLIER SUCCESSFUL build while the most recent attempt had failed
+    // seconds later, at exit 0.
+    const r = ab(["status"], hub);
+    expect(r.out).toMatch(/Last build: .* — FAILED/);
+    expect(r.out).not.toMatch(/reporting on a stale dist\/[\s\S]*refusing to run `status`/);
+    expect(r.status, r.out).toBe(1);
+  }, 300_000);
+
+  it("V5: doctor calls a failed build a FAILED check, not `dist/ exists (built)`", () => {
+    const r = ab(["doctor"], hub);
+    expect(r.out).toMatch(/dist\/ exists but is NOT trustworthy/);
+    expect(r.out).not.toMatch(/✓ dist\/ exists \(built\)/);
+    expect(r.status, r.out).not.toBe(0);
+  }, 300_000);
+
+  it("POSITIVE: a successful rebuild clears every one of them — no gate is an outage", () => {
+    makeDistFresh();
+    expect(ab(["build"], hub).status).toBe(0);
+    expect(ab(["install-user", "--dry-run"], hub).status).toBe(0);
+    expect(ab(["export", "--format", "plugin", "--output", "zz-ok"], hub).status).toBe(0);
+    expect(ab(["cost-estimate"], hub).status).toBe(0);
+    const st = ab(["status"], hub);
+    expect(st.status, st.out).toBe(0);
+    expect(st.out).not.toMatch(/FAILED/);
+  }, 900_000);
+});
+
+/**
+ * A1/A2-residual — end to end: the surface where guardrails are actually declared.
+ *
+ * The config digest catches a config edit. It does not catch `guardrail: hard`,
+ * `applyTo:` or the control text, because none of those live in
+ * agentboot.config.json. This is the reported repro, run against the CLI.
+ */
+describe("A1/A2-residual — an ARTIFACT edit that never rebuilt", () => {
+  let vhub: string;
+  let vspoke: string;
+
+  const phi = (guardrail: string, body: string) =>
+    `---\ndescription: PHI handling\nguardrail: ${guardrail}\n---\n# PHI\n${body}\n`;
+
+  it("precondition: build + sync ships the SOFT control to the spoke", () => {
+    const vbase = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-srcstale-"));
+    vhub = path.join(vbase, "hub");
+    vspoke = path.join(vbase, "spoke");
+    fs.mkdirSync(vspoke, { recursive: true });
+    spawnSync("git", ["init", "-q", "."], { cwd: vspoke });
+    spawnSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], { cwd: vspoke });
+    const inst = spawnSync(
+      process.execPath,
+      [CLI, "install", "--hub", "--org", "acme", "--path", vhub, "--non-interactive", "--skip-sync"],
+      { cwd: vbase, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (inst.status !== 0) throw new Error(`scaffold failed: ${inst.stdout}${inst.stderr}`);
+
+    fs.writeFileSync(
+      path.join(vhub, "core", "instructions", "phi.instructions.md"),
+      phi("soft", "Avoid logging patient data where practical."),
+    );
+    const cfgPath = path.join(vhub, "agentboot.config.json");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+    cfg.personas = { ...(cfg.personas ?? {}), outputFormats: ["claude"] };
+    cfg.instructions = { enabled: ["phi.instructions"] };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(
+      path.join(vhub, "repos.json"),
+      JSON.stringify([{ name: "spokeV", path: "../spoke", platform: "claude" }], null, 2),
+    );
+
+    expect(ab(["build"], vhub).status).toBe(0);
+    expect(ab(["sync"], vhub).status).toBe(0);
+    const landed = path.join(vspoke, ".claude", "rules", "phi.instructions.md");
+    expect(fs.existsSync(landed)).toBe(true);
+    expect(fs.readFileSync(landed, "utf-8")).toContain("where practical");
+  }, 900_000);
+
+  it("tightening the ARTIFACT without rebuilding is caught by sync, drift-check and audit", () => {
+    fs.writeFileSync(
+      path.join(vhub, "core", "instructions", "phi.instructions.md"),
+      phi("hard", "NEVER log, trace, or print patient-identifying data. Non-overridable."),
+    );
+    // Pre-fix, measured unpiped: SYNC_EXIT=0 printing
+    // "– spokeV (claude) — skipped (no changes)" / "✓ Synced 0 of 1 repo";
+    // DRIFT_EXIT=0 "1/1 clean"; AUDIT_EXIT=0; stamp "success"; spoke still soft.
+    const s = ab(["sync"], vhub);
+    expect(s.status, s.out).toBe(1);
+    expect(s.out).toMatch(/sources-stale/);
+    expect(s.out).toMatch(/guardrail: hard/);
+    expect(ab(["drift-check"], vhub).status).toBe(1);
+    expect(ab(["audit"], vhub).status).toBe(1);
+    // And the stamp still says "success" — which is TRUE and beside the point:
+    // the last build did succeed, against sources that no longer exist.
+    expect(stampStatusOf(vhub)).toBe("success");
+  }, 600_000);
+
+  it("DELETING an artifact without rebuilding is caught too — revocation is an edit", () => {
+    fs.rmSync(path.join(vhub, "core", "instructions", "phi.instructions.md"));
+    expect(ab(["sync"], vhub).status).toBe(1);
+  }, 300_000);
+
+  it("POSITIVE: rebuilding clears it and the HARD control reaches the spoke", () => {
+    fs.writeFileSync(
+      path.join(vhub, "core", "instructions", "phi.instructions.md"),
+      phi("hard", "NEVER log, trace, or print patient-identifying data. Non-overridable."),
+    );
+    expect(ab(["build"], vhub).status).toBe(0);
+    expect(ab(["sync"], vhub).status).toBe(0);
+    expect(ab(["drift-check"], vhub).status).toBe(0);
+    const landed = fs.readFileSync(path.join(vspoke, ".claude", "rules", "phi.instructions.md"), "utf-8");
+    expect(landed).toContain("Non-overridable");
+    expect(landed).not.toContain("where practical");
+  }, 900_000);
+});
+
+/**
+ * NF2-1 — the gate was skipped entirely when no hub config resolved.
+ *
+ * `install-user` gated behind `if (config)` (cli.ts) and `publish` behind
+ * `if (fs.existsSync(publishConfigPath))`. Point either at a `dist/` with no
+ * agentboot.config.json beside it and the whole gate vanishes:
+ *
+ *     cd /tmp/hub    && agentboot install-user --dry-run  → 1   (gate fires)
+ *     cp -R dist /tmp/nohub && cd /tmp/nohub
+ *     agentboot install-user --dry-run                    → 0
+ *       "Would write 5 skill file(s) + 6 rule file(s) to ~/.claude/"
+ *       "Would withdraw 1 revoked artifact(s) from ~/.claude/"   ← PRUNES too
+ *     agentboot publish --dry-run                         → 0
+ *
+ * Same bytes, same `status: "failed"` stamp: exit 1 in the hub, exit 0 one
+ * directory over. `install-user` writes ORG POLICY into ~/.claude — the
+ * A2-residual commit named it "a SECOND delivery channel" — and it also acted
+ * on the stale tree's idea of what had been revoked.
+ *
+ * "No stamp" and "status: failed" require no config to read. This is existence
+ * read as freshness, relocated behind a config-presence check. Every test in
+ * this file above runs with cwd = the hub, so the branch was untested by
+ * construction.
+ */
+describe("NF2-1 — a gated consumer with no hub config still checks the stamp", () => {
+  let nohubFailed = "";
+  let nohubFresh = "";
+
+  beforeAll(() => {
+    // A hub whose build FAILS, and a copy of its dist/ with no config beside it.
+    const fhub = path.join(base, "nf21-hub");
+    const inst = spawnSync(
+      process.execPath,
+      [CLI, "install", "--hub", "--org", "acme", "--path", fhub, "--non-interactive", "--skip-sync"],
+      { cwd: base, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf-8", timeout: 300_000 },
+    );
+    if (inst.status !== 0) throw new Error(`scaffold failed: ${inst.stdout}${inst.stderr}`);
+
+    // A successful build first, so dist/ has real content...
+    expect(ab(["build"], fhub).status).toBe(0);
+    nohubFresh = path.join(base, "nf21-nohub-fresh");
+    fs.mkdirSync(nohubFresh, { recursive: true });
+    fs.cpSync(path.join(fhub, "dist"), path.join(nohubFresh, "dist"), { recursive: true });
+
+    // ...then a build that FAILS, which leaves that same tree in place and
+    // stamps it `failed`.
+    //
+    // The failure has to happen AFTER the build arms its invalidation context,
+    // which means a well-formed config that the build then refuses. An earlier
+    // draft used `claude: { permissions: "deny-everything" }`; once
+    // configShapeErrors landed, that is rejected at config LOAD, so the build
+    // never starts, no stamp is written, and the previous "success" stamp
+    // correctly survives. Correct behaviour, wrong fixture. The capability gate
+    // is the right lever: declare claude.hooks with `claude` removed from
+    // outputFormats, so nothing can emit it and the gate refuses mid-build.
+    const cfgPath = path.join(fhub, "agentboot.config.json");
+    const c = JSON.parse(fs.readFileSync(cfgPath, "utf-8"));
+    c.personas = { ...(c.personas ?? {}), outputFormats: ["cursor"] };
+    c.claude = {
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/zz.sh" }] }] },
+    };
+    fs.writeFileSync(cfgPath, JSON.stringify(c, null, 2));
+    expect(ab(["build"], fhub).status).toBe(1);
+    expect(JSON.parse(fs.readFileSync(path.join(fhub, "dist", ".agentboot-build.json"), "utf-8")).status)
+      .toBe("failed");
+
+    nohubFailed = path.join(base, "nf21-nohub-failed");
+    fs.mkdirSync(nohubFailed, { recursive: true });
+    fs.cpSync(path.join(fhub, "dist"), path.join(nohubFailed, "dist"), { recursive: true });
+  }, 900_000);
+
+  function abNoHub(args: string[], cwd: string): { status: number; out: string } {
+    const env = { ...process.env, NODE_NO_WARNINGS: "1" };
+    delete (env as Record<string, string | undefined>)["AGENTBOOT_CONFIG"];
+    const r = spawnSync(process.execPath, [CLI, ...args], {
+      cwd, env, encoding: "utf-8", timeout: 300_000,
+    });
+    return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  it("install-user REFUSES a failed tree with no config in reach", () => {
+    const r = abNoHub(["install-user", "--dry-run"], nohubFailed);
+    expect(r.status, `install-user shipped org policy from a failed build:\n${r.out}`).toBe(1);
+    expect(r.out).toContain("failed");
+    // It must not have reached the write/prune report at all.
+    expect(r.out).not.toContain("Would write");
+    expect(r.out).not.toContain("Would withdraw");
+  }, 300_000);
+
+  it("publish REFUSES a failed tree with no config in reach", () => {
+    const r = abNoHub(["publish", "--dry-run"], nohubFailed);
+    expect(r.status, `publish shipped from a failed build:\n${r.out}`).toBe(1);
+  }, 300_000);
+
+  it("the refusal SAYS which dimensions it could not check — not a silent partial pass", () => {
+    const r = abNoHub(["install-user", "--dry-run"], nohubFailed);
+    expect(r.out).toMatch(/config and artifact-source\s+dimensions were not checked/);
+  }, 300_000);
+
+  it("POSITIVE: a SUCCESSFUL tree with no config still installs — this is a gate, not a ban", () => {
+    const r = abNoHub(["install-user", "--dry-run"], nohubFresh);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("Would write");
+    // And it is honest about the reduced check rather than printing a full pass.
+    expect(r.out).toMatch(/verified the build stamp only/);
+  }, 300_000);
+
+  it("POSITIVE: dist/ absent with no config is refused, not treated as nothing to do", () => {
+    const empty = path.join(base, "nf21-empty");
+    fs.mkdirSync(empty, { recursive: true });
+    const r = abNoHub(["install-user", "--dry-run"], empty);
+    expect(r.status).toBe(1);
+  }, 300_000);
+
+  /**
+   * NF4-3 — the same hatch, still open on `test` (and, unreported, `baseline`).
+   *
+   * NF2-1 closed install-user and publish and stopped there. `test` kept
+   * `if (config) assertDistFreshOrExit(configPath, config, "test");` with no
+   * `else`, so on the SAME failed tree measured above:
+   *
+   *     install-user=1  publish=1  export=1  cost-estimate=1  test=0
+   *     agentboot test --snapshot  ->  "Snapshot saved (100 files)", exit 0
+   *
+   * — banking a superseded tree as the baseline every later `--regression` is
+   * measured against, which is the worst version of this failure because the
+   * false pass becomes the definition of correct. DIST_CONSUMERS declares
+   * `test` posture `gated` with the reason "a green run against a superseded
+   * tree is a false pass banked as a baseline", so the registry and the code
+   * disagreed, and the A-2 invariant could not see it (NF4-4).
+   */
+  it("NF4-3: `test` REFUSES a failed tree with no config in reach", () => {
+    const r = abNoHub(["test"], nohubFailed);
+    expect(r.status, `test ran against a failed build:\n${r.out}`).toBe(1);
+    expect(r.out).toContain("failed");
+  }, 300_000);
+
+  it("NF4-3: `test --snapshot` does not BANK a baseline from a failed tree", () => {
+    const r = abNoHub(["test", "--snapshot"], nohubFailed);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out, "a superseded tree became the baseline").not.toMatch(/Snapshot saved/);
+    expect(
+      fs.existsSync(path.join(nohubFailed, ".agentboot-snapshot.json")),
+      "the snapshot file was written anyway",
+    ).toBe(false);
+  }, 300_000);
+
+  it("NF4-3 sibling: `baseline` REFUSES too — an archive must not date a failed tree", () => {
+    // Not in the report. Found by grepping the pattern rather than the symptom:
+    // `baseline` carried the identical `if (config)`-with-no-else. It exited 1
+    // on this fixture already, but only because a bare dist/ has no enforcement
+    // manifests to archive — luck, not a gate. Assert the REASON, not the code.
+    const r = abNoHub(["baseline"], nohubFailed);
+    expect(r.status, r.out).toBe(1);
+    expect(r.out, "baseline exited 1 for an unrelated reason, so the gate is still untested")
+      .toContain("failed");
+  }, 300_000);
+
+  it("POSITIVE: a SUCCESSFUL tree with no config still tests and snapshots", () => {
+    const r = abNoHub(["test", "--snapshot"], nohubFresh);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/Snapshot saved/);
+  }, 300_000);
+
+  it("POSITIVE: an UNBUILT dir is a warning for `test`, not a refusal", () => {
+    // `test` has work that does not need dist/ (behavioral runs), so "never
+    // built" must degrade the way its config-present sibling already does —
+    // loudly, but not fatally. The two must not disagree about the same tree
+    // just because a config happened to be beside it.
+    const empty = path.join(base, "nf43-empty");
+    fs.mkdirSync(empty, { recursive: true });
+    const r = abNoHub(["test"], empty);
+    expect(r.out).toMatch(/has never been built/);
+  }, 300_000);
+});

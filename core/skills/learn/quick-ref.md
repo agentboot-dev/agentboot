@@ -1,3 +1,9 @@
+---
+id: 01KZRGW0EVGMKPWGZ8TYFDAVT5
+slug: quick-ref
+hash: sha256:0ee275361c1d4d59
+---
+
 # AgentBoot Quick Reference
 
 ## CLI Commands
@@ -7,7 +13,7 @@
 | `npx agentboot build` | Validate + compile to `dist/` | `-c <config>` |
 | `npx agentboot validate` | Run pre-build checks only | `--strict` |
 | `npx agentboot sync` | Distribute `dist/` to target repos | `--dry-run`, `--repos-file <path>` |
-| `npx agentboot test` | Run test suite | `--behavioral`, `--snapshot`, `--regression` |
+| `npx agentboot test` | Run test suite | `--snapshot`, `--regression` |
 | `npx agentboot migrate` | Run schema migrations | `--path <dir>`, `--revert`, `--dry-run` |
 | `npx agentboot dev-build` | clean + validate + build + dev-sync | |
 | `npx agentboot install` | Install AgentBoot into a repo | `--non-interactive` |
@@ -49,8 +55,18 @@
 | `dist/skill/` | Cross-platform | SKILL.md (agentskills.io) |
 | `dist/claude/` | Claude Code | `.claude/` native format |
 | `dist/copilot/` | GitHub Copilot | `.github/` format |
-| `dist/cursor/` | Cursor | `.cursor/rules/` (planned) |
-| `dist/agents/` | Universal | AGENTS.md standard (planned) |
+| `dist/codex/` | OpenAI Codex CLI | AGENTS.md + `.codex/` |
+| `dist/agents/` | Universal | AGENTS.md standard |
+| `dist/cursor/` | Cursor | `.cursor/rules/` |
+| `dist/windsurf/` | Windsurf | `.windsurf/rules/` |
+| `dist/gemini/` | Gemini | `GEMINI.md` |
+| `dist/jetbrains/` | JetBrains AI Assistant | `.aiassistant/rules/` |
+| `dist/plugin/` | Claude Code plugin | plugin bundle (not syncable) |
+
+All of the above are emitted today. Which ones a build produces is
+`personas.outputFormats`; the default when that key is absent is `skill`, `claude`,
+`copilot`, `agents`. Emission is not enforcement — only the Claude Code, Codex and
+Copilot CLI surfaces receive blocking hooks.
 
 ## Scope Hierarchy
 
@@ -81,6 +97,5 @@ Mandatory behaviors (compliance) inherit top-down — org wins.
 | `-c <path>` | `build` | Use alternate config file |
 | `--repos-file <path>` | `sync` | Use alternate repos file |
 | `--non-interactive` | `install` | Skip interactive prompts (CI mode) |
-| `--behavioral` | `test` | Run behavioral (LLM) tests |
 | `--snapshot` | `test` | Run snapshot regression tests |
 | `--revert` | `migrate` | Undo a migration |

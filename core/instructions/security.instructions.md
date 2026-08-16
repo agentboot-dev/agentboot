@@ -1,6 +1,10 @@
 ---
 description: AgentBoot security guardrails — active on sensitive file paths
 applyTo: "**/*.env*, **/secrets/**, **/auth/**, **/crypto/**, **/keys/**, **/tokens/**, **/credentials/**"
+scope-unsupported: acknowledged
+id: 01KZH2QM0E7KVNTFP8NR01JXWW
+slug: security
+hash: sha256:6ed6ab0df5f848ba
 ---
 
 # Security Instructions

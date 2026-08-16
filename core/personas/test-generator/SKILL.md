@@ -1,6 +1,9 @@
 ---
 name: test-generator
 description: Top QA engineer — writes tests, audits coverage, finds gaps, manages test plans. Assumes there are issues and finds them all.
+id: 01KZRG8RTEG2X6S66H5J8XQKXZ
+slug: test-generator
+hash: sha256:29264fd3dcbef9a1
 ---
 
 # Test Generator

@@ -351,6 +351,16 @@ export interface BatchChainVerification {
   /** Batches whose signer authenticated against the allowed_signers file. */
   signerAuthenticated: number;
   gaps: number[];
+  /**
+   * The earliest batch present does not begin the chain — its
+   * `prev_batch_digest` names a predecessor that is NOT in this directory.
+   *
+   * Sequence continuity was only ever checked BETWEEN present files, so deleting
+   * the oldest batches left `gaps: []` and `ok: true`. Truncating the front of
+   * the chain is the obvious move for anyone removing the window they care
+   * about, and it was the one edit this tamper-evident control could not see.
+   */
+  truncatedPrefix: boolean;
   failures: Array<{ file: string; reason: string }>;
   ok: boolean;
 }
@@ -365,6 +375,14 @@ export interface VerifyBatchChainOptions {
    * org's verifier/CI.
    */
   requireSigned?: boolean | undefined;
+  /**
+   * Accept a directory that holds a deliberate SLICE of the chain rather than
+   * all of it — e.g. the live spool root, whose oldest batches have already been
+   * moved to `shipped/`. Off by default: a store that is meant to be complete
+   * (the sink's, or the spool's `shipped/`) must not pass while missing its
+   * head, and "we are only looking at part of it" has to be stated, not assumed.
+   */
+  allowPartial?: boolean | undefined;
   /**
    * Cryptographically verify signatures and COUNT the verified ones, without
    * failing on unsigned batches (for reporting, e.g. the evidence pack). Implied
@@ -433,7 +451,8 @@ function verifyBatchSignature(
  */
 export function verifyBatchChain(dir: string, options: VerifyBatchChainOptions = {}): BatchChainVerification {
   const result: BatchChainVerification = {
-    batches: 0, signed: 0, signatureVerified: 0, signerAuthenticated: 0, gaps: [], failures: [], ok: false,
+    batches: 0, signed: 0, signatureVerified: 0, signerAuthenticated: 0,
+    gaps: [], truncatedPrefix: false, failures: [], ok: false,
   };
   if (!fs.existsSync(dir)) {
     result.failures.push({ file: dir, reason: "directory not found" });
@@ -441,6 +460,14 @@ export function verifyBatchChain(dir: string, options: VerifyBatchChainOptions =
   }
   const wantSigCheck = options.requireSigned === true || options.allowedSignersPath !== undefined || options.verifySignatures === true;
   const files = fs.readdirSync(dir).filter((f) => /^batch-\d{8}\.json$/.test(f)).sort();
+  if (files.length === 0) {
+    // An empty store is not a verified chain. `failures: []` + `gaps: []` used
+    // to compute ok=true, so deleting every batch PASSED verification and the
+    // evidence pack embedded `{batches: 0, ok: true}` for an auditor to read.
+    result.failures.push({ file: dir, reason: "no batch files in this directory — an empty store is not a verified chain" });
+    return result;
+  }
+  let firstBatchSeen = false;
   let prevSeq: number | null = null;
   let prevDigest: string | null = null;
   for (const f of files) {
@@ -454,6 +481,25 @@ export function verifyBatchChain(dir: string, options: VerifyBatchChainOptions =
     }
     if (batch.digest !== computeBatchDigest(batch)) {
       result.failures.push({ file: f, reason: "digest mismatch — batch content was modified" });
+    }
+    if (!firstBatchSeen) {
+      firstBatchSeen = true;
+      // The chain's genesis batch is seq 1 with a null predecessor, by
+      // construction. Anything else means this directory does not contain the
+      // start of the chain — the batches before it were deleted or never
+      // delivered, and nothing downstream could tell.
+      if (batch.batch_seq !== 1 || batch.prev_batch_digest !== null) {
+        result.truncatedPrefix = true;
+        if (!options.allowPartial) {
+          result.failures.push({
+            file: f,
+            reason: `chain does not start here — earliest batch is seq ${batch.batch_seq}` +
+              `${batch.prev_batch_digest ? " and names a predecessor that is absent" : ""}` +
+              " (batches before it were deleted or never delivered)",
+          });
+          for (let s = 1; s < batch.batch_seq; s++) result.gaps.push(s);
+        }
+      }
     }
     if (prevSeq !== null) {
       if (batch.batch_seq !== prevSeq + 1) {

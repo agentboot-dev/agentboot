@@ -732,11 +732,10 @@ Investment Summary:
   Top quartile:            $280/mo
   Bottom quartile:         $40/mo
 
-ROI Indicators:
-  PR review turnaround:    -34% (faster since deployment)
-  Bug escape rate:         -22% (fewer prod bugs)
-  Test coverage:           +15% (from test generation personas)
-  Onboarding time:         -40% (new hires productive faster)
+Outcome Indicators (bring your own — AgentBoot does not measure these):
+  PR review turnaround, defect escape rate, coverage, onboarding time
+  → sourced from your existing DORA/CI metrics, correlated by rollout date.
+  AgentBoot reports adoption and cost; it does not claim causation for the above.
 
 Adoption:
   Active seats:            47/52 (90%)
@@ -772,8 +771,8 @@ Attention Items:
 - Which developers asked "dumb" questions
 - Session transcripts or conversation excerpts
 
-The dashboard shows **investment metrics** (cost, adoption, ROI) and **outcome
-metrics** (PR quality, bug rates, coverage). It never shows **process metrics**
+The dashboard shows **investment metrics** (cost, adoption) and, where you supply
+them, **outcome metrics** from your own systems. It never shows **process metrics**
 (what developers typed, how many times they rephrased, what they asked about).
 
 ### The Escalation Path for Outliers
@@ -804,7 +803,7 @@ The dashboard informs management actions. It doesn't automate them.
 | **Skeptics** | "We don't monitor your AI conversations. Here's the privacy architecture." The technical proof matters to this audience. |
 | **Non-Engineers** | Same privacy model. Their Cowork interactions are equally private. |
 | **IT / Platform** | Aggregate dashboard. Team-level metrics. No individual surveillance. Escalation for compliance only. |
-| **Org Owner / Exec** | Investment dashboard: cost, adoption, ROI indicators, outcome metrics. Per-developer usage if policy allows (hashed or attributed). Never prompts. |
+| **Org Owner / Exec** | Investment dashboard: cost and adoption, plus any outcome metrics you supply from your own systems. Per-developer usage if policy allows (hashed or attributed). Never prompts. |
 
 ---
 

@@ -26,8 +26,14 @@ function run(script: string, cwd = ROOT): string {
 }
 
 /**
- * Create a temp config + repos.json pair for sync testing.
- * Returns the --config flag to pass to sync.ts.
+ * Create a temp config + repos.json pair for sync testing, and BUILD from it.
+ *
+ * These tests used to point `output.distPath` at the repo's own `dist/` and rely
+ * on a build produced from the REPO's config — two different configs sharing one
+ * tree. N1's freshness stamp now (correctly) refuses that: the tree sync would
+ * ship was not built from the config sync is holding. Each case now owns its
+ * dist and builds it from the same config it syncs with, which is also the flow
+ * the docs describe.
  */
 function createTempSyncConfig(
   tempDir: string,
@@ -39,22 +45,22 @@ function createTempSyncConfig(
   fs.writeFileSync(reposPath, JSON.stringify(repos));
   fs.writeFileSync(configPath, JSON.stringify({
     org: "test-monorepo",
-    personas: { enabled: ["review-code", "review-security", "gen-tests", "gen-testdata"] },
+    // PERSONA directory names, not skill names. The previous list
+    // (["review-code", …]) named the SKILLS, so it enabled nothing — which went
+    // unnoticed because these tests read a dist/ built from the repo's own
+    // config, where the personas really were enabled. Building from this config
+    // makes the test assert what it says it asserts.
+    personas: { enabled: ["code-reviewer", "security-reviewer", "test-generator", "test-data-expert"] },
     traits: { enabled: [] },
     sync: { repos: reposPath },
-    output: { distPath: path.join(ROOT, "dist") },
+    // Must live under the config's own directory — the build replaces this tree
+    // wholesale and refuses to do that outside the hub.
+    output: { distPath: path.join(tempDir, "dist") },
   }));
 
+  run(`scripts/compile.ts --config ${configPath}`);
   return configPath;
 }
-
-// Ensure dist/ is built before sync tests run.
-beforeAll(() => {
-  const distPath = path.join(ROOT, "dist");
-  if (!fs.existsSync(path.join(distPath, "claude", "core"))) {
-    run("scripts/compile.ts");
-  }
-});
 
 // ---------------------------------------------------------------------------
 // Monorepo sync with packages config

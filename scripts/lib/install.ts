@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { select, input, confirm, checkbox } from "@inquirer/prompts";
 import { getRegistryPath } from "./registry.js";
+import { checkDistStamp } from "./dist-stamp.js";
 import { agentbootNpxSpec } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -813,6 +814,51 @@ export function installHubSkills(hubDir: string): number {
   return count;
 }
 
+/**
+ * Q112: run THIS AgentBoot, not whatever `agentboot` happens to be on PATH.
+ *
+ * `runBuild` and `runSync` spawned the bare name `agentboot`. During the one
+ * flow that runs before anything is installed — `agentboot install` — that name
+ * is frequently not on PATH at all: a local (non-global) install, a `npx`
+ * invocation, CI. `spawnSync` then returns `{status: null, error: ENOENT}`,
+ * `status === 0` is false, and install printed "Build did not complete — you can
+ * run `agentboot build` later", which advises the operator to run a command that
+ * will not be found either. The hub was left with no `dist/` and install exited
+ * 0 over it.
+ *
+ * Two failures were wearing one message: "the build ran and failed" and "the
+ * build never ran". They need different words because they need different
+ * fixes, and only one of them is the operator's to make.
+ *
+ * Resolving `bin/agentboot.js` under `process.execPath` removes the PATH
+ * dependency entirely — the same move that fixed the `.bin/tsx` shim in the test
+ * harness, for the same reason: a shim lookup is an assumption about the
+ * environment, and this command's whole job is to run in an environment that is
+ * not set up yet.
+ */
+function selfCli(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "bin", "agentboot.js");
+}
+
+/** Spawn this AgentBoot, distinguishing "never ran" from "ran and failed". */
+function runSelf(
+  args: string[],
+  hubDir: string,
+  stdio: "pipe" | "inherit",
+): { ok: boolean; notFound: boolean; out: string } {
+  const r = spawnSync(process.execPath, [selfCli(), ...args], {
+    cwd: hubDir,
+    encoding: "utf-8",
+    stdio: stdio === "inherit" ? "inherit" : ["pipe", "pipe", "pipe"],
+  });
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  // `error` is set when the process could not be started at all. That is a
+  // broken installation, never a build problem, and saying so is the difference
+  // between a fixable message and a misleading one.
+  if (r.error) return { ok: false, notFound: true, out: `${out}${r.error.message}` };
+  return { ok: r.status === 0, notFound: false, out };
+}
+
 function runBuild(hubDir: string): boolean {
   console.log(chalk.cyan("\n  Compiling personas..."));
   console.log(chalk.gray(
@@ -820,32 +866,74 @@ function runBuild(hubDir: string): boolean {
     "  writes compiled output to dist/. The dist/ folder is what gets\n" +
     "  deployed to your repos.\n"
   ));
-  const result = spawnSync("agentboot", ["build"], {
-    cwd: hubDir,
-    encoding: "utf-8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const result = runSelf(["build"], hubDir, "pipe");
 
-  if (result.status === 0) {
+  if (result.ok) {
     console.log(chalk.green("  Build complete."));
     const skillCount = installHubSkills(hubDir);
     if (skillCount > 0) {
       console.log(chalk.green(`  ✓ Compiled skills installed to .claude/skills/ (${skillCount} file(s)) — /ab works in the hub after a session restart.`));
     }
     return true;
+  } else if (result.notFound) {
+    console.log(chalk.red("  ✗ Could not start AgentBoot to build — the installation is incomplete."));
+    console.log(chalk.gray(`    ${result.out.trim()}`));
+    console.log(chalk.gray("    Nothing was compiled, so this hub has no dist/ to deploy."));
+    return false;
   } else {
-    console.log(chalk.yellow("  Build did not complete — you can run `agentboot build` later."));
+    console.log(chalk.red("  ✗ Build FAILED — nothing was compiled, so this hub has no dist/ to deploy."));
+    if (result.out.trim()) console.log(chalk.gray(`    ${result.out.trim().split("\n").slice(-8).join("\n    ")}`));
+    console.log(chalk.gray("    Fix the reason above, then run `agentboot build` from the hub."));
     return false;
   }
 }
 
 function runSync(hubDir: string): boolean {
-  const result = spawnSync("agentboot", ["sync"], {
-    cwd: hubDir,
-    encoding: "utf-8",
-    stdio: "inherit",
-  });
-  return result.status === 0;
+  const result = runSelf(["sync"], hubDir, "inherit");
+  if (!result.ok) {
+    // NF3-6: every caller was `if (runSync(hubDir)) { …"Done" }` with no else,
+    // so a sync that REFUSED — which is what the dist-freshness gate does on a
+    // failed build — left install printing nothing at all. The operator was
+    // asked "Deploy personas to this repo now?", said yes, and got silence.
+    // A skip must never read as a pass.
+    console.log(chalk.red("\n  ✗ Sync did not complete — nothing was deployed to this repo."));
+    if (result.notFound) console.log(chalk.gray("    AgentBoot could not be started at all — the installation is incomplete."));
+    console.log(chalk.gray("    Fix the reason printed above, then run `agentboot sync` from the hub."));
+  }
+  return result.ok;
+}
+
+/**
+ * NF3-6: is this hub's `dist/` something we may act on?
+ *
+ * `install` read `dist/` in six places, all `fs.existsSync(path.join(hubDir,
+ * "dist"))` — existence read as freshness, which is the exact pattern the whole
+ * dist-stamp subsystem was written to kill. A failed build leaves the previous
+ * `dist/` byte-identical, so existence is evidence of a build having happened
+ * ONCE, not of the tree reflecting current policy.
+ *
+ * Consequence was damped, not absent: `runSync` shells out to the gated
+ * `agentboot sync`, which refuses. But install still OFFERED to deploy from a
+ * superseded tree, and its own summary said nothing when the offer was declined
+ * by the gate. Asking a question whose answer the tool already knows is wrong is
+ * how an operator learns to distrust the prompts.
+ *
+ * Deliberately the STAMP only — install runs before a hub config is necessarily
+ * loadable, and the stamp needs none. Same reduced-but-real check
+ * `assertDistStampOrExit` applies for install-user and publish.
+ */
+export function distIsActionable(hubDir: string): boolean {
+  const distDir = path.join(hubDir, "dist");
+  if (!fs.existsSync(distDir)) return false;
+  const check = checkDistStamp(distDir);
+  if (!check.fresh) {
+    console.log(chalk.yellow(
+      `  ~ dist/ exists but its build stamp says ${check.reason} — not offering to deploy from it.`,
+    ));
+    console.log(chalk.gray("    Run `agentboot build` and let it succeed first."));
+    return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1343,7 +1431,7 @@ async function path1CreateHub(cwd: string, opts: InstallOptions, detection: Dete
   }
 
   // Sync automatically — no confirmation prompt
-  if (registeredRepoPaths.length > 0 && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+  if (registeredRepoPaths.length > 0 && !opts.noSync && buildSucceeded && distIsActionable(hubDir)) {
     console.log(chalk.cyan("\n  Syncing..."));
     if (runSync(hubDir)) {
       console.log(chalk.green("\n  Personas deployed to all registered repos."));
@@ -1427,7 +1515,7 @@ async function path1Reconfigure(hubDir: string, opts: InstallOptions): Promise<v
 
   let importedAny = false;
   let reposAdded = false;
-  let buildSucceeded = fs.existsSync(path.join(hubDir, "dist"));
+  let buildSucceeded = distIsActionable(hubDir);
 
   // ── Import step ────────────────────────────────────────────────────────────
 
@@ -1596,7 +1684,7 @@ async function path1Reconfigure(hubDir: string, opts: InstallOptions): Promise<v
 
   // ── Build + sync ───────────────────────────────────────────────────────────
 
-  if ((importedAny || reposAdded) && !opts.noSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+  if ((importedAny || reposAdded) && !opts.noSync && buildSucceeded && distIsActionable(hubDir)) {
     console.log(chalk.cyan("\n  Syncing..."));
     if (runSync(hubDir)) {
       console.log(chalk.green("\n  Personas deployed to all registered repos."));
@@ -1810,7 +1898,7 @@ async function path2ConnectToHub(cwd: string, opts: InstallOptions, detection: D
   }
 
   // Step 2.4: Build and sync
-  if (fs.existsSync(path.join(hubDir, "dist"))) {
+  if (distIsActionable(hubDir)) {
     if (!opts.noSync) {
       const shouldSync = await confirm({
         message: "Deploy personas to this repo now?",
@@ -1897,7 +1985,7 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
       }
 
       // Optional sync
-      if (enableSync && fs.existsSync(path.join(resolvedHub, "dist"))) {
+      if (enableSync && distIsActionable(resolvedHub)) {
         console.log(chalk.cyan("  Syncing..."));
         runSync(resolvedHub);
       }
@@ -1920,8 +2008,31 @@ export async function runInstall(opts: InstallOptions): Promise<void> {
     // Build
     const buildSucceeded = runBuild(hubDir);
 
-    if (enableSync && buildSucceeded && fs.existsSync(path.join(hubDir, "dist"))) {
+    if (enableSync && buildSucceeded && distIsActionable(hubDir)) {
       runSync(hubDir);
+    }
+
+    // Q112: a green completion line printed directly beneath "Build FAILED".
+    //
+    // Measured, with `agentboot` absent from PATH — the ordinary state during
+    // the one command that runs BEFORE anything is installed:
+    //
+    //     ✗ Build FAILED — nothing was compiled, so this hub has no dist/ …
+    //     Non-interactive install complete.        (exit 0)
+    //
+    // The scaffold genuinely succeeded, which is why this read as a pass. But
+    // the hub has no `dist/`, so nothing can be deployed from it, and a
+    // non-interactive caller — a script, a CI job, a provisioning run — saw
+    // exit 0 and moved on. "The parts I did are fine" is not the question the
+    // exit code answers; the question is whether the operator got a usable hub.
+    //
+    // A component that did not do its work must SAY SO and exit non-zero.
+    if (!buildSucceeded) {
+      console.log(chalk.red(
+        "  ✗ Install INCOMPLETE — the hub was scaffolded but not compiled, so it has no dist/ to deploy.\n",
+      ));
+      process.exitCode = 1;
+      return;
     }
 
     console.log(chalk.green("  Non-interactive install complete.\n"));

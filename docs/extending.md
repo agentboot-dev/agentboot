@@ -193,9 +193,8 @@ specific requirements the persona should enforce, and the scope of review.]
 ## How to add path-scoped instructions for sensitive file types
 
 Path-scoped instructions activate only when the user's working context involves matching
-file patterns. They are one of the most powerful features in AgentBoot because they let
-you add domain-specific guidance exactly where it is needed without polluting every
-interaction.
+file patterns. That is what makes domain-specific guidance affordable: it reaches the
+files it applies to without being carried in every interaction.
 
 Create a file in `domains/my-domain/instructions/path-scoped/`. The filename determines
 the glob pattern that activates the instruction:
@@ -261,8 +260,10 @@ Org customization uses top-level fields in `agentboot.config.json` (there is no 
    all of the above for repos in that team.
 
 Nothing in a domain layer can disable a core trait or persona that a higher scope has
-marked required. Extensions add; they do not subtract. This is the guarantee that
-org-level governance always propagates downward.
+marked required. Extensions add; they do not subtract. That is what makes org-level
+policy propagate downward through composition — a compile-time property, checked by
+`validate --strict`, and distinct from whether the propagated rule is mechanically
+enforced on a given platform.
 
 ---
 
@@ -289,17 +290,18 @@ Extension rules **add to** the base persona's rules — they do not replace them
 extension rule conflicts with a base rule, the extension is ignored and the conflict
 is logged.
 
-This pattern was validated in a production implementation, where product-level
-extensions added HIPAA-specific checks to the generic code reviewer, security
-reviewer, and test data expert without changing any base agent definitions.
+This is the pattern the shipped healthcare domain starter uses: product-level
+extensions add HIPAA-specific checks to the generic code reviewer, security reviewer,
+and test data expert without changing any base agent definitions.
 
 ---
 
 ## How to add gotchas rules
 
-Gotchas rules are path-scoped instructions that encode battle-tested operational
-knowledge. They are the single highest-value extension you can add — developers
-immediately see value when the agent warns them about a pitfall they would have hit.
+Gotchas rules are path-scoped instructions that encode hard-won operational knowledge —
+the "never do X in this directory" lesson that otherwise lives in one senior engineer's
+head. They are also the cheapest artifact to carry: a gotcha costs context only when a
+developer touches a matching path, and nothing otherwise.
 
 Create gotchas files in `domains/my-domain/instructions/path-scoped/`:
 

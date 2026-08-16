@@ -137,6 +137,12 @@ describe("Stop-hook output scan reads the real payload", () => {
   function runHookScript(script: string, payload: object): { status: number; stdout: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-hookrun-"));
     const file = path.join(dir, "hook.sh");
+    // L40 — DELIBERATELY NOT GUARDED. `mode: 0o755` is inert here: the script
+    // is run as `bash <file>` on the next line, never executed directly, so the
+    // execute bit is never consulted and Windows ignoring it changes nothing.
+    // Left running on Windows on purpose — this is output-scan (secret
+    // egress) behaviour, which is exactly what should not be skipped to keep a
+    // platform leg green.
     fs.writeFileSync(file, script, { mode: 0o755 });
     const res = spawnSync("bash", [file], {
       input: JSON.stringify(payload), encoding: "utf-8", timeout: 20_000,

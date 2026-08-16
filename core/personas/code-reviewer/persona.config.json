@@ -1,6 +1,6 @@
 {
   "name": "Code Reviewer",
-  "description": "Senior code reviewer — finds real bugs, not style nits",
+  "description": "Senior code reviewer — correctness, security, and maintainability",
   "invocation": "/review-code",
   "pattern": "react",
   "traits": {
