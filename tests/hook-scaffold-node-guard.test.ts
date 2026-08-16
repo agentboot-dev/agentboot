@@ -34,7 +34,10 @@ import path from "node:path";
 import os from "node:os";
 
 const ROOT = path.resolve(__dirname, "..");
-const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+// The `.bin/tsx` shim is unlaunchable on Windows without a shell (see
+// tests/setup.ts). Use the shared launcher so this file cannot drift from the
+// other 30-odd call sites.
+import { TSX_BIN, TSX_ARGS } from "./setup.js";
 const CLI = path.join(ROOT, "scripts", "cli.ts");
 
 /**
@@ -128,7 +131,7 @@ describe("L41: the `agentboot add hook` scaffold is portable", () => {
 
   beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentboot-hook-scaffold-"));
-    execFileSync(TSX, [CLI, "add", "hook", "portability-probe"], {
+    execFileSync(TSX_BIN, [...TSX_ARGS, CLI, "add", "hook", "portability-probe"], {
       cwd: tmpDir,
       env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" },
       timeout: 60_000,

@@ -123,7 +123,12 @@ function findClaims(): Claim[] {
     // own vacuity guard. Normalising here keeps ONE spelling of a path.
     .map((abs) => path.relative(ROOT, abs).split(path.sep).join("/"));
 
-  for (const rel of [...files.map((f) => path.join("docs", f)), ...extra]) {
+  // `path.join("docs", f)` yields `docs\\concepts.md` on Windows, and these
+  // strings are ALSO the identity a caller matches on (`c.file === "docs/..."`).
+  // The website half above was normalised and this half was not, so the anchor
+  // check reported "docs/concepts.md dropped out of the scan" — one half of a
+  // pair taught and the other not, in the fix for that very class. POSIX join.
+  for (const rel of [...files.map((f) => `docs/${f}`), ...extra]) {
     const abs = path.join(ROOT, rel);
     if (!fs.existsSync(abs)) continue;
     const paras = paragraphs(fs.readFileSync(abs, "utf-8"));

@@ -34,7 +34,10 @@ import path from "node:path";
 import { DEFAULT_SECRET_PATTERNS } from "../scripts/lib/frontmatter.js";
 
 const ROOT = path.resolve(__dirname, "..");
-const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+// The `.bin/tsx` shim is unlaunchable on Windows without a shell (see
+// tests/setup.ts). Use the shared launcher so this file cannot drift from the
+// other 30-odd call sites.
+import { TSX_BIN, TSX_ARGS } from "./setup.js";
 const CLI = path.join(ROOT, "scripts", "cli.ts");
 
 const j = (...parts: string[]) => parts.join("");
@@ -97,14 +100,24 @@ function lintLines(bodyLines: string[]): Array<{ rule: string; line?: number; me
     let stdout: string;
     try {
       stdout = execFileSync(
-        TSX,
-        [CLI, "lint", "--config", configPath, "--format", "json"],
+        TSX_BIN,
+        [...TSX_ARGS, CLI, "lint", "--config", configPath, "--format", "json"],
         { cwd: tempDir, encoding: "utf-8", env: { ...process.env, NODE_NO_WARNINGS: "1", FORCE_COLOR: "0" }, timeout: 60_000 },
       );
     } catch (err: unknown) {
       // lint exits non-zero when it finds errors — that is the expected path here.
       const e = err as { stdout?: string };
       stdout = e.stdout ?? "";
+    }
+    // On Windows this parsed "" and threw "Unexpected end of JSON input", which
+    // names neither the command nor the reason. Empty output means lint never
+    // produced any — a launch failure, not a lint result — and the two need
+    // different words because they need different fixes.
+    if (!stdout.trim()) {
+      throw new Error(
+        `lint --format json produced NO output (cwd=${tempDir}). The command did not run; ` +
+          `this is a launch failure, not a lint finding.`,
+      );
     }
     return JSON.parse(stdout);
   } finally {

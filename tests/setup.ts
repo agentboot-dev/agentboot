@@ -47,6 +47,26 @@ process.env["AGENTBOOT_HOME"] = testHome;
  * read) and correct when it is not, and it removes the shared-mutable-state
  * hazard for every consumer that adopts it.
  */
+
+/**
+ * Launch tsx WITHOUT going through the `node_modules/.bin` shim.
+ *
+ * The shim is an extensionless shell script; on Windows the executable is
+ * `tsx.cmd`, and `spawnSync`/`execFileSync` without a shell can launch neither —
+ * ENOENT, null status, empty output. That took the entire Windows leg down once
+ * (302 cascaded failures from the shared setup), and then took two more test
+ * files down after the setup itself was fixed, because each call site carried
+ * its own copy of the rule.
+ *
+ * This is the one rule. `[TSX_BIN, ...TSX_ARGS, script]` runs tsx's own entry
+ * under the current node, so there is no shim and no shell quoting on any
+ * platform. Prefer it over `path.join(ROOT, "node_modules", ".bin", "tsx")` —
+ * `tests/no-bin-shim-spawn.test.ts` fails a file that reaches for the shim
+ * directly.
+ */
+export const TSX_BIN = process.execPath;
+export const TSX_ARGS = [path.join(path.resolve(__dirname, ".."), "node_modules", "tsx", "dist", "cli.mjs")];
+
 export function ensureRootDist(): void {
   const ROOT = path.resolve(__dirname, "..");
   const distPath = path.join(ROOT, "dist");
