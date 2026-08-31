@@ -1,0 +1,567 @@
+{
+  "schema": 1,
+  "capturedAt": "2026-08-31T10:49:40.795Z",
+  "agentbootVersion": "0.21.0",
+  "note": "Point-in-time platform enforcement behaviour. Archive only — comparison is post-GA (Continental Drift).",
+  "observedProbes": 9,
+  "platforms": {
+    "agents": {
+      "platform": "agents",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.681Z",
+      "declared": {
+        "level": "advisory",
+        "detail": "AGENTS.md is instructions only",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "claude": {
+      "platform": "claude",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.072Z",
+      "declared": {
+        "level": "enforced",
+        "detail": "hooks block (exit 2); managed settings via the MDM channel are non-overridable",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "hook script",
+          "declared_level": "enforced",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "clean input passes",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "secret-bearing input BLOCKS",
+              "expected": "exit 2 (block decision)",
+              "observed": "exit 2 (block decision)",
+              "pass": true
+            },
+            {
+              "probe": "malformed input fails CLOSED",
+              "expected": "exit 0 with empty extraction OR exit 2 block — never a crash past the parse guard",
+              "observed": "exit 2 (block decision)",
+              "pass": true
+            },
+            {
+              "probe": "oversized input completes within the 5s hook binding",
+              "expected": "completes (no timeout)",
+              "observed": "exit 0",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "hook script",
+          "declared_level": "enforced",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "clean output passes",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "secret in output WARNS (outputScan.blocking disabled — warn-only by design)",
+              "expected": "exit 0 + warning on stderr",
+              "observed": "exit 0 (warned)",
+              "pass": true
+            },
+            {
+              "probe": "secret detected via transcript_path fallback (no inline message field)",
+              "expected": "exit 0 + warning on stderr",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "malformed input at Stop fails OPEN (never wedges the session)",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "hook script",
+          "declared_level": "enforced",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "telemetry event records without blocking",
+              "expected": "exit 0 within the 3s binding, event appended to the log",
+              "observed": "exit 0 (log written)",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "hook script",
+          "declared_level": "enforced",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "codex": {
+      "platform": "codex",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:40.275Z",
+      "declared": {
+        "level": "partial",
+        "detail": "hooks emitted with partial event coverage; managed-settings ceiling is lower than Claude Code",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "hook script",
+          "declared_level": "partial",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "clean input passes",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "secret-bearing input BLOCKS",
+              "expected": "exit 2 (block decision)",
+              "observed": "exit 2 (block decision)",
+              "pass": true
+            },
+            {
+              "probe": "malformed input fails CLOSED",
+              "expected": "exit 0 with empty extraction OR exit 2 block — never a crash past the parse guard",
+              "observed": "exit 2 (block decision)",
+              "pass": true
+            },
+            {
+              "probe": "oversized input completes within the 5s hook binding",
+              "expected": "completes (no timeout)",
+              "observed": "exit 0",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "hook script",
+          "declared_level": "partial",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "clean output passes",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "secret in output WARNS (outputScan.blocking disabled — warn-only by design)",
+              "expected": "exit 0 + warning on stderr",
+              "observed": "exit 0 (warned)",
+              "pass": true
+            },
+            {
+              "probe": "secret detected via transcript_path fallback (no inline message field)",
+              "expected": "exit 0 + warning on stderr",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "malformed input at Stop fails OPEN (never wedges the session)",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "hook script",
+          "declared_level": "partial",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "telemetry event records without blocking",
+              "expected": "exit 0 within the 3s binding, event appended to the log",
+              "observed": "exit 0 (log written)",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "hook script",
+          "declared_level": "partial",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "copilot": {
+      "platform": "copilot",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.681Z",
+      "declared": {
+        "level": "fail-open",
+        "detail": "command hooks time out OPEN — a hung or slow hook does not block",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "hook script",
+          "declared_level": "fail-open",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "clean input passes",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "secret-bearing input BLOCKS",
+              "expected": "exit 2 (block decision)",
+              "observed": "exit 2 (block decision)",
+              "pass": true
+            },
+            {
+              "probe": "malformed input fails CLOSED",
+              "expected": "exit 0 with empty extraction OR exit 2 block — never a crash past the parse guard",
+              "observed": "exit 2 (block decision)",
+              "pass": true
+            },
+            {
+              "probe": "oversized input completes within the 5s hook binding",
+              "expected": "completes (no timeout)",
+              "observed": "exit 0",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "hook script",
+          "declared_level": "fail-open",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "clean output passes",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "secret in output WARNS (outputScan.blocking disabled — warn-only by design)",
+              "expected": "exit 0 + warning on stderr",
+              "observed": "exit 0 (warned)",
+              "pass": true
+            },
+            {
+              "probe": "secret detected via transcript_path fallback (no inline message field)",
+              "expected": "exit 0 + warning on stderr",
+              "observed": "exit 0",
+              "pass": true
+            },
+            {
+              "probe": "malformed input at Stop fails OPEN (never wedges the session)",
+              "expected": "exit 0",
+              "observed": "exit 0",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "hook script",
+          "declared_level": "fail-open",
+          "status": "pass",
+          "probes": [
+            {
+              "probe": "telemetry event records without blocking",
+              "expected": "exit 0 within the 3s binding, event appended to the log",
+              "observed": "exit 0 (log written)",
+              "pass": true
+            }
+          ]
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "hook script",
+          "declared_level": "fail-open",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "cursor": {
+      "platform": "cursor",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.681Z",
+      "declared": {
+        "level": "advisory",
+        "detail": "instructions only — no hook binding, nothing is enforced",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "gemini": {
+      "platform": "gemini",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.681Z",
+      "declared": {
+        "level": "advisory",
+        "detail": "instructions only — no hook binding",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "jetbrains": {
+      "platform": "jetbrains",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.681Z",
+      "declared": {
+        "level": "advisory",
+        "detail": "instructions only — no hook binding",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "skill": {
+      "platform": "skill",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:38.464Z",
+      "declared": {
+        "level": "advisory",
+        "detail": "skill content is instructions only",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    },
+    "windsurf": {
+      "platform": "windsurf",
+      "agentboot_version": "0.21.0",
+      "generated_at": "2026-08-31T10:49:39.681Z",
+      "declared": {
+        "level": "advisory",
+        "detail": "instructions only — no hook binding",
+        "unmetRequires": []
+      },
+      "controls": [
+        {
+          "control": "input-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "output-scan",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "telemetry",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "no hook mechanism exists on this platform — instructions are advisory only"
+        },
+        {
+          "control": "deny-tools",
+          "mechanism": "none",
+          "declared_level": "advisory",
+          "status": "not-applicable",
+          "probes": [],
+          "reason": "managed.guardrails.denyTools not configured"
+        }
+      ]
+    }
+  }
+}
